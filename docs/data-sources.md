@@ -42,6 +42,21 @@ The Odds API (api.the-odds-api.com)
 - The NHL API is unofficial and changes without notice. A nightly contract test on one golden game catches schema drift.
 - Shift chart coverage varies for older seasons. Phase 1 checks coverage per season before RAPM depends on it.
 - The Odds API free tier has 500 credits a month. A call costs 1 credit per market per region and returns every game. The slot plan uses about 300 credits a month. Store `last_update` with every quote.
+- Many EU books (13 of 20 on 2026-09-28, among them Marathonbet, Unibet, Betclic and 1xBet) quote the 3-way regulation line under the Odds API `h2h` key, with a `Draw` outcome. The parser stores those quotes as `h2h_3_way`, so `h2h` only holds the two-way moneyline including OT and the shootout. Pinnacle, Betsson and NordicBet quote the two-way line.
+
+## Odds snapshots
+
+`nhl odds snapshot` runs from `.github/workflows/odds-snapshots.yml`. Slots are set in US Eastern time. The workflow has one cron line per slot for each UTC offset, and the CLI maps the line that fired to a slot for the current offset, so nothing changes by hand when DST starts or ends. A run first checks the NHL schedule and makes no Odds API call when the slot has no regular-season or playoff game.
+
+| Slot | ET | UTC in EDT / EST | Markets | Runs when |
+| --- | --- | --- | --- | --- |
+| morning | 07:05 | 11:05 / 12:05 | h2h, spreads, totals | a game today (ET) has not started |
+| midday | 12:45 | 16:45 / 17:45 | h2h, spreads, totals | a game today (ET) has not started |
+| pre7 | 18:45 | 22:45 / 23:45 | h2h, totals | a game starts within 90 minutes |
+| pre8 | 19:45 | 23:45 / 00:45 | h2h | a game starts within 90 minutes |
+| pre10 | 21:45 | 01:45 / 02:45 | h2h | a game starts within 90 minutes |
+
+At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<date>/<snapshot>_<slot>_<regions>.json.gz` with a `.meta.json` sidecar (parameters without the key, credit headers), mirrored to `raw/odds/` in R2. Supabase `odds_snapshots` gets only pre-game quotes for games starting within 36 hours of the snapshot; the raw files keep every listed game for the lake. Games starting before 18:45 ET (weekend matinees) get the midday snapshot as their last pre-game quote.
 - The Odds API historical endpoint is paid. The `guard-bash` hook blocks it unless Claude Code starts with `ALLOW_PAID_ODDS=1`.
 - MoneyPuck data is free for non-commercial use with attribution and must not be scraped. It is a sanity check, not a backtest input.
 - Daily Faceoff and RotoWire are manual references only, not part of the automated pipeline.

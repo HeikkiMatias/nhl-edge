@@ -5,9 +5,12 @@ description = "NHL moneyline model that must add information beyond a recalibrat
 authors = [{ name = "Heikki Mattila" }]
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "boto3>=1.43.103",
     "duckdb>=1.1",
+    "httpx>=0.28.1",
     "pandera[polars]>=0.20",
     "polars>=1.0",
+    "python-dotenv>=1.2.3",
     "scikit-learn>=1.5",
     "scipy>=1.13",
     "statsmodels>=0.14",
