@@ -14,3 +14,10 @@ Codex applies the section below when reviewing. It mirrors the hard rules in CLA
 - Flag metrics reported as pass or fail without intervals.
 - Flag new features or model code without tests, any change to data/raw/ or tests/golden/,
   and calls to paid endpoints such as the Odds API historical API.
+
+Scope:
+- Flag only problems this PR's diff introduces or changes. Do not re-report existing code.
+- Label a violation of any rule above P0, whatever its size.
+- The scripts in .claude/hooks/ are best-effort guards against accidents, not a security boundary.
+  Flag gaps an agent could hit by accident, not ways to bypass them on purpose.
+- Empty .gitkeep placeholders in protected directories are not changes to their contents.

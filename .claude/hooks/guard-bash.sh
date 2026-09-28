@@ -7,7 +7,9 @@ if echo "$cmd" | grep -qE 'the-odds-api\.com/v4/historical|nhl odds backfill' \
   echo "Blocked: paid historical odds call. Start Claude with ALLOW_PAID_ODDS=1 to allow." >&2
   exit 2
 fi
-if echo "$cmd" | grep -qE 'rm -rf|git reset --hard|git push (-f|--force)'; then
+# Any recursive rm, however its options are spelled: -rf, -fr, -r -f, -R, --recursive
+recursive_rm='(^|[^[:alnum:]_-])rm[[:space:]]+([^;&|]*[[:space:]])?(-[[:alpha:]]*[rR][[:alpha:]]*|--recursive)([[:space:]]|$)'
+if echo "$cmd" | grep -qE "$recursive_rm|git reset --hard|git push (-f|--force)"; then
   echo "Blocked: destructive command." >&2
   exit 2
 fi
