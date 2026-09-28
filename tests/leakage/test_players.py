@@ -1,6 +1,6 @@
 """players has no observed_utc because it may only hold facts fixed before a player's NHL debut.
-A time-varying column (team, stats, status) must go to a table with observed_utc instead, so the
-column set is locked here and the strict schema rejects anything extra."""
+A time-varying column (position, team, stats, status) must go to a table with observed_utc
+instead, so the column set is locked here and the strict schema rejects anything extra."""
 
 from datetime import UTC, date, datetime
 
@@ -14,7 +14,6 @@ STATIC_BIO = [
     "player_id",
     "name",
     "birth_date",
-    "position",
     "shoots",
     "draft_year",
     "draft_overall",
@@ -32,7 +31,6 @@ def test_a_time_varying_column_is_rejected() -> None:
         "player_id": 8478402,
         "name": "Connor McDavid",
         "birth_date": date(1997, 1, 13),
-        "position": "C",
         "shoots": "L",
         "draft_year": 2015,
         "draft_overall": 1,
@@ -41,5 +39,7 @@ def test_a_time_varying_column_is_rejected() -> None:
     }
     frame = pl.DataFrame([row], schema=dtypes(Players))
     Players.validate(frame)
-    with pytest.raises(pandera.errors.SchemaError):
-        Players.validate(frame.with_columns(pl.lit("EDM").alias("current_team")))
+    # The landing page's position and team are today's, not the player's at game time.
+    for column, value in (("position", "D"), ("current_team", "EDM")):
+        with pytest.raises(pandera.errors.SchemaError):
+            Players.validate(frame.with_columns(pl.lit(value).alias(column)))

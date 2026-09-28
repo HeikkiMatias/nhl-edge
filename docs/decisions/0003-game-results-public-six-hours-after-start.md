@@ -15,7 +15,7 @@ Hard rule 1 requires every input to have an `observed_utc` before the prediction
 
 ## Decision
 
-Option 3: `observed_utc = start_utc + 6h` (`RESULT_LAG` in `ingest/games.py`), for backfilled and live games alike. The bound errs late, so a result can only be used later than it truly became public, never earlier. The price is that a matinee result cannot feed a prediction for an evening game on the same day. That loses one game in a rolling window of dozens. `results_known_at(games, t)` is the selector, and `tests/leakage/test_games.py` checks that a game never sees its own result.
+Option 3: `observed_utc = start_utc + 6h` (`RESULT_LAG` in `ingest/games.py`), for backfilled and live games alike. The bound errs late, so a result can only be used later than it truly became public, never earlier. The price is that a game started less than six hours before a prediction is left out, even when it has already ended. That loses at most one game in a rolling window of dozens. `results_known_at(games, t)` is the selector, and `tests/leakage/test_games.py` checks that a game never sees its own result.
 
 ## Backtest evidence
 
@@ -24,7 +24,12 @@ None yet. This is a point-in-time convention, not a tuned choice. Gate 1 (B2 aga
 ## Consequences
 
 - Every feature built from game results filters `observed_utc < prediction time`.
-- The live pipeline can never be ahead of the backtest. It ingests results the next morning, at least 6 hours after the start of any game.
+- The backtest can be slightly ahead of live, though this is not leakage.
+  - The live pipeline ingests results in the 09:00 UTC nightly run.
+  - A backtest prediction can use a same-day result once its six hours have passed. For example, a noon ET start becomes usable before a 10 pm ET puck drop.
+  - The result was public by then, so nothing leaks. It only reaches league-wide components, because a team never plays twice in a day.
+  - An intraday ingest before the evening odds slots would close the gap.
+- `observed_utc` covers the result columns only. The schedule columns in the same row (teams, start, venue) were public long before the game. Issue #24 splits schedule from results before phase 2, so rest and travel features can read the current game's schedule without its result.
 - The Supabase `games` table stores the same `observed_utc`.
 
 ## Revisit when

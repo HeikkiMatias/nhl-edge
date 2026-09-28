@@ -60,6 +60,12 @@ Raw responses go to `data/raw/nhl/<kind>/<entity>/<fetch stamp>.json.gz`, with a
 | `roster` | `{season}/{team}` | it was fetched after the team's last ingested game was observed |
 | `player-landing` | `{player_id}` | always (bio and draft facts do not change) |
 
+Two cached responses reflect later knowledge, so neither may feed a point-in-time input:
+- A past season's roster lists everyone who played for the team that season. It only finds player ids for `players` and must never feed a lineup (hard rule 9).
+- A boxscore fetched years later includes post-game stat corrections. It may be used only after its game's `observed_utc`.
+
+The landing page's `position` is today's, so it stays out of `players`. Each game's boxscore gives the position at game time.
+
 `--replay` reads only the local raw cache, never the network, and fails on a miss. It re-parses every player, so a parser fix reaches old rows. The odds job's schedule check always fetches fresh.
 
 Lake tables live in `data/lake/<table>/`, and with `--r2` they are mirrored to `lake/<table>/` in R2. `games` is partitioned as `season=S/game_date=D/part-0.parquet`, and a write replaces whole partitions; `players` is one file. `--supabase` upserts the games into Supabase `games` and ends with one small read, which keeps the free project from pausing.

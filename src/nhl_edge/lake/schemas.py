@@ -87,9 +87,12 @@ class Games(pa.DataFrameModel):
 
     Scores are full-game: a shootout adds one goal for its winner, so home_score > away_score
     settles the moneyline, OT and shootout included. decided_in is the period type that ended the
-    game. observed_utc is when the result counts as public: start_utc plus six hours, a
-    conservative bound because the API has no end time (ADR 0003). limited_attendance marks the
-    2020-21 season, played without fans or with capped crowds.
+    game. limited_attendance marks the 2020-21 season, played without fans or with capped crowds.
+
+    observed_utc is when the result (home_score, away_score, decided_in) counts as public:
+    start_utc plus six hours, a conservative bound because the API has no end time (ADR 0003).
+    The schedule columns (teams, start, venue, neutral_site) were public long before the game,
+    but share the row's observed_utc until schedule and results are split (#24).
     """
 
     game_id: pl.Int64
@@ -140,21 +143,18 @@ class Games(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("observed_utc") > pl.col("start_utc"))
 
 
-PLAYER_POSITIONS = ("C", "L", "R", "D", "G")
-
-
 class Players(pa.DataFrameModel):
     """One NHL player, from the player landing page.
 
     Only facts fixed before a player's NHL debut belong here, which is why the table has no
-    observed_utc: fetched_utc records provenance. Anything that changes over a career (team,
-    stats, injuries) goes in a table with observed_utc. position is the current listed position.
+    observed_utc: fetched_utc records provenance. Anything that changes over a career (position,
+    team, stats, injuries) goes in a table with observed_utc; the landing page's position is the
+    one listed today, so a player's position comes from each game's boxscore instead.
     """
 
     player_id: pl.Int64
     name: pl.String = pa.Field(str_length={"min_value": 1})
     birth_date: pl.Date
-    position: pl.String = pa.Field(isin=PLAYER_POSITIONS)
     shoots: pl.String = pa.Field(isin=("L", "R"), nullable=True)
     draft_year: pl.Int16 = pa.Field(nullable=True)
     draft_overall: pl.Int16 = pa.Field(ge=1, nullable=True)

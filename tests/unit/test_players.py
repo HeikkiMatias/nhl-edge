@@ -39,7 +39,6 @@ def test_drafted_player() -> None:
         "player_id": 8478402,
         "name": "Connor McDavid",
         "birth_date": date(1997, 1, 13),
-        "position": "C",
         "shoots": "L",
         "draft_year": 2015,
         "draft_overall": 1,
@@ -57,12 +56,12 @@ def test_undrafted_player_has_no_draft() -> None:
     )
 
 
-def test_schema_rejects_half_a_draft_and_unknown_positions() -> None:
+def test_schema_rejects_half_a_draft_and_bad_values() -> None:
     frame = parse_players([landing(8478402)])
     with pytest.raises(pandera.errors.SchemaError, match="drafted_or_not"):
         parse_players([{**landing(8478402), "draft_overall": None}])
     with pytest.raises(pandera.errors.SchemaError):
-        parse_players([{**landing(8478402), "position": "F"}])
+        parse_players([{**landing(8478402), "shoots": "X"}])
     with pytest.raises(pandera.errors.SchemaError):
         parse_players([landing(8478402), landing(8478402)])  # duplicate player_id
     assert frame.schema["draft_year"] == pl.Int16

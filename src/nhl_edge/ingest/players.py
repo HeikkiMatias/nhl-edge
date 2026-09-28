@@ -1,5 +1,9 @@
 """Players: bio and draft facts from the player landing page, for every player on a fetched
-roster or in a fetched boxscore (docs/plan.md section 4)."""
+roster or in a fetched boxscore (docs/plan.md section 4).
+
+The landing page's position is today's, so it stays out of players (see the Players schema).
+A past season's roster lists everyone who played that season, an after-the-fact view: it only
+finds player ids here and must never feed a lineup (hard rule 9)."""
 
 import json
 from datetime import date, datetime
@@ -38,7 +42,6 @@ def landing_row(body: bytes, fetched_utc: datetime, raw_key: str) -> dict[str, A
         "player_id": data["playerId"],
         "name": f"{data['firstName']['default']} {data['lastName']['default']}",
         "birth_date": date.fromisoformat(data["birthDate"]),
-        "position": data["position"],
         "shoots": data.get("shootsCatches") or None,
         "draft_year": draft.get("year"),
         "draft_overall": draft.get("overallPick"),
