@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.pyright/
+.ipynb_checkpoints/
+
+# Secrets (the template is committed)
+.env
+.env.*
+!.env.example
+
+# Local data: raw cache and lake live in R2, only placeholders are tracked
+/data/**
+!/data/**/
+!/data/**/.gitkeep
+
+# Claude Code personal settings
+.claude/settings.local.json
+
+# OS
+.DS_Store
