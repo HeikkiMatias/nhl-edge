@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 import polars as pl
@@ -75,3 +75,30 @@ def test_rejected_write_raises_without_the_key() -> None:
 
 def test_project_ref() -> None:
     assert Supabase(URL, SECRET_KEY, httpx.Client()).project_ref == "abcdefghijklmnop"
+
+
+def test_upsert_replaces_on_conflict_and_serializes_dates() -> None:
+    requests, client = capture()
+    dated = pl.DataFrame(
+        {"game_id": [2010020003], "game_date": [date(2010, 10, 7)]},
+        schema={"game_id": pl.Int64, "game_date": pl.Date},
+    )
+    sent = Supabase(URL, SECRET_KEY, client).upsert("games", dated, ["game_id"])
+    assert sent == 1
+    request = requests[0]
+    assert str(request.url) == f"{URL}/rest/v1/games?on_conflict=game_id"
+    assert request.headers["Prefer"] == "resolution=merge-duplicates,return=minimal"
+    assert json.loads(request.content) == [{"game_id": 2010020003, "game_date": "2010-10-07"}]
+
+
+def test_ping_is_one_tiny_read() -> None:
+    requests, client = capture(status=200)
+    Supabase(URL, SECRET_KEY, client).ping("games", "game_id")
+    assert requests[0].method == "GET"
+    assert str(requests[0].url) == f"{URL}/rest/v1/games?select=game_id&limit=1"
+
+
+def test_failed_ping_raises() -> None:
+    _, client = capture(status=503)
+    with pytest.raises(SupabaseError, match="read from games returned 503"):
+        Supabase(URL, SECRET_KEY, client).ping("games", "game_id")

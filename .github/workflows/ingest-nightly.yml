@@ -1,0 +1,48 @@
+name: ingest-nightly
+# The last three NHL game dates into the lake and Supabase (docs/data-sources.md, issue #4): the
+# schedule, play-by-play, boxscores, shift charts, rosters and new players' landing pages, every
+# raw response mirrored to R2. The lookback picks up a game that was not final yet and a missed
+# night; responses already in R2 are reused, not fetched again. The Supabase read at the end of
+# every run keeps the free project from pausing in the off-season. Older gaps are caught up with
+# a manual run over a date range.
+on:
+  schedule:
+    - cron: "0 9 * * *"  # 04:00 or 05:00 ET, after every game of the night is final
+  workflow_dispatch:
+    inputs:
+      start:
+        description: First game date (YYYY-MM-DD); empty for yesterday
+        required: false
+        default: ""
+      end:
+        description: Last game date (YYYY-MM-DD); empty for the start date
+        required: false
+        default: ""
+concurrency: ingest
+permissions:
+  contents: read
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --frozen
+      - name: Ingest
+        env:
+          START: ${{ inputs.start }}
+          END: ${{ inputs.end }}
+        run: |
+          if [ -n "$START" ]; then window=(--start "$START" --end "${END:-$START}"); else window=(--recent 3); fi
+          uv run nhl ingest "${window[@]}" --r2 --supabase
+      - name: R2 bucket size
+        if: always()
+        run: uv run nhl lake size --max-gb 8

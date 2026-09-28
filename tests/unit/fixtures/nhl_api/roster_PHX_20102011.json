@@ -1,0 +1,73 @@
+{
+ "forwards": [
+  {
+   "id": 8465050,
+   "firstName": {
+    "default": "Eric"
+   },
+   "lastName": {
+    "default": "Belanger"
+   },
+   "sweaterNumber": 20,
+   "positionCode": "C",
+   "shootsCatches": "L",
+   "birthDate": "1977-12-16"
+  },
+  {
+   "id": 8470713,
+   "firstName": {
+    "default": "Paul"
+   },
+   "lastName": {
+    "default": "Bissonnette"
+   },
+   "sweaterNumber": 12,
+   "positionCode": "L",
+   "shootsCatches": "L",
+   "birthDate": "1985-03-11"
+  }
+ ],
+ "defensemen": [
+  {
+   "id": 8459053,
+   "firstName": {
+    "default": "Adrian"
+   },
+   "lastName": {
+    "default": "Aucoin"
+   },
+   "sweaterNumber": 33,
+   "positionCode": "D",
+   "shootsCatches": "R",
+   "birthDate": "1973-07-03"
+  },
+  {
+   "id": 8475171,
+   "firstName": {
+    "default": "Oliver"
+   },
+   "lastName": {
+    "default": "Ekman-Larsson"
+   },
+   "sweaterNumber": 23,
+   "positionCode": "D",
+   "shootsCatches": "L",
+   "birthDate": "1991-07-17"
+  }
+ ],
+ "goalies": [
+  {
+   "id": 8468524,
+   "firstName": {
+    "default": "Ilya"
+   },
+   "lastName": {
+    "default": "Bryzgalov"
+   },
+   "sweaterNumber": 30,
+   "positionCode": "G",
+   "shootsCatches": "L",
+   "birthDate": "1980-06-22"
+  }
+ ]
+}

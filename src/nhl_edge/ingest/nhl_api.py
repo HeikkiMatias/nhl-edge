@@ -1,19 +1,30 @@
-"""NHL API client (api-web.nhle.com): throttled to about 1 request per second, every response cached
-raw. Only the schedule for now; #4 adds games, boxscores, shifts and rosters."""
+"""NHL API client (api-web.nhle.com and api.nhle.com/stats/rest; docs/data-sources.md).
+
+One throttle covers both hosts at about 1 request per second. Every response is stored untouched
+in the raw store under nhl/<kind>/<entity>/<fetch stamp> before anything parses it. A lookup first
+checks the cache: the newest stored copy is reused when the caller's reuse rule accepts it, so a
+backfill can stop and restart without refetching. In offline (replay) mode the client never touches
+the network and fails on a cache miss.
+"""
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from email.utils import parsedate_to_datetime
+from typing import Any
 
 import httpx
 
 from nhl_edge.lake.raw import RawStore
 
 BASE_URL = "https://api-web.nhle.com"
+STATS_URL = "https://api.nhle.com/stats/rest"
 SOURCE = "nhl"
 MIN_INTERVAL_S = 1.0
+BACKOFF_S = (5.0, 10.0, 20.0)
+RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 USER_AGENT = "nhl-edge/0.1 (personal research)"
 REGULAR_SEASON = 2
 PLAYOFFS = 3
@@ -51,6 +62,45 @@ def scheduled_games(body: bytes) -> list[ScheduledGame]:
     ]
 
 
+class NhlApiError(RuntimeError):
+    """A request that still failed after the retries."""
+
+
+class NotFoundError(NhlApiError):
+    """The API answered 404."""
+
+
+class NotCachedError(RuntimeError):
+    """Replay needed a response that is not in the raw cache."""
+
+
+@dataclass(frozen=True)
+class Response:
+    body: bytes
+    raw_key: str
+    fetched_utc: datetime
+    cached: bool
+
+
+# Decides whether a cached copy is still good, given its body and meta sidecar.
+Reuse = Callable[[bytes, dict[str, Any]], bool]
+
+
+def always(body: bytes, meta: dict[str, Any]) -> bool:
+    return True
+
+
+def never(body: bytes, meta: dict[str, Any]) -> bool:
+    return False
+
+
+def fetched_after(moment: datetime) -> Reuse:
+    def reuse(body: bytes, meta: dict[str, Any]) -> bool:
+        return parse_utc(meta["fetched_utc"]) >= moment
+
+    return reuse
+
+
 class NhlApi:
     def __init__(
         self,
@@ -58,34 +108,120 @@ class NhlApi:
         client: httpx.Client | None = None,
         *,
         min_interval_s: float = MIN_INTERVAL_S,
+        backoff_s: Sequence[float] = BACKOFF_S,
         now: Callable[[], datetime] = utc_now,
+        offline: bool = False,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.store = store
         self.client = client or httpx.Client(
             base_url=BASE_URL, headers={"User-Agent": USER_AGENT}, timeout=30
         )
         self.min_interval_s = min_interval_s
+        self.backoff_s = tuple(backoff_s)
         self.now = now
+        self.offline = offline
+        self.sleep = sleep
+        self.monotonic = monotonic
         self._last_request = float("-inf")
+        self.requests = 0
+        self.cache_hits = 0
 
-    def _get(self, path: str) -> tuple[bytes, datetime, dict[str, object]]:
-        wait = self._last_request + self.min_interval_s - time.monotonic()
+    def _throttle(self) -> None:
+        wait = self._last_request + self.min_interval_s - self.monotonic()
         if wait > 0:
-            time.sleep(wait)
-        self._last_request = time.monotonic()
-        response = self.client.get(path)
-        response.raise_for_status()
-        fetched_utc = self.now()
-        meta: dict[str, object] = {
-            "url": str(response.request.url),
-            "status": response.status_code,
-            "fetched_utc": fetched_utc.isoformat(),
-        }
-        return response.content, fetched_utc, meta
+            self.sleep(wait)
+        self._last_request = self.monotonic()
+
+    def _get(self, url: str) -> tuple[bytes, datetime, dict[str, Any]]:
+        """GET with retries on timeouts, 429 and 5xx. A 404 raises NotFoundError at once."""
+        error = ""
+        for attempt, backoff in enumerate((*self.backoff_s, None), start=1):
+            self._throttle()
+            self.requests += 1
+            retry_after: float | None = None
+            try:
+                response = self.client.get(url)
+            except httpx.TransportError as exc:
+                error = type(exc).__name__
+            else:
+                if response.status_code == 404:
+                    raise NotFoundError(f"GET {url} returned 404")
+                if response.status_code not in RETRY_STATUS:
+                    response.raise_for_status()
+                    fetched_utc = self.now()
+                    meta: dict[str, Any] = {
+                        "url": str(response.request.url),
+                        "status": response.status_code,
+                        "fetched_utc": fetched_utc.isoformat(),
+                        "attempts": attempt,
+                    }
+                    return response.content, fetched_utc, meta
+                error = f"status {response.status_code}"
+                retry_after = retry_after_s(response.headers.get("Retry-After"), self.now())
+            if backoff is None:
+                break
+            self.sleep(max(backoff, retry_after or 0.0))
+        raise NhlApiError(f"GET {url} failed after {len(self.backoff_s) + 1} attempts: {error}")
+
+    def fetch(self, kind: str, entity: str, url: str, reuse: Reuse) -> Response:
+        """The newest cached copy when reuse accepts it (or in replay), otherwise a fresh GET that
+        is stored raw before it is returned."""
+        prefix = f"{SOURCE}/{kind}/{entity}"
+        cached = self.store.latest(prefix)
+        if cached is not None:
+            body, meta = self.store.get(cached), self.store.meta(cached)
+            if self.offline or reuse(body, meta):
+                self.cache_hits += 1
+                return Response(body, cached, parse_utc(meta["fetched_utc"]), cached=True)
+        if self.offline:
+            raise NotCachedError(f"{prefix} is not in the raw cache; run without --replay")
+        body, fetched_utc, meta = self._get(url)
+        raw_key = self.store.put(
+            SOURCE, f"{kind}/{entity}/{fetched_utc:%Y%m%dT%H%M%SZ}", body, meta
+        )
+        return Response(body, raw_key, fetched_utc, cached=False)
 
     def schedule(self, day: date) -> list[ScheduledGame]:
-        body, fetched_utc, meta = self._get(f"/v1/schedule/{day.isoformat()}")
-        self.store.put(
-            SOURCE, f"schedule/{day.isoformat()}/{fetched_utc:%Y%m%dT%H%M%SZ}", body, meta
-        )
-        return scheduled_games(body)
+        """The week from day, always fetched fresh (the odds job needs today's start times)."""
+        return scheduled_games(self.schedule_week(day, never).body)
+
+    def schedule_week(self, day: date, reuse: Reuse) -> Response:
+        return self.fetch("schedule", day.isoformat(), f"/v1/schedule/{day.isoformat()}", reuse)
+
+    def play_by_play(self, season: int, game_id: int) -> Response:
+        path = f"/v1/gamecenter/{game_id}/play-by-play"
+        return self.fetch("play-by-play", f"{season}/{game_id}", path, always)
+
+    def boxscore(self, season: int, game_id: int) -> Response:
+        path = f"/v1/gamecenter/{game_id}/boxscore"
+        return self.fetch("boxscore", f"{season}/{game_id}", path, always)
+
+    def shift_chart(self, season: int, game_id: int) -> Response:
+        url = f"{STATS_URL}/en/shiftcharts?cayenneExp=gameId={game_id}"
+        return self.fetch("shiftcharts", f"{season}/{game_id}", url, always)
+
+    def roster(self, team: str, season: int, reuse: Reuse) -> Response:
+        return self.fetch("roster", f"{season}/{team}", f"/v1/roster/{team}/{season}", reuse)
+
+    def player_landing(self, player_id: int) -> Response:
+        path = f"/v1/player/{player_id}/landing"
+        return self.fetch("player-landing", str(player_id), path, always)
+
+
+def retry_after_s(value: str | None, now: datetime) -> float | None:
+    """A Retry-After header in seconds: either delay-seconds or an HTTP date (RFC 9110)."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        moment = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return max(0.0, (moment - now).total_seconds())

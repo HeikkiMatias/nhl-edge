@@ -1,5 +1,6 @@
 """The `nhl` command line: one interface for you, Claude Code and GitHub Actions."""
 
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -14,6 +15,8 @@ app = typer.Typer(
 )
 odds_app = typer.Typer(help="Live odds snapshots and historical odds.", no_args_is_help=True)
 app.add_typer(odds_app, name="odds")
+lake_app = typer.Typer(help="The R2 lake: raw responses and parquet tables.", no_args_is_help=True)
+app.add_typer(lake_app, name="lake")
 
 DEFAULT_BACKTEST_SEASONS = ",".join(str(season) for season in DEVELOPMENT_SEASONS)
 DEFAULT_BACKTEST_OUT = Path("reports/backtest")
@@ -25,9 +28,85 @@ def _not_implemented(command: str, phase: str) -> NoReturn:
 
 
 @app.command()
-def ingest() -> None:
-    """Ingest NHL API games, shifts and rosters into the lake."""
-    _not_implemented("ingest", "phase 1")
+def ingest(
+    seasons: Annotated[
+        str | None,
+        typer.Option(help="Seasons as 20232024, a comma list, or a range 20102011-20252026."),
+    ] = None,
+    start: Annotated[
+        datetime | None, typer.Option(formats=["%Y-%m-%d"], help="First game date.")
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(formats=["%Y-%m-%d"], help="Last game date (default: --start)."),
+    ] = None,
+    recent: Annotated[
+        int | None,
+        typer.Option(
+            min=1, help="The last N game dates up to yesterday (US Eastern); 1 is yesterday."
+        ),
+    ] = None,
+    feeds: Annotated[
+        bool, typer.Option(help="Cache play-by-play, boxscore and shift chart per game.")
+    ] = True,
+    players: Annotated[bool, typer.Option(help="Rosters and player landing pages.")] = True,
+    replay: Annotated[
+        bool, typer.Option("--replay", help="Rebuild from the raw cache only, no network.")
+    ] = False,
+    r2: Annotated[
+        bool, typer.Option("--r2", help="Mirror raw responses and lake tables to R2.")
+    ] = False,
+    supabase: Annotated[
+        bool, typer.Option("--supabase", help="Upsert games to Supabase and keep it awake.")
+    ] = False,
+) -> None:
+    """Ingest NHL games and players into the lake, caching every raw response."""
+    from nhl_edge.ingest.nhl_api import NhlApi, utc_now
+    from nhl_edge.ingest.nhl_ingest import (
+        DateRange,
+        Ingest,
+        Season,
+        Window,
+        parse_seasons,
+        recent_days,
+    )
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.supabase import Supabase
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    if sum(option is not None for option in (seasons, start, recent)) != 1:
+        raise typer.BadParameter("pass exactly one of --seasons, --start or --recent")
+    if end is not None and start is None:
+        raise typer.BadParameter("--end needs --start")
+    windows: list[Window]
+    if seasons is not None:
+        try:
+            windows = [Season(season) for season in parse_seasons(seasons)]
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    elif start is not None:
+        last = (end or start).date()
+        if last < start.date():
+            raise typer.BadParameter("--end is before --start")
+        windows = [DateRange(start.date(), last)]
+    else:
+        windows = [recent_days(utc_now(), recent or 1)]
+
+    load_env()
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    lake = Lake.from_env(mirror=r2)
+    writer = Supabase.from_env() if supabase else None
+    if writer is not None:
+        typer.echo(f"supabase project: {writer.project_ref}")
+    Ingest(
+        api=NhlApi(store, offline=replay),
+        lake=lake,
+        supabase=writer,
+        feeds=feeds,
+        players=players,
+        echo=typer.echo,
+    ).run(windows)
 
 
 @app.command()
@@ -141,6 +220,33 @@ def snapshot(
 def backfill() -> None:
     """Backfill historical odds from the paid Odds API endpoint."""
     _not_implemented("odds backfill", "deferred to v2")
+
+
+@lake_app.command()
+def size(
+    max_gb: Annotated[
+        float, typer.Option(help="Fail above this many GB (2^30 bytes); R2 is free to 10 GB.")
+    ] = 8.0,
+) -> None:
+    """Report the R2 bucket's object count and size, and fail loudly above --max-gb."""
+    import os
+
+    from nhl_edge.lake.r2 import R2Config, bucket_usage
+    from nhl_edge.settings import load_env
+
+    load_env()
+    config = R2Config.require("nhl lake size")
+    count, total = bucket_usage(config.client(), config.bucket)
+    gb = total / 2**30
+    typer.echo(f"R2 bucket {config.bucket}: {count} objects, {gb:.3f} GB (limit {max_gb:g} GB)")
+    if gb > max_gb:
+        prefix = "::error::" if os.environ.get("GITHUB_ACTIONS") == "true" else "error: "
+        typer.echo(
+            f"{prefix}R2 bucket is {gb:.2f} GB, above the {max_gb:g} GB limit. R2 charges above "
+            "10 GB and has no spending cap: prune or move data before it grows further.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
 
 @app.command()

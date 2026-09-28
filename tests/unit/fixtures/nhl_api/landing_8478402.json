@@ -1,0 +1,25 @@
+{
+ "playerId": 8478402,
+ "isActive": true,
+ "currentTeamAbbrev": "EDM",
+ "firstName": {
+  "default": "Connor"
+ },
+ "lastName": {
+  "default": "McDavid"
+ },
+ "sweaterNumber": 97,
+ "position": "C",
+ "heightInInches": 74,
+ "weightInPounds": 190,
+ "birthDate": "1997-01-13",
+ "birthCountry": "CAN",
+ "shootsCatches": "L",
+ "draftDetails": {
+  "year": 2015,
+  "teamAbbrev": "EDM",
+  "round": 1,
+  "pickInRound": 1,
+  "overallPick": 1
+ }
+}

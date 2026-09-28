@@ -1,0 +1,17 @@
+{
+ "playerId": 8462535,
+ "isActive": false,
+ "firstName": {
+  "default": "Jody"
+ },
+ "lastName": {
+  "default": "Shelley"
+ },
+ "sweaterNumber": 45,
+ "position": "L",
+ "heightInInches": 75,
+ "weightInPounds": 230,
+ "birthDate": "1976-02-07",
+ "birthCountry": "CAN",
+ "shootsCatches": "L"
+}
