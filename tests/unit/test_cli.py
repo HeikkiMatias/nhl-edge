@@ -1,9 +1,17 @@
+import re
+
 import pytest
 from typer.testing import CliRunner
 
 from nhl_edge.cli import app
 
 runner = CliRunner()
+
+
+def plain(text: str) -> str:
+    """Output without ANSI styling, which Rich adds on CI runners."""
+    return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", text).split())
+
 
 COMMANDS = ["ingest", "rate", "predict", "backtest", "bets", "odds", "status"]
 STUBS = [
@@ -35,7 +43,7 @@ def test_stubs_fail_loudly(args: list[str]) -> None:
 def test_snapshot_needs_exactly_one_of_cron_and_slot(extra: list[str]) -> None:
     result = runner.invoke(app, [*SNAPSHOT, *extra])
     assert result.exit_code == 2
-    assert "exactly one of --cron and --slot" in result.output
+    assert "exactly one of --cron and --slot" in plain(result.output)
 
 
 def test_snapshot_rejects_unknown_slot_and_plan() -> None:
