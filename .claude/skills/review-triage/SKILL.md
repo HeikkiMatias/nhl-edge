@@ -17,7 +17,7 @@ Apply the review budget in CLAUDE.md to PR $ARGUMENTS (default: the PR for the c
    | P0, or a hard-rule violation (leakage, settlement, de-vig, secrets, paid endpoints, protected paths), whatever its label | Fix |
    | P1 in lines this PR changed, small (a few lines, no redesign) | Fix |
    | P1 otherwise | Follow-up issue in the current milestone |
-   | P2 and below | Follow-up issue if it is a real defect worth doing later, otherwise won't fix |
+   | P2 and below | Fix in this PR. If it needs a redesign or lies outside the PR's diff, ask me first |
    | A guard bypass that needs deliberate effort | Won't fix |
 
    Show me the table (finding, label, decision, reason) and wait for my OK before changing anything.
@@ -28,7 +28,8 @@ Apply the review budget in CLAUDE.md to PR $ARGUMENTS (default: the PR for the c
    body to a file first and post it with
    `gh api repos/{owner}/{repo}/pulls/<n>/comments/<id>/replies -F body=@<file>`, since reply text often
    names paths the Bash guard blocks.
-6. **Next round.** After round 1 with fixes, request round 2 with `gh pr comment <n> --body "@codex review"`.
-   After round 2, request another round only when a P0 was fixed.
+6. **Next round.** After round 1 with P0 or P1 fixes, request round 2 with
+   `gh pr comment <n> --body "@codex review"`. P2-only fixes get a reply but no new round. After
+   round 2, request another round only when a P0 was fixed.
 7. **Report** readiness: CI (`gh pr checks <n>`), open P0s, unanswered findings, rounds used, follow-ups
    filed. Merge only on my go-ahead, with `gh pr merge <n> --squash --delete-branch`.

@@ -43,10 +43,11 @@ and docs/decisions/ before changing a modeling choice.
 - Record modeling decisions with /adr
 
 ## Review budget (Codex)
-- Two rounds per PR: the automatic review, then one requested re-review after fixes. A third
-  round only after a P0 fix.
+- Two rounds per PR: the automatic review, then one requested re-review after P0 or P1 fixes. A
+  third round only after a P0 fix. P2-only fixes never trigger a re-review.
 - Fix before merge: P0 and any hard-rule violation, whatever its label. P1: fix if it is in this
-  PR's diff and small, otherwise a follow-up issue. P2 and below never block.
+  PR's diff and small, otherwise a follow-up issue. P2 and below never block, but fix them in the PR
+  unless that needs a redesign.
 - Hooks are best-effort guards against accidents. Findings that need a deliberate bypass are
   won't-fix.
 - Reply to every finding: "Fixed in <sha>", "Follow-up #n" or "Won't fix: <reason>". Ready to merge
