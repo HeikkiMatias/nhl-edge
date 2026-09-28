@@ -1,0 +1,220 @@
+[
+ {
+  "id": "9de33ce1013f2a3375dbded2c9fbc7d6",
+  "sport_key": "icehockey_nhl",
+  "sport_title": "NHL",
+  "commence_time": "2026-09-29T21:00:47Z",
+  "home_team": "Carolina Hurricanes",
+  "away_team": "Florida Panthers",
+  "bookmakers": [
+   {
+    "key": "marathonbet",
+    "title": "Marathon Bet",
+    "last_update": "2026-09-28T12:00:03Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2026-09-28T12:00:02Z",
+      "outcomes": [
+       {
+        "name": "Carolina Hurricanes",
+        "price": 2.28
+       },
+       {
+        "name": "Florida Panthers",
+        "price": 2.69
+       },
+       {
+        "name": "Draw",
+        "price": 4.25
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "key": "nordicbet",
+    "title": "Nordic Bet",
+    "last_update": "2026-09-28T12:00:39Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2026-09-28T12:00:39Z",
+      "outcomes": [
+       {
+        "name": "Carolina Hurricanes",
+        "price": 1.79
+       },
+       {
+        "name": "Florida Panthers",
+        "price": 2.03
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "key": "pinnacle",
+    "title": "Pinnacle",
+    "last_update": "2026-09-28T12:00:53Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2026-09-28T12:00:53Z",
+      "outcomes": [
+       {
+        "name": "Carolina Hurricanes",
+        "price": 1.81
+       },
+       {
+        "name": "Florida Panthers",
+        "price": 2.1
+       }
+      ]
+     },
+     {
+      "key": "spreads",
+      "last_update": "2026-09-28T12:00:53Z",
+      "outcomes": [
+       {
+        "name": "Carolina Hurricanes",
+        "price": 2.94,
+        "point": -1.5
+       },
+       {
+        "name": "Florida Panthers",
+        "price": 1.43,
+        "point": 1.5
+       }
+      ]
+     },
+     {
+      "key": "totals",
+      "last_update": "2026-09-28T12:00:53Z",
+      "outcomes": [
+       {
+        "name": "Over",
+        "price": 2.04,
+        "point": 6.5
+       },
+       {
+        "name": "Under",
+        "price": 1.84,
+        "point": 6.5
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "id": "485b295347cb22f002e014cb87813ed7",
+  "sport_key": "icehockey_nhl",
+  "sport_title": "NHL",
+  "commence_time": "2026-09-29T23:10:00Z",
+  "home_team": "Toronto Maple Leafs",
+  "away_team": "Montréal Canadiens",
+  "bookmakers": [
+   {
+    "key": "marathonbet",
+    "title": "Marathon Bet",
+    "last_update": "2026-09-28T12:00:03Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2026-09-28T12:00:02Z",
+      "outcomes": [
+       {
+        "name": "Montréal Canadiens",
+        "price": 2.46
+       },
+       {
+        "name": "Toronto Maple Leafs",
+        "price": 2.49
+       },
+       {
+        "name": "Draw",
+        "price": 4.2
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "key": "nordicbet",
+    "title": "Nordic Bet",
+    "last_update": "2026-09-28T12:00:39Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2026-09-28T12:00:39Z",
+      "outcomes": [
+       {
+        "name": "Montréal Canadiens",
+        "price": 1.9
+       },
+       {
+        "name": "Toronto Maple Leafs",
+        "price": 1.9
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "key": "pinnacle",
+    "title": "Pinnacle",
+    "last_update": "2026-09-28T12:00:53Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2026-09-28T12:00:53Z",
+      "outcomes": [
+       {
+        "name": "Montréal Canadiens",
+        "price": 1.93
+       },
+       {
+        "name": "Toronto Maple Leafs",
+        "price": 1.96
+       }
+      ]
+     },
+     {
+      "key": "spreads",
+      "last_update": "2026-09-28T12:00:53Z",
+      "outcomes": [
+       {
+        "name": "Montréal Canadiens",
+        "price": 3.28,
+        "point": -1.5
+       },
+       {
+        "name": "Toronto Maple Leafs",
+        "price": 1.36,
+        "point": 1.5
+       }
+      ]
+     },
+     {
+      "key": "totals",
+      "last_update": "2026-09-28T12:00:53Z",
+      "outcomes": [
+       {
+        "name": "Over",
+        "price": 1.85,
+        "point": 6.0
+       },
+       {
+        "name": "Under",
+        "price": 2.03,
+        "point": 6.0
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+]

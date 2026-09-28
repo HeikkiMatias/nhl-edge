@@ -67,6 +67,8 @@ American odds: o = 1 + A/100 for A > 0, and o = 1 + 100/|A| for A < 0.
 ## Known pitfalls
 
 - Regulation probability against a moneyline price (see Settlement).
+- Many EU books quote the 3-way regulation line under the Odds API `h2h` key, with a `Draw` outcome.
+  `ingest/odds.py` stores those as `h2h_3_way`. Only `h2h` rows are moneyline prices.
 - Using implied probabilities without removing the vig, or de-vigging outside devig.py.
 - Closing odds used as the market input of a tradable (E2) prediction. E2 uses the price available at the
   prediction time: the SBR opening line historically, live snapshots from October 2026.

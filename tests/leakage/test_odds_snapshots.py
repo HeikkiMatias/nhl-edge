@@ -1,0 +1,40 @@
+"""Point-in-time rules for odds snapshots: a prediction may use only quotes observed before it
+(snapshot_utc < prediction time), and only pre-game quotes."""
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import polars as pl
+
+from nhl_edge.ingest.odds import available_at, parse_odds
+
+BODY = (
+    Path(__file__).parents[1]
+    / "unit"
+    / "fixtures"
+    / "odds_api"
+    / "odds_eu_full_20260928T120053Z.json"
+).read_bytes()
+MORNING = datetime(2026, 9, 28, 12, 0, 53, tzinfo=UTC)
+FLORIDA_AT_CAROLINA = datetime(2026, 9, 29, 21, 0, 47, tzinfo=UTC)
+
+
+def snapshots(*times: datetime) -> pl.DataFrame:
+    return pl.concat(parse_odds(BODY, t, "test", f"odds/{t:%H%M%S}") for t in times)
+
+
+def test_quotes_at_or_after_the_prediction_time_are_excluded() -> None:
+    later = MORNING + timedelta(hours=6)
+    frame = snapshots(MORNING, later)
+    usable = available_at(frame, prediction_utc=later)
+    assert usable.height > 0
+    assert (usable["snapshot_utc"] < later).all()
+    assert available_at(frame, prediction_utc=MORNING).is_empty()
+
+
+def test_in_play_quotes_are_excluded() -> None:
+    in_play = FLORIDA_AT_CAROLINA + timedelta(minutes=30)
+    frame = snapshots(in_play)
+    usable = available_at(frame, prediction_utc=in_play + timedelta(minutes=1))
+    assert (usable["commence_time_utc"] > usable["snapshot_utc"]).all()
+    assert FLORIDA_AT_CAROLINA not in usable["commence_time_utc"].to_list()
