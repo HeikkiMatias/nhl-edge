@@ -14,6 +14,7 @@ from nhl_edge.ingest.nhl_api import (
     always,
     fetched_after,
     never,
+    retry_after_s,
 )
 from nhl_edge.lake.raw import RawStore
 
@@ -121,6 +122,32 @@ def test_retries_503_and_429_with_backoff_and_retry_after(tmp_path: Path) -> Non
     assert clock.sleeps == [5.0, 30.0]
     assert store.meta(response.raw_key)["attempts"] == 3
     assert response.body == WEEK
+
+
+def test_retry_after_as_an_http_date(tmp_path: Path) -> None:
+    clock = Clock()
+    # The ticker's clock is 12:00:00 at the first call; the server asks for 12:01:00.
+    later = "Mon, 28 Sep 2026 12:01:00 GMT"
+    requests, handler = sequence(
+        httpx.Response(503, headers={"Retry-After": later}), httpx.Response(200, content=WEEK)
+    )
+    make_api(RawStore(tmp_path), handler, clock=clock).schedule_week(DAY, never)
+    assert len(requests) == 2
+    assert clock.sleeps == [60.0]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("120", 120.0),
+        ("Mon, 28 Sep 2026 12:00:30 GMT", 30.0),
+        ("Mon, 28 Sep 2026 11:00:00 GMT", 0.0),  # already past
+        ("soon", None),
+        (None, None),
+    ],
+)
+def test_retry_after_forms(value: str | None, expected: float | None) -> None:
+    assert retry_after_s(value, NOW) == expected
 
 
 def test_retries_transport_errors(tmp_path: Path) -> None:

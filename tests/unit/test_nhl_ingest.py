@@ -34,6 +34,12 @@ NOW = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
 PLAYERS = 15
 
 
+@pytest.fixture(autouse=True)
+def plain_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Warnings read "warning: ..." outside GitHub Actions, which CI itself runs in."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
+
 def probe_body() -> bytes:
     """The 2010-11 probe, with the season cut to the two fixture days."""
     data = json.loads(OPENING_WEEK)

@@ -79,6 +79,8 @@ class OddsSnapshots(pa.DataFrameModel):
 
 
 DECIDED_IN = ("REG", "OT", "SO")
+# No result counts as public sooner after its scheduled start (ADR 0003).
+MIN_RESULT_LAG = timedelta(hours=6)
 TRI_CODE = r"^[A-Z]{3}$"
 
 
@@ -90,7 +92,8 @@ class Games(pa.DataFrameModel):
     game. limited_attendance marks the 2020-21 season, played without fans or with capped crowds.
 
     observed_utc is when the result (home_score, away_score, decided_in) counts as public:
-    start_utc plus six hours, a conservative bound because the API has no end time (ADR 0003).
+    10:00 UTC the morning after game_date, a conservative bound because the API has no end time
+    (ADR 0003). The schema also requires it to be at least six hours after start_utc.
     The schedule columns (teams, start, venue, neutral_site) were public long before the game,
     but share the row's observed_utc until schedule and results are split (#24).
     """
@@ -139,8 +142,8 @@ class Games(pa.DataFrameModel):
         return data.lazyframe.select((pl.col("decided_in") == "REG") | (margin == 1))
 
     @pa.dataframe_check
-    def observed_after_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
-        return data.lazyframe.select(pl.col("observed_utc") > pl.col("start_utc"))
+    def observed_six_hours_after_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("observed_utc") >= pl.col("start_utc") + MIN_RESULT_LAG)
 
 
 class Players(pa.DataFrameModel):

@@ -40,7 +40,7 @@ The Odds API (api.the-odds-api.com)
 
 - Throttle the NHL API to about 1 request per second and cache every response. Raw responses are stored untouched as JSON under `data/raw/` locally and under the `raw/` prefix in the R2 lake, so parser bugs can be fixed and replayed without calling the API again.
 - The NHL API is unofficial and changes without notice. A nightly contract test on one golden game catches schema drift.
-- The NHL API has no end-of-game time. A result counts as public six hours after the scheduled start (`games.observed_utc`, ADR 0003).
+- The NHL API has no end-of-game time. A result counts as public at 10:00 UTC the morning after its game date, and at least six hours after its start (`games.observed_utc`, ADR 0003).
 - Shift chart coverage varies for older seasons. Phase 1 checks coverage per season before RAPM depends on it.
 - The Odds API free tier has 500 credits a month. A call costs 1 credit per market per region and returns every game. The slot plan uses about 300 credits a month. Store `last_update` with every quote.
 - Many EU books (13 of 20 on 2026-09-28, among them Marathonbet, Unibet, Betclic and 1xBet) quote the 3-way regulation line under the Odds API `h2h` key, with a `Draw` outcome. The parser stores those quotes as `h2h_3_way`, so `h2h` only holds the two-way moneyline including OT and the shootout. Pinnacle, Betsson and NordicBet quote the two-way line.

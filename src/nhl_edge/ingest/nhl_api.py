@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -158,7 +159,7 @@ class NhlApi:
                     }
                     return response.content, fetched_utc, meta
                 error = f"status {response.status_code}"
-                retry_after = _seconds(response.headers.get("Retry-After"))
+                retry_after = retry_after_s(response.headers.get("Retry-After"), self.now())
             if backoff is None:
                 break
             self.sleep(max(backoff, retry_after or 0.0))
@@ -209,8 +210,18 @@ class NhlApi:
         return self.fetch("player-landing", str(player_id), path, always)
 
 
-def _seconds(value: str | None) -> float | None:
-    try:
-        return float(value) if value else None
-    except ValueError:
+def retry_after_s(value: str | None, now: datetime) -> float | None:
+    """A Retry-After header in seconds: either delay-seconds or an HTTP date (RFC 9110)."""
+    if not value:
         return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        moment = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return max(0.0, (moment - now).total_seconds())

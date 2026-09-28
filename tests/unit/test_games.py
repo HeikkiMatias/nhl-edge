@@ -8,7 +8,6 @@ import pytest
 
 from nhl_edge.ingest.games import (
     EXPECTED_GAMES,
-    RESULT_LAG,
     listed_games,
     parse_games,
     probe_date,
@@ -64,8 +63,12 @@ def test_game_date_is_the_nhl_date_not_the_utc_date() -> None:
     assert late["game_date"] == date(2010, 10, 7)
 
 
-def test_result_is_observed_six_hours_after_the_start() -> None:
-    assert (OPENING["observed_utc"] - OPENING["start_utc"] == RESULT_LAG).all()
+def test_result_is_public_at_10_utc_the_morning_after() -> None:
+    assert dict(OPENING.select("game_id", "observed_utc").iter_rows()) == {
+        2010020003: datetime(2010, 10, 8, 10, 0, tzinfo=UTC),
+        2010020004: datetime(2010, 10, 8, 10, 0, tzinfo=UTC),  # started 02:00 UTC on 10-08
+        2010020008: datetime(2010, 10, 9, 10, 0, tzinfo=UTC),
+    }
     assert OPENING["raw_key"].unique().to_list() == ["nhl/schedule/test"]
 
 
@@ -116,6 +119,10 @@ def test_expected_game_counts() -> None:
         ({"game_id": 2011020003}, "regular_season_id_of_its_season"),
         ({"game_id": 2010030003}, "regular_season_id_of_its_season"),
         ({"home": "CAR"}, "home_is_not_away"),
+        (
+            {"observed_utc": datetime(2010, 10, 7, 21, 59, tzinfo=UTC)},  # start 16:00 + 5:59
+            "observed_six_hours_after_start",
+        ),
     ],
 )
 def test_schema_rejects_impossible_games(change: dict[str, object], check: str) -> None:

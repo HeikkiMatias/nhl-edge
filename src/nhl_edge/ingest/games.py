@@ -8,7 +8,7 @@ a game twice.
 
 import json
 from collections.abc import Collection
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import polars as pl
@@ -17,9 +17,17 @@ from nhl_edge.ingest.nhl_api import REGULAR_SEASON, Reuse, parse_utc
 from nhl_edge.lake.schemas import Games, dtypes
 
 FINAL = "OFF"
-# The API has no end-of-game time. Six hours after the scheduled start bounds every regular-season
-# game, OT and shootout included, so a result counts as public then (ADR 0003).
-RESULT_LAG = timedelta(hours=6)
+# The API has no end-of-game time, and a delayed game can finish many hours after its scheduled
+# start (the 2021 Lake Tahoe game ended about 11 hours after it). A result counts as public at
+# 10:00 UTC the morning after its game date (ADR 0003): after the nightly ingest, before the
+# morning odds slot, and at least six hours after any start.
+RESULT_PUBLIC_AT = time(10, 0, tzinfo=UTC)
+
+
+def result_public_utc(game_date: date) -> datetime:
+    return datetime.combine(game_date + timedelta(days=1), RESULT_PUBLIC_AT)
+
+
 # Played without fans or with capped crowds throughout.
 LIMITED_ATTENDANCE_SEASONS = frozenset({20202021})
 # Regular-season games per season: the 2012-13 lockout, the 2019-20 pause and the 56-game 2020-21
@@ -93,7 +101,7 @@ def game_row(game_date: date, game: dict[str, Any], raw_key: str) -> dict[str, A
         "decided_in": game["gameOutcome"]["lastPeriodType"],
         "neutral_site": game["neutralSite"],
         "limited_attendance": game["season"] in LIMITED_ATTENDANCE_SEASONS,
-        "observed_utc": start_utc + RESULT_LAG,
+        "observed_utc": result_public_utc(game_date),
         "raw_key": raw_key,
     }
 
