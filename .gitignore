@@ -22,6 +22,10 @@ dist/
 !/data/**/
 !/data/**/.gitkeep
 
+# Stray npm files at the root; web/ keeps its own lockfile
+/package-lock.json
+/node_modules/
+
 # Claude Code personal settings
 .claude/settings.local.json
 
