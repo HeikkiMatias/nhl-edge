@@ -38,7 +38,7 @@ The Odds API (api.the-odds-api.com)
 
 ## Access rules
 
-- Throttle the NHL API to about 1 request per second and cache every response. Raw responses are stored untouched as JSON under `raw/`, so parser bugs can be fixed and replayed without calling the API again.
+- Throttle the NHL API to about 1 request per second and cache every response. Raw responses are stored untouched as JSON under `data/raw/` locally and under the `raw/` prefix in the R2 lake, so parser bugs can be fixed and replayed without calling the API again.
 - The NHL API is unofficial and changes without notice. A nightly contract test on one golden game catches schema drift.
 - Shift chart coverage varies for older seasons. Phase 1 checks coverage per season before RAPM depends on it.
 - The Odds API free tier has 500 credits a month. A call costs 1 credit per market per region and returns every game. The slot plan uses about 300 credits a month. Store `last_update` with every quote.

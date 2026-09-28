@@ -9,8 +9,9 @@ Add the data source: $ARGUMENTS. Use the data-engineer subagent for the build.
 1. **Docs.** Add the source to docs/data-sources.md: what it gives, access and limits, terms of use,
    and its role in the model. List every endpoint used. Stop and ask if the terms forbid automated
    access or the endpoint is paid.
-2. **Raw cache.** Write responses untouched as JSON under raw/, keyed so a rerun can replay them without
-   calling the source. Throttle requests and record the fetch time.
+2. **Raw cache.** Have the ingest code write responses untouched as JSON under data/raw/<source>/, mirrored
+   to the lake's raw/ prefix on R2, keyed so a rerun can replay them without calling the source. Throttle
+   requests and record the fetch time. Never write or edit files there by hand.
 3. **Parser.** Parse raw JSON into a Polars frame in src/nhl_edge/ingest/. Every row gets observed_utc,
    when the fact became public, not when it was fetched if the two differ.
 4. **Schema.** Add a pandera schema to src/nhl_edge/lake/schemas.py and validate on every write.
