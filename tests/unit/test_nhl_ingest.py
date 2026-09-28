@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 import polars as pl
 import pytest
+from fakes import MemoryBucket
 
 from nhl_edge.ingest import nhl_api
 from nhl_edge.ingest.nhl_api import NhlApi, NotCachedError
@@ -16,6 +17,7 @@ from nhl_edge.ingest.nhl_ingest import (
     Ingest,
     Season,
     parse_seasons,
+    recent_days,
     yesterday_et,
 )
 from nhl_edge.lake.raw import RawStore
@@ -237,6 +239,32 @@ def test_parse_seasons() -> None:
 )
 def test_yesterday_is_the_eastern_date(now: datetime, expected: date) -> None:
     assert yesterday_et(now) == expected
+
+
+def test_recent_days_end_yesterday() -> None:
+    now = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
+    assert recent_days(now, 1) == DateRange(date(2026, 10, 7), date(2026, 10, 7))
+    assert recent_days(now, 3) == DateRange(date(2026, 10, 5), date(2026, 10, 7))
+    with pytest.raises(ValueError):
+        recent_days(now, 0)
+
+
+def test_a_fresh_runner_reuses_r2_instead_of_the_nhl_api(tmp_path: Path) -> None:
+    """The nightly lookback revisits dates an earlier run already stored: everything comes back
+    from R2, so the NHL API is not called and no raw response is stored twice."""
+    bucket = MemoryBucket()
+    first = make_api(RawStore(tmp_path / "laptop" / "raw", "b", bucket), FakeNhl())
+    ingest(first, Lake(tmp_path / "laptop" / "lake", "b", bucket), []).run([OPENING])
+    stored = set(bucket.objects)
+
+    fresh = FakeNhl()
+    runner_lake = Lake(tmp_path / "runner" / "lake", "b", bucket)
+    runner = make_api(RawStore(tmp_path / "runner" / "raw", "b", bucket), fresh)
+    [summary] = ingest(runner, runner_lake, []).run([OPENING])
+    assert sum(fresh.calls.values()) == 0
+    assert summary.written == 3
+    assert set(bucket.objects) == stored
+    assert runner_lake.read("players").height == PLAYERS
 
 
 def test_players_already_known_are_not_fetched_again(tmp_path: Path) -> None:

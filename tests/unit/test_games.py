@@ -12,6 +12,7 @@ from nhl_edge.ingest.games import (
     parse_games,
     probe_date,
     season_bounds,
+    season_over,
     settled_on,
 )
 from nhl_edge.lake.schemas import Games
@@ -103,6 +104,13 @@ def test_season_bounds_and_probe() -> None:
     assert season_bounds(OPENING_WEEK) == (date(2010, 10, 7), date(2011, 4, 10))
     assert season_bounds(PANDEMIC_WEEK) == (date(2021, 1, 13), date(2021, 5, 19))
     assert probe_date(20122013) == date(2013, 2, 15)
+
+
+def test_season_probe_is_reused_only_once_the_season_is_over() -> None:
+    # 2010-11 ended 2011-04-10: until then a postponement could still move the end date.
+    assert not season_over(OPENING_WEEK, {"fetched_utc": "2011-02-15T12:00:00+00:00"})
+    assert not season_over(OPENING_WEEK, {"fetched_utc": "2011-04-10T23:00:00+00:00"})
+    assert season_over(OPENING_WEEK, {"fetched_utc": "2011-04-11T09:00:00+00:00"})
 
 
 def test_expected_game_counts() -> None:

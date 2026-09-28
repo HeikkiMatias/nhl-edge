@@ -20,6 +20,8 @@ class ObjectStore(Protocol):
 
     def list_objects_v2(self, **kwargs: Any) -> Any: ...
 
+    def delete_object(self, **kwargs: Any) -> Any: ...
+
 
 @dataclass(frozen=True)
 class R2Config:

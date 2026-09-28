@@ -1,8 +1,10 @@
 name: ingest-nightly
-# Yesterday's NHL games into the lake and Supabase (docs/data-sources.md, issue #4): the week's
+# The last three NHL game dates into the lake and Supabase (docs/data-sources.md, issue #4): the
 # schedule, play-by-play, boxscores, shift charts, rosters and new players' landing pages, every
-# raw response mirrored to R2. The Supabase read at the end of every run keeps the free project
-# from pausing in the off-season. A missed night is caught up with a manual run over a date range.
+# raw response mirrored to R2. The lookback picks up a game that was not final yet and a missed
+# night; responses already in R2 are reused, not fetched again. The Supabase read at the end of
+# every run keeps the free project from pausing in the off-season. Older gaps are caught up with
+# a manual run over a date range.
 on:
   schedule:
     - cron: "0 9 * * *"  # 04:00 or 05:00 ET, after every game of the night is final
@@ -39,7 +41,7 @@ jobs:
           START: ${{ inputs.start }}
           END: ${{ inputs.end }}
         run: |
-          if [ -n "$START" ]; then window=(--start "$START" --end "${END:-$START}"); else window=(--yesterday); fi
+          if [ -n "$START" ]; then window=(--start "$START" --end "${END:-$START}"); else window=(--recent 3); fi
           uv run nhl ingest "${window[@]}" --r2 --supabase
       - name: R2 bucket size
         if: always()

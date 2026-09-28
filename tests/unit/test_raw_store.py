@@ -1,28 +1,15 @@
 import gzip
 from pathlib import Path
-from typing import Any
 
 import pytest
+from fakes import MemoryBucket
 
 from nhl_edge.lake.r2 import R2Config
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.settings import MissingSettingError
 
 BODY = b'[{"id": "evt1", "home_team": "Montr\xc3\xa9al Canadiens"}]'
-
-
-class FakeObjects:
-    def __init__(self) -> None:
-        self.puts: list[dict[str, Any]] = []
-
-    def put_object(self, **kwargs: Any) -> None:
-        self.puts.append(kwargs)
-
-    def get_object(self, **kwargs: Any) -> Any:
-        raise NotImplementedError
-
-    def list_objects_v2(self, **kwargs: Any) -> Any:
-        raise NotImplementedError
+PREFIX = "nhl/boxscore/20102011/2010020003"
 
 
 def test_round_trip_is_byte_for_byte(tmp_path: Path) -> None:
@@ -43,13 +30,48 @@ def test_raw_files_are_never_overwritten(tmp_path: Path) -> None:
 
 
 def test_mirror_uploads_the_same_bytes_under_raw(tmp_path: Path) -> None:
-    objects = FakeObjects()
-    store = RawStore(tmp_path, bucket="lake", objects=objects)
+    bucket = MemoryBucket()
+    store = RawStore(tmp_path, bucket="lake", objects=bucket)
     store.put("odds", "snap", BODY, {"slot": "morning"})
-    by_key = {put["Key"]: put for put in objects.puts}
-    assert set(by_key) == {"raw/odds/snap.json.gz", "raw/odds/snap.meta.json"}
-    assert all(put["Bucket"] == "lake" for put in objects.puts)
-    assert by_key["raw/odds/snap.json.gz"]["Body"] == (tmp_path / "odds/snap.json.gz").read_bytes()
+    assert set(bucket.objects) == {"raw/odds/snap.json.gz", "raw/odds/snap.meta.json"}
+    assert bucket.objects["raw/odds/snap.json.gz"] == (tmp_path / "odds/snap.json.gz").read_bytes()
+
+
+def test_latest_is_the_newest_complete_response(tmp_path: Path) -> None:
+    store = RawStore(tmp_path)
+    assert store.latest(PREFIX) is None
+    store.put("nhl", "boxscore/20102011/2010020003/20260928T120000Z", BODY, {})
+    store.put("nhl", "boxscore/20102011/2010020003/20260928T130000Z", BODY, {})
+    assert store.latest(PREFIX) == f"{PREFIX}/20260928T130000Z"
+    # A body without its sidecar is a write that was interrupted, so it never counts.
+    (tmp_path / f"{PREFIX}/20260928T140000Z.json.gz").write_bytes(b"partial")
+    assert store.latest(PREFIX) == f"{PREFIX}/20260928T130000Z"
+
+
+def test_a_local_miss_is_served_from_r2(tmp_path: Path) -> None:
+    bucket = MemoryBucket()
+    RawStore(tmp_path / "laptop", "b", bucket).put(
+        "nhl", "boxscore/20102011/2010020003/20260928T120000Z", BODY, {"status": 200}
+    )
+    runner = RawStore(tmp_path / "runner", "b", bucket)
+    raw_key = f"{PREFIX}/20260928T120000Z"
+    assert runner.latest(PREFIX) == raw_key
+    assert runner.get(raw_key) == BODY
+    assert runner.meta(raw_key) == {"status": 200}
+    # Now cached locally: the next lookup does not touch R2.
+    gets = len(bucket.gets)
+    assert runner.latest(PREFIX) == raw_key
+    assert len(bucket.gets) == gets
+
+
+def test_r2_responses_without_a_sidecar_or_below_the_prefix_are_ignored(tmp_path: Path) -> None:
+    bucket = MemoryBucket()
+    bucket.put_object(Key=f"raw/{PREFIX}/20260928T150000Z.json.gz", Body=b"partial")
+    bucket.put_object(Key=f"raw/{PREFIX}/deeper/20260928T160000Z.json.gz", Body=b"x")
+    bucket.put_object(Key=f"raw/{PREFIX}/deeper/20260928T160000Z.meta.json", Body=b"{}")
+    store = RawStore(tmp_path, "b", bucket)
+    assert store.latest(PREFIX) is None
+    assert RawStore(tmp_path).latest(PREFIX) is None  # no mirror, no R2 lookup
 
 
 def test_mirror_needs_bucket_and_client(tmp_path: Path) -> None:

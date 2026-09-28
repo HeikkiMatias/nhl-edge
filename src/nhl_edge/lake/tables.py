@@ -10,6 +10,7 @@ from R2 before a read-modify-write.
 """
 
 import io
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -93,6 +94,19 @@ class Lake:
             self._put(key, buffer.getvalue())
         return sorted(files)
 
+    def replace_dates(self, table: str, frame: pl.DataFrame, dates: Collection[date]) -> list[str]:
+        """Make the frame the whole content of the given game dates: write its partitions, then
+        delete any partition for those dates that the frame no longer has, locally and in R2, so
+        a replay or parser fix that drops games leaves nothing stale. Returns the keys written."""
+        if "game_date" not in TABLES[table].partition_by:
+            raise ValueError(f"{table} is not partitioned by game_date")
+        written = self.write(table, frame)
+        days = {f"game_date={day.isoformat()}" for day in dates}
+        for key in self._file_keys(table) - set(written):
+            if key.split("/")[-2] in days:
+                self._delete(key)
+        return written
+
     def read(self, table: str) -> pl.DataFrame:
         """The whole local table, or an empty frame with the schema's columns."""
         spec = TABLES[table]
@@ -122,6 +136,22 @@ class Lake:
         merged = pl.concat([existing.join(frame, on=list(spec.key), how="anti"), frame])
         self.write(table, merged)
         return merged.sort(spec.key)
+
+    def _file_keys(self, table: str) -> set[str]:
+        """Every file key of a table, local and in R2."""
+        keys = {
+            path.relative_to(self.base_dir).as_posix()
+            for path in (self.base_dir / table).rglob("*.parquet")
+        }
+        if self.objects is not None:
+            remote = list_keys(self.objects, self.bucket or "", f"{R2_PREFIX}/{table}/")
+            keys |= {key.removeprefix(f"{R2_PREFIX}/") for key, _ in remote}
+        return keys
+
+    def _delete(self, key: str) -> None:
+        (self.base_dir / key).unlink(missing_ok=True)
+        if self.objects is not None:
+            self.objects.delete_object(Bucket=self.bucket, Key=f"{R2_PREFIX}/{key}")
 
     def _put(self, key: str, data: bytes) -> None:
         self._write_local(key, data)

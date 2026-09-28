@@ -72,10 +72,11 @@ def test_status_brief_is_one_line_and_succeeds() -> None:
 @pytest.mark.parametrize(
     ("args", "message"),
     [
-        ([], "exactly one of --seasons, --start or --yesterday"),
-        (["--seasons", "20232024", "--yesterday"], "exactly one of"),
+        ([], "exactly one of --seasons, --start or --recent"),
+        (["--seasons", "20232024", "--recent", "3"], "exactly one of"),
+        (["--recent", "0"], "0 is not in the range x>=1"),
         (["--seasons", "2023"], "expected a season like 20232024"),
-        (["--end", "2026-10-01", "--yesterday"], "--end needs --start"),
+        (["--end", "2026-10-01", "--recent", "1"], "--end needs --start"),
         (["--start", "2026-10-02", "--end", "2026-10-01"], "--end is before --start"),
     ],
 )

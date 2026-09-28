@@ -40,9 +40,12 @@ def ingest(
         datetime | None,
         typer.Option(formats=["%Y-%m-%d"], help="Last game date (default: --start)."),
     ] = None,
-    yesterday: Annotated[
-        bool, typer.Option("--yesterday", help="Yesterday's games (US Eastern date).")
-    ] = False,
+    recent: Annotated[
+        int | None,
+        typer.Option(
+            min=1, help="The last N game dates up to yesterday (US Eastern); 1 is yesterday."
+        ),
+    ] = None,
     feeds: Annotated[
         bool, typer.Option(help="Cache play-by-play, boxscore and shift chart per game.")
     ] = True,
@@ -65,15 +68,15 @@ def ingest(
         Season,
         Window,
         parse_seasons,
-        yesterday_et,
+        recent_days,
     )
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.supabase import Supabase
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
 
-    if sum([seasons is not None, start is not None, yesterday]) != 1:
-        raise typer.BadParameter("pass exactly one of --seasons, --start or --yesterday")
+    if sum(option is not None for option in (seasons, start, recent)) != 1:
+        raise typer.BadParameter("pass exactly one of --seasons, --start or --recent")
     if end is not None and start is None:
         raise typer.BadParameter("--end needs --start")
     windows: list[Window]
@@ -88,8 +91,7 @@ def ingest(
             raise typer.BadParameter("--end is before --start")
         windows = [DateRange(start.date(), last)]
     else:
-        day = yesterday_et(utc_now())
-        windows = [DateRange(day, day)]
+        windows = [recent_days(utc_now(), recent or 1)]
 
     load_env()
     store = RawStore.from_env(mirror=r2, flag="--r2")

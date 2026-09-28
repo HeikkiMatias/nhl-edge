@@ -49,5 +49,6 @@ venv = ".venv"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests/unit"]  # shared test doubles in tests/unit/fakes.py
 addopts = "--strict-markers --import-mode=importlib"
 markers = ["slow: long-running tests, excluded from the fast suite with -m 'not slow'"]

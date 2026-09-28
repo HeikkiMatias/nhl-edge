@@ -1,11 +1,10 @@
-import io
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
 
 import pandera.errors
 import polars as pl
 import pytest
+from fakes import MemoryBucket
 
 from nhl_edge.ingest.games import listed_games, parse_games
 from nhl_edge.ingest.players import landing_row, parse_players
@@ -18,31 +17,8 @@ GAMES = parse_games(
     listed_games((FIXTURES / "schedule_2010-10-07.json").read_bytes(), OPENING_DAYS), "k"
 )
 FETCHED = datetime(2026, 9, 28, 13, 0, tzinfo=UTC)
-
-
-class MemoryBucket:
-    """In-memory stand-in for the boto3 S3 client, paging listings like R2 does."""
-
-    def __init__(self, page_size: int = 1000) -> None:
-        self.objects: dict[str, bytes] = {}
-        self.page_size = page_size
-
-    def put_object(self, **kwargs: Any) -> None:
-        self.objects[kwargs["Key"]] = kwargs["Body"]
-
-    def get_object(self, **kwargs: Any) -> dict[str, Any]:
-        return {"Body": io.BytesIO(self.objects[kwargs["Key"]])}
-
-    def list_objects_v2(self, **kwargs: Any) -> dict[str, Any]:
-        keys = sorted(k for k in self.objects if k.startswith(kwargs["Prefix"]))
-        start = int(kwargs.get("ContinuationToken", 0))
-        page = keys[start : start + self.page_size]
-        more = start + self.page_size < len(keys)
-        return {
-            "Contents": [{"Key": k, "Size": len(self.objects[k])} for k in page],
-            "IsTruncated": more,
-            **({"NextContinuationToken": str(start + self.page_size)} if more else {}),
-        }
+OCT_7 = "games/season=20102011/game_date=2010-10-07/part-0.parquet"
+OCT_8 = "games/season=20102011/game_date=2010-10-08/part-0.parquet"
 
 
 def players(*ids: int) -> pl.DataFrame:
@@ -73,6 +49,32 @@ def test_writing_a_partition_replaces_it(tmp_path: Path) -> None:
     lake.write("games", GAMES.filter(pl.col("game_id") == 2010020004))
     # 2010-10-07 now holds only the rewritten game; 2010-10-08 is untouched.
     assert lake.read("games")["game_id"].to_list() == [2010020004, 2010020008]
+
+
+def test_replacing_dates_drops_partitions_the_frame_no_longer_has(tmp_path: Path) -> None:
+    bucket = MemoryBucket()
+    laptop = Lake(tmp_path / "laptop", "b", bucket)
+    laptop.write("games", GAMES)
+    # A fresh machine replays both dates, and a parser fix has dropped the game on 2010-10-08.
+    runner = Lake(tmp_path / "runner", "b", bucket)
+    kept = GAMES.filter(pl.col("game_date") == date(2010, 10, 7))
+    assert runner.replace_dates("games", kept, OPENING_DAYS) == [OCT_7]
+    assert sorted(bucket.objects) == [f"lake/{OCT_7}"]
+    # The laptop's stale local copy goes too once it replaces the same dates.
+    laptop.replace_dates("games", kept, OPENING_DAYS)
+    assert not (tmp_path / "laptop" / OCT_8).exists()
+    assert laptop.read("games")["game_id"].to_list() == [2010020003, 2010020004]
+
+
+def test_replacing_dates_leaves_other_dates_alone(tmp_path: Path) -> None:
+    lake = Lake(tmp_path)
+    lake.write("games", GAMES)
+    lake.replace_dates("games", GAMES.head(0), {date(2010, 10, 9)})
+    assert lake.read("games").height == 3
+    lake.replace_dates("games", GAMES.head(0), {date(2010, 10, 8)})
+    assert lake.read("games")["game_id"].to_list() == [2010020003, 2010020004]
+    with pytest.raises(ValueError, match="not partitioned by game_date"):
+        lake.replace_dates("players", players(1), {date(2010, 10, 8)})
 
 
 def test_write_validates(tmp_path: Path) -> None:

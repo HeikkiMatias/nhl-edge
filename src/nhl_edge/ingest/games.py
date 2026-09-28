@@ -67,6 +67,13 @@ def season_bounds(body: bytes) -> tuple[date, date]:
     )
 
 
+def season_over(body: bytes, meta: dict[str, Any]) -> bool:
+    """Reuse a cached season probe only if it was fetched after the regular season ended: until
+    then, postponements can still move the end date."""
+    _, end = season_bounds(body)
+    return parse_utc(meta["fetched_utc"]).date() > end
+
+
 def listed_games(body: bytes, days: Collection[date]) -> list[tuple[date, dict[str, Any]]]:
     """Every regular-season game the response lists on the given days, with its day."""
     listed: list[tuple[date, dict[str, Any]]] = []

@@ -25,13 +25,13 @@ from nhl_edge.ingest.games import (
     parse_games,
     probe_date,
     season_bounds,
+    season_over,
     settled_on,
 )
 from nhl_edge.ingest.nhl_api import (
     NhlApi,
     NotCachedError,
     NotFoundError,
-    always,
     fetched_after,
 )
 from nhl_edge.ingest.players import (
@@ -82,6 +82,15 @@ def yesterday_et(now: datetime) -> date:
     return now.astimezone(ET).date() - timedelta(days=1)
 
 
+def recent_days(now: datetime, days: int) -> "DateRange":
+    """The last `days` game dates up to yesterday (US Eastern). The nightly job looks back a few
+    days, so a game that was not final yet, or a missed run, is picked up the next night."""
+    if days < 1:
+        raise ValueError("--recent must be at least 1")
+    last = yesterday_et(now)
+    return DateRange(last - timedelta(days=days - 1), last)
+
+
 def parse_seasons(text: str) -> list[int]:
     """Seasons as 20232024, a comma list, or an inclusive range 20102011-20252026."""
     seasons: list[int] = []
@@ -125,7 +134,8 @@ class Ingest:
         requests, hits = api.requests, api.cache_hits
         if isinstance(window, Season):
             label = str(window.season)
-            start, end = season_bounds(api.schedule_week(probe_date(window.season), always).body)
+            probe = api.schedule_week(probe_date(window.season), season_over)
+            start, end = season_bounds(probe.body)
         else:
             label = f"{window.start.isoformat()}..{window.end.isoformat()}"
             start, end = window.start, window.end
@@ -157,10 +167,12 @@ class Ingest:
 
         games = pl.concat(frames)
         summary.written = games.height
-        if games.height:
-            self.lake.write("games", games)
-            if self.supabase is not None:
-                self.supabase.upsert("games", games, TABLES["games"].key)
+        # The window's final games are the whole content of its dates, so a replay or parser fix
+        # that drops a game also drops its stale partition.
+        window_days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+        self.lake.replace_dates("games", games, window_days)
+        if games.height and self.supabase is not None:
+            self.supabase.upsert("games", games, TABLES["games"].key)
         if self.players:
             self.ingest_players(games, boxscore_ids, summary)
 
