@@ -1,5 +1,6 @@
 """Point-in-time rules for odds snapshots: a prediction may use only quotes observed before it
-(snapshot_utc < prediction time), and only pre-game quotes."""
+(snapshot_utc < prediction time), and only for games that have not started by the prediction
+time."""
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -38,3 +39,11 @@ def test_in_play_quotes_are_excluded() -> None:
     usable = available_at(frame, prediction_utc=in_play + timedelta(minutes=1))
     assert (usable["commence_time_utc"] > usable["snapshot_utc"]).all()
     assert FLORIDA_AT_CAROLINA not in usable["commence_time_utc"].to_list()
+
+
+def test_games_started_by_the_prediction_time_are_excluded() -> None:
+    # Both morning quotes are pre-game, but Carolina has started by the prediction time, so its
+    # price is no longer executable. Toronto starts at 23:10 and stays.
+    frame = snapshots(MORNING)
+    usable = available_at(frame, prediction_utc=FLORIDA_AT_CAROLINA + timedelta(minutes=1))
+    assert set(usable["home"]) == {"TOR"}

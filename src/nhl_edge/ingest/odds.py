@@ -294,10 +294,11 @@ def supabase_window(snapshots: pl.DataFrame) -> pl.DataFrame:
 
 
 def available_at(snapshots: pl.DataFrame, prediction_utc: datetime) -> pl.DataFrame:
-    """Quotes a prediction at prediction_utc may use: observed before it, and pre-game."""
+    """Quotes a prediction at prediction_utc may use: observed before it, for games that have not
+    started by then. A pre-game price for a game already under way is no longer executable."""
     return snapshots.filter(
         pl.col("snapshot_utc") < prediction_utc,
-        pl.col("commence_time_utc") > pl.col("snapshot_utc"),
+        pl.col("commence_time_utc") > prediction_utc,
     )
 
 
