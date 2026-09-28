@@ -61,7 +61,10 @@ Raw responses go to `data/raw/nhl/<kind>/<entity>/<fetch stamp>.json.gz`, with a
 | `player-landing` | `{player_id}` | always (bio and draft facts do not change) |
 
 Two cached responses reflect later knowledge, so neither may feed a point-in-time input:
-- A past season's roster lists everyone who played for the team that season. It only finds player ids for `players` and must never feed a lineup (hard rule 9).
+- A past season's roster is an after-the-fact view. It only finds player ids for `players` and must never feed a lineup (hard rule 9).
+  - Up to 2022-23 it lists everyone who played for the team that season (31 to 44 players).
+  - From 2023-24 on it holds only a current-style roster (17 to 30). ARI 2023-24 is empty, since the franchise moved.
+  - The boxscores fill these gaps, which is why player ids come from both.
 - A boxscore fetched years later includes post-game stat corrections. It may be used only after its game's `observed_utc`.
 
 The landing page's `position` is today's, so it stays out of `players`. Each game's boxscore gives the position at game time.

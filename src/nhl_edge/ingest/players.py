@@ -2,8 +2,8 @@
 roster or in a fetched boxscore (docs/plan.md section 4).
 
 The landing page's position is today's, so it stays out of players (see the Players schema).
-A past season's roster lists everyone who played that season, an after-the-fact view: it only
-finds player ids here and must never feed a lineup (hard rule 9)."""
+A past season's roster is an after-the-fact view: it only finds player ids here and must never
+feed a lineup (hard rule 9)."""
 
 import json
 from datetime import date, datetime
@@ -18,8 +18,9 @@ BOXSCORE_GROUPS = ("forwards", "defense", "goalies")
 
 
 def roster_player_ids(body: bytes) -> set[int]:
-    """Players on a /v1/roster/{team}/{season} response. Past seasons list everyone who played
-    for the team that season."""
+    """Players on a /v1/roster/{team}/{season} response. Up to 2022-23 a past season lists
+    everyone who played for the team; later seasons list only a current-style roster, so the
+    boxscores fill the gaps."""
     data = json.loads(body)
     return {player["id"] for group in ROSTER_GROUPS for player in data.get(group, [])}
 
