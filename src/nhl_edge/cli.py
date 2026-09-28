@@ -81,8 +81,8 @@ def backfill() -> None:
 def status(
     brief: Annotated[bool, typer.Option(help="One line, for the SessionStart hook.")] = False,
 ) -> None:
-    """Show project phase and data state."""
-    typer.echo(f"nhl-edge {__version__} · phase 0 (setup) · no data ingested, no models fitted")
+    """Show data and model state. Open tasks live in GitHub issues."""
+    typer.echo(f"nhl-edge {__version__} · no data ingested, no models fitted")
     if brief:
         return
     typer.echo("\nSeason roles (docs/plan.md section 5):")

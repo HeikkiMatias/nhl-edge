@@ -35,4 +35,4 @@ def test_status_brief_is_one_line_and_succeeds() -> None:
     result = runner.invoke(app, ["status", "--brief"])
     assert result.exit_code == 0
     assert len(result.output.strip().splitlines()) == 1
-    assert "phase 0" in result.output
+    assert result.output.startswith("nhl-edge ")

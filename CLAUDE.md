@@ -33,6 +33,11 @@ and docs/decisions/ before changing a modeling choice.
 - One modeling change per PR, with the backtest delta and its interval in the PR description
 
 ## Workflow
+- Tasks are GitHub issues in milestones P0 to P6; the SessionStart hook lists the open ones in
+  the earliest milestone. Take [priority] issues first, then the lowest number. A phase's summary
+  issue is broken into task issues when the phase starts. docs/plan.md's status column is not kept.
+- One branch and PR per issue (phase-N/<topic>), with "Closes #n" in the PR description. Work
+  found along the way becomes a new issue, not extra scope. Resume unfinished work from its open PR.
 - Start each phase in plan mode and paste the approved plan into the PR description
 - After changing features or models: /leakage-check, then /run-backtest
 - Record modeling decisions with /adr
