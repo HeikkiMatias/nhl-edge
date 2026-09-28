@@ -1,0 +1,113 @@
+{
+ "nextStartDate": "2021-01-20",
+ "previousStartDate": "2020-09-23",
+ "gameWeek": [
+  {
+   "date": "2021-01-13",
+   "dayAbbrev": "WED",
+   "numberOfGames": 2,
+   "games": [
+    {
+     "id": 2020020001,
+     "season": 20202021,
+     "gameType": 2,
+     "venue": {
+      "default": "Wells Fargo Center"
+     },
+     "neutralSite": false,
+     "startTimeUTC": "2021-01-13T22:30:00Z",
+     "gameState": "OFF",
+     "gameScheduleState": "OK",
+     "awayTeam": {
+      "id": 5,
+      "abbrev": "PIT",
+      "score": 3
+     },
+     "homeTeam": {
+      "id": 4,
+      "abbrev": "PHI",
+      "score": 6
+     },
+     "periodDescriptor": {
+      "number": 3,
+      "periodType": "REG",
+      "maxRegulationPeriods": 3
+     },
+     "gameOutcome": {
+      "lastPeriodType": "REG"
+     }
+    },
+    {
+     "id": 2020020003,
+     "season": 20202021,
+     "gameType": 2,
+     "venue": {
+      "default": "Scotiabank Arena"
+     },
+     "neutralSite": false,
+     "startTimeUTC": "2021-01-14T00:00:00Z",
+     "gameState": "OFF",
+     "gameScheduleState": "OK",
+     "awayTeam": {
+      "id": 8,
+      "abbrev": "MTL",
+      "score": 4
+     },
+     "homeTeam": {
+      "id": 10,
+      "abbrev": "TOR",
+      "score": 5
+     },
+     "periodDescriptor": {
+      "number": 4,
+      "periodType": "OT",
+      "maxRegulationPeriods": 3
+     },
+     "gameOutcome": {
+      "lastPeriodType": "OT"
+     }
+    }
+   ]
+  },
+  {
+   "date": "2021-01-14",
+   "dayAbbrev": "THU",
+   "numberOfGames": 0,
+   "games": []
+  },
+  {
+   "date": "2021-01-15",
+   "dayAbbrev": "FRI",
+   "numberOfGames": 0,
+   "games": []
+  },
+  {
+   "date": "2021-01-16",
+   "dayAbbrev": "SAT",
+   "numberOfGames": 0,
+   "games": []
+  },
+  {
+   "date": "2021-01-17",
+   "dayAbbrev": "SUN",
+   "numberOfGames": 0,
+   "games": []
+  },
+  {
+   "date": "2021-01-18",
+   "dayAbbrev": "MON",
+   "numberOfGames": 0,
+   "games": []
+  },
+  {
+   "date": "2021-01-19",
+   "dayAbbrev": "TUE",
+   "numberOfGames": 0,
+   "games": []
+  }
+ ],
+ "regularSeasonStartDate": "2021-01-13",
+ "regularSeasonEndDate": "2021-05-19",
+ "playoffEndDate": "2021-07-07",
+ "numberOfGames": 2
+}

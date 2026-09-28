@@ -4,6 +4,7 @@ Only what the dashboard and bet ledger need lives in Supabase; history lives in 
 """
 
 from collections.abc import Sequence
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -40,19 +41,45 @@ class Supabase:
     def insert_new(self, table: str, frame: pl.DataFrame, key: Sequence[str]) -> int:
         """Insert rows, skipping any whose key already exists, so reruns are idempotent. Returns
         the number of rows sent."""
-        rows = frame.with_columns(pl.col(pl.Datetime).dt.strftime("%Y-%m-%dT%H:%M:%SZ")).to_dicts()
+        return self._post(table, frame, key, "ignore-duplicates", "insert into")
+
+    def upsert(self, table: str, frame: pl.DataFrame, key: Sequence[str]) -> int:
+        """Insert rows, replacing any whose key already exists, so a corrected fact wins. Returns
+        the number of rows sent."""
+        return self._post(table, frame, key, "merge-duplicates", "upsert into")
+
+    def ping(self, table: str, column: str) -> None:
+        """One tiny read. The nightly job calls it every day, so the free project never sits
+        idle long enough to pause, even in the off-season."""
+        self._request(f"read from {table}", "GET", table, params={"select": column, "limit": "1"})
+
+    def _post(
+        self, table: str, frame: pl.DataFrame, key: Sequence[str], resolution: str, action: str
+    ) -> int:
+        rows = json_rows(frame)
         for start in range(0, len(rows), BATCH_SIZE):
-            try:
-                response = self.client.post(
-                    f"{self.url}/rest/v1/{table}",
-                    params={"on_conflict": ",".join(key)},
-                    headers={"Prefer": "resolution=ignore-duplicates,return=minimal"},
-                    json=rows[start : start + BATCH_SIZE],
-                )
-            except httpx.HTTPError as exc:
-                raise SupabaseError(f"insert into {table} failed: {type(exc).__name__}") from None
-            if response.status_code not in (200, 201, 204):
-                raise SupabaseError(
-                    f"insert into {table} returned {response.status_code}: {response.text[:300]}"
-                )
+            self._request(
+                f"{action} {table}",
+                "POST",
+                table,
+                params={"on_conflict": ",".join(key)},
+                headers={"Prefer": f"resolution={resolution},return=minimal"},
+                json=rows[start : start + BATCH_SIZE],
+            )
         return len(rows)
+
+    def _request(self, what: str, method: str, table: str, **kwargs: Any) -> None:
+        try:
+            response = self.client.request(method, f"{self.url}/rest/v1/{table}", **kwargs)
+        except httpx.HTTPError as exc:
+            raise SupabaseError(f"{what} failed: {type(exc).__name__}") from None
+        if response.status_code not in (200, 201, 204):
+            raise SupabaseError(f"{what} returned {response.status_code}: {response.text[:300]}")
+
+
+def json_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
+    """Rows as JSON-ready dicts: timestamps as ISO UTC strings, dates as YYYY-MM-DD."""
+    return frame.with_columns(
+        pl.col(pl.Datetime).dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        pl.col(pl.Date).dt.strftime("%Y-%m-%d"),
+    ).to_dicts()

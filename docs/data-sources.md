@@ -40,9 +40,45 @@ The Odds API (api.the-odds-api.com)
 
 - Throttle the NHL API to about 1 request per second and cache every response. Raw responses are stored untouched as JSON under `data/raw/` locally and under the `raw/` prefix in the R2 lake, so parser bugs can be fixed and replayed without calling the API again.
 - The NHL API is unofficial and changes without notice. A nightly contract test on one golden game catches schema drift.
+- The NHL API has no end-of-game time. A result counts as public six hours after the scheduled start (`games.observed_utc`, ADR 0003).
 - Shift chart coverage varies for older seasons. Phase 1 checks coverage per season before RAPM depends on it.
 - The Odds API free tier has 500 credits a month. A call costs 1 credit per market per region and returns every game. The slot plan uses about 300 credits a month. Store `last_update` with every quote.
 - Many EU books (13 of 20 on 2026-09-28, among them Marathonbet, Unibet, Betclic and 1xBet) quote the 3-way regulation line under the Odds API `h2h` key, with a `Draw` outcome. The parser stores those quotes as `h2h_3_way`, so `h2h` only holds the two-way moneyline including OT and the shootout. Pinnacle, Betsson and NordicBet quote the two-way line.
+
+## NHL ingest
+
+`nhl ingest` fills the lake's `games` and `players` tables and caches the raw per-game feeds that the shot, shift and lineup parsers read (#5). A window is `--seasons 20102011-20252026` (a range or a comma list), `--start D --end D`, or `--yesterday` (the US Eastern date). For each week of the window, it fetches the schedule and keeps the final (`OFF`) regular-season games. It fetches play-by-play, boxscore and shift chart for each of them (`--no-feeds` skips these), then the roster of every team that played, then the landing page of every player on those rosters or in those boxscores who is not yet in `players`. A season window first fetches the schedule at February 15 of its second year to read `regularSeasonStartDate` and `regularSeasonEndDate`. Games that are not final are skipped with a warning, and a later run picks them up. Playoffs are out of scope for v1.
+
+One throttle at about 1 request per second covers both NHL hosts. Timeouts, 429 and 5xx are retried 3 times with backoff of 5, 10 and 20 s (longer when the API sends `Retry-After`); a 404 is not retried.
+
+Raw responses go to `data/raw/nhl/<kind>/<entity>/<fetch stamp>.json.gz`, with a `.meta.json` sidecar (URL, status, fetch time, attempts), and with `--r2` they are mirrored to `raw/nhl/` in R2. The newest copy is reused when its rule allows it, so a stopped backfill restarts where it left off:
+
+| Kind | Entity | Cached copy reused when |
+| --- | --- | --- |
+| `schedule` | `{date}` (a week from that date) | every regular-season game on the days used is final; the season-bounds probe always |
+| `play-by-play`, `boxscore`, `shiftcharts` | `{season}/{game_id}` | always (fetched only for final games) |
+| `roster` | `{season}/{team}` | it was fetched after the team's last ingested game was observed |
+| `player-landing` | `{player_id}` | always (bio and draft facts do not change) |
+
+`--replay` reads only the local raw cache, never the network, and fails on a miss. It re-parses every player, so a parser fix reaches old rows. The odds job's schedule check always fetches fresh.
+
+Lake tables live in `data/lake/<table>/`, and with `--r2` they are mirrored to `lake/<table>/` in R2. `games` is partitioned as `season=S/game_date=D/part-0.parquet`, and a write replaces whole partitions; `players` is one file. `--supabase` upserts the games into Supabase `games` and ends with one small read, which keeps the free project from pausing.
+
+`.github/workflows/ingest-nightly.yml` runs `nhl ingest --yesterday --r2 --supabase` at 09:00 UTC (04:00 or 05:00 ET, when every game of the night is final), then `nhl lake size --max-gb 8`, which fails the run above 8 GB. R2 is free up to 10 GB and has no spending cap. A missed night is caught up with a manual run over a date range.
+
+Regular-season games per season, which a season window checks against:
+
+| Seasons | Games | Note |
+| --- | --- | --- |
+| 2010-11, 2011-12 | 1,230 | 30 teams |
+| 2012-13 | 720 | lockout, 48 games |
+| 2013-14 to 2016-17 | 1,230 | |
+| 2017-18, 2018-19 | 1,271 | VGK joins |
+| 2019-20 | 1,082 | paused on 2020-03-11, the rest cancelled |
+| 2020-21 | 868 | 56 games, limited attendance |
+| 2021-22 to 2025-26 | 1,312 | SEA joins |
+
+The 16 seasons come to 19,152 games. With the feeds this is about 64,000 requests, roughly 18 hours at 1 request per second, and about 0.65 GB gzipped in R2.
 
 ## Odds snapshots
 

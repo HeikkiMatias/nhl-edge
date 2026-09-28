@@ -8,6 +8,12 @@ import polars as pl
 
 UtcDatetime = Annotated[pl.Datetime, "us", "UTC"]
 
+
+def dtypes(model: type[pa.DataFrameModel]) -> dict[str, pl.DataType]:
+    """Column name to Polars dtype, in schema order, for building frames that match a model."""
+    return {name: column.dtype.type for name, column in model.to_schema().columns.items()}
+
+
 ODDS_SIDES = {
     "h2h": ("home", "away"),
     "h2h_3_way": ("home", "draw", "away"),
@@ -70,3 +76,98 @@ class OddsSnapshots(pa.DataFrameModel):
     @pa.dataframe_check
     def home_is_not_away(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(pl.col("home") != pl.col("away"))
+
+
+DECIDED_IN = ("REG", "OT", "SO")
+TRI_CODE = r"^[A-Z]{3}$"
+
+
+class Games(pa.DataFrameModel):
+    """One final regular-season game (NHL gameState OFF).
+
+    Scores are full-game: a shootout adds one goal for its winner, so home_score > away_score
+    settles the moneyline, OT and shootout included. decided_in is the period type that ended the
+    game. observed_utc is when the result counts as public: start_utc plus six hours, a
+    conservative bound because the API has no end time (ADR 0003). limited_attendance marks the
+    2020-21 season, played without fans or with capped crowds.
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    venue: pl.String
+    home_score: pl.Int16 = pa.Field(ge=0)
+    away_score: pl.Int16 = pa.Field(ge=0)
+    decided_in: pl.String = pa.Field(isin=DECIDED_IN)
+    neutral_site: pl.Boolean
+    limited_attendance: pl.Boolean
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = "game_id"
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        # 2023020001: season start year, game type 02 (regular season), game number
+        game_id = pl.col("game_id")
+        return data.lazyframe.select(
+            (game_id // 1_000_000 == pl.col("season") // 10_000)
+            & ((game_id // 10_000) % 100 == 2)
+            & (pl.col("season") % 10_000 == pl.col("season") // 10_000 + 1)
+        )
+
+    @pa.dataframe_check
+    def home_is_not_away(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("home") != pl.col("away"))
+
+    @pa.dataframe_check
+    def no_ties(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("home_score") != pl.col("away_score"))
+
+    @pa.dataframe_check
+    def extra_time_wins_by_one(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        margin = (pl.col("home_score").cast(pl.Int32) - pl.col("away_score")).abs()
+        return data.lazyframe.select((pl.col("decided_in") == "REG") | (margin == 1))
+
+    @pa.dataframe_check
+    def observed_after_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("observed_utc") > pl.col("start_utc"))
+
+
+PLAYER_POSITIONS = ("C", "L", "R", "D", "G")
+
+
+class Players(pa.DataFrameModel):
+    """One NHL player, from the player landing page.
+
+    Only facts fixed before a player's NHL debut belong here, which is why the table has no
+    observed_utc: fetched_utc records provenance. Anything that changes over a career (team,
+    stats, injuries) goes in a table with observed_utc. position is the current listed position.
+    """
+
+    player_id: pl.Int64
+    name: pl.String = pa.Field(str_length={"min_value": 1})
+    birth_date: pl.Date
+    position: pl.String = pa.Field(isin=PLAYER_POSITIONS)
+    shoots: pl.String = pa.Field(isin=("L", "R"), nullable=True)
+    draft_year: pl.Int16 = pa.Field(nullable=True)
+    draft_overall: pl.Int16 = pa.Field(ge=1, nullable=True)
+    fetched_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = "player_id"
+
+    @pa.dataframe_check
+    def drafted_or_not(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("draft_year").is_null() == pl.col("draft_overall").is_null()
+        )

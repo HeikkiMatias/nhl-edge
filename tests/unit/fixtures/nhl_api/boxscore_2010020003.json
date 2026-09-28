@@ -1,0 +1,107 @@
+{
+ "id": 2010020003,
+ "season": 20102011,
+ "gameType": 2,
+ "gameDate": "2010-10-07",
+ "startTimeUTC": "2010-10-07T16:00:00Z",
+ "gameState": "OFF",
+ "playerByGameStats": {
+  "awayTeam": {
+   "forwards": [
+    {
+     "playerId": 8470649,
+     "sweaterNumber": 8,
+     "name": {
+      "default": "P. O'Sullivan"
+     },
+     "position": "C"
+    },
+    {
+     "playerId": 8470595,
+     "sweaterNumber": 12,
+     "name": {
+      "default": "E. Staal"
+     },
+     "position": "C"
+    }
+   ],
+   "defense": [
+    {
+     "playerId": 8473571,
+     "sweaterNumber": 4,
+     "name": {
+      "default": "J. McBain"
+     },
+     "position": "D"
+    },
+    {
+     "playerId": 8469476,
+     "sweaterNumber": 6,
+     "name": {
+      "default": "T. Gleason"
+     },
+     "position": "D"
+    }
+   ],
+   "goalies": [
+    {
+     "playerId": 8470320,
+     "sweaterNumber": 30,
+     "name": {
+      "default": "C. Ward"
+     },
+     "position": "G"
+    }
+   ]
+  },
+  "homeTeam": {
+   "forwards": [
+    {
+     "playerId": 8464989,
+     "sweaterNumber": 7,
+     "name": {
+      "default": "M. Cullen"
+     },
+     "position": "C"
+    },
+    {
+     "playerId": 8469459,
+     "sweaterNumber": 9,
+     "name": {
+      "default": "M. Koivu"
+     },
+     "position": "C"
+    }
+   ],
+   "defense": [
+    {
+     "playerId": 8470886,
+     "sweaterNumber": 4,
+     "name": {
+      "default": "C. Stoner"
+     },
+     "position": "D"
+    },
+    {
+     "playerId": 8468636,
+     "sweaterNumber": 5,
+     "name": {
+      "default": "G. Zanon"
+     },
+     "position": "D"
+    }
+   ],
+   "goalies": [
+    {
+     "playerId": 8473404,
+     "sweaterNumber": 32,
+     "name": {
+      "default": "N. Backstrom",
+      "fi": "N. Bäckström"
+     },
+     "position": "G"
+    }
+   ]
+  }
+ }
+}

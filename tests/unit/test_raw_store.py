@@ -4,7 +4,8 @@ from typing import Any
 
 import pytest
 
-from nhl_edge.lake.raw import R2Config, RawStore
+from nhl_edge.lake.r2 import R2Config
+from nhl_edge.lake.raw import RawStore
 from nhl_edge.settings import MissingSettingError
 
 BODY = b'[{"id": "evt1", "home_team": "Montr\xc3\xa9al Canadiens"}]'
@@ -16,6 +17,12 @@ class FakeObjects:
 
     def put_object(self, **kwargs: Any) -> None:
         self.puts.append(kwargs)
+
+    def get_object(self, **kwargs: Any) -> Any:
+        raise NotImplementedError
+
+    def list_objects_v2(self, **kwargs: Any) -> Any:
+        raise NotImplementedError
 
 
 def test_round_trip_is_byte_for_byte(tmp_path: Path) -> None:

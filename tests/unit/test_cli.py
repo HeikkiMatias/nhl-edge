@@ -1,9 +1,11 @@
 import re
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
 from nhl_edge.cli import app
+from nhl_edge.lake.r2 import R2_ENV, R2Config
 
 runner = CliRunner()
 
@@ -13,9 +15,8 @@ def plain(text: str) -> str:
     return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", text).split())
 
 
-COMMANDS = ["ingest", "rate", "predict", "backtest", "bets", "odds", "status"]
+COMMANDS = ["ingest", "rate", "predict", "backtest", "bets", "odds", "lake", "status"]
 STUBS = [
-    ["ingest"],
     ["rate"],
     ["predict"],
     ["backtest"],
@@ -66,3 +67,42 @@ def test_status_brief_is_one_line_and_succeeds() -> None:
     assert result.exit_code == 0
     assert len(result.output.strip().splitlines()) == 1
     assert result.output.startswith("nhl-edge ")
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        ([], "exactly one of --seasons, --start or --yesterday"),
+        (["--seasons", "20232024", "--yesterday"], "exactly one of"),
+        (["--seasons", "2023"], "expected a season like 20232024"),
+        (["--end", "2026-10-01", "--yesterday"], "--end needs --start"),
+        (["--start", "2026-10-02", "--end", "2026-10-01"], "--end is before --start"),
+    ],
+)
+def test_ingest_rejects_bad_windows_before_any_call(args: list[str], message: str) -> None:
+    result = runner.invoke(app, ["ingest", *args])
+    assert result.exit_code == 2
+    assert message in plain(result.output)
+
+
+class SizedBucket:
+    def __init__(self, sizes: list[int]) -> None:
+        self.sizes = sizes
+
+    def list_objects_v2(self, **kwargs: Any) -> dict[str, Any]:
+        contents = [{"Key": f"raw/{i}", "Size": s} for i, s in enumerate(self.sizes)]
+        return {"Contents": contents, "IsTruncated": False}
+
+
+@pytest.mark.parametrize(("gb", "exit_code"), [(7.5, 0), (8.5, 1)])
+def test_lake_size_fails_above_the_limit(
+    monkeypatch: pytest.MonkeyPatch, gb: float, exit_code: int
+) -> None:
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    bucket = SizedBucket([int(gb * 2**30) - 1000, 1000])
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    result = runner.invoke(app, ["lake", "size", "--max-gb", "8"])
+    assert result.exit_code == exit_code
+    assert f"R2 bucket test: 2 objects, {gb:.3f} GB (limit 8 GB)" in result.output
+    assert ("above the 8 GB limit" in result.output) is (exit_code == 1)
