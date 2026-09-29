@@ -22,6 +22,7 @@ NHL API (api-web.nhle.com)
   GET /v1/schedule/{YYYY-MM-DD}
   GET /v1/gamecenter/{gameId}/play-by-play
   GET /v1/gamecenter/{gameId}/boxscore
+  GET /v1/gamecenter/{gameId}/landing     # pre-game goalie poll only
   GET /v1/roster/{team}/{season}          # season as 20252026
   GET /v1/player/{playerId}/landing       # bio + career stats by league
   GET /v1/player/{playerId}/game-log/{season}/{gameType}
@@ -152,6 +153,16 @@ At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<da
 - The Odds API historical endpoint is paid. The `guard-bash` hook blocks it unless Claude Code starts with `ALLOW_PAID_ODDS=1`.
 - MoneyPuck data is free for non-commercial use with attribution and must not be scraped. It is a sanity check, not a backtest input.
 - Daily Faceoff and RotoWire are manual references only, not part of the automated pipeline.
+
+## Pre-game goalies
+
+`nhl goalies poll` records what the NHL API says about each team's starting goalie before puck drop (#43), so the audit (#9, plan section 10) can tell whether starters are confirmed early enough to use. The ingest reads boxscores only after a game is final, and a pre-game state cannot be fetched after the fact, so this poll is the only record of it.
+
+- **When:** a step in `.github/workflows/odds-snapshots.yml` after the snapshot, at every odds slot (07:05, 12:45, 18:45, 19:45 and 21:45 ET), whether or not the snapshot itself ran. It uses the odds cron lines, so it adds no workflow runs.
+- **What:** every regular-season or playoff game that starts within 18 hours and has not started. For each, `GET /v1/gamecenter/{gameId}/boxscore` and `/landing`, always fetched fresh (two requests a game, throttled as every NHL call).
+- **Raw:** `nhl/pregame-boxscore/<ET game date>/<game_id>/<fetch stamp>` and `nhl/pregame-landing/...`, mirrored to R2. They are kept apart from the ingest's `nhl/boxscore/`, which reuses the newest cached boxscore of a game: a pre-game copy there would stand in for the final one.
+- **Signal:** the boxscore's `playerByGameStats.<side>.goalies[].starter` flag, the same one `actual_lineups.starting_goalie` reads after the game. On 2026-09-29, nine hours before FLA at CAR, the boxscore had no `playerByGameStats`, and the landing listed each team's goalies with season stats (`matchup.goalieComparison`) but flagged no starter. When, or whether, the flag appears before puck drop is what the poll measures. The landing copy is kept so a later check can look for other signals.
+- **Table:** `nhl goalies replay` rebuilds the lake's `pregame_goalies` from the raw boxscores: one row per poll, game and team, with the goalies listed, how many carry the starter flag, and `starter_id` when exactly one does. `observed_utc` is the fetch time, when that state was public; a response fetched at or after the scheduled start gives no rows. The nightly workflow runs `nhl goalies replay --recent 3 --r2`.
 
 ## Reference files
 

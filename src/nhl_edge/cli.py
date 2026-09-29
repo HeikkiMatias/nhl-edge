@@ -18,6 +18,10 @@ app = typer.Typer(
 )
 odds_app = typer.Typer(help="Live odds snapshots and historical odds.", no_args_is_help=True)
 app.add_typer(odds_app, name="odds")
+goalies_app = typer.Typer(
+    help="Pre-game starting goalies, polled before puck drop.", no_args_is_help=True
+)
+app.add_typer(goalies_app, name="goalies")
 lake_app = typer.Typer(help="The R2 lake: raw responses and parquet tables.", no_args_is_help=True)
 app.add_typer(lake_app, name="lake")
 audit_app = typer.Typer(
@@ -302,6 +306,80 @@ def replay(
         typer.echo(f"warning: {raw_key} has no sidecar (an interrupted write), skipped")
 
 
+@goalies_app.command()
+def poll(
+    cron: Annotated[
+        str | None,
+        typer.Option(
+            help="Cron line that fired the run; the poll is skipped when it is not an odds slot."
+        ),
+    ] = None,
+    mirror_raw: Annotated[
+        bool, typer.Option(help="Mirror the raw responses to R2 (needs the R2_* variables).")
+    ] = False,
+) -> None:
+    """Store the pre-game boxscore and landing of every game starting in the next 18 hours."""
+    from nhl_edge.ingest.nhl_api import NhlApi, utc_now
+    from nhl_edge.ingest.odds import resolve_slot
+    from nhl_edge.ingest.pregame import run_poll
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.settings import load_env
+
+    now = utc_now()
+    if cron is not None and resolve_slot("free-tier", cron, now.date()) is None:
+        typer.echo(f"goalie poll: cron {cron!r} is not an odds slot at this time of year, skipped")
+        return
+    load_env()
+    store = RawStore.from_env(mirror=mirror_raw)
+    report = run_poll(nhl=NhlApi(store), now=now, echo=typer.echo)
+    if report.failed:
+        raise typer.Exit(code=1)
+
+
+@goalies_app.command("replay")
+def goalies_replay(
+    recent: Annotated[
+        int | None,
+        typer.Option(min=1, help="Game dates (US Eastern) of the last N days, today included."),
+    ] = None,
+    r2: Annotated[
+        bool,
+        typer.Option("--r2", help="Restore the raw pre-game boxscores from R2 first, and mirror."),
+    ] = False,
+) -> None:
+    """Rebuild the lake's pregame_goalies from the stored pre-game boxscores. Never calls the NHL
+    API. Without --recent, every stored date is replayed."""
+    from datetime import timedelta
+
+    from nhl_edge.ingest.nhl_api import utc_now
+    from nhl_edge.ingest.pregame import BOXSCORE_PREFIX, ET, replay_pregame_goalies
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    dates = None
+    if recent is not None:
+        today = utc_now().astimezone(ET).date()
+        dates = [today - timedelta(days=i) for i in range(recent - 1, -1, -1)]
+    load_env()
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    if r2:
+        prefixes = (
+            [f"{BOXSCORE_PREFIX}/"]
+            if dates is None
+            else [f"{BOXSCORE_PREFIX}/{day.isoformat()}/" for day in dates]
+        )
+        restored = sum(store.restore_from_r2(prefix).copied for prefix in prefixes)
+        typer.echo(f"restored {restored} raw responses from R2")
+    report = replay_pregame_goalies(store, Lake.from_env(mirror=r2), dates)
+    window = f"{report.dates[0]}..{report.dates[-1]}" if report.dates else "no stored polls"
+    typer.echo(
+        f"goalie replay {window}: {report.responses} boxscores, {report.rows} rows; "
+        f"{report.after_start} fetched after the start left out, "
+        f"{len(report.incomplete)} incomplete"
+    )
+
+
 @lake_app.command()
 def size(
     max_gb: Annotated[
@@ -453,7 +531,11 @@ def _status_against_r2(local: "list[TableState]") -> None:
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.status import compare, raw_lag, remote_tables, replay_window
 
-    ODDS_TABLE = "odds_snapshots"
+    # Tables rebuilt by a replay of their own raw responses, not by the NHL ingest.
+    REPLAYED = {
+        "odds_snapshots": "nhl odds replay --r2",
+        "pregame_goalies": "nhl goalies replay --r2",
+    }
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
 
@@ -481,27 +563,29 @@ def _status_against_r2(local: "list[TableState]") -> None:
             raw_behind |= (here_key or "") < (there_key or "")
             raw_ahead |= (here_key or "") > (there_key or "")
             typer.echo(f"  raw/{prefix}: newest here {here_key}, in R2 {there_key}")
-    # odds_snapshots is rebuilt by the odds replay, every other table by the NHL ingest.
-    odds_here = [key for key in missing_here if key.startswith(f"{ODDS_TABLE}/")]
-    odds_there = [key for key in missing_there if key.startswith(f"{ODDS_TABLE}/")]
-    missing_here = [key for key in missing_here if key not in odds_here]
-    missing_there = [key for key in missing_there if key not in odds_there]
+    # The replayed tables are rebuilt by their own replay, every other table by the NHL ingest.
+    replayed_here = sorted(
+        {key.split("/")[0] for key in missing_here if key.split("/")[0] in REPLAYED}
+    )
+    replayed_there = sorted(
+        {key.split("/")[0] for key in missing_there if key.split("/")[0] in REPLAYED}
+    )
+    missing_here = [key for key in missing_here if key.split("/")[0] not in REPLAYED]
+    missing_there = [key for key in missing_there if key.split("/")[0] not in REPLAYED]
     if missing_here or raw_behind:
         window = replay_window(missing_here) or "--recent 3"
         typer.echo(
             f"  this machine is behind R2: nhl lake restore-raw, then nhl ingest {window} --replay"
         )
-    if odds_here:
-        typer.echo("  odds_snapshots is behind R2: nhl odds replay --r2 restores and rebuilds it")
+    for table in replayed_here:
+        typer.echo(f"  {table} is behind R2: {REPLAYED[table]} restores and rebuilds it")
     if missing_there or raw_ahead:
         window = replay_window(missing_there) or "--recent 3"
         typer.echo(
             f"  R2 lacks what is here: nhl lake sync-raw, then nhl ingest {window} --replay --r2"
         )
-    if odds_there:
-        typer.echo(
-            "  R2 lacks odds_snapshots rows here: nhl lake sync-raw, then nhl odds replay --r2"
-        )
+    for table in replayed_there:
+        typer.echo(f"  R2 lacks {table} rows here: nhl lake sync-raw, then {REPLAYED[table]}")
     if differ:
         # A size difference does not tell which copy is current, so no direction is suggested.
         tables = sorted({key.split("/")[0] for key in differ})
@@ -509,6 +593,6 @@ def _status_against_r2(local: "list[TableState]") -> None:
             f"  {len(differ):,} files differ from R2 in {', '.join(tables)}: check which copy is "
             "current before syncing either way"
         )
-    in_step = not (missing_here or missing_there or odds_here or odds_there or differ)
+    in_step = not (missing_here or missing_there or replayed_here or replayed_there or differ)
     if in_step and not (raw_behind or raw_ahead):
         typer.echo("  up to date with R2")

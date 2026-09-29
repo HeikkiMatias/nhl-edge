@@ -49,6 +49,10 @@ jobs:
         # days, so a snapshot is replayed until the schedules cached since list all its games.
         if: always()
         run: uv run nhl odds replay --recent 14 --r2
+      - name: Pre-game goalies into the lake
+        # The last 3 game dates of pre-game goalie polls (issue #43), rebuilt from the raw copies.
+        if: always()
+        run: uv run nhl goalies replay --recent 3 --r2
       - name: Contract test on a golden game
         # One golden game read live must parse as its frozen copy does (issue #6). A failure
         # means the NHL API changed under the parsers.
