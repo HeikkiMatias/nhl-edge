@@ -252,6 +252,33 @@ def test_status_shows_what_r2_has_that_this_machine_lacks(
     assert "R2 lacks" not in result.output
 
 
+def test_status_shows_pregame_polls_missing_here(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.raw import RawStore
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    # A runner polled a game's landing page, which only R2 holds: it cannot be fetched again.
+    # Both sides hold an earlier poll of a later game, whose key sorts after the missing one.
+    key = "pregame-landing/2026-09-29/2026020001/20260929T224500Z"
+    shared = "pregame-landing/2026-09-29/2026020005/20260929T110500Z"
+    RawStore(tmp_path / "runner", "test", bucket).put("nhl", key, b"{}", {})
+    RawStore(tmp_path / "runner", "test", bucket).put("nhl", shared, b"{}", {})
+    monkeypatch.chdir(tmp_path)
+    RawStore().put("nhl", shared, b"{}", {})
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "raw/nhl/pregame-landing/: 1 responses only in R2, 0 only here" in result.output
+    assert "pre-game goalie polls are behind R2: nhl lake restore-raw copies them" in result.output
+    assert "up to date with R2" not in result.output
+
+
 def test_status_notices_a_file_that_differs_from_r2(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -405,3 +432,49 @@ def test_status_sends_odds_drift_to_the_odds_replay(
     result = runner.invoke(app, ["status"])
     assert "odds_snapshots is behind R2: nhl odds replay --r2" in result.output
     assert "nhl ingest" not in result.output.split("Against R2:")[1]
+
+
+def test_status_sends_sbr_drift_to_the_sbr_import(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, date, datetime
+
+    import polars as pl
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.schemas import SbrOdds, dtypes
+    from nhl_edge.lake.tables import Lake
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    start = datetime(2018, 10, 3, 23, 0, tzinfo=UTC)
+    row = {
+        "game_id": 2018020001,
+        "season": 20182019,
+        "game_date": date(2018, 10, 3),
+        "start_utc": start,
+        "home": "TOR",
+        "away": "MTL",
+        "market": "h2h",
+        "side": "home",
+        "line": None,
+        "quote": "close",
+        "price_american": -150,
+        "price_decimal": 1.0 + 100 / 150,
+        "observed_utc": start,
+        "assumed_available_utc": start,
+        "raw_key": "sbr/20182019/x",
+    }
+    Lake(tmp_path / "runner", "test", bucket).write(
+        "sbr_odds", pl.DataFrame([row], schema=dtypes(SbrOdds))
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["status"])
+    against = result.output.split("Against R2:")[1]
+    assert (
+        "sbr_odds is behind R2: nhl odds sbr --replay --r2 --seasons 20182019 restores" in against
+    )
+    assert "nhl ingest" not in against

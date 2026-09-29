@@ -31,12 +31,29 @@ permissions:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --frozen
+      - name: Pre-game goalies
+        # The pre-game boxscore, landing and right-rail of every game in the next 18 hours, and
+        # Daily Faceoff's starting goalies for their dates, stored raw in R2 (issues #42 and #48),
+        # so the goalie state is on record at each odds slot. It runs before the snapshot, so every
+        # goalie row is observed before the prices of the same slot and a point-in-time join can
+        # use it. The odds cron lines of the other half of the DST year skip.
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
+          uv run nhl goalies poll --mirror-raw "${pick[@]}"
       - name: Snapshot
+        # Runs when the goalie poll failed too.
+        if: always()
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

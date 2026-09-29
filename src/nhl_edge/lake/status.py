@@ -16,6 +16,13 @@ from nhl_edge.lake.tables import R2_PREFIX, TABLES, Lake
 GAME_DATE = "game_date="
 # The raw responses that grow every day, from the nightly ingest and the odds snapshots.
 DAILY_RAW = ("nhl/schedule/", "odds/")
+# The pre-game goalie polls (#42, #48), which cannot be fetched again once the game has started.
+PREGAME_RAW = (
+    "nhl/pregame-boxscore/",
+    "nhl/pregame-landing/",
+    "nhl/pregame-right-rail/",
+    "dailyfaceoff/",
+)
 
 
 def partition_dates(keys: Iterable[str]) -> list[str]:
@@ -106,6 +113,31 @@ def raw_lag(
         remote = list_keys(store.objects, store.bucket or "", f"{R2_RAW}{prefix}")
         there = newest_raw(key.removeprefix(R2_RAW) for key, _ in remote)
         rows.append((prefix, here, there))
+    return rows
+
+
+def _complete(paths: Iterable[str]) -> set[str]:
+    listed = list(paths)
+    bodies = {path.removesuffix(SUFFIX) for path in listed if path.endswith(SUFFIX)}
+    return bodies & {path.removesuffix(META) for path in listed if path.endswith(META)}
+
+
+def raw_sets(store: RawStore, prefixes: Iterable[str]) -> list[tuple[str, int, int]]:
+    """(prefix, complete responses only here, only in R2) for raw responses that cannot be fetched
+    again, such as the pre-game polls. Their keys nest a fetch stamp under a date and a game, so
+    the newest key does not show a missing poll; the whole key sets are compared instead."""
+    if store.objects is None:
+        raise ValueError("comparing with R2 needs a mirrored raw store")
+    rows = []
+    for prefix in prefixes:
+        root = store.base_dir / prefix
+        local = root.rglob("*") if root.exists() else []
+        here = _complete(
+            path.relative_to(store.base_dir).as_posix() for path in local if path.is_file()
+        )
+        remote = list_keys(store.objects, store.bucket or "", f"{R2_RAW}{prefix}")
+        there = _complete(key.removeprefix(R2_RAW) for key, _ in remote)
+        rows.append((prefix, len(here - there), len(there - here)))
     return rows
 
 
