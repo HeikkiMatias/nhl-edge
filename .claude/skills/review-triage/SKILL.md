@@ -32,7 +32,10 @@ Apply the review budget in CLAUDE.md to PR $ARGUMENTS (default: the PR for the c
    names paths the Bash guard blocks.
 6. **Next round.** After round 1 with P0 or P1 fixes, request round 2 with
    `gh pr comment <n> --body "@codex review"`. P2-only fixes get a reply but no new round. After
-   round 2, request another round only when a P0 was fixed.
+   round 2, request another round only when a P0 was fixed. After requesting a round, wait for its
+   answer on the new head commit (a review, a 👍 on the request, or a "Didn't find any major
+   issues" comment, as CLAUDE.md describes), then triage it from step 1 before step 7. Never merge
+   while a requested round is unanswered.
 7. **Report** readiness: CI (`gh pr checks <n>`), open P0s, unanswered findings, rounds used, follow-ups
    filed. When it is ready and its issue is done, merge it yourself with
    `gh pr merge <n> --squash --delete-branch` (CLAUDE.md, Workflow). A P0 you would answer
