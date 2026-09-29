@@ -49,6 +49,8 @@ American odds: o = 1 + A/100 for A > 0, and o = 1 + 100/|A| for A < 0.
 | Power | p_i = pi_i^k, with k solving sum of pi_i^k = 1 | Puts more of the margin on the longshot |
 | Shin | p_i = (sqrt(z^2 + 4(1 - z) pi_i^2 / P) - z) / (2(1 - z)), with z solving sum of p_i = 1 | z models insider trading; corrects favorite-longshot bias |
 
+- With two outcomes, as on the moneyline, Shin takes the same margin off each side:
+  p_i = pi_i - (P - 1) / 2. Power and Shin both give the favorite more than multiplicative does.
 - De-vig only through `src/nhl_edge/market/devig.py`. Which method is default is decided in phase 1, by
   audit and ADR. Tests check that probabilities sum to 1 and that symmetric prices give 0.5.
 - B0 is the raw de-vigged market. B1 is a logistic regression on the market log-odds, fitted
