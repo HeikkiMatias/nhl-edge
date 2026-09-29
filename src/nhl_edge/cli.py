@@ -430,6 +430,8 @@ def _status_against_r2(local: "list[TableState]") -> None:
     from nhl_edge.lake.r2 import R2Config
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.status import compare, raw_lag, remote_tables, replay_window
+
+    ODDS_TABLE = "odds_snapshots"
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
 
@@ -457,15 +459,26 @@ def _status_against_r2(local: "list[TableState]") -> None:
             raw_behind |= (here_key or "") < (there_key or "")
             raw_ahead |= (here_key or "") > (there_key or "")
             typer.echo(f"  raw/{prefix}: newest here {here_key}, in R2 {there_key}")
+    # odds_snapshots is rebuilt by the odds replay, every other table by the NHL ingest.
+    odds_here = [key for key in missing_here if key.startswith(f"{ODDS_TABLE}/")]
+    odds_there = [key for key in missing_there if key.startswith(f"{ODDS_TABLE}/")]
+    missing_here = [key for key in missing_here if key not in odds_here]
+    missing_there = [key for key in missing_there if key not in odds_there]
     if missing_here or raw_behind:
         window = replay_window(missing_here) or "--recent 3"
         typer.echo(
             f"  this machine is behind R2: nhl lake restore-raw, then nhl ingest {window} --replay"
         )
+    if odds_here:
+        typer.echo("  odds_snapshots is behind R2: nhl odds replay --r2 restores and rebuilds it")
     if missing_there or raw_ahead:
         window = replay_window(missing_there) or "--recent 3"
         typer.echo(
             f"  R2 lacks what is here: nhl lake sync-raw, then nhl ingest {window} --replay --r2"
+        )
+    if odds_there:
+        typer.echo(
+            "  R2 lacks odds_snapshots rows here: nhl lake sync-raw, then nhl odds replay --r2"
         )
     if differ:
         # A size difference does not tell which copy is current, so no direction is suggested.
@@ -474,5 +487,6 @@ def _status_against_r2(local: "list[TableState]") -> None:
             f"  {len(differ):,} files differ from R2 in {', '.join(tables)}: check which copy is "
             "current before syncing either way"
         )
-    if not (missing_here or missing_there or differ or raw_behind or raw_ahead):
+    in_step = not (missing_here or missing_there or odds_here or odds_there or differ)
+    if in_step and not (raw_behind or raw_ahead):
         typer.echo("  up to date with R2")

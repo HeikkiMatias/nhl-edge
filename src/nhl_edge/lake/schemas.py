@@ -87,7 +87,8 @@ class LakeOddsSnapshots(OddsSnapshots):
     date of snapshot_utc, which partitions the table as the raw responses are laid out. Only
     pre-game quotes are kept: a game under way has live prices. game_id and game_type (1 preseason,
     2 regular season, 3 playoffs) come from the NHL schedule listing that matches the event's teams
-    and start; they are null for an event no listing matches. They are keys, not observed facts:
+    and start (other NHL types, such as 4 for the All-Star game, are kept as they are); they are
+    null for an event no listing matches. They are keys, not observed facts:
     anything joined through game_id still goes through its own point-in-time selector, and a
     closing proxy keys on the event and its commence time, since quotes priced before a
     postponement carry the rescheduled game's id.
@@ -95,7 +96,7 @@ class LakeOddsSnapshots(OddsSnapshots):
 
     snapshot_date: pl.Date
     game_id: pl.Int64 = pa.Field(nullable=True)
-    game_type: pl.Int8 = pa.Field(isin=(1, 2, 3), nullable=True)
+    game_type: pl.Int8 = pa.Field(ge=1, nullable=True)
 
     @pa.dataframe_check
     def snapshot_date_is_the_utc_date(cls, data: pa.PolarsData) -> pl.LazyFrame:

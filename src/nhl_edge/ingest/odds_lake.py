@@ -38,6 +38,7 @@ LISTINGS_SCHEMA = {
     "home": pl.String,
     "away": pl.String,
 }
+# NHL game types; others (4 is the All-Star game) are kept and reported by number.
 GAME_TYPES = {1: "preseason", 2: "regular season", 3: "playoffs"}
 
 
@@ -116,8 +117,9 @@ def match_games(quotes: pl.DataFrame, listings: pl.DataFrame) -> pl.DataFrame:
 
 
 def replay_odds(store: RawStore, lake: Lake, dates: Collection[date] | None = None) -> ReplayReport:
-    """Parse the stored snapshots of the given UTC dates (all when None) into the lake's
-    odds_snapshots, replacing those dates' partitions. Never calls the Odds API."""
+    """Parse the stored snapshots of the given UTC dates (all stored dates when None) into the
+    lake's odds_snapshots. Every requested date's partition is replaced, and deleted when the date
+    now has no quotes, so a parser fix leaves nothing stale. Never calls the Odds API."""
     report = ReplayReport()
     frames = []
     for day, keys in _dated_dirs(SOURCE, store).items():
@@ -134,7 +136,10 @@ def replay_odds(store: RawStore, lake: Lake, dates: Collection[date] | None = No
             report.snapshots += 1
         report.dates.append(day)
     columns = list(dtypes(LakeOddsSnapshots))
+    requested = sorted(dates) if dates is not None else report.dates
+    empty = pl.DataFrame(schema=dtypes(LakeOddsSnapshots))
     if not frames:
+        lake.replace_dates("odds_snapshots", empty, requested)
         return report
     quotes = pl.concat(frames)
     # The Odds API also lists games under way, with live prices that move with the score. The
@@ -144,6 +149,7 @@ def replay_odds(store: RawStore, lake: Lake, dates: Collection[date] | None = No
     report.in_play = quotes.filter(~pre_game).height
     quotes = quotes.filter(pre_game)
     if quotes.is_empty():
+        lake.replace_dates("odds_snapshots", empty, requested)
         return report
     commence = pl.col("commence_time_utc").dt.date()
     first, last = quotes.select(commence.min().alias("first"), commence.max().alias("last")).row(0)
@@ -152,7 +158,7 @@ def replay_odds(store: RawStore, lake: Lake, dates: Collection[date] | None = No
         snapshot_date=pl.col("snapshot_utc").dt.date()
     )
     table = LakeOddsSnapshots.validate(table.select(columns))
-    lake.write("odds_snapshots", table)
+    lake.replace_dates("odds_snapshots", table, requested)
 
     events = table.select("event_id", "home", "away", "commence_time_utc", "game_type").unique(
         "event_id", keep="first", maintain_order=True
@@ -162,5 +168,5 @@ def replay_odds(store: RawStore, lake: Lake, dates: Collection[date] | None = No
         if game_type is None:
             report.unmatched.append((event_id, home, away, commence))
         else:
-            report.matched[GAME_TYPES[game_type]] += 1
+            report.matched[GAME_TYPES.get(game_type, f"game type {game_type}")] += 1
     return report

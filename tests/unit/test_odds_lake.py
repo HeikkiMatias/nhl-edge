@@ -141,3 +141,29 @@ def test_replay_needs_no_network(tmp_path: Path, missing: str) -> None:
         store_schedule(store)
     report = replay_odds(store, Lake(tmp_path / "lake"))
     assert len(report.unmatched) == (2 if missing == "schedule" else 0)
+
+
+def test_a_date_without_quotes_left_loses_its_partition(tmp_path: Path) -> None:
+    # A parser fix or a stricter filter can leave a replayed date with no quotes: its old
+    # partition must go too, not linger with rows the replay no longer makes.
+    store = RawStore(tmp_path / "raw")
+    raw_key = store_snapshot(store)
+    store_schedule(store)
+    lake = Lake(tmp_path / "lake")
+    replay_odds(store, lake)
+    assert lake.read("odds_snapshots").height > 0
+    for suffix in (".json.gz", ".meta.json"):
+        (tmp_path / "raw" / f"{raw_key}{suffix}").unlink()
+    report = replay_odds(store, lake, [date(2026, 9, 28)])
+    assert report.snapshots == 0
+    assert lake.read("odds_snapshots").is_empty()
+
+
+def test_other_nhl_game_types_are_kept_and_named(tmp_path: Path) -> None:
+    store = RawStore(tmp_path / "raw")
+    store_snapshot(store)
+    store_schedule(store, edited_week(MTL_AT_TOR, gameType=4))  # as if an All-Star game
+    report = replay_odds(store, Lake(tmp_path / "lake"))
+    assert dict(report.matched) == {"regular season": 1, "game type 4": 1}
+    table = Lake(tmp_path / "lake").read("odds_snapshots")
+    assert set(table["game_type"]) == {2, 4}
