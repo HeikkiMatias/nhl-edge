@@ -116,6 +116,12 @@ def team_games(games: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def finished_seasons(games: pl.DataFrame) -> list[int]:
+    """The seasons games holds in full: as many games as the season had (EXPECTED_GAMES)."""
+    counts = games.group_by("season").len().sort("season")
+    return [season for season, count in counts.iter_rows() if EXPECTED_GAMES.get(season) == count]
+
+
 def check_files(ref: Reference) -> list[str]:
     """Problems within the reference files themselves, one line each: rows that point at missing
     rows, a code change that leaves a gap, and coach stints of one team that overlap."""
@@ -208,10 +214,7 @@ def _team_code_problems(games: pl.DataFrame, ref: Reference) -> Iterator[str]:
             "teams.csv"
         )
     # In a finished season, every code in use must have played.
-    counts = games.group_by("season").len()
-    for season, count in counts.sort("season").iter_rows():
-        if EXPECTED_GAMES.get(season) != count:
-            continue
+    for season in finished_seasons(games):
         active = ref.teams.filter(
             (pl.col("first_season") <= season)
             & (pl.col("last_season").fill_null(OPEN_SEASON) >= season)
@@ -254,9 +257,10 @@ def _home_arena_problems(games: pl.DataFrame, ref: Reference) -> Iterator[str]:
     )
     for team, season, count in primaries.sort("team", "season").iter_rows():
         yield f"{team} has {count or 0} primary home arenas in {season} in home_arenas.csv"
-    # The primary arena is where the team's first home game of the season in games is played.
+    # The primary arena is where the team's first home game of the season is played. Only a
+    # finished season is sure to hold that game: in part of one, the first game present may not be.
     openers = (
-        games.filter(~pl.col("neutral_site"))
+        games.filter(~pl.col("neutral_site") & pl.col("season").is_in(finished_seasons(games)))
         .sort("game_date", "game_id")
         .group_by("home", "season")
         .first()

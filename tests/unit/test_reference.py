@@ -171,23 +171,6 @@ CASES: dict[str, tuple[pl.DataFrame, Reference, str]] = {
         ),
         "COL has 2 primary home arenas in 20102011",
     ),
-    "primary arena is not where the season opens": (
-        OPENING,
-        replace(
-            REF,
-            home_arenas=pl.concat(
-                [
-                    REF.home_arenas.with_columns(
-                        primary=pl.col("primary") & (pl.col("team") != "COL")
-                    ),
-                    REF.home_arenas.filter(pl.col("team") == "COL").with_columns(
-                        arena_id=pl.lit("coors_field"), primary=pl.lit(True)
-                    ),
-                ]
-            ),
-        ),
-        "COL's first home game in 20102011 (2010020004) is at Pepsi Center, not its primary",
-    ),
     "no coach": (
         OPENING,
         replace(REF, coaches=without(REF.coaches, **COL_SACCO)),
@@ -262,3 +245,41 @@ def test_a_finished_season_must_have_every_code_in_use(monkeypatch: pytest.Monke
     problems = check_games(OPENING, REF)
     assert "ATL is in use in 20102011 by teams.csv but plays no game" in problems
     assert not any(problem.startswith("CHI is in use") for problem in problems)
+
+
+PRIMARY_NOT_OPENER = replace(
+    REF,
+    home_arenas=pl.concat(
+        [
+            REF.home_arenas.with_columns(primary=pl.col("primary") & (pl.col("team") != "COL")),
+            REF.home_arenas.filter(pl.col("team") == "COL").with_columns(
+                arena_id=pl.lit("coors_field"), primary=pl.lit(True)
+            ),
+        ]
+    ),
+)
+
+
+def test_the_primary_home_arena_hosts_the_season_opener(monkeypatch: pytest.MonkeyPatch) -> None:
+    # COL's primary arena is moved to Coors Field, but its first home game is at the Pepsi Center.
+    # Only a finished season is sure to hold the opener, so part of one isn't checked.
+    expected = "COL's first home game in 20102011 (2010020004) is at Pepsi Center, not its primary"
+    assert not any(expected in problem for problem in check_games(OPENING, PRIMARY_NOT_OPENER))
+    monkeypatch.setitem(EXPECTED_GAMES, 20102011, OPENING.height)
+    assert any(expected in problem for problem in check_games(OPENING, PRIMARY_NOT_OPENER))
+
+
+def test_a_later_home_game_at_a_second_arena_is_fine() -> None:
+    # NYI's 2018-19 home games moved to the Coliseum from December; Barclays was primary.
+    coliseum = pl.DataFrame(
+        {
+            "game_id": [2018020350],
+            "season": [20182019],
+            "game_date": [date(2018, 12, 1)],
+            "home": ["NYI"],
+            "away": ["DAL"],
+            "venue": ["NYCB Live/Nassau Coliseum"],
+            "neutral_site": [False],
+        }
+    )
+    assert check_games(coliseum, REF) == []
