@@ -82,6 +82,18 @@ DECIDED_IN = ("REG", "OT", "SO")
 # No result counts as public sooner after its scheduled start (ADR 0003).
 MIN_RESULT_LAG = timedelta(hours=6)
 TRI_CODE = r"^[A-Z]{3}$"
+# A game's schedule counts as public this long before its start (ADR 0005).
+SCHEDULE_LEAD = timedelta(hours=24)
+
+
+def regular_season_id_of_its_season() -> pl.Expr:
+    """2023020001: the season's start year, game type 02 (regular season), then the game number."""
+    game_id = pl.col("game_id")
+    return (
+        (game_id // 1_000_000 == pl.col("season") // 10_000)
+        & ((game_id // 10_000) % 100 == 2)
+        & (pl.col("season") % 10_000 == pl.col("season") // 10_000 + 1)
+    )
 
 
 class Games(pa.DataFrameModel):
@@ -93,9 +105,10 @@ class Games(pa.DataFrameModel):
 
     observed_utc is when the result (home_score, away_score, decided_in) counts as public:
     10:00 UTC the morning after game_date, a conservative bound because the API has no end time
-    (ADR 0003). The schema also requires it to be at least six hours after start_utc.
-    The schedule columns (teams, start, venue, neutral_site) were public long before the game,
-    but share the row's observed_utc until schedule and results are split (#24).
+    (ADR 0003). The schema also requires it to be at least six hours after start_utc. The teams,
+    start and venue ride along so a result reads on its own, but they share the result's
+    observed_utc. A feature that needs the pre-game facts of the game it predicts reads Schedule,
+    which is public a day before the start and has no result columns.
     """
 
     game_id: pl.Int64
@@ -120,13 +133,7 @@ class Games(pa.DataFrameModel):
 
     @pa.dataframe_check
     def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
-        # 2023020001: season start year, game type 02 (regular season), game number
-        game_id = pl.col("game_id")
-        return data.lazyframe.select(
-            (game_id // 1_000_000 == pl.col("season") // 10_000)
-            & ((game_id // 10_000) % 100 == 2)
-            & (pl.col("season") % 10_000 == pl.col("season") // 10_000 + 1)
-        )
+        return data.lazyframe.select(regular_season_id_of_its_season())
 
     @pa.dataframe_check
     def home_is_not_away(cls, data: pa.PolarsData) -> pl.LazyFrame:
@@ -144,6 +151,52 @@ class Games(pa.DataFrameModel):
     @pa.dataframe_check
     def observed_six_hours_after_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(pl.col("observed_utc") >= pl.col("start_utc") + MIN_RESULT_LAG)
+
+
+class Schedule(pa.DataFrameModel):
+    """The pre-game facts of one final regular-season game: when and where it was played, and by
+    whom. It has no result columns, so reading it can never reveal a score.
+
+    observed_utc is when the schedule counts as public: 24 hours before start_utc (ADR 0005). The
+    NHL publishes each season's schedule in the summer and gives postponed games new dates days or
+    weeks ahead, so a day is conservative; a game re-timed at shorter notice gets a later time
+    (games.SCHEDULE_PUBLIC_OVERRIDES). Rest, travel and home-ice features read this table through
+    games.schedule_known_at: games whose result is public, plus the games being predicted. Not
+    other games, because the table holds only games that were played, and a missing or delayed
+    game would reveal how it turned out. Results come from Games, public the morning after.
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    venue: pl.String
+    neutral_site: pl.Boolean
+    limited_attendance: pl.Boolean
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = "game_id"
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def home_is_not_away(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("home") != pl.col("away"))
+
+    @pa.dataframe_check
+    def public_no_sooner_than_a_day_before_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        # An earlier observed_utc would leak the schedule; a later one (an override for a game
+        # re-dated at short notice) is allowed, as long as it is before the start.
+        observed, start = pl.col("observed_utc"), pl.col("start_utc")
+        return data.lazyframe.select((observed >= start - SCHEDULE_LEAD) & (observed < start))
 
 
 class Players(pa.DataFrameModel):

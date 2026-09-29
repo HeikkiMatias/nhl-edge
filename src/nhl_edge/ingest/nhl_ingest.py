@@ -4,10 +4,10 @@ A window is a season or a date range. For each week of it: fetch the schedule, k
 regular-season games, and fetch play-by-play, boxscore and shift chart for each (feeds), parsed
 into shots, shifts, actual_lineups and shift_coverage. Then fetch the rosters of every team that
 played, and a landing page for every player on them or in the boxscores who is not in the players
-table yet. Games and the per-game tables are written as whole game_date partitions, players merged
-by player_id, and games upserted to Supabase. Every response goes to the raw store first, and
-cached copies are reused by the rules in nhl_api, so a stopped backfill restarts where it left off
-and --replay rebuilds the tables with no network at all.
+table yet. Games, their schedule and the per-game tables are written as whole game_date
+partitions, players merged by player_id, and games upserted to Supabase. Every response goes to
+the raw store first, and cached copies are reused by the rules in nhl_api, so a stopped backfill
+restarts where it left off and --replay rebuilds the tables with no network at all.
 """
 
 import os
@@ -26,6 +26,7 @@ from nhl_edge.ingest.games import (
     listed_games,
     parse_games,
     probe_date,
+    schedule_of,
     season_bounds,
     season_over,
     settled_on,
@@ -179,6 +180,7 @@ class Ingest:
         # that drops a game also drops its stale partition.
         window_days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
         self.lake.replace_dates("games", games, window_days)
+        self.lake.replace_dates("schedule", schedule_of(games), window_days)
         if self.feeds:
             # Written only when the feeds were read, so --no-feeds leaves these tables alone.
             parsed = {table: pl.concat(parts) for table, parts in feed_frames.items()}

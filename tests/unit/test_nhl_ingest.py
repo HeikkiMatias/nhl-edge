@@ -184,6 +184,14 @@ def test_no_feeds_leaves_the_per_game_tables_alone(tmp_path: Path) -> None:
     assert "shifts" not in lines[-1]
 
 
+def test_the_schedule_is_written_with_games_even_without_feeds(tmp_path: Path) -> None:
+    lake = Lake(tmp_path / "lake")
+    ingest(make_api(RawStore(tmp_path / "raw"), FakeNhl()), lake, [], feeds=False).run([OPENING])
+    schedule, games = lake.read("schedule"), lake.read("games")
+    assert schedule["game_id"].to_list() == games["game_id"].to_list() == list(OPENING_WEEK_GAMES)
+    assert (schedule["observed_utc"] < games["observed_utc"]).all()
+
+
 def test_rerun_is_served_from_the_cache(tmp_path: Path) -> None:
     store, lake = RawStore(tmp_path / "raw"), Lake(tmp_path / "lake")
     ingest(make_api(store, FakeNhl()), lake, []).run([OPENING])
@@ -198,7 +206,7 @@ def test_replay_rebuilds_identical_tables_offline(tmp_path: Path) -> None:
     online, replayed = Lake(tmp_path / "lake"), Lake(tmp_path / "rebuilt")
     ingest(make_api(store, FakeNhl()), online, []).run([OPENING])
     ingest(make_api(store, fail, offline=True), replayed, []).run([OPENING])
-    for table in ("games", "players", *FEED_TABLES):
+    for table in ("games", "schedule", "players", *FEED_TABLES):
         assert replayed.read(table).height > 0
         assert replayed.read(table).equals(online.read(table))
 
