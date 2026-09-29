@@ -7,10 +7,12 @@ start, and reads its own season's outcomes only to score."""
 from datetime import UTC, datetime, timedelta
 
 import market_history
+import numpy as np
 import polars as pl
 import pytest
 from test_sbr import NEW, NEW_SCHEDULE, results_empty
 
+from nhl_edge.backtest import walk_forward
 from nhl_edge.backtest.market import PREDICTION_LAG, Experiment, market_prices
 from nhl_edge.backtest.walk_forward import run
 from nhl_edge.ingest.sbr import match_season, parse_season
@@ -133,6 +135,8 @@ def test_b1_is_fitted_only_on_results_public_before_its_fold() -> None:
     starts = games.group_by("season").agg(fold_start=pl.col("start_utc").min())
     fitted = predictions.filter(model="B1").join(starts, on="season")
     assert (fitted["train_cutoff"] < fitted["fold_start"]).all()
+    # E2 predicts at 10:00 ET, before the start: its fit still comes before every prediction.
+    assert (fitted["train_cutoff"] < fitted["prediction_utc"]).all()
     base = b1(odds, games)
     # A later season's results never reach an earlier fold.
     later = b1(odds, flip(games, pl.col("season") == 20192020))
@@ -155,6 +159,76 @@ def test_b1_leaves_out_a_result_public_only_after_the_fold_starts() -> None:
     flipped, _, _ = run(odds, flip(late, last), [20212022])
     keys = ["experiment", "model", "method", "game_id"]
     assert predictions.sort(keys)["p_home"].to_list() == flipped.sort(keys)["p_home"].to_list()
+
+
+def test_b1_reads_only_earlier_open_seasons_even_when_their_results_look_public() -> None:
+    rng = np.random.default_rng(3)
+    start = datetime(2021, 10, 12, 23, tzinfo=UTC)
+    early = start - timedelta(days=150)
+
+    def rows(season: int, games: int, result_utc: datetime, home_win: int | None = None) -> dict:
+        wins = rng.integers(0, 2, games) if home_win is None else [home_win] * games
+        return {
+            "season": [season] * games,
+            "game_id": list(range(season * 1000, season * 1000 + games)),
+            "p_home": rng.uniform(0.3, 0.7, games).tolist(),
+            "home_win": list(wins),
+            "result_utc": [result_utc] * games,
+        }
+
+    def market(*parts: dict) -> pl.DataFrame:
+        return pl.concat([pl.DataFrame(part) for part in parts], how="vertical_relaxed")
+
+    history = rows(20202021, 200, early)
+    tested = rows(20212022, 20, start + timedelta(days=1))
+    _, fit = walk_forward.b1(market(history, tested), start, 20212022)
+    # Rows the season filters alone keep out: the test season's own and a held-out season's,
+    # with results made to look public before the fold starts and all home wins.
+    leaking = market(
+        history,
+        tested,
+        rows(20212022, 50, early, home_win=1),
+        rows(20222023, 50, early, home_win=1),
+    )
+    _, guarded = walk_forward.b1(leaking, start, 20212022)
+    assert (guarded.intercept, guarded.slope, guarded.games) == (
+        fit.intercept,
+        fit.slope,
+        fit.games,
+    )
+
+
+def test_e2_fits_b1_on_the_earlier_openers_only() -> None:
+    odds, games = market_history.seasons([20202021, 20212022], games=60)
+    earlier_close = (pl.col("season") == 20202021) & (pl.col("quote") == "close")
+    swapped = odds.with_columns(
+        price_decimal=pl.when(earlier_close)
+        .then(pl.col("price_decimal").reverse().over("game_id", "quote"))
+        .otherwise(pl.col("price_decimal"))
+    )
+    _, _, fits = run(odds, games, [20212022])
+    _, _, changed = run(swapped, games, [20212022])
+    assert changed["E2"][20212022] == fits["E2"][20212022]
+    assert changed["E1"][20212022] != fits["E1"][20212022]
+
+
+def test_the_fold_starts_at_the_seasons_first_game_priced_or_not() -> None:
+    odds, games = market_history.seasons([20202021, 20212022], games=60)
+    tested = games.filter(season=20212022)
+    first_day = tested["game_date"].min()
+    first_start = tested["start_utc"].min()
+    assert isinstance(first_start, datetime)
+    # No prices for the first day's games, and one earlier result public between the season's
+    # first start and its first priced start: the fold has started, so B1 leaves it out.
+    unpriced = odds.filter((pl.col("season") != 20212022) | (pl.col("game_date") != first_day))
+    last = pl.col("game_id") == games.filter(season=20202021)["game_id"].max()
+    between = games.with_columns(
+        observed_utc=pl.when(last)
+        .then(pl.lit(first_start + timedelta(hours=12)))
+        .otherwise(pl.col("observed_utc"))
+    )
+    _, _, fits = run(unpriced, between, [20212022])
+    assert fits["E1"][20212022].games == 59
 
 
 def test_b1_never_reads_a_held_out_season() -> None:
