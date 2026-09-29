@@ -41,6 +41,17 @@ and docs/decisions/ before changing a modeling choice.
 - Start each phase in plan mode and paste the approved plan into the PR description
 - After changing features or models: /leakage-check, then /run-backtest
 - Record modeling decisions with /adr
+- Merge a PR yourself (`gh pr merge <n> --squash --delete-branch`) once its issue is done and it is
+  ready to merge (below). Bring a P0 you would answer "Won't fix", an ADR, or a scope change to the
+  user first.
+- After pushing or requesting a review, watch for Codex yourself in a background poll. It answers
+  as a review with findings, a 👍 reaction on the PR, or a plain PR comment starting "Codex Review:
+  Didn't find any major issues" that names the reviewed commit. Check all three.
+- The Bash guard blocks any command that names `data/raw/` or `tests/golden/` and writes a file,
+  heredoc text included. Write such files with the Write tool, or run a script from the scratchpad.
+- A fresh machine has no local data: `nhl lake restore-raw` (about 0.5 GB), then
+  `nhl ingest --seasons 20102011-20252026 --replay` and `nhl odds replay` rebuild the lake offline.
+  `nhl status` shows how this machine compares with R2. docs/handover.md has the current state.
 
 ## Review budget (Codex)
 - Two rounds per PR: the automatic review, then one requested re-review after P0 or P1 fixes. A
