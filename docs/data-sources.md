@@ -114,7 +114,7 @@ Shift chart rows the parser leaves out, counted in `shift_coverage`:
 
 | Count | Rows | Seen in |
 | --- | --- | --- |
-| `dropped_rows` | zero-length shifts, shootout (period 5) rows, and exact repeats of a kept shift | blank-ended `00:00` placeholders in 174 games of 2019-20; 2022020041 lists 14 shifts twice |
+| `dropped_rows` | zero-length shifts, shootout (period 5) rows, and repeats of a kept shift (same player, period and times, under the same or another shift number) | blank-ended `00:00` placeholders in 174 games of 2019-20; 2022020041 lists 14 shifts twice; many 2023-24 charts repeat a shift under the next shift numbers |
 | `foreign_rows` | teams not in the game | 2021020513 (WSH at NYI) lists every shift twice and STL and MIN shifts besides |
 | `bad_rows` | malformed times, shifts outside their period, a shift number repeated with other times | |
 

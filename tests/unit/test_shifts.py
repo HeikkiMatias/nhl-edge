@@ -68,7 +68,9 @@ def test_shootout_rows_are_dropped_and_overtime_kept() -> None:
 def test_repeated_shifts_are_dropped_once() -> None:
     rows = chart_rows(trimmed("shiftcharts", 2022020041))
     shifts, drops = parse_trimmed(2022020041)
-    distinct = {(r["playerId"], r["period"], r["shiftNumber"]) for r in rows}
+    distinct = {(r["playerId"], r["period"], r["startTime"], r["endTime"]) for r in rows}
+    numbers = {(r["playerId"], r["period"], r["shiftNumber"]) for r in rows}
+    assert len(distinct) < len(numbers)  # some repeats come under a new shift number
     assert drops == ShiftDrops(dropped=len(rows) - len(distinct)) != ShiftDrops()
     assert shifts.height == len(distinct)
 
@@ -112,6 +114,18 @@ def test_a_shift_number_repeated_with_other_times_is_bad() -> None:
     )
     assert [(r["start_s"], r["end_s"]) for r in rows] == [(0, 45)]
     assert drops == ShiftDrops(dropped=1, bad=1)
+
+
+def test_a_shift_repeated_under_the_next_numbers_is_dropped() -> None:
+    # 2023020022: shifts 6, 7 and 8 of one NYR defenseman are all 02:55 to 04:16 of the second
+    # period, which added 162 seconds to his time on ice.
+    rows, drops = shift_rows(
+        [shift(shiftNumber=6), shift(shiftNumber=7), shift(shiftNumber=8)],
+        TRIMMED_GAMES[2019020003],
+        "k",
+    )
+    assert [r["shift_number"] for r in rows] == [6]
+    assert drops == ShiftDrops(dropped=2)
 
 
 def test_a_row_of_another_game_is_foreign() -> None:

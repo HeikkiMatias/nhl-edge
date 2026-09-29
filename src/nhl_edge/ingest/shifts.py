@@ -4,8 +4,9 @@ The chart lists shifts (type 517) and goal markers (type 505). Shift times are p
 turned into elapsed game seconds here. Some rows carry no play or cannot be trusted, and are
 dropped and counted for shift_coverage:
 - dropped: zero-length rows, such as the blank-ended placeholders with duration 00:00 in many
-  2019-20 charts; shootout rows (period 5); and exact repeats of a shift already kept (2022020041
-  lists 14 shifts twice under new row ids)
+  2019-20 charts; shootout rows (period 5); and repeats of a shift already kept, the same player,
+  period and times under the same or another shift number (2022020041 lists 14 shifts twice under
+  new row ids, and many 2023-24 charts repeat a shift under the next shift numbers)
 - foreign: rows of teams not in the game (2021020513, WSH at NYI, lists its own shifts twice and
   STL and MIN shifts besides)
 - bad: malformed times, shifts outside their period, and a shift number repeated with other times
@@ -36,7 +37,8 @@ def shift_rows(
     rows: list[dict[str, Any]], game: FeedGame, raw_key: str
 ) -> tuple[list[dict[str, Any]], ShiftDrops]:
     kept: list[dict[str, Any]] = []
-    seen: dict[tuple[int, int, int], tuple[int, int]] = {}
+    numbers: set[tuple[int, int, int]] = set()
+    times: set[tuple[int, int, int, int]] = set()
     dropped = foreign = bad = 0
     for row in rows:
         if row.get("typeCode") != SHIFT:
@@ -56,28 +58,30 @@ def shift_rows(
             dropped += 1
             continue
         length = OT_S if period == OT_PERIOD else PERIOD_S
-        key = (row.get("playerId") or 0, period, row.get("shiftNumber") or 0)
-        if start is not None and seen.get(key) == (start, end):
+        player, number = row.get("playerId") or 0, row.get("shiftNumber") or 0
+        if start is not None and end is not None and (player, period, start, end) in times:
             dropped += 1
             continue
         if (
             start is None
             or end is None
             or not 0 <= start < end <= length
-            or 0 in key
-            or key in seen
+            or not player
+            or not number
+            or (player, period, number) in numbers
         ):
             bad += 1
             continue
-        seen[key] = (start, end)
+        numbers.add((player, period, number))
+        times.add((player, period, start, end))
         offset = (period - 1) * PERIOD_S
         kept.append(
             {
                 **game.keys(),
                 "team": team,
-                "player_id": key[0],
+                "player_id": player,
                 "period": period,
-                "shift_number": key[2],
+                "shift_number": number,
                 "start_s": offset + start,
                 "end_s": offset + end,
                 "observed_utc": game.observed_utc,

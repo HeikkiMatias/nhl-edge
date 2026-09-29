@@ -1,6 +1,6 @@
 # 0004. Per-game feeds count as public the morning after, corrections included
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-29
 
 ## Context
