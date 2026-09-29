@@ -157,6 +157,134 @@ def test_audit_shifts_leaves_out_the_test_season_unless_asked(
     assert asked.output.splitlines()[2].startswith("| 20252026 | 1 |")
 
 
+def test_status_reports_an_empty_lake(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["status", "--brief"])
+    assert result.exit_code == 0
+    assert "lake empty: run nhl ingest" in result.output
+
+
+def test_status_counts_rows_and_the_newest_date(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import date
+    from pathlib import Path
+
+    from nhl_edge.ingest.games import listed_games, parse_games, schedule_of
+    from nhl_edge.lake.tables import Lake
+
+    week = (Path(__file__).parent / "fixtures/nhl_api/schedule_2010-10-07.json").read_bytes()
+    games = parse_games(listed_games(week, {date(2010, 10, 7), date(2010, 10, 8)}), "k")
+    monkeypatch.chdir(tmp_path)
+    Lake().write("games", games)
+    Lake().write("schedule", schedule_of(games))
+    brief = runner.invoke(app, ["status", "--brief"])
+    assert "lake to 2010-10-08: games 3, schedule 3 · missing: players, shots" in brief.output
+
+    for name in R2_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    full = runner.invoke(app, ["status"])
+    assert full.exit_code == 0, full.output
+    assert "games                  3 rows in 2 files, to 2010-10-08" in full.output
+    assert "R2: not configured" in full.output
+
+
+def test_status_shows_what_r2_has_that_this_machine_lacks(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import date
+    from pathlib import Path
+
+    import polars as pl
+    from fakes import MemoryBucket
+
+    from nhl_edge.ingest.games import listed_games, parse_games
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+
+    week = (Path(__file__).parent / "fixtures/nhl_api/schedule_2010-10-07.json").read_bytes()
+    games = parse_games(listed_games(week, {date(2010, 10, 7), date(2010, 10, 8)}), "k")
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    # The nightly runner mirrored a later date and an odds snapshot this machine never saw.
+    Lake(tmp_path / "runner", "test", bucket).write("games", games)
+    RawStore(tmp_path / "runner", "test", bucket).put("odds", "2010-10-08/snap", b"[]", {})
+    monkeypatch.chdir(tmp_path)
+    Lake().write("games", games.filter(pl.col("game_date") == date(2010, 10, 7)))
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "games: 1 files only in R2, 0 only here, 0 differ in size" in result.output
+    assert "raw/odds/: newest here None, in R2 odds/2010-10-08/snap" in result.output
+    assert (
+        "this machine is behind R2: nhl lake restore-raw, then "
+        "nhl ingest --start 2010-10-08 --end 2010-10-08 --replay"
+    ) in result.output
+    assert "R2 lacks" not in result.output
+
+
+def test_status_notices_a_file_that_differs_from_r2(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, date, datetime
+
+    import polars as pl
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.schemas import Players, dtypes
+    from nhl_edge.lake.tables import Lake
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    monkeypatch.chdir(tmp_path)
+    player = {
+        "player_id": 8478402,
+        "name": "Connor McDavid",
+        "birth_date": date(1997, 1, 13),
+        "shoots": "L",
+        "draft_year": 2015,
+        "draft_overall": 1,
+        "fetched_utc": datetime(2026, 9, 28, tzinfo=UTC),
+        "raw_key": "k",
+    }
+    # The same players file on both sides, but R2 holds an older, smaller copy.
+    Lake().write("players", pl.DataFrame([player], schema=dtypes(Players)))
+    bucket.objects["lake/players/part-0.parquet"] = b"older"
+    result = runner.invoke(app, ["status"])
+    assert "players: 0 files only in R2, 0 only here, 1 differ in size" in result.output
+    assert "1 files differ from R2 in players: check which copy is current" in result.output
+    # Neither side is assumed newer, so no command that would overwrite one is suggested.
+    assert "R2 lacks" not in result.output
+    assert "behind R2" not in result.output
+    assert pl.read_parquet(tmp_path / "data/lake/players/part-0.parquet").height == 1
+
+
+def test_status_brief_names_tables_that_lag(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import date
+    from pathlib import Path
+
+    import polars as pl
+
+    from nhl_edge.ingest.games import listed_games, parse_games, schedule_of
+    from nhl_edge.lake.tables import Lake
+
+    week = (Path(__file__).parent / "fixtures/nhl_api/schedule_2010-10-07.json").read_bytes()
+    games = parse_games(listed_games(week, {date(2010, 10, 7), date(2010, 10, 8)}), "k")
+    monkeypatch.chdir(tmp_path)
+    Lake().write("games", games)  # an ingest with --no-feeds moved games on
+    Lake().write("schedule", schedule_of(games.filter(pl.col("game_date") == date(2010, 10, 7))))
+    brief = runner.invoke(app, ["status", "--brief"])
+    assert (
+        "lake to 2010-10-08: games 3, schedule 2 · behind: schedule to 2010-10-07" in brief.output
+    )
+
+
 @pytest.mark.parametrize("command", ["sync-raw", "restore-raw"])
 def test_raw_sync_commands_need_r2(monkeypatch: pytest.MonkeyPatch, command: str) -> None:
     for name in R2_ENV:

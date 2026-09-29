@@ -2,12 +2,15 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, NoReturn
+from typing import TYPE_CHECKING, Annotated, NoReturn
 
 import typer
 
 from nhl_edge import __version__
 from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, SEASON_ROLES
+
+if TYPE_CHECKING:
+    from nhl_edge.lake.status import TableState
 
 app = typer.Typer(
     help="NHL moneyline model that must add information beyond a recalibrated market.",
@@ -400,10 +403,74 @@ def status(
     brief: Annotated[bool, typer.Option(help="One line, for the SessionStart hook.")] = False,
 ) -> None:
     """Show data and model state. Open tasks live in GitHub issues."""
-    typer.echo(f"nhl-edge {__version__} · no data ingested, no models fitted")
+    from nhl_edge.lake.status import brief_line, compact, local_tables
+    from nhl_edge.lake.tables import Lake
+
+    states = local_tables(Lake())
+    typer.echo(f"nhl-edge {__version__} · {brief_line(states)} · no models fitted")
     if brief:
         return
+    typer.echo("\nLocal lake (data/lake):")
+    for state in states:
+        rows = compact(state.rows or 0)
+        latest = f", to {state.latest}" if state.latest else ""
+        typer.echo(f"  {state.table:<16}{rows:>8} rows in {len(state.files):,} files{latest}")
+    _status_against_r2(states)
     typer.echo("\nSeason roles (docs/plan.md section 5):")
     for season, role in SEASON_ROLES.items():
         typer.echo(f"  {season}  {role}")
     typer.echo("  20262027+ live")
+
+
+def _status_against_r2(local: "list[TableState]") -> None:
+    """Which lake files and daily raw responses differ between this machine and R2, with the
+    commands that bring them in step. Skipped without R2 settings."""
+    from nhl_edge.lake.r2 import R2Config
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.status import compare, raw_lag, remote_tables, replay_window
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    load_env()
+    if R2Config.from_env() is None:
+        typer.echo("\nR2: not configured, so no comparison with the mirror")
+        return
+    typer.echo("\nAgainst R2:")
+    missing_here: list[str] = []  # lake files R2 has and this machine lacks
+    missing_there: list[str] = []  # lake files this machine has that R2 lacks
+    differ: list[str] = []  # lake files on both sides with different sizes
+    for here, there in zip(local, remote_tables(Lake.from_env(mirror=True)), strict=True):
+        diff = compare(here, there)
+        if diff:
+            typer.echo(
+                f"  {diff.table}: {len(diff.only_there):,} files only in R2, "
+                f"{len(diff.only_here):,} only here, {len(diff.differ):,} differ in size"
+            )
+            missing_here += diff.only_there
+            missing_there += diff.only_here
+            differ += diff.differ
+    raw_behind = raw_ahead = False
+    for prefix, here_key, there_key in raw_lag(RawStore.from_env(mirror=True)):
+        if here_key != there_key:
+            raw_behind |= (here_key or "") < (there_key or "")
+            raw_ahead |= (here_key or "") > (there_key or "")
+            typer.echo(f"  raw/{prefix}: newest here {here_key}, in R2 {there_key}")
+    if missing_here or raw_behind:
+        window = replay_window(missing_here) or "--recent 3"
+        typer.echo(
+            f"  this machine is behind R2: nhl lake restore-raw, then nhl ingest {window} --replay"
+        )
+    if missing_there or raw_ahead:
+        window = replay_window(missing_there) or "--recent 3"
+        typer.echo(
+            f"  R2 lacks what is here: nhl lake sync-raw, then nhl ingest {window} --replay --r2"
+        )
+    if differ:
+        # A size difference does not tell which copy is current, so no direction is suggested.
+        tables = sorted({key.split("/")[0] for key in differ})
+        typer.echo(
+            f"  {len(differ):,} files differ from R2 in {', '.join(tables)}: check which copy is "
+            "current before syncing either way"
+        )
+    if not (missing_here or missing_there or differ or raw_behind or raw_ahead):
+        typer.echo("  up to date with R2")
