@@ -502,7 +502,7 @@ PREGAME_GOALIES_KEY = ("game_id", "team", "observed_utc")
 
 
 class PregameGoalies(pa.DataFrameModel):
-    """One team of one game at one pre-game poll (#43): what the gamecenter boxscore said about its
+    """One team of one game at one pre-game poll (#42): what the gamecenter boxscore said about its
     goalies at observed_utc, the fetch time, which is when that state was public.
 
     goalies_listed counts the goalies in playerByGameStats (0 while the boxscore has none),

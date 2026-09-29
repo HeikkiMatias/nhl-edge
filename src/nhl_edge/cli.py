@@ -314,11 +314,17 @@ def poll(
             help="Cron line that fired the run; the poll is skipped when it is not an odds slot."
         ),
     ] = None,
+    within: Annotated[
+        int,
+        typer.Option(min=1, help="Poll games starting within this many minutes (default 18 h)."),
+    ] = 18 * 60,
     mirror_raw: Annotated[
         bool, typer.Option(help="Mirror the raw responses to R2 (needs the R2_* variables).")
     ] = False,
 ) -> None:
-    """Store the pre-game boxscore and landing of every game starting in the next 18 hours."""
+    """Store the pre-game boxscore, landing and right-rail of every game starting soon."""
+    from datetime import timedelta
+
     from nhl_edge.ingest.nhl_api import NhlApi, utc_now
     from nhl_edge.ingest.odds import resolve_slot
     from nhl_edge.ingest.pregame import run_poll
@@ -331,7 +337,9 @@ def poll(
         return
     load_env()
     store = RawStore.from_env(mirror=mirror_raw)
-    report = run_poll(nhl=NhlApi(store), now=now, echo=typer.echo)
+    report = run_poll(
+        nhl=NhlApi(store), now=now, echo=typer.echo, horizon=timedelta(minutes=within)
+    )
     if report.failed:
         raise typer.Exit(code=1)
 

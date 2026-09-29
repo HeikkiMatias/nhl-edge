@@ -50,7 +50,7 @@ jobs:
         if: always()
         run: uv run nhl odds replay --recent 14 --r2
       - name: Pre-game goalies into the lake
-        # The last 3 game dates of pre-game goalie polls (issue #43), rebuilt from the raw copies.
+        # The last 3 game dates of pre-game goalie polls (issue #42), rebuilt from the raw copies.
         if: always()
         run: uv run nhl goalies replay --recent 3 --r2
       - name: Contract test on a golden game

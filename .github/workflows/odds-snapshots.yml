@@ -53,8 +53,8 @@ jobs:
           if [ "$SKIP" = "true" ]; then skip=--skip-if-no-games; else skip=--no-skip-if-no-games; fi
           uv run nhl odds snapshot --regions eu --slot-plan free-tier "$skip" --mirror-raw "${pick[@]}"
       - name: Pre-game goalies
-        # The pre-game boxscore and landing of every game in the next 18 hours, stored raw in R2
-        # (issue #43), so the goalie state is on record at each odds slot. Runs when the snapshot
+        # The pre-game boxscore, landing and right-rail of every game in the next 18 hours, stored raw in R2
+        # (issue #42), so the goalie state is on record at each odds slot. Runs when the snapshot
         # step failed or skipped too; the odds cron lines of the other half of the DST year skip.
         if: always()
         env:

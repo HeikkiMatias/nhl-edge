@@ -104,6 +104,9 @@ def test_poll_window_keeps_upcoming_regular_season_games_within_the_horizon() ->
         2026020004,
         2026020005,
     ]
+    # A pre-start poll 50 minutes before FLA at CAR reaches only that game.
+    soon = games_to_poll(games, START - timedelta(minutes=50), timedelta(minutes=75))
+    assert [game.game_id for game in soon] == [2026020001]
     # Once FLA at CAR is under way it is no longer polled.
     later = games_to_poll(games, START)
     assert 2026020001 not in {game.game_id for game in later}
@@ -140,8 +143,10 @@ def test_poll_stores_pregame_responses_apart_from_the_postgame_boxscores(tmp_pat
     assert report.games == 5 and report.teams == 10 and report.flagged == 0
     assert paths.count("/v1/gamecenter/2026020001/boxscore") == 1
     assert paths.count("/v1/gamecenter/2026020001/landing") == 1
+    assert paths.count("/v1/gamecenter/2026020001/right-rail") == 1
     assert store.latest("nhl/pregame-boxscore/2026-09-29/2026020001") is not None
     assert store.latest("nhl/pregame-landing/2026-09-29/2026020001") is not None
+    assert store.latest("nhl/pregame-right-rail/2026-09-29/2026020001") is not None
     # The ingest's boxscore cache stays empty, so a pre-game copy never stands in for the final.
     assert store.latest("nhl/boxscore/20262027/2026020001") is None
     offline = NhlApi(store, offline=True)

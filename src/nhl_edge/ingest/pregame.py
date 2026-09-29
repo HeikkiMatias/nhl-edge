@@ -1,18 +1,18 @@
-"""Pre-game goalie poll (#43): what the NHL API says about each team's starting goalie before
-puck drop, recorded at the odds slot times so the audit (#9, plan section 10) can tell whether
-starters are confirmed early enough to use.
+"""Pre-game goalie poll (#42): what the NHL API says about each team's starting goalie before
+puck drop, recorded at the odds slot times and shortly before each start, so the audit (#9, plan
+section 10) can tell whether and how early starters are confirmed.
 
 The ingest reads a game's boxscore only once the game is final, so nothing else records the
-pre-game state, and it cannot be fetched after the fact. Each poll fetches the gamecenter boxscore
-and landing of every game that has not started and stores both raw, under their own kinds
-(nhl/pregame-boxscore/, nhl/pregame-landing/) keyed by the game's US Eastern date and id, apart
-from the post-game nhl/boxscore/ cache: the ingest reuses the newest cached boxscore of a game, and
-a pre-game copy there would stand in for the final one.
+pre-game state, and it cannot be fetched after the fact. Each poll fetches the gamecenter boxscore,
+landing and right-rail of every game in its window that has not started and stores them raw, under
+their own kinds (nhl/pregame-boxscore/, nhl/pregame-landing/, nhl/pregame-right-rail/) keyed by
+the game's US Eastern date and id, apart from the post-game nhl/boxscore/ cache: the ingest reuses
+the newest cached boxscore of a game, and a pre-game copy there would stand in for the final one.
 
 A pre-game boxscore has no playerByGameStats hours before the game, and the landing page lists
 each team's goalies with season stats but flags no starter (checked on 2026-09-29, nine hours
-before FLA at CAR). The boxscore's starter flag is the one signal parsed here; the landing copy is
-kept so a later check can look for others without having polled again.
+before FLA at CAR). The boxscore's starter flag is the one signal parsed here; the landing and
+right-rail copies are kept so a later check can look for others without having polled again.
 """
 
 import json
@@ -40,6 +40,7 @@ from nhl_edge.lake.tables import Lake
 ET = ZoneInfo("America/New_York")
 BOXSCORE = "pregame-boxscore"
 LANDING = "pregame-landing"
+RIGHT_RAIL = "pregame-right-rail"
 BOXSCORE_PREFIX = f"nhl/{BOXSCORE}"
 # Games starting this far ahead are polled; the morning slot (07:05 ET) reaches every game of the
 # day, the latest of which start around 22:30 ET.
@@ -47,14 +48,16 @@ POLL_HORIZON = timedelta(hours=18)
 TABLE = "pregame_goalies"
 
 
-def games_to_poll(games: Sequence[ScheduledGame], now: datetime) -> list[ScheduledGame]:
-    """Regular-season and playoff games that start after now and within POLL_HORIZON."""
+def games_to_poll(
+    games: Sequence[ScheduledGame], now: datetime, horizon: timedelta = POLL_HORIZON
+) -> list[ScheduledGame]:
+    """Regular-season and playoff games that start after now and within the horizon."""
     return sorted(
         (
             game
             for game in games
             if game.game_type in (REGULAR_SEASON, PLAYOFFS)
-            and now < game.start_utc <= now + POLL_HORIZON
+            and now < game.start_utc <= now + horizon
         ),
         key=lambda game: (game.start_utc, game.game_id),
     )
@@ -104,14 +107,20 @@ class PollReport:
     failed: list[int] = field(default_factory=list)
 
 
-def run_poll(*, nhl: NhlApi, now: datetime, echo: Callable[[str], None]) -> PollReport:
-    """Fetch and store the pre-game boxscore and landing of every game in the poll window, then
-    parse the boxscores to report how many teams have a flagged starter. The raw copies are the
-    record; the lake table is rebuilt from them by replay_pregame_goalies."""
+def run_poll(
+    *,
+    nhl: NhlApi,
+    now: datetime,
+    echo: Callable[[str], None],
+    horizon: timedelta = POLL_HORIZON,
+) -> PollReport:
+    """Fetch and store the pre-game boxscore, landing and right-rail of every game starting within
+    the horizon, then parse the boxscores to report how many teams have a flagged starter. The raw
+    copies are the record; the lake table is rebuilt from them by replay_pregame_goalies."""
     report = PollReport()
-    games = games_to_poll(nhl.schedule(now.astimezone(ET).date()), now)
+    games = games_to_poll(nhl.schedule(now.astimezone(ET).date()), now, horizon)
     if not games:
-        echo("goalie poll: no NHL games in the next 18 hours, nothing fetched")
+        echo(f"goalie poll: no NHL games starting within {horizon}, nothing fetched")
         return report
     frames = []
     for game in games:
@@ -119,7 +128,8 @@ def run_poll(*, nhl: NhlApi, now: datetime, echo: Callable[[str], None]) -> Poll
             boxscore = nhl.fetch(
                 BOXSCORE, entity(game), f"/v1/gamecenter/{game.game_id}/boxscore", never
             )
-            nhl.fetch(LANDING, entity(game), f"/v1/gamecenter/{game.game_id}/landing", never)
+            for kind, page in ((LANDING, "landing"), (RIGHT_RAIL, "right-rail")):
+                nhl.fetch(kind, entity(game), f"/v1/gamecenter/{game.game_id}/{page}", never)
         except NhlApiError as exc:
             echo(f"::warning::goalie poll: {game.away} at {game.home} ({game.game_id}): {exc}")
             report.failed.append(game.game_id)
