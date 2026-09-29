@@ -664,3 +664,37 @@ class CoachTenures(pa.DataFrameModel):
     @pa.dataframe_check
     def uncredited_games_are_explained(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(pl.col("coach").is_not_null() | pl.col("note").is_not_null())
+
+
+class AttendanceLimits(pa.DataFrameModel):
+    """A limit on spectators at one arena over a date range, from first_date to last_date.
+
+    capacity_share is the share of the arena's seats that could be filled: 0 means no spectators.
+    A head-count limit is divided by the arena's seating capacity, as limit shows. A game at an
+    arena and date no row covers had no limit. announced is the date of the source reporting the
+    limit. It is null for a limit in force from the season's first day, known before the season
+    (no spectators at the start of 2020-21). Features read shares through
+    reference.capacity_share, which uses a limit only once it was announced.
+    """
+
+    arena_id: pl.String = pa.Field(str_matches=ARENA_ID)
+    first_date: pl.Date
+    last_date: pl.Date
+    capacity_share: pl.Float64 = pa.Field(ge=0, lt=1)
+    limit: pl.String = pa.Field(str_length={"min_value": 1})
+    announced: pl.Date = pa.Field(nullable=True)
+    source: pl.String = pa.Field(str_startswith="https://")
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["arena_id", "first_date"]  # noqa: RUF012
+
+    @pa.dataframe_check
+    def last_not_before_first(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("last_date") >= pl.col("first_date"))
+
+    @pa.dataframe_check
+    def announced_while_in_force_or_before(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        # A limit reported only after it ended would never apply to a game.
+        return data.lazyframe.select((pl.col("announced") <= pl.col("last_date")).fill_null(True))

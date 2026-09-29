@@ -1,0 +1,79 @@
+arena_id,first_date,last_date,capacity_share,limit,announced,source
+amerant_bank_arena,2021-01-13,2021-05-19,0.3,30% capacity,,https://www.espn.com/nhl/insider/story/_/id/30737247/nhl-teams-wrestling-covid-19-fan-attendance-policies
+american_airlines_center,2021-01-13,2021-05-19,0.25,25% capacity,,https://www.espn.com/nhl/insider/story/_/id/30737247/nhl-teams-wrestling-covid-19-fan-attendance-policies
+ball_arena,2021-01-13,2021-04-01,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+ball_arena,2021-04-02,2021-05-19,0.22,22% capacity,2021-03-18,https://www.espn.com/nba/story/_/id/31087228/denver-nuggets-colorado-avalanche-allow-limited-number-fans
+benchmark_international_arena,2021-01-13,2021-03-12,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+benchmark_international_arena,2021-03-13,2021-05-04,0.199,"3,800 spectators (3,800 of 19,092 seats)",2021-03-04,https://www.nhl.com/lightning/news/tampa-bay-lightning-to-welcome-fans-back-to-amalie-arena-322058414
+benchmark_international_arena,2021-05-05,2021-05-19,0.22,"4,200 spectators (4,200 of 19,092 seats)",2021-05-05,https://www.wtsp.com/article/sports/nhl/lightning/tampa-bay-lightning-games-capacity/67-91e52d02-3428-4936-8715-64a8f49dbf24
+bridgestone_arena,2021-01-13,2021-01-25,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+bridgestone_arena,2021-01-26,2021-04-18,0.15,15% capacity,2021-01-27,https://www.tennessean.com/story/sports/nhl/predators/2021/01/27/nashville-predators-fans-back-bridgestone-arena-almost-year-chicago-blackhawks/6697602002/
+bridgestone_arena,2021-04-19,2021-05-19,0.33,33% capacity,2021-04-15,https://www.nhl.com/predators/news/metro-public-health-update-allows-increased-bridgestone-arena-capacity-323677988
+canada_life_centre,2021-01-13,2021-05-19,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+canada_life_centre,2021-12-21,2021-12-27,0.5,50% capacity,2021-12-17,https://www.ctvnews.ca/winnipeg/article/capacity-limits-set-to-come-into-effect-next-week-for-jets-games/
+canada_life_centre,2021-12-28,2022-02-07,0.016,"250 spectators; the Jets admitted none until at least January 11 (250 of 15,325 seats)",2021-12-27,https://www.sportsnet.ca/nhl/winnipeg-jets-not-permitting-fans-home-games-least-jan-11/
+canada_life_centre,2022-02-08,2022-02-14,0.5,50% capacity,2022-02-03,https://www.ctvnews.ca/winnipeg/article/more-fans-welcome-at-winnipeg-jets-games-under-health-order-changes/
+canadian_tire_centre,2021-01-13,2021-05-19,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+canadian_tire_centre,2021-12-18,2021-12-30,0.5,50% capacity,2021-12-15,https://www.ctvnews.ca/toronto/article/ontario-expands-eligibility-for-covid-19-booster-shots-cuts-capacity-limits-in-some-indoor-spaces/
+canadian_tire_centre,2021-12-31,2022-01-04,0.054,"1,000 spectators (1,000 of 18,652 seats)",2021-12-30,https://toronto.ctvnews.ca/ontario-reducing-capacity-limits-at-large-spectator-venues-to-1-000-people-1.5723604
+canadian_tire_centre,2022-01-05,2022-01-30,0,no spectators,2022-01-03,https://en.wikipedia.org/wiki/2021%E2%80%9322_NHL_season#COVID-19_restrictions
+canadian_tire_centre,2022-01-31,2022-02-16,0.027,"500 spectators (500 of 18,652 seats)",2022-01-20,https://www.cbc.ca/sports/ontario-sports-covid-spectators-arena-1.6321776
+canadian_tire_centre,2022-02-17,2022-02-28,0.5,50% capacity,2022-02-14,https://thehockeynews.com/news/news/maple-leafs-senators-to-return-to-50-percent-capacity-on-thursday
+capital_one_arena,2021-01-13,2021-04-26,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+capital_one_arena,2021-04-27,2021-05-19,0.1,10% capacity,2021-04-12,https://www.washingtonpost.com/sports/2021/04/12/wizards-capitals-fans-coronavirus/
+centre_bell,2021-01-13,2021-05-19,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+centre_bell,2021-12-16,2022-02-20,0,"no spectators: at public health's request for the December 16 game, then by provincial order from December 20",2021-12-16,https://www.sportsnet.ca/nhl/bell-centre-will-closed-fans-thursdays-canadiens-game-flyers/
+centre_bell,2022-02-21,2022-03-11,0.5,50% capacity,2022-02-08,https://www.sportsnet.ca/nhl/article/bell-centre-returning-50-per-cent-capacity-feb-21-premier-says/
+crypto_com_arena,2021-01-13,2021-04-19,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+crypto_com_arena,2021-04-20,2021-05-19,0.1,10% capacity,2021-04-02,https://www.ocregister.com/2021/04/02/lakers-clippers-kings-ducks-set-to-welcome-fans-back-to-the-great-indoors/
+edgewood_tahoe_resort,2021-02-20,2021-02-21,0,no spectators,2021-01-11,https://www.nhl.com/news/nhl-lake-tahoe-outdoor-games-new-twist-320186268
+enterprise_center,2021-01-13,2021-02-01,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+enterprise_center,2021-02-02,2021-05-19,0.077,"1,400 spectators (1,400 of 18,096 seats)",2021-01-27,https://www.sportsnet.ca/nhl/blues-allow-limited-number-ticketed-fans-games-starting-feb-2/
+gila_river_arena,2021-01-13,2021-04-16,0.25,25% capacity,,https://www.espn.com/nhl/insider/story/_/id/30737247/nhl-teams-wrestling-covid-19-fan-attendance-policies
+gila_river_arena,2021-04-17,2021-05-19,0.5,50% capacity,2021-04-12,https://www.nhl.com/news/coyotes-increase-seating-capacity-to-50-percent-at-gila-river-arena-323574802
+grand_casino_arena,2021-01-13,2021-04-04,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+grand_casino_arena,2021-04-05,2021-05-19,0.167,"3,000 spectators (3,000 of 17,954 seats)",2021-03-12,https://www.kare11.com/article/sports/minnesota-sports-fans-returning-soon/89-0b087909-000a-475f-8cdb-2609aaf62535
+honda_center,2021-01-13,2021-04-15,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+honda_center,2021-04-16,2021-05-19,0.1,10% capacity,2021-04-02,https://www.ocregister.com/2021/04/02/lakers-clippers-kings-ducks-set-to-welcome-fans-back-to-the-great-indoors/
+keybank_center,2021-01-13,2021-04-02,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+keybank_center,2021-04-03,2021-05-19,0.1,"10% capacity, with a negative test or proof of vaccination",2021-02-25,https://www.wgrz.com/article/sports/nhl/sabres/buffalo-sabres-to-open-keybank-center-to-limited-fans-march-20/71-cf024d75-3322-46e1-853e-efb013552e73
+lenovo_center,2021-01-13,2021-03-03,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+lenovo_center,2021-03-04,2021-05-19,0.15,15% capacity,2021-02-24,https://www.nhl.com/hurricanes/news/canes-to-welcome-back-fans-to-pnc-arena-321756690
+little_caesars_arena,2021-01-13,2021-03-08,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+little_caesars_arena,2021-03-09,2021-05-19,0.038,"750 spectators (750 of 19,515 seats)",2021-03-03,https://www.freep.com/story/sports/nhl/red-wings/2021/03/03/detroit-red-wings-host-750-fans-little-caesars-arena-home-game/6908884002/
+madison_square_garden,2021-01-13,2021-02-25,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+madison_square_garden,2021-02-26,2021-05-19,0.1,"10% capacity, with a negative test or proof of vaccination",2021-02-22,https://abc7ny.com/covid-vaccine-madison-square-garden-reopening-msg-knicks/10361442/
+nassau_veterans_memorial_coliseum,2021-01-13,2021-03-17,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+nassau_veterans_memorial_coliseum,2021-03-18,2021-05-19,0.1,"10% capacity, with a negative test or proof of vaccination",2021-02-24,https://newyork.cbslocal.com/2021/02/24/islanders-nassau-coliseum-fans-march-18/
+nationwide_arena,2021-01-13,2021-03-01,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+nationwide_arena,2021-03-02,2021-03-08,0.1,10% capacity,2021-02-20,https://www.espn.com/nhl/story/_/id/30934753/columbus-blue-jackets-get-permission-fans-arena
+nationwide_arena,2021-03-09,2021-05-19,0.25,25% capacity,2021-03-03,https://www.nbc4i.com/sports/blue-jackets/blue-jackets-will-allow-more-fans-to-attend-future-home-games/
+ppg_paints_arena,2021-01-13,2021-02-28,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+ppg_paints_arena,2021-03-01,2021-04-14,0.15,15% capacity,2021-03-01,https://www.nhl.com/penguins/news/penguins-welcome-back-fans-ppg-paints-arena-15-percent-capacity-321958894
+ppg_paints_arena,2021-04-15,2021-05-19,0.25,25% capacity,2021-03-15,https://www.wpxi.com/sports/nhl/pittsburgh-penguins/loosened-covid-19-restrictions-mean-more-fans-pirates-penguins-games/XWRJHS2YQFEIHMBL3JXN6VMTKE/
+prudential_center,2021-01-13,2021-02-28,0,no spectators; players' and staff's families only from late January,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+prudential_center,2021-03-01,2021-04-01,0.1,10% capacity,2021-02-21,https://www.nhl.com/devils/news/release-governor-murphy-announces-10-capacity-for-games-321674632
+prudential_center,2021-04-02,2021-05-19,0.2,20% capacity,2021-03-29,https://www.nj.com/devils/2021/03/more-fans-allowed-at-devils-games-as-prudential-center-capacity-increases-this-week-how-to-buy-devils-tickets.html
+rogers_arena,2021-01-13,2021-05-19,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+rogers_arena,2021-12-20,2022-02-15,0.5,50% capacity,2021-12-17,https://www.ctvnews.ca/vancouver/article/bc-imposes-new-gathering-limits-restaurant-rules-vaccine-requirements-as-covid-19-cases-surge/
+rogers_place,2021-01-13,2021-05-19,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+rogers_place,2021-12-24,2022-02-28,0.5,50% capacity,2021-12-21,https://web.archive.org/web/20211221233508/https://edmonton.ctvnews.ca/alberta-reduces-attendance-at-large-venues-to-avoid-covid-19-superspreaders-opens-boosters-to-all-adults-1.5715178
+sap_center_at_san_jose,2021-01-13,2021-04-25,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+sap_center_at_san_jose,2021-04-26,2021-05-19,0.057,"1,000 spectators, with a negative test or proof of vaccination (1,000 of 17,562 seats)",2021-04-16,https://www.mercurynews.com/2021/04/16/san-jose-sharks-to-allow-spectators-again-heres-what-fans-need-to-know/
+scotiabank_arena,2021-01-13,2021-05-19,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+scotiabank_arena,2021-12-18,2021-12-30,0.5,50% capacity,2021-12-15,https://www.ctvnews.ca/toronto/article/ontario-expands-eligibility-for-covid-19-booster-shots-cuts-capacity-limits-in-some-indoor-spaces/
+scotiabank_arena,2021-12-31,2022-01-30,0,"no spectators: 1,000 at most from December 31, and the Maple Leafs chose to play behind closed doors; closed doors province-wide from January 5",2021-12-30,https://toronto.ctvnews.ca/ontario-reducing-capacity-limits-at-large-spectator-venues-to-1-000-people-1.5723604
+scotiabank_arena,2022-01-31,2022-02-16,0.027,"500 spectators (500 of 18,819 seats)",2022-01-20,https://www.cbc.ca/sports/ontario-sports-covid-spectators-arena-1.6321776
+scotiabank_arena,2022-02-17,2022-02-28,0.5,50% capacity,2022-02-14,https://thehockeynews.com/news/news/maple-leafs-senators-to-return-to-50-percent-capacity-on-thursday
+scotiabank_saddledome,2021-01-13,2021-05-19,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+scotiabank_saddledome,2021-12-24,2022-02-28,0.5,50% capacity,2021-12-21,https://web.archive.org/web/20211221233508/https://edmonton.ctvnews.ca/alberta-reduces-attendance-at-large-venues-to-avoid-covid-19-superspreaders-opens-boosters-to-all-adults-1.5715178
+t_mobile_arena,2021-01-13,2021-02-28,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+t_mobile_arena,2021-03-01,2021-05-06,0.15,"15% capacity, 2,600 spectators",2021-02-22,https://news3lv.com/news/local/vegas-golden-knights-allowed-to-host-2600-fans-at-t-mobile-arena
+t_mobile_arena,2021-05-07,2021-05-19,0.5,50% capacity,2021-05-03,https://news3lv.com/news/local/vegas-golden-knights-expand-capacity-end-regular-season-2021
+td_garden,2021-01-13,2021-03-21,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+td_garden,2021-03-22,2021-05-09,0.12,12% capacity,2021-02-25,https://www.nhl.com/bruins/news/statement-in-response-to-governor-baker-s-arena-re-opening-announcemen-321806862
+td_garden,2021-05-10,2021-05-19,0.25,25% capacity,2021-04-27,https://www.nhl.com/bruins/news/td-garden-approved-for-25-capacity-starting-may-10-324082154
+united_center,2021-01-13,2021-05-08,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+united_center,2021-05-09,2021-05-19,0.25,25% capacity,2021-04-29,https://www.nhl.com/blackhawks/news/release-blackhawks-to-welcome-back-fans-starting-may-9-vs-dallas-324119614
+xfinity_mobile_arena,2021-01-13,2021-03-06,0,no spectators,,https://en.wikipedia.org/wiki/2020%E2%80%9321_NHL_season#COVID-19_restrictions
+xfinity_mobile_arena,2021-03-07,2021-05-19,0.15,"15% capacity, about 3,100 spectators",2021-03-02,https://www.inquirer.com/flyers/philadelphia-flyers-76ers-sixers-fans-are-back-returning-wells-fargo-center-home-covid-20210302.html

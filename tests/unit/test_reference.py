@@ -9,7 +9,7 @@ import pytest
 
 from nhl_edge.ingest.games import EXPECTED_GAMES, listed_games, parse_games
 from nhl_edge.lake.schemas import Arenas
-from nhl_edge.reference import Reference, check_files, check_games, lineage
+from nhl_edge.reference import Reference, capacity_share, check_files, check_games, lineage
 
 FIXTURES = Path(__file__).parent / "fixtures" / "nhl_api"
 REF = Reference.load()
@@ -283,3 +283,106 @@ def test_a_later_home_game_at_a_second_arena_is_fine() -> None:
         }
     )
     assert check_games(coliseum, REF) == []
+
+
+def played(*games: tuple[str, str, date]) -> pl.DataFrame:
+    """Games as (home, venue, date), one id each."""
+    return pl.DataFrame(
+        {
+            "game_id": list(range(1, len(games) + 1)),
+            "home": [home for home, _, _ in games],
+            "venue": [venue for _, venue, _ in games],
+            "game_date": [day for _, _, day in games],
+        }
+    )
+
+
+def shares(*games: tuple[str, str, date]) -> list[float]:
+    return capacity_share(played(*games), REF).sort("game_id")["capacity_share"].to_list()
+
+
+def test_capacity_share_by_arena_and_date() -> None:
+    assert shares(
+        # 2020-21: Dallas at 25% all season, Detroit empty until 750 fans from March 9.
+        ("DAL", "American Airlines Center", date(2021, 1, 22)),
+        ("DET", "Little Caesars Arena", date(2021, 3, 7)),
+        ("DET", "Little Caesars Arena", date(2021, 3, 9)),
+        # Canada was empty all season, Lake Tahoe too.
+        ("TOR", "Scotiabank Arena", date(2021, 4, 1)),
+        ("COL", "Edgewood Tahoe Resort", date(2021, 2, 20)),
+        # 2021-22: full in the US, Ontario at 500 from January 31 and 50% from February 17.
+        ("BOS", "TD Garden", date(2022, 1, 15)),
+        ("TOR", "Scotiabank Arena", date(2022, 1, 31)),
+        ("OTT", "Canadian Tire Centre", date(2022, 2, 19)),
+        ("TOR", "Scotiabank Arena", date(2022, 3, 2)),
+        # An unknown venue has no limit to find.
+        ("TOR", "Nowhere Arena", date(2021, 4, 1)),
+    ) == [0.25, 0.0, round(750 / 19_515, 3), 0.0, 0.0, 1.0, round(500 / 18_819, 3), 0.5, 1.0, 1.0]
+
+
+def test_every_game_of_the_empty_arenas_week_is_limited() -> None:
+    # The fixture week's home teams, Philadelphia and Toronto, had no spectators yet.
+    games = WEEKS["empty arenas 2021"]
+    by_home = games.join(capacity_share(games, REF), on="game_id").select("home", "capacity_share")
+    assert sorted(set(by_home["home"])) == ["PHI", "TOR"]
+    assert by_home["capacity_share"].to_list() == [0.0] * games.height
+
+
+ATTENDANCE_CASES: dict[str, tuple[pl.DataFrame, Reference, str]] = {
+    "limit at an unknown arena": (
+        OPENING,
+        replace(
+            REF,
+            attendance_limits=REF.attendance_limits.with_columns(
+                arena_id=pl.when(pl.col("arena_id") == "ball_arena")
+                .then(pl.lit("pepsi"))
+                .otherwise("arena_id")
+            ),
+        ),
+        "attendance_limits.csv: arena pepsi is not in arenas.csv",
+    ),
+    "overlapping limits": (
+        OPENING,
+        replace(
+            REF,
+            attendance_limits=REF.attendance_limits.with_columns(
+                last_date=pl.when(
+                    (pl.col("arena_id") == "ball_arena")
+                    & (pl.col("first_date") == date(2021, 1, 13))
+                )
+                .then(pl.lit(date(2021, 4, 2)))
+                .otherwise("last_date")
+            ),
+        ),
+        "the ball_arena limit from 2021-01-13 overlaps the one from 2021-04-02",
+    ),
+    "limited season without a limit": (
+        WEEKS["empty arenas 2021"],
+        replace(
+            REF,
+            attendance_limits=REF.attendance_limits.filter(
+                pl.col("arena_id") != "xfinity_mobile_arena"
+            ),
+        ),
+        "20202021 is limited_attendance, but attendance_limits.csv has no limit for",
+    ),
+    "unannounced limit mid-season": (
+        WEEKS["empty arenas 2021"],
+        replace(
+            REF,
+            attendance_limits=REF.attendance_limits.with_columns(
+                announced=pl.when(pl.col("arena_id") == "united_center")
+                .then(None)
+                .otherwise("announced")
+            ),
+        ),
+        "the united_center limit from 2021-05-09 has no announcement date",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(ATTENDANCE_CASES))
+def test_each_kind_of_attendance_problem_is_found(case: str) -> None:
+    games, ref, expected = ATTENDANCE_CASES[case]
+    problems = check_games(games, ref)
+    assert any(expected in problem for problem in problems), problems
