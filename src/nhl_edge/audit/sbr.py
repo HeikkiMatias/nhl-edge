@@ -31,6 +31,8 @@ from nhl_edge.market.devig import OVERROUND_TOLERANCE, Method, fair_probabilitie
 # The seasons whose prices the audit may read. A market validation season counts as development
 # once inspected (backtest/seasons.py), and later seasons have no SBR prices.
 PRICE_ROLES = frozenset({SeasonRole.TRAINING, SeasonRole.TRAINING_FLAGGED, SeasonRole.DEVELOPMENT})
+# What makes one sbr_odds row a price: the stored rows must match the page's on these.
+PRICE_KEY = ["game_id", "market", "side", "quote", "line", "price_american"]
 # A move of the de-vigged home probability from open to close larger than this is reviewed by
 # hand. Over 2010-11 to 2021-22 the 90th percentile is 4 to 5 points, and the largest moves pair
 # a price like -1010 with a close near even.
@@ -71,12 +73,15 @@ def join_reports(
     games: pl.DataFrame,
     seasons: Iterable[int],
     expected_games: Mapping[int, int] = EXPECTED_GAMES,
-) -> tuple[list[SeasonReport], list[str]]:
-    """Each season's stored SBR page joined to the NHL's games, as `nhl odds sbr` reports it, and
-    a problem for each season it cannot join: one with no stored page, or one whose schedule is
-    short of the season's games, since match_season takes every SBR row after the schedule's last
-    date for a playoff game (as import_seasons, which refuses such a season)."""
-    reports, found = [], []
+) -> tuple[list[SeasonReport], dict[int, pl.DataFrame], list[str]]:
+    """Each season's stored SBR page joined to the NHL's games, as `nhl odds sbr` reports it, the
+    rows that command writes for it, and a problem for each season it cannot join: one with no
+    stored page, or one whose schedule is short of the season's games, since match_season takes
+    every SBR row after the schedule's last date for a playoff game (as import_seasons, which
+    refuses such a season)."""
+    reports: list[SeasonReport] = []
+    pages: dict[int, pl.DataFrame] = {}
+    found: list[str] = []
     for season in seasons:
         raw_key = store.latest(f"{SOURCE}/{season}")
         in_season = pl.col("season") == season
@@ -91,15 +96,35 @@ def join_reports(
             )
             continue
         parsed = parse_season(store.get(raw_key), season)
-        _, report = match_season(parsed, season_schedule, games.filter(in_season), raw_key)
+        frame, report = match_season(parsed, season_schedule, games.filter(in_season), raw_key)
         reports.append(report)
-    return reports, found
+        pages[season] = frame
+    return reports, pages, found
 
 
-def unpriced(odds: pl.DataFrame, priced: Iterable[int]) -> list[str]:
-    """A problem for each season whose prices the audit reads but sbr_odds lacks."""
-    have = set(odds["season"].unique().to_list())
-    return [f"{season}: no SBR prices in sbr_odds" for season in priced if season not in have]
+def unpriced(
+    odds: pl.DataFrame, priced: Iterable[int], pages: Mapping[int, pl.DataFrame]
+) -> list[str]:
+    """A problem for each season whose prices the audit reads but sbr_odds lacks, or holds other
+    than its stored page gives them: the price checks would then see part of the season."""
+    found = []
+    for season in priced:
+        stored = odds.filter(pl.col("season") == season)
+        if stored.is_empty():
+            found.append(f"{season}: no SBR prices in sbr_odds")
+            continue
+        page = pages.get(season)
+        if page is None:  # its join is already a problem
+            continue
+        missing = page.join(stored, on=PRICE_KEY, how="anti", nulls_equal=True).height
+        extra = stored.join(page, on=PRICE_KEY, how="anti", nulls_equal=True).height
+        if missing or extra or stored.height != page.height:
+            found.append(
+                f"{season}: sbr_odds has {stored.height:,} prices where the stored SBR page gives "
+                f"{page.height:,} ({missing:,} missing, {extra:,} not on the page), so the price "
+                f"checks see part of the season: rerun nhl odds sbr --seasons {season}"
+            )
+    return found
 
 
 def unmatched(report: SeasonReport, listed: pl.DataFrame) -> list[tuple[date, str, str]]:

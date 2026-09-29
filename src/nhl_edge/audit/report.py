@@ -67,10 +67,10 @@ def _sbr_section(
     if not seasons:
         return Section("SBR odds", "No SBR season is over by the audit date.")
     schedule = lake.read("schedule").filter(pl.col("game_date") <= as_of)
-    reports, coverage = sbr_audit.join_reports(store, schedule, games, seasons)
+    reports, pages, coverage = sbr_audit.join_reports(store, schedule, games, seasons)
     priced = sbr_audit.price_seasons(seasons)
     odds = lake.read("sbr_odds").filter(pl.col("season").is_in(priced))
-    coverage += sbr_audit.unpriced(odds, priced)
+    coverage += sbr_audit.unpriced(odds, priced, pages)
     if not reports and odds.is_empty():
         return Section(
             "SBR odds",

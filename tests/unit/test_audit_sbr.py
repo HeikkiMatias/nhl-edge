@@ -93,7 +93,7 @@ NL_OPENER = "20102011: 1 SBR prices shown as NL, blank or malformed, left out wi
 def test_the_join_is_rerun_from_the_stored_page(tmp_path: Path) -> None:
     # Without the 2010-12-31 game in the schedule, SBR's NYR and STL row matches nothing.
     schedule = OLD_SCHEDULE.filter(pl.col("game_id") != 2010020500)
-    reports, coverage = sbr_audit.join_reports(
+    reports, _, coverage = sbr_audit.join_reports(
         stored_2010(tmp_path), schedule, results_empty(schedule), [20102011], {20102011: 2}
     )
     assert coverage == []
@@ -108,7 +108,7 @@ def test_the_join_is_rerun_from_the_stored_page(tmp_path: Path) -> None:
 
 def test_a_season_without_a_page_or_a_full_schedule_is_not_joined(tmp_path: Path) -> None:
     # A schedule short of the season would pass its later games' SBR rows off as playoffs.
-    reports, coverage = sbr_audit.join_reports(
+    reports, _, coverage = sbr_audit.join_reports(
         stored_2010(tmp_path),
         OLD_SCHEDULE,
         results_empty(OLD_SCHEDULE),
@@ -122,10 +122,33 @@ def test_a_season_without_a_page_or_a_full_schedule_is_not_joined(tmp_path: Path
     ]
 
 
-def test_a_season_whose_prices_are_read_needs_sbr_odds_rows() -> None:
-    frame = odds(moneyline(20182019, 2018020001, "close", -110, -110))
-    assert sbr_audit.unpriced(frame, [20182019, 20212022]) == [
-        "20212022: no SBR prices in sbr_odds"
+def test_a_season_whose_prices_are_read_needs_all_its_pages_rows_in_sbr_odds(
+    tmp_path: Path,
+) -> None:
+    _, pages, _ = sbr_audit.join_reports(
+        stored_2010(tmp_path), OLD_SCHEDULE, results_empty(OLD_SCHEDULE), [20102011], {20102011: 3}
+    )
+    page = pages[20102011]
+    assert sbr_audit.unpriced(page, [20102011, 20112012], pages) == [
+        "20112012: no SBR prices in sbr_odds"
+    ]
+    # A partition holding only the totals, as a partial import might leave it.
+    totals = page.filter(pl.col("market") == "totals")
+    assert sbr_audit.unpriced(totals, [20102011], pages) == [
+        f"20102011: sbr_odds has {totals.height} prices where the stored SBR page gives "
+        f"{page.height} ({page.height - totals.height} missing, 0 not on the page), so the price "
+        "checks see part of the season: rerun nhl odds sbr --seasons 20102011"
+    ]
+    # A price changed since the import.
+    changed = page.with_columns(
+        price_american=pl.when(pl.int_range(pl.len()) == 0)
+        .then(pl.col("price_american") + 5)
+        .otherwise(pl.col("price_american"))
+    )
+    assert sbr_audit.unpriced(changed, [20102011], pages) == [
+        f"20102011: sbr_odds has {page.height} prices where the stored SBR page gives "
+        f"{page.height} (1 missing, 1 not on the page), so the price checks see part of the "
+        "season: rerun nhl odds sbr --seasons 20102011"
     ]
 
 
@@ -133,7 +156,7 @@ def test_an_unmatched_row_the_listings_name_as_a_playoff_game_is_not_a_problem(
     tmp_path: Path,
 ) -> None:
     schedule = OLD_SCHEDULE.filter(pl.col("game_id") != 2010020500)
-    reports, _ = sbr_audit.join_reports(
+    reports, _, _ = sbr_audit.join_reports(
         stored_2010(tmp_path), schedule, results_empty(schedule), [20102011], {20102011: 2}
     )
     # As in 2020-21: a playoff game before the regular season's last date.
@@ -165,7 +188,7 @@ def test_nhl_games_without_sbr_prices_and_score_mismatches_are_problems(tmp_path
     )
     schedule = pl.concat([OLD_SCHEDULE, extra])
     scores = results([(2010020001, 3, 4), (2010020500, 3, 1), (2010020600, 4, 2)], schedule)
-    reports, _ = sbr_audit.join_reports(
+    reports, _, _ = sbr_audit.join_reports(
         stored_2010(tmp_path), schedule, scores, [20102011], {20102011: 4}
     )
     assert problems(reports) == [
@@ -275,7 +298,7 @@ def test_a_clear_favourite_at_plus_one_and_a_half_is_a_problem() -> None:
 def test_prices_of_the_market_validation_season_are_not_read(tmp_path: Path) -> None:
     assert sbr_audit.price_seasons([20182019, 20212022, 20222023]) == [20182019, 20212022]
     # A held-out season keeps its join counts, but not its count of unusable prices.
-    reports, _ = sbr_audit.join_reports(
+    reports, _, _ = sbr_audit.join_reports(
         stored_2010(tmp_path), OLD_SCHEDULE, results_empty(OLD_SCHEDULE), [20102011], {20102011: 3}
     )
     row = sbr_audit.join_report(reports, NO_LISTINGS, held_out=[20102011]).row(0, named=True)
