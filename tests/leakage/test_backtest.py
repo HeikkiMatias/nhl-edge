@@ -231,6 +231,24 @@ def test_the_fold_starts_at_the_seasons_first_game_priced_or_not() -> None:
     assert fits["E1"][20212022].games == 59
 
 
+def test_the_fold_starts_at_a_priced_game_whose_result_is_missing() -> None:
+    odds, games = market_history.seasons([20202021, 20212022], games=60)
+    tested = games.filter(season=20212022).sort("start_utc")
+    first_start, second_start = tested["start_utc"].unique().sort().head(2).to_list()
+    # The first day's games are priced but have no result, and one earlier result is public
+    # between the season's first start and the next: the fold has started, so B1 leaves it out.
+    unsettled = games.filter(pl.col("start_utc") != first_start)
+    last = pl.col("game_id") == games.filter(season=20202021)["game_id"].max()
+    between = unsettled.with_columns(
+        observed_utc=pl.when(last)
+        .then(pl.lit(first_start + (second_start - first_start) / 2))
+        .otherwise(pl.col("observed_utc"))
+    )
+    _, coverage, fits = run(odds, between, [20212022])
+    assert coverage["E1"][20212022]["unsettled"] > 0
+    assert fits["E1"][20212022].games == 59
+
+
 def test_b1_never_reads_a_held_out_season() -> None:
     odds, games = market_history.seasons([20202021, 20212022], games=60)
     held_odds, held_games = market_history.seasons([20222023], games=60, intercept=2.0)

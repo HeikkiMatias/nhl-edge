@@ -155,7 +155,7 @@ def backtest(
     from nhl_edge.lake.tables import Lake
 
     try:
-        wanted = parse_seasons(seasons)
+        wanted = sorted(set(parse_seasons(seasons)))
         held_out = [season for season in wanted if season_role(season) not in OPEN_ROLES]
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
@@ -165,9 +165,15 @@ def backtest(
             "until their phase (docs/plan.md section 5, #10)",
             param_hint="--seasons",
         )
-    lake = Lake()
     # B1 is fitted on every open SBR season before the test season, so those need prices too.
-    needed = set(wanted) | {s for s in SEASON_PAGES if s in OPEN_SEASONS and s < max(wanted)}
+    history = [s for s in SEASON_PAGES if s in OPEN_SEASONS]
+    first = [season for season in wanted if season <= min(history)]
+    if first:
+        raise typer.BadParameter(
+            f"{first} have no earlier SBR season to fit B1 on", param_hint="--seasons"
+        )
+    lake = Lake()
+    needed = set(wanted) | {s for s in history if s < max(wanted)}
     sbr_odds = lake.read("sbr_odds").filter(pl.col("season").is_in(needed))
     missing = sorted(needed - set(sbr_odds["season"].unique().to_list()))
     if missing:

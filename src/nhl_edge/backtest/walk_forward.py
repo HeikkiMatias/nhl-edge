@@ -76,10 +76,12 @@ def b0(prices: pl.DataFrame, method: Method) -> pl.DataFrame:
     return fair.with_columns(p_home=pl.Series(p_home, dtype=pl.Float64))
 
 
-def fold_start(games: pl.DataFrame, season: int) -> datetime:
+def fold_start(calendar: pl.DataFrame, season: int) -> datetime:
     """The test season's first start: every game a fold's fit reads has its result public before
-    it."""
-    first = games.filter(pl.col("season") == season)["start_utc"].min()
+    it. calendar holds the start of every game known, from the results and from the prices, so a
+    priced game without a result still starts its fold. The CLI checks that games holds every game
+    of each season it reads."""
+    first = calendar.filter(pl.col("season") == season)["start_utc"].min()
     if not isinstance(first, datetime):
         raise ValueError(f"no games of {season} to start its fold")
     return first
@@ -143,13 +145,14 @@ def run(
     those whose market de-vigging refuses, those scored, and B1's training games. E2's also counts
     the games whose opener differs from the close, which sizes how much E2's opener can have moved
     before its assumed time (ADR 0006)."""
-    seasons = sorted(seasons)
+    seasons = sorted(set(seasons))
     held_out = [season for season in seasons if season_role(season) not in OPEN_ROLES]
     if held_out:
         raise ValueError(f"{held_out} are held out: phase 1 backtests open seasons only (#10)")
     open_odds = sbr_odds.filter(pl.col("season").is_in(OPEN_SEASONS))
     results = outcomes(games.filter(pl.col("season").is_in(OPEN_SEASONS)))
-    starts = {season: fold_start(games, season) for season in seasons}
+    calendar = pl.concat([frame.select("season", "start_utc") for frame in (games, sbr_odds)])
+    starts = {season: fold_start(calendar, season) for season in seasons}
     frames = [pl.DataFrame(schema=PREDICTION_SCHEMA)]
     coverage: Coverage = {}
     fits: Fits = {}

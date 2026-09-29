@@ -37,7 +37,7 @@ B0 is multiplicative-de-vigged. Power and Shin can't be told apart from it on th
 
 Predicting at the opener costs 0.0046 [0.0011, 0.0083] against the close, paired on the games both score.
 
-B1 recalibrates B0's multiplicative probabilities. It is fitted on 9,370 games for the 2018-19 fold and 12,591 for the 2021-22 fold:
+B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fitted on 9,370 games in E1 and 9,369 in E2, and for the 2021-22 fold on 12,591 and 12,589. E2 has a few fewer because a few earlier games have no usable opener:
 - **Its slope is 1.07 to 1.12** across the four fits, so the market was slightly under-confident over 2010-11 to 2020-21.
 - **Its intercept is about -0.03,** a slight overpricing of home teams.
 - **It does not beat B0 on these seasons.** B0 minus B1 is +0.0004 [-0.0005, +0.0013] on E1 and +0.0002 [-0.0008, +0.0012] on E2, and no per-season interval excludes 0.

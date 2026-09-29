@@ -161,6 +161,15 @@ def test_run_scores_b0_and_b1_for_both_experiments() -> None:
     assert coverage["E2"][20212022] == {**counts, "opener_differs_from_close": 3}
 
 
+def test_a_season_asked_for_twice_is_predicted_once() -> None:
+    odds = pl.concat([HISTORY_ODDS, sbr_odds_2021().select(list(dtypes(SbrOdds)))])
+    games = pl.concat([HISTORY_GAMES, games_of(NEW_SCHEDULE, SCORES)])
+    once, coverage, _ = run(odds, games, [20212022])
+    twice, again, _ = run(odds, games, [20212022, 20212022])
+    assert twice.equals(once)
+    assert again == coverage
+
+
 def test_a_priced_game_without_a_result_is_counted_and_not_scored() -> None:
     games = games_of(NEW_SCHEDULE, SCORES).filter(pl.col("game_id") != 2021020001)
     predictions, coverage = run_2021(games=games)
@@ -239,6 +248,14 @@ def test_runs_csv_keeps_earlier_rows_when_its_columns_change(tmp_path: Path) -> 
     assert list(rows[0]) == reports.RUNS_FIELDS
     assert (rows[0]["version"], rows[0]["train_cutoff"]) == ("backtest-1", "")
     assert len(rows) == 1 + 8
+    # An earlier header with no rows is rewritten too.
+    (tmp_path / "runs.csv").write_text(old)
+    reports.write(
+        reports.summary(predictions, coverage, fits, [20212022], "backtest-3", NOW), tmp_path
+    )
+    header = (tmp_path / "runs.csv").read_text().splitlines()[0]
+    assert header.split(",") == reports.RUNS_FIELDS
+    assert len(list(csv.DictReader((tmp_path / "runs.csv").open()))) == 8
 
 
 def test_an_experiment_with_no_scored_game_keeps_its_coverage() -> None:
@@ -285,6 +302,15 @@ def test_backtest_refuses_held_out_seasons(tmp_path: Path, monkeypatch: pytest.M
         result = runner.invoke(app, ["backtest", "--seasons", season])
         assert result.exit_code == 2, result.output
         assert "held out" in result.output
+
+
+def test_backtest_refuses_the_first_sbr_season(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["backtest", "--seasons", "20102011,20182019"])
+    assert result.exit_code == 2, result.output
+    assert "[20102011] have no earlier SBR season" in result.output
 
 
 def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -216,9 +216,10 @@ def write(report: dict[str, Any], out: Path) -> Path:
     if runs.exists():
         with runs.open(newline="") as handle:
             reader = csv.DictReader(handle)
-            if reader.fieldnames != RUNS_FIELDS:
+            stale = reader.fieldnames != RUNS_FIELDS
+            if stale:
                 earlier = list(reader)
-        if earlier:
+        if stale:
             runs.unlink()
     new = not runs.exists()
     with runs.open("a", newline="") as handle:
