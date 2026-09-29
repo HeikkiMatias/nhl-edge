@@ -1,11 +1,14 @@
 import polars as pl
+import pytest
 from sbr_rows import ODDS
 
 from nhl_edge.ingest.sbr_suspect import (
     CSV_DATETIME,
+    SEASONS,
     SUSPECT_FILE,
     load_suspect_openers,
     suspect_openers,
+    write_suspect_openers,
 )
 from nhl_edge.lake.schemas import SBR_SUSPECT_FLAGS, SbrSuspectOpeners
 
@@ -58,3 +61,16 @@ def test_the_committed_list_is_as_written() -> None:
     # The file is generated; a hand edit would drift from what the module writes.
     text = load_suspect_openers().write_csv(datetime_format=CSV_DATETIME)
     assert SUSPECT_FILE.read_text() == text
+
+
+def test_a_rebuild_refuses_a_lake_missing_a_covered_season() -> None:
+    # ODDS has only 2018-19 of the covered seasons: rebuilding from it would drop the others.
+    before = SUSPECT_FILE.read_bytes()
+    with pytest.raises(ValueError, match="sbr_odds has no prices for") as refused:
+        write_suspect_openers(ODDS)
+    assert "20102011" in str(refused.value) and "20182019" not in str(refused.value)
+    assert SUSPECT_FILE.read_bytes() == before
+
+
+def test_the_list_covers_the_phase_one_seasons() -> None:
+    assert tuple(range(20102011, 20222023, 10_001)) == SEASONS

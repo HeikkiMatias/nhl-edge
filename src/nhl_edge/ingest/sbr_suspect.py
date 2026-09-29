@@ -30,11 +30,14 @@ reference/sbr_suspect_openers.csv from the local lake's sbr_odds.
 import polars as pl
 
 from nhl_edge.audit.sbr import BIG_MOVE, CLEAR_FAVOURITE, moneylines, price_seasons
+from nhl_edge.ingest.sbr import SBR_SEASONS
 from nhl_edge.lake.schemas import SBR_SUSPECT_FLAGS, SbrSuspectOpeners, dtypes
 from nhl_edge.lake.tables import Lake
 from nhl_edge.reference import REFERENCE_DIR
 
 SUSPECT_FILE = REFERENCE_DIR / "sbr_suspect_openers.csv"
+# The seasons the list covers: every SBR season whose prices phase 1 reads.
+SEASONS = tuple(price_seasons(SBR_SEASONS))
 EXTREME_OPEN = (0.15, 0.85)
 SWAP_TOLERANCE = 0.05
 # Probabilities, moves and gaps are stored to this many decimals, enough to read and compare.
@@ -45,8 +48,7 @@ CSV_DATETIME = "%Y-%m-%dT%H:%M:%SZ"
 def suspect_openers(odds: pl.DataFrame) -> pl.DataFrame:
     """The games of sbr_odds rows whose opening moneyline meets a criterion, as rows of
     SbrSuspectOpeners sorted by game_id."""
-    read = price_seasons(sorted(odds["season"].unique().to_list()))
-    odds = odds.filter(pl.col("season").is_in(read))
+    odds = odds.filter(pl.col("season").is_in(SEASONS))
     lines = moneylines(odds)
 
     def at(quote: str) -> pl.DataFrame:
@@ -100,13 +102,27 @@ def load_suspect_openers() -> pl.DataFrame:
     return SbrSuspectOpeners.validate(frame)
 
 
-def write_suspect_openers(frame: pl.DataFrame) -> None:
-    SbrSuspectOpeners.validate(frame).write_csv(SUSPECT_FILE, datetime_format=CSV_DATETIME)
+def write_suspect_openers(odds: pl.DataFrame) -> pl.DataFrame:
+    """Rebuild the committed list from the whole sbr_odds table and return it. Refuses a table
+    that lacks a season the list covers, since the rebuilt file would silently drop that season's
+    games; nothing is written then."""
+    missing = sorted(set(SEASONS) - set(odds["season"].unique().to_list()))
+    if missing:
+        wanted = ",".join(str(season) for season in missing)
+        raise ValueError(
+            f"sbr_odds has no prices for {missing}; run `nhl odds sbr --replay --seasons {wanted}` "
+            "first, or the rebuilt list would leave those seasons out"
+        )
+    frame = SbrSuspectOpeners.validate(suspect_openers(odds))
+    frame.write_csv(SUSPECT_FILE, datetime_format=CSV_DATETIME)
+    return frame
 
 
 def main() -> None:
-    frame = suspect_openers(Lake().read("sbr_odds"))
-    write_suspect_openers(frame)
+    try:
+        frame = write_suspect_openers(Lake().read("sbr_odds"))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     counts = frame.select(pl.col(SBR_SUSPECT_FLAGS).sum())
     print(f"{frame.height} suspect openers written to {SUSPECT_FILE}")
     print(counts)
