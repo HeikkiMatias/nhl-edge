@@ -31,7 +31,7 @@ def live_bodies(api: NhlApi) -> dict[str, bytes]:
         f"schedule_{day.isoformat()}": api.schedule_week(day, never).body,
         f"play-by-play_{game_id}": api.play_by_play(season, game_id).body,
         f"boxscore_{game_id}": api.boxscore(season, game_id).body,
-        f"shiftcharts_{game_id}": api.shift_chart(season, game_id).body,
+        f"shiftcharts_{game_id}": api.shift_chart(season, game_id, day).body,
     }
 
 

@@ -203,7 +203,7 @@ class Ingest:
         season, game_id = game["season"], game["game_id"]
         pbp = self.api.play_by_play(season, game_id)
         box = self.api.boxscore(season, game_id)
-        chart = self.api.shift_chart(season, game_id)
+        chart = self.api.shift_chart(season, game_id, game["game_date"])
         feed_game = FeedGame.from_boxscore(game, box.body)
         shots = parse_shots(pbp.body, feed_game, pbp.raw_key)
         shifts, drops = parse_shifts(chart.body, feed_game, chart.raw_key)

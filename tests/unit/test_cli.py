@@ -220,3 +220,35 @@ def test_status_shows_what_r2_has_that_this_machine_lacks(
     assert "games: here 1 files to 2010-10-07, R2 2 to 2010-10-08" in result.output
     assert "raw/odds/: newest here None, in R2 odds/2010-10-08/snap" in result.output
     assert "this machine is behind R2: run nhl lake restore-raw" in result.output
+
+
+@pytest.mark.parametrize("command", ["sync-raw", "restore-raw"])
+def test_raw_sync_commands_need_r2(monkeypatch: pytest.MonkeyPatch, command: str) -> None:
+    for name in R2_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    result = runner.invoke(app, ["lake", command])
+    assert result.exit_code == 1
+
+
+def test_restore_raw_reports_its_counts(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.raw import RawStore
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    bucket = MemoryBucket()
+    RawStore(tmp_path / "runner", "test", bucket).put("odds", "2026-09-29/a", b"[]", {})
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["lake", "restore-raw", "--prefix", "odds/"])
+    assert result.exit_code == 0, result.output
+    assert (
+        "raw/odds/: 1 responses in R2, 0 here; downloaded 1, skipped 0 incomplete" in result.output
+    )
+    again = runner.invoke(app, ["lake", "sync-raw", "--prefix", "odds/"])
+    assert (
+        "raw/odds/: 1 responses here, 1 in R2; uploaded 0, skipped 0 incomplete here"
+        in again.output
+    )

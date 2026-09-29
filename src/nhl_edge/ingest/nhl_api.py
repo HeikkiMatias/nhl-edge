@@ -11,13 +11,14 @@ import json
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
 
 from nhl_edge.lake.raw import RawStore
+from nhl_edge.lake.schemas import PERIOD_S
 
 BASE_URL = "https://api-web.nhle.com"
 STATS_URL = "https://api.nhle.com/stats/rest"
@@ -28,6 +29,15 @@ RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 USER_AGENT = "nhl-edge/0.1 (personal research)"
 REGULAR_SEASON = 2
 PLAYOFFS = 3
+# Shift chart rows of this type are shifts; type 505 rows are goal markers.
+SHIFT = 517
+# A shift chart fetched this long after its game counts as settled: a gap left then is the source's.
+# It matches the nightly lookback (nhl ingest --recent 3 in .github/workflows/ingest-nightly.yml),
+# so every unsettled chart is refetched by some nightly run before it settles.
+CHART_SETTLED = timedelta(days=3)
+# A team's valid shifts in each of periods 1 to 3 must add up to at least four players' full period:
+# less means the chart is cut short, even when every period has some rows.
+MIN_TEAM_PERIOD_S = 4 * PERIOD_S
 
 
 @dataclass(frozen=True)
@@ -45,6 +55,16 @@ def utc_now() -> datetime:
 
 def parse_utc(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+
+
+def clock_s(text: str | None) -> int | None:
+    """Seconds in an "MM:SS" clock, or None when the value is missing or malformed."""
+    if not text:
+        return None
+    minutes, sep, seconds = text.partition(":")
+    if not sep or not minutes.isdigit() or not seconds.isdigit():
+        return None
+    return int(minutes) * 60 + int(seconds)
 
 
 def scheduled_games(body: bytes) -> list[ScheduledGame]:
@@ -92,6 +112,39 @@ def always(body: bytes, meta: dict[str, Any]) -> bool:
 
 def never(body: bytes, meta: dict[str, Any]) -> bool:
     return False
+
+
+def chart_complete_or_settled(game_id: int, game_date: date) -> Reuse:
+    """Reuse a cached shift chart when two teams each have valid shifts of this game adding up
+    to MIN_TEAM_PERIOD_S in every one of periods 1 to 3, or when it was fetched CHART_SETTLED or
+    more after the game. The NHL sometimes publishes a chart late or cut short, so the nightly
+    lookback fetches such a copy again; once settled, a gap is taken as the source's."""
+    settled = datetime(game_date.year, game_date.month, game_date.day, tzinfo=UTC) + CHART_SETTLED
+
+    def reuse(body: bytes, meta: dict[str, Any]) -> bool:
+        if parse_utc(meta["fetched_utc"]) >= settled:
+            return True
+        seconds: dict[tuple[Any, Any], int] = {}
+        for row in json.loads(body).get("data") or []:
+            start, end = clock_s(row.get("startTime")), clock_s(row.get("endTime"))
+            if (
+                row.get("typeCode") != SHIFT
+                or row.get("gameId") != game_id
+                or not row.get("playerId")
+                or start is None
+                or end is None
+                or end <= start
+            ):
+                continue
+            key = (row.get("teamId"), row.get("period"))
+            seconds[key] = seconds.get(key, 0) + end - start
+        teams = {team for team, _ in seconds}
+        full = [
+            t for t in teams if all(seconds.get((t, p), 0) >= MIN_TEAM_PERIOD_S for p in (1, 2, 3))
+        ]
+        return len(full) >= 2
+
+    return reuse
 
 
 def fetched_after(moment: datetime) -> Reuse:
@@ -198,9 +251,10 @@ class NhlApi:
         path = f"/v1/gamecenter/{game_id}/boxscore"
         return self.fetch("boxscore", f"{season}/{game_id}", path, always)
 
-    def shift_chart(self, season: int, game_id: int) -> Response:
+    def shift_chart(self, season: int, game_id: int, game_date: date) -> Response:
         url = f"{STATS_URL}/en/shiftcharts?cayenneExp=gameId={game_id}"
-        return self.fetch("shiftcharts", f"{season}/{game_id}", url, always)
+        reuse = chart_complete_or_settled(game_id, game_date)
+        return self.fetch("shiftcharts", f"{season}/{game_id}", url, reuse)
 
     def roster(self, team: str, season: int, reuse: Reuse) -> Response:
         return self.fetch("roster", f"{season}/{team}", f"/v1/roster/{team}/{season}", reuse)
