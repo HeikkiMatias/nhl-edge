@@ -54,7 +54,7 @@ class ReplayReport:
     dates: list[date] = field(default_factory=list)
 
 
-def _dated_dirs(root_dir: str, store: RawStore) -> dict[date, list[str]]:
+def dated_raw_keys(root_dir: str, store: RawStore) -> dict[date, list[str]]:
     """Raw keys under <root_dir>/<YYYY-MM-DD>/, by date, complete or not."""
     root = store.base_dir / root_dir
     found: dict[date, list[str]] = {}
@@ -72,7 +72,7 @@ def _dated_dirs(root_dir: str, store: RawStore) -> dict[date, list[str]]:
     return found
 
 
-def _complete(store: RawStore, raw_key: str) -> bool:
+def is_complete(store: RawStore, raw_key: str) -> bool:
     return (store.base_dir / f"{raw_key}.meta.json").exists()
 
 
@@ -80,11 +80,11 @@ def nhl_listings(store: RawStore, first: date, last: date) -> pl.DataFrame:
     """Every game listed in the cached schedule responses that can cover first..last: one row per
     listing, so a game appears once for each time and date it was listed at."""
     rows = []
-    for day, keys in _dated_dirs(SCHEDULE_PREFIX, store).items():
+    for day, keys in dated_raw_keys(SCHEDULE_PREFIX, store).items():
         if not first - timedelta(days=SCHEDULE_DAYS) <= day <= last:
             continue
         for raw_key in keys:
-            if not _complete(store, raw_key):
+            if not is_complete(store, raw_key):
                 continue
             for game in scheduled_games(store.get(raw_key)):
                 rows.append(
@@ -122,11 +122,11 @@ def replay_odds(store: RawStore, lake: Lake, dates: Collection[date] | None = No
     now has no quotes, so a parser fix leaves nothing stale. Never calls the Odds API."""
     report = ReplayReport()
     frames = []
-    for day, keys in _dated_dirs(SOURCE, store).items():
+    for day, keys in dated_raw_keys(SOURCE, store).items():
         if dates is not None and day not in dates:
             continue
         for raw_key in keys:
-            if not _complete(store, raw_key):
+            if not is_complete(store, raw_key):
                 report.incomplete.append(raw_key)
                 continue
             meta = store.meta(raw_key)
