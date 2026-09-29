@@ -235,6 +235,68 @@ def backfill() -> None:
 
 
 @odds_app.command()
+def sbr(
+    seasons: Annotated[
+        str,
+        typer.Option(
+            help="Seasons as 20182019, a comma list or a range, within 2010-11 to 2022-23."
+        ),
+    ] = "20102011-20222023",
+    replay: Annotated[
+        bool, typer.Option("--replay", help="Parse the stored pages only, no network.")
+    ] = False,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2", help="Mirror raw pages to R2 (and restore them first), and the table."
+        ),
+    ] = False,
+) -> None:
+    """Import the SBR odds archive into the lake's sbr_odds table, matched to NHL games through
+    the schedule table, and print the join rate per season. Pages are fetched once and kept raw."""
+    import polars as pl
+
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.ingest.sbr import SBR_SEASONS, SOURCE, SbrArchive, import_seasons, report_lines
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    try:
+        wanted = parse_seasons(seasons)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    outside = [season for season in wanted if season not in SBR_SEASONS]
+    if outside:
+        raise typer.BadParameter(f"SBR has no NHL odds for {outside}", param_hint="--seasons")
+    load_env()
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    if r2:
+        restored = store.restore_from_r2(f"{SOURCE}/").copied
+        typer.echo(f"restored {restored} raw SBR pages from R2")
+    lake = Lake.from_env(mirror=r2)
+    if r2:
+        lake.pull("schedule")
+        lake.pull("games")
+    schedule, results = lake.read("schedule"), lake.read("games")
+    archive = SbrArchive(store, offline=replay)
+    try:
+        # Every season is checked and parsed before anything is written.
+        frames, reports = import_seasons(archive, wanted, schedule, results)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    # import_seasons refuses a season with no prices, so every season's partition is replaced.
+    for frame in frames.values():
+        lake.write("sbr_odds", frame)
+    typer.echo("\n".join(report_lines(reports)))
+    total = pl.concat(frames.values()).height if frames else 0
+    typer.echo(
+        f"sbr_odds: {total:,} prices over {len(frames)} seasons, {archive.requests} requests"
+    )
+
+
+@odds_app.command()
 def replay(
     start: Annotated[
         datetime | None, typer.Option(formats=["%Y-%m-%d"], help="First snapshot date (UTC).")
@@ -590,6 +652,28 @@ def status(
     typer.echo("  20262027+ live")
 
 
+# Replayed tables whose command takes --seasons: sbr_odds refuses a season whose schedule is
+# incomplete here, so its command names only the seasons that drifted.
+SEASON_SCOPED = frozenset({"sbr_odds"})
+
+
+def _replay_command(command: str, table: str, keys: list[str]) -> str:
+    """The replay command for a table, with --seasons from its drifted partition keys (such as
+    sbr_odds/season=20182019/part-0.parquet) when the table is season-scoped."""
+    if table not in SEASON_SCOPED:
+        return command
+    seasons = sorted(
+        {
+            part.removeprefix("season=")
+            for key in keys
+            if key.split("/")[0] == table
+            for part in key.split("/")
+            if part.startswith("season=")
+        }
+    )
+    return f"{command} --seasons {','.join(seasons)}" if seasons else command
+
+
 def _status_against_r2(local: "list[TableState]") -> None:
     """Which lake files and daily raw responses differ between this machine and R2, with the
     commands that bring them in step. Skipped without R2 settings."""
@@ -609,6 +693,7 @@ def _status_against_r2(local: "list[TableState]") -> None:
         "odds_snapshots": "nhl odds replay --r2",
         "pregame_goalies": "nhl goalies replay --r2",
         "dailyfaceoff_goalies": "nhl goalies replay --r2",
+        "sbr_odds": "nhl odds sbr --replay --r2",
     }
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
@@ -654,6 +739,7 @@ def _status_against_r2(local: "list[TableState]") -> None:
     replayed_there = sorted(
         {key.split("/")[0] for key in missing_there if key.split("/")[0] in REPLAYED}
     )
+    drifted_here, drifted_there = missing_here, missing_there
     missing_here = [key for key in missing_here if key.split("/")[0] not in REPLAYED]
     missing_there = [key for key in missing_there if key.split("/")[0] not in REPLAYED]
     if missing_here or raw_behind:
@@ -662,14 +748,16 @@ def _status_against_r2(local: "list[TableState]") -> None:
             f"  this machine is behind R2: nhl lake restore-raw, then nhl ingest {window} --replay"
         )
     for table in replayed_here:
-        typer.echo(f"  {table} is behind R2: {REPLAYED[table]} restores and rebuilds it")
+        command = _replay_command(REPLAYED[table], table, drifted_here)
+        typer.echo(f"  {table} is behind R2: {command} restores and rebuilds it")
     if missing_there or raw_ahead:
         window = replay_window(missing_there) or "--recent 3"
         typer.echo(
             f"  R2 lacks what is here: nhl lake sync-raw, then nhl ingest {window} --replay --r2"
         )
     for table in replayed_there:
-        typer.echo(f"  R2 lacks {table} rows here: nhl lake sync-raw, then {REPLAYED[table]}")
+        command = _replay_command(REPLAYED[table], table, drifted_there)
+        typer.echo(f"  R2 lacks {table} rows here: nhl lake sync-raw, then {command}")
     if polls_behind:
         typer.echo("  pre-game goalie polls are behind R2: nhl lake restore-raw copies them")
     if polls_ahead:
