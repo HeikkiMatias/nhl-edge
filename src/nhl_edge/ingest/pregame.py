@@ -106,6 +106,8 @@ class PollReport:
     teams: int = 0
     flagged: int = 0
     failed: list[int] = field(default_factory=list)
+    # The US Eastern dates of the games in the window, for the Daily Faceoff pages (#48).
+    dates: set[date] = field(default_factory=set)
 
 
 def run_poll(
@@ -123,6 +125,7 @@ def run_poll(
     if not games:
         echo(f"goalie poll: no NHL games starting within {horizon}, nothing fetched")
         return report
+    report.dates = {game.start_utc.astimezone(ET).date() for game in games}
     frames = []
     for game in games:
         # Each page gets its own attempt: a pre-game state missed now cannot be fetched later.

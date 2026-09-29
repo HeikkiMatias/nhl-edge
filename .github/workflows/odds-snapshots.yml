@@ -37,10 +37,11 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --frozen
       - name: Pre-game goalies
-        # The pre-game boxscore, landing and right-rail of every game in the next 18 hours, stored
-        # raw in R2 (issue #42), so the goalie state is on record at each odds slot. It runs before
-        # the snapshot, so every goalie row is observed before the prices of the same slot and a
-        # point-in-time join can use it. The odds cron lines of the other half of the DST year skip.
+        # The pre-game boxscore, landing and right-rail of every game in the next 18 hours, and
+        # Daily Faceoff's starting goalies for their dates, stored raw in R2 (issues #42 and #48),
+        # so the goalie state is on record at each odds slot. It runs before the snapshot, so every
+        # goalie row is observed before the prices of the same slot and a point-in-time join can
+        # use it. The odds cron lines of the other half of the DST year skip.
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}

@@ -319,13 +319,18 @@ def poll(
         int,
         typer.Option(min=1, help="Poll games starting within this many minutes (default 18 h)."),
     ] = 18 * 60,
+    daily_faceoff: Annotated[
+        bool, typer.Option(help="Also store Daily Faceoff's starting-goalies page of each date.")
+    ] = True,
     mirror_raw: Annotated[
         bool, typer.Option(help="Mirror the raw responses to R2 (needs the R2_* variables).")
     ] = False,
 ) -> None:
-    """Store the pre-game boxscore, landing and right-rail of every game starting soon."""
+    """Store the pre-game boxscore, landing and right-rail of every game starting soon, and Daily
+    Faceoff's starting goalies for their dates."""
     from datetime import timedelta
 
+    from nhl_edge.ingest import dailyfaceoff
     from nhl_edge.ingest.nhl_api import NhlApi, utc_now
     from nhl_edge.ingest.odds import resolve_slot
     from nhl_edge.ingest.pregame import run_poll
@@ -341,7 +346,11 @@ def poll(
     report = run_poll(
         nhl=NhlApi(store), now=now, echo=typer.echo, horizon=timedelta(minutes=within)
     )
-    if report.failed:
+    failed_pages = []
+    if daily_faceoff and report.dates:
+        dfo = dailyfaceoff.DailyFaceoff(store)
+        failed_pages = dailyfaceoff.run_poll(dfo=dfo, days=report.dates, echo=typer.echo)
+    if report.failed or failed_pages:
         raise typer.Exit(code=1)
 
 
@@ -356,10 +365,12 @@ def goalies_replay(
         typer.Option("--r2", help="Restore the raw pre-game boxscores from R2 first, and mirror."),
     ] = False,
 ) -> None:
-    """Rebuild the lake's pregame_goalies from the stored pre-game boxscores. Never calls the NHL
-    API. Without --recent, every stored date is replayed."""
+    """Rebuild the lake's pregame_goalies and dailyfaceoff_goalies from the stored pre-game
+    boxscores and Daily Faceoff pages. Never calls either source. Without --recent, every stored
+    date is replayed."""
     from datetime import timedelta
 
+    from nhl_edge.ingest import dailyfaceoff
     from nhl_edge.ingest.nhl_api import utc_now
     from nhl_edge.ingest.pregame import BOXSCORE_PREFIX, ET, replay_pregame_goalies
     from nhl_edge.lake.raw import RawStore
@@ -373,19 +384,27 @@ def goalies_replay(
     load_env()
     store = RawStore.from_env(mirror=r2, flag="--r2")
     if r2:
+        roots = [BOXSCORE_PREFIX, dailyfaceoff.PREFIX]
         prefixes = (
-            [f"{BOXSCORE_PREFIX}/"]
+            [f"{root}/" for root in roots]
             if dates is None
-            else [f"{BOXSCORE_PREFIX}/{day.isoformat()}/" for day in dates]
+            else [f"{root}/{day.isoformat()}/" for root in roots for day in dates]
         )
         restored = sum(store.restore_from_r2(prefix).copied for prefix in prefixes)
         typer.echo(f"restored {restored} raw responses from R2")
-    report = replay_pregame_goalies(store, Lake.from_env(mirror=r2), dates)
+    lake = Lake.from_env(mirror=r2)
+    report = replay_pregame_goalies(store, lake, dates)
     window = f"{report.dates[0]}..{report.dates[-1]}" if report.dates else "no stored polls"
     typer.echo(
         f"goalie replay {window}: {report.responses} boxscores, {report.rows} rows; "
         f"{report.after_start} fetched after the start left out, "
         f"{len(report.incomplete)} incomplete"
+    )
+    dfo = dailyfaceoff.replay_starting_goalies(store, lake, dates)
+    window = f"{dfo.dates[0]}..{dfo.dates[-1]}" if dfo.dates else "no stored pages"
+    typer.echo(
+        f"daily faceoff replay {window}: {dfo.pages} pages, {dfo.rows} rows; "
+        f"{len(dfo.incomplete)} incomplete"
     )
 
 
@@ -589,6 +608,7 @@ def _status_against_r2(local: "list[TableState]") -> None:
     REPLAYED = {
         "odds_snapshots": "nhl odds replay --r2",
         "pregame_goalies": "nhl goalies replay --r2",
+        "dailyfaceoff_goalies": "nhl goalies replay --r2",
     }
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
@@ -651,11 +671,9 @@ def _status_against_r2(local: "list[TableState]") -> None:
     for table in replayed_there:
         typer.echo(f"  R2 lacks {table} rows here: nhl lake sync-raw, then {REPLAYED[table]}")
     if polls_behind:
-        typer.echo(
-            "  pre-game goalie polls are behind R2: nhl lake restore-raw --prefix nhl/pregame-"
-        )
+        typer.echo("  pre-game goalie polls are behind R2: nhl lake restore-raw copies them")
     if polls_ahead:
-        typer.echo("  R2 lacks pre-game goalie polls here: nhl lake sync-raw --prefix nhl/pregame-")
+        typer.echo("  R2 lacks pre-game goalie polls here: nhl lake sync-raw copies them")
     if differ:
         # A size difference does not tell which copy is current, so no direction is suggested.
         tables = sorted({key.split("/")[0] for key in differ})
