@@ -140,8 +140,47 @@ def backtest(
     ] = DEFAULT_BACKTEST_SEASONS,
     out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_BACKTEST_OUT,
 ) -> None:
-    """Run the walk-forward backtest for B0 to B3 and the blend."""
-    _not_implemented("backtest", "phase 1")
+    """Run the walk-forward backtest. Phase 1 has the market baseline B0 on the SBR archive, for
+    E1 (the close) and E2 (the opener), under each de-vig method."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports, walk_forward
+    from nhl_edge.backtest.seasons import OPEN_ROLES, season_role
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.lake.tables import Lake
+
+    try:
+        wanted = parse_seasons(seasons)
+        held_out = [season for season in wanted if season_role(season) not in OPEN_ROLES]
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    if held_out:
+        raise typer.BadParameter(
+            f"{held_out} are held out: a backtest runs on training and development seasons only "
+            "until their phase (docs/plan.md section 5, #10)",
+            param_hint="--seasons",
+        )
+    lake = Lake()
+    sbr_odds = lake.read("sbr_odds").filter(pl.col("season").is_in(wanted))
+    missing = sorted(set(wanted) - set(sbr_odds["season"].unique().to_list()))
+    if missing:
+        typer.echo(f"no SBR prices for {missing} in the lake: run nhl odds sbr", err=True)
+        raise typer.Exit(code=1)
+    predictions, coverage = walk_forward.run(sbr_odds, lake.read("games"), wanted)
+    now = datetime.now(UTC)
+    report = reports.summary(predictions, coverage, wanted, reports.version("backtest", now), now)
+    path = reports.write(report, out)
+    typer.echo(f"{path}: {report['version']}")
+    for experiment, body in report["experiments"].items():
+        for model, results in body["models"].items():
+            for method, estimates in results["log_loss"].items():
+                pooled = estimates["pooled"]
+                typer.echo(
+                    f"  {experiment} {model} {method}: log loss {pooled['mean']:.4f} "
+                    f"[{pooled['low']:.4f}, {pooled['high']:.4f}] over {pooled['games']:,} games"
+                )
 
 
 @app.command()
