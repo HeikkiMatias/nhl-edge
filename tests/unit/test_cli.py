@@ -405,3 +405,46 @@ def test_status_sends_odds_drift_to_the_odds_replay(
     result = runner.invoke(app, ["status"])
     assert "odds_snapshots is behind R2: nhl odds replay --r2" in result.output
     assert "nhl ingest" not in result.output.split("Against R2:")[1]
+
+
+def test_status_sends_sbr_drift_to_the_sbr_import(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, date, datetime
+
+    import polars as pl
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.schemas import SbrOdds, dtypes
+    from nhl_edge.lake.tables import Lake
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    start = datetime(2018, 10, 3, 23, 0, tzinfo=UTC)
+    row = {
+        "game_id": 2018020001,
+        "season": 20182019,
+        "game_date": date(2018, 10, 3),
+        "start_utc": start,
+        "home": "TOR",
+        "away": "MTL",
+        "market": "h2h",
+        "side": "home",
+        "line": None,
+        "quote": "close",
+        "price_american": -150,
+        "price_decimal": 1.0 + 100 / 150,
+        "observed_utc": start,
+        "raw_key": "sbr/20182019/x",
+    }
+    Lake(tmp_path / "runner", "test", bucket).write(
+        "sbr_odds", pl.DataFrame([row], schema=dtypes(SbrOdds))
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["status"])
+    against = result.output.split("Against R2:")[1]
+    assert "sbr_odds is behind R2: nhl odds sbr --replay --r2" in against
+    assert "nhl ingest" not in against

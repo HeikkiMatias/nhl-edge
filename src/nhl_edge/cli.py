@@ -274,12 +274,13 @@ def sbr(
         lake.pull("schedule")
         lake.pull("games")
     schedule, results = lake.read("schedule"), lake.read("games")
-    missing = sorted(set(wanted) - set(schedule["season"].unique().to_list()))
-    if missing:
-        typer.echo(f"no schedule in the lake for {missing}: run nhl ingest first", err=True)
-        raise typer.Exit(code=1)
     archive = SbrArchive(store, offline=replay)
-    frames, reports = import_seasons(archive, wanted, schedule, results)
+    try:
+        # Every season is checked and parsed before anything is written.
+        frames, reports = import_seasons(archive, wanted, schedule, results)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
     for frame in frames.values():
         if frame.height:
             lake.write("sbr_odds", frame)
@@ -515,6 +516,7 @@ def _status_against_r2(local: "list[TableState]") -> None:
     from nhl_edge.lake.status import compare, raw_lag, remote_tables, replay_window
 
     ODDS_TABLE = "odds_snapshots"
+    SBR_TABLE = "sbr_odds"
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
 
@@ -542,11 +544,14 @@ def _status_against_r2(local: "list[TableState]") -> None:
             raw_behind |= (here_key or "") < (there_key or "")
             raw_ahead |= (here_key or "") > (there_key or "")
             typer.echo(f"  raw/{prefix}: newest here {here_key}, in R2 {there_key}")
-    # odds_snapshots is rebuilt by the odds replay, every other table by the NHL ingest.
+    # odds_snapshots is rebuilt by the odds replay, sbr_odds by the SBR import, every other table
+    # by the NHL ingest.
     odds_here = [key for key in missing_here if key.startswith(f"{ODDS_TABLE}/")]
     odds_there = [key for key in missing_there if key.startswith(f"{ODDS_TABLE}/")]
-    missing_here = [key for key in missing_here if key not in odds_here]
-    missing_there = [key for key in missing_there if key not in odds_there]
+    sbr_here = [key for key in missing_here if key.startswith(f"{SBR_TABLE}/")]
+    sbr_there = [key for key in missing_there if key.startswith(f"{SBR_TABLE}/")]
+    missing_here = [key for key in missing_here if key not in odds_here + sbr_here]
+    missing_there = [key for key in missing_there if key not in odds_there + sbr_there]
     if missing_here or raw_behind:
         window = replay_window(missing_here) or "--recent 3"
         typer.echo(
@@ -563,6 +568,13 @@ def _status_against_r2(local: "list[TableState]") -> None:
         typer.echo(
             "  R2 lacks odds_snapshots rows here: nhl lake sync-raw, then nhl odds replay --r2"
         )
+    if sbr_here:
+        typer.echo("  sbr_odds is behind R2: nhl odds sbr --replay --r2 restores and rebuilds it")
+    if sbr_there:
+        typer.echo(
+            "  R2 lacks sbr_odds seasons here: nhl lake sync-raw --prefix sbr/, then "
+            "nhl odds sbr --replay --r2"
+        )
     if differ:
         # A size difference does not tell which copy is current, so no direction is suggested.
         tables = sorted({key.split("/")[0] for key in differ})
@@ -570,6 +582,8 @@ def _status_against_r2(local: "list[TableState]") -> None:
             f"  {len(differ):,} files differ from R2 in {', '.join(tables)}: check which copy is "
             "current before syncing either way"
         )
-    in_step = not (missing_here or missing_there or odds_here or odds_there or differ)
+    in_step = not (
+        missing_here or missing_there or odds_here or odds_there or sbr_here or sbr_there or differ
+    )
     if in_step and not (raw_behind or raw_ahead):
         typer.echo("  up to date with R2")

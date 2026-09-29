@@ -306,13 +306,21 @@ def test_replay_never_fetches(tmp_path: Path) -> None:
     assert seen == []
 
 
+# The fixture schedules stand in for complete seasons.
+FIXTURE_GAMES = {20102011: 3, 20212022: 4}
+
+
 def test_import_writes_the_lake_table(tmp_path: Path) -> None:
     store = RawStore(tmp_path / "raw")
     store.put("sbr", "20102011/20260929T120000Z", OLD, {"fetched_utc": NOW.isoformat()})
     store.put("sbr", "20212022/20260929T120000Z", NEW, {"fetched_utc": NOW.isoformat()})
     sched = pl.concat([OLD_SCHEDULE, NEW_SCHEDULE])
     frames, reports = import_seasons(
-        SbrArchive(store, offline=True), [20102011, 20212022], sched, results_empty(sched)
+        SbrArchive(store, offline=True),
+        [20102011, 20212022],
+        sched,
+        results_empty(sched),
+        FIXTURE_GAMES,
     )
     lake = Lake(tmp_path / "lake")
     for frame in frames.values():
@@ -329,3 +337,14 @@ def test_import_refuses_a_season_sbr_does_not_have(tmp_path: Path) -> None:
         import_seasons(
             SbrArchive(RawStore(tmp_path), offline=True), [20232024], OLD_SCHEDULE, OLD_SCHEDULE
         )
+
+
+def test_import_refuses_a_season_whose_schedule_is_incomplete(tmp_path: Path) -> None:
+    # Each season replaces its whole partition, so importing part of a season would delete the
+    # rest of its prices. The check comes before any page is read.
+    seen: list[httpx.Request] = []
+    archive = SbrArchive(RawStore(tmp_path), page_client({}, seen))
+    partial = OLD_SCHEDULE.head(2)
+    with pytest.raises(ValueError, match="2 of 20102011's 3 games"):
+        import_seasons(archive, [20102011], partial, results_empty(partial), FIXTURE_GAMES)
+    assert seen == []

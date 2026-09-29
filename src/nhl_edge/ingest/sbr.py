@@ -21,7 +21,7 @@ match no game are counted in the report and left out of the table, which needs a
 
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from datetime import time as clock
@@ -32,6 +32,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import polars as pl
 
+from nhl_edge.ingest.games import EXPECTED_GAMES
 from nhl_edge.ingest.nhl_api import NhlApiError, NotCachedError, parse_utc, utc_now
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.schemas import SbrOdds, dtypes
@@ -454,19 +455,26 @@ def import_seasons(
     seasons: Iterable[int],
     schedule: pl.DataFrame,
     results: pl.DataFrame,
+    expected_games: Mapping[int, int] = EXPECTED_GAMES,
 ) -> tuple[dict[int, pl.DataFrame], list[SeasonReport]]:
-    """Each season's SbrOdds rows and join report. The caller writes the frames."""
+    """Each season's SbrOdds rows and join report. The caller writes the frames, and each frame
+    replaces its whole season partition, so a season whose schedule is incomplete (such as after
+    an ingest of a date range) is refused rather than imported for part of its games."""
     frames: dict[int, pl.DataFrame] = {}
     reports: list[SeasonReport] = []
     for season in seasons:
         if season not in SEASON_PAGES:
             raise ValueError(f"SBR has no NHL odds page for {season}")
+        in_season = pl.col("season") == season
+        season_schedule = schedule.filter(in_season)
+        if season_schedule.height != expected_games[season]:
+            raise ValueError(
+                f"the schedule has {season_schedule.height} of {season}'s "
+                f"{expected_games[season]} games: run nhl ingest --seasons {season} first"
+            )
         body, raw_key = archive.page(season)
         games = parse_season(body, season)
-        in_season = pl.col("season") == season
-        frame, report = match_season(
-            games, schedule.filter(in_season), results.filter(in_season), raw_key
-        )
+        frame, report = match_season(games, season_schedule, results.filter(in_season), raw_key)
         frames[season] = SbrOdds.validate(frame)
         reports.append(report)
     return frames, reports
