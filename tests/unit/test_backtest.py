@@ -5,6 +5,7 @@ import subprocess
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import market_history
 import polars as pl
 import pytest
 from test_sbr import NEW, NEW_SCHEDULE, results_empty
@@ -12,11 +13,11 @@ from typer.testing import CliRunner
 
 from nhl_edge.backtest import reports
 from nhl_edge.backtest.metrics import bootstrap, log_loss
-from nhl_edge.backtest.walk_forward import b0, outcomes, run
+from nhl_edge.backtest.walk_forward import Coverage, b0, outcomes, run
 from nhl_edge.cli import app
 from nhl_edge.ingest.games import EXPECTED_GAMES
 from nhl_edge.ingest.sbr import match_season, parse_season
-from nhl_edge.lake.schemas import Games, dtypes
+from nhl_edge.lake.schemas import Games, SbrOdds, dtypes
 from nhl_edge.lake.tables import Lake
 from nhl_edge.market.devig import Method
 
@@ -56,9 +57,26 @@ SCORES = {
     2021020030: (1, 5, "REG"),
 }
 
+# A synthetic 2020-21 for B1 to fit on before the 2021-22 fixture season.
+HISTORY_ODDS, HISTORY_GAMES = market_history.seasons([20202021], games=40)
+
+
+def run_2021(
+    odds: pl.DataFrame | None = None, games: pl.DataFrame | None = None
+) -> tuple[pl.DataFrame, Coverage]:
+    """run on the 2021-22 fixture page, with the synthetic 2020-21 before it."""
+    odds = sbr_odds_2021() if odds is None else odds
+    games = games_of(NEW_SCHEDULE, SCORES) if games is None else games
+    predictions, coverage, _ = run(
+        pl.concat([HISTORY_ODDS, odds.select(list(dtypes(SbrOdds)))]),
+        pl.concat([HISTORY_GAMES, games]),
+        [20212022],
+    )
+    return predictions, coverage
+
 
 def test_the_moneyline_settles_on_the_full_game() -> None:
-    results = dict(outcomes(games_of(NEW_SCHEDULE, SCORES)).rows())
+    results = dict(outcomes(games_of(NEW_SCHEDULE, SCORES)).select("game_id", "home_win").rows())
     assert results == {2021020001: 1, 2021020010: 0, 2021020020: 1, 2021020030: 0}
 
 
@@ -119,59 +137,118 @@ def test_the_bootstrap_needs_games() -> None:
         bootstrap(empty, "value")
 
 
-def test_run_scores_b0_for_both_experiments_and_every_method() -> None:
-    predictions, coverage = run(sbr_odds_2021(), games_of(NEW_SCHEDULE, SCORES), [20212022])
+def test_run_scores_b0_and_b1_for_both_experiments() -> None:
+    predictions, coverage = run_2021()
     assert set(predictions["experiment"]) == {"E1", "E2"}
-    assert set(predictions["method"]) == {m.value for m in Method}
-    counts = predictions.group_by("experiment", "method").len()
+    assert set(predictions["season"]) == {20212022}
+    b0_rows = predictions.filter(pl.col("model") == "B0")
+    assert set(b0_rows["method"]) == {m.value for m in Method}
+    counts = b0_rows.group_by("experiment", "method").len()
     assert set(counts["len"]) == {coverage["E1"][20212022]["priced"]}
+    b1_rows = predictions.filter(pl.col("model") == "B1")
+    assert set(b1_rows["method"]) == {"multiplicative"}
+    assert b1_rows.group_by("experiment").len()["len"].to_list() == [3, 3]
     # BOS and DAL (2021020030) are not on the fixture page, so they have no price.
-    counts = {"games": 4, "priced": 3, "unsettled": 0, "refused": 0, "scored": 3}
+    counts = {
+        "games": 4,
+        "priced": 3,
+        "unsettled": 0,
+        "refused": 0,
+        "scored": 3,
+        "b1_trained_on": 40,
+    }
     assert coverage["E1"][20212022] == counts
     assert coverage["E2"][20212022] == {**counts, "opener_differs_from_close": 3}
 
 
 def test_a_priced_game_without_a_result_is_counted_and_not_scored() -> None:
     games = games_of(NEW_SCHEDULE, SCORES).filter(pl.col("game_id") != 2021020001)
-    predictions, coverage = run(sbr_odds_2021(), games, [20212022])
+    predictions, coverage = run_2021(games=games)
     assert coverage["E1"][20212022] == {
         "games": 3,
         "priced": 3,
         "unsettled": 1,
         "refused": 0,
         "scored": 2,
+        "b1_trained_on": 40,
     }
     assert 2021020001 not in predictions["game_id"].to_list()
 
 
-def test_the_summary_pairs_each_method_with_the_multiplicative_one(tmp_path: Path) -> None:
-    predictions, coverage = run(sbr_odds_2021(), games_of(NEW_SCHEDULE, SCORES), [20212022])
-    report = reports.summary(predictions, coverage, [20212022], "backtest-20260929-abc", NOW)
+def test_the_summary_pairs_each_model_with_b1_and_each_method_with_multiplicative(
+    tmp_path: Path,
+) -> None:
+    odds = pl.concat([HISTORY_ODDS, sbr_odds_2021().select(list(dtypes(SbrOdds)))])
+    games = pl.concat([HISTORY_GAMES, games_of(NEW_SCHEDULE, SCORES)])
+    predictions, coverage, fits = run(odds, games, [20212022])
+    report = reports.summary(predictions, coverage, fits, [20212022], "backtest-20260929-abc", NOW)
     b0_e1 = report["experiments"]["E1"]["models"]["B0"]
     assert set(b0_e1["log_loss"]) == {"multiplicative", "power", "shin"}
     assert set(b0_e1["paired_against_multiplicative"]) == {"power", "shin"}
+    assert set(b0_e1["paired_against_B1"]) == {"multiplicative", "power", "shin"}
     pooled = b0_e1["log_loss"]["power"]["pooled"]
     assert pooled["games"] == 3
     assert pooled["low"] <= pooled["mean"] <= pooled["high"]
-    assert report["train_cutoff"] is None
+    # B0 against B1: per game, B0's log loss minus B1's.
+    b1 = predictions.filter(pl.col("experiment") == "E1", pl.col("model") == "B1")
+    b0 = predictions.filter(
+        pl.col("experiment") == "E1", pl.col("model") == "B0", pl.col("method") == "multiplicative"
+    )
+    against = b0_e1["paired_against_B1"]["multiplicative"]["pooled"]
+    difference = b0["log_loss"].to_numpy().mean() - b1["log_loss"].to_numpy().mean()
+    assert against["mean"] == pytest.approx(difference)
+    b1_e1 = report["experiments"]["E1"]["models"]["B1"]
+    assert set(b1_e1) == {"log_loss", "fits"}
+    fit = b1_e1["fits"]["20212022"]
+    assert fit["games"] == 40
+    cutoff = HISTORY_GAMES["observed_utc"].max()
+    assert isinstance(cutoff, datetime)
+    assert fit["train_cutoff"] == cutoff.isoformat()
+    assert report["train_cutoff"] == {"20212022": cutoff.isoformat()}
     assert "10:00 US Eastern" in report["experiments"]["E2"]["market"]
     later = report["e2_against_e1"]["B0"]["multiplicative"]["pooled"]
     assert later["games"] == 3
-    e1 = predictions.filter(pl.col("experiment") == "E1", pl.col("method") == "multiplicative")
-    e2 = predictions.filter(pl.col("experiment") == "E2", pl.col("method") == "multiplicative")
-    assert later["mean"] == pytest.approx(e2["log_loss"].mean() - e1["log_loss"].mean())
+    b0_multiplicative = (pl.col("model") == "B0") & (pl.col("method") == "multiplicative")
+    e1 = predictions.filter(pl.col("experiment") == "E1", b0_multiplicative)
+    e2 = predictions.filter(pl.col("experiment") == "E2", b0_multiplicative)
+    difference = e2["log_loss"].to_numpy().mean() - e1["log_loss"].to_numpy().mean()
+    assert later["mean"] == pytest.approx(difference)
     reports.write(report, tmp_path)
     reports.write(report, tmp_path)
     assert json.loads((tmp_path / "summary.json").read_text())["version"] == report["version"]
     rows = list(csv.DictReader((tmp_path / "runs.csv").open()))
-    assert len(rows) == 12  # two runs of two experiments by three methods, one header
+    assert len(rows) == 16  # two runs of two experiments by B0's three methods and B1
     assert rows[0]["seasons"] == "20212022"
+    b1_rows = [row for row in rows if row["model"] == "B1"]
+    assert {row["train_cutoff"] for row in b1_rows} == {cutoff.isoformat()}
+    assert {row["train_cutoff"] for row in rows if row["model"] == "B0"} == {""}
+
+
+def test_runs_csv_keeps_earlier_rows_when_its_columns_change(tmp_path: Path) -> None:
+    old = "run_utc,version,seasons,experiment,model,method,games,log_loss,low,high\n"
+    (tmp_path / "runs.csv").write_text(old + "t,backtest-1,20212022,E1,B0,shin,3,0.6,0.5,0.7\n")
+    predictions, coverage, fits = run(
+        pl.concat([HISTORY_ODDS, sbr_odds_2021().select(list(dtypes(SbrOdds)))]),
+        pl.concat([HISTORY_GAMES, games_of(NEW_SCHEDULE, SCORES)]),
+        [20212022],
+    )
+    reports.write(
+        reports.summary(predictions, coverage, fits, [20212022], "backtest-2", NOW), tmp_path
+    )
+    rows = list(csv.DictReader((tmp_path / "runs.csv").open()))
+    assert list(rows[0]) == reports.RUNS_FIELDS
+    assert (rows[0]["version"], rows[0]["train_cutoff"]) == ("backtest-1", "")
+    assert len(rows) == 1 + 8
 
 
 def test_an_experiment_with_no_scored_game_keeps_its_coverage() -> None:
-    predictions, coverage = run(sbr_odds_2021(), games_of(NEW_SCHEDULE, SCORES), [20212022])
+    predictions, coverage, fits = run(
+        pl.concat([HISTORY_ODDS, sbr_odds_2021().select(list(dtypes(SbrOdds)))]),
+        pl.concat([HISTORY_GAMES, games_of(NEW_SCHEDULE, SCORES)]),
+        [20212022],
+    )
     e1_only = predictions.filter(pl.col("experiment") == "E1")
-    report = reports.summary(e1_only, coverage, [20212022], "backtest-20260929-abc", NOW)
+    report = reports.summary(e1_only, coverage, fits, [20212022], "backtest-20260929-abc", NOW)
     assert report["experiments"]["E2"]["models"] == {}
     assert report["experiments"]["E2"]["coverage"]["20212022"]["priced"] == 3
 
@@ -218,13 +295,24 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     lake = Lake()
     lake.write("sbr_odds", sbr_odds_2021())
     lake.write("games", games_of(NEW_SCHEDULE, SCORES))
+    # B1 is fitted on every earlier season, so each needs its prices.
+    history = runner.invoke(app, ["backtest", "--seasons", "20212022"])
+    assert history.exit_code == 1
+    assert "no SBR prices for [20102011," in history.output
+    earlier = [s for s in range(20102011, 20212022, 10001)]
+    odds, games = market_history.seasons(earlier, games=20)
+    lake.write("sbr_odds", odds)
+    lake.write("games", games)
     short = runner.invoke(app, ["backtest", "--seasons", "20212022"])
     assert short.exit_code == 1
-    assert "games has 4 of 1,312 in 20212022" in short.output
+    assert "games has 20 of 1,230 in 20102011" in short.output
+    for season in earlier:
+        monkeypatch.setitem(EXPECTED_GAMES, season, 20)
     monkeypatch.setitem(EXPECTED_GAMES, 20212022, 4)
     result = runner.invoke(app, ["backtest", "--seasons", "20212022", "--out", "out"])
     assert result.exit_code == 0, result.output
     assert "E1 B0 multiplicative: log loss" in result.output
+    assert "E2 B1 multiplicative: log loss" in result.output
     summary = json.loads((tmp_path / "out" / "summary.json").read_text())
     assert summary["seasons"] == [20212022]
     assert summary["experiments"]["E2"]["coverage"]["20212022"]["priced"] == 3
@@ -240,12 +328,12 @@ def test_a_market_below_100_percent_is_counted_and_left_out() -> None:
     odds = sbr_odds_2021().with_columns(
         price_decimal=pl.when(opener).then(2.65).otherwise(pl.col("price_decimal"))
     )
-    predictions, coverage = run(odds, games_of(NEW_SCHEDULE, SCORES), [20212022])
+    predictions, coverage = run_2021(odds)
     assert coverage["E2"][20212022]["refused"] == 1
     assert coverage["E2"][20212022]["scored"] == 2
     e2 = predictions.filter(pl.col("experiment") == "E2")
     assert 2021020001 not in e2["game_id"].to_list()
-    assert e2.height == 2 * len(Method)
+    assert e2.height == 2 * (len(Method) + 1)  # B0 under each method, and B1
 
 
 def test_coverage_counts_the_openers_that_differ_from_the_close() -> None:
@@ -262,5 +350,5 @@ def test_coverage_counts_the_openers_that_differ_from_the_close() -> None:
         )
         .drop("close")
     )
-    _, coverage = run(odds, games_of(NEW_SCHEDULE, SCORES), [20212022])
+    _, coverage = run_2021(odds)
     assert coverage["E2"][20212022]["opener_differs_from_close"] == 2
