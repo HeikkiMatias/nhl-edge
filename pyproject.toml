@@ -41,7 +41,7 @@ extend-exclude = ["notebooks"]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 extraPaths = ["tests/unit"]  # shared test helpers, as pytest's pythonpath
 pythonVersion = "3.12"
 typeCheckingMode = "standard"

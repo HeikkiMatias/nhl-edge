@@ -1,0 +1,93 @@
+{
+  "frozen_utc": "2026-09-29T06:55:25+00:00",
+  "cases": [
+    {
+      "case": "regulation",
+      "game_id": 2023020003,
+      "season": 20232024,
+      "game_date": "2023-10-10",
+      "schedule": "nhl/schedule_2023-10-10.json.gz",
+      "description": "SEA at VGK, 1-4 in regulation, with a 5-on-6 empty-net goal at 58:45",
+      "files": {
+        "nhl/schedule_2023-10-10.json.gz": "5fbebf69bcf3cc69076c5f6979884f6d00bff83120beca5d8670129c058c0be1",
+        "nhl/schedule_2023-10-10.meta.json": "f6b355d3e16a9b7711f229ecf8a64d06cda75a85d8868c522f35da05f053aea5",
+        "nhl/play-by-play_2023020003.json.gz": "4a9ef8bcedeb73e2455f2e8a7793c6b27756eafd1b55492af4ac2ab4363a3e65",
+        "nhl/play-by-play_2023020003.meta.json": "028f8b9dfc613166cea94b03e0fd844e820f41339439307b35ca077607402f4e",
+        "nhl/boxscore_2023020003.json.gz": "141f29a3410d2cb0c608f6a12d5fe5dec94d1ebf05efe4334a1919665e927703",
+        "nhl/boxscore_2023020003.meta.json": "d1a215f53ce001929d05e3862e345d64483f8323230eb2f54a7cb8c3b6536017",
+        "nhl/shiftcharts_2023020003.json.gz": "864e805109565c34b19dcd9e34db2ee3759c03cbb041f36c2a84ace7e27663fc",
+        "nhl/shiftcharts_2023020003.meta.json": "50dfa488049f510dcf937b838a6a1762687e88611d63069b0a3b4088e3af104b"
+      }
+    },
+    {
+      "case": "overtime",
+      "game_id": 2023020040,
+      "season": 20232024,
+      "game_date": "2023-10-17",
+      "schedule": "nhl/schedule_2023-10-17.json.gz",
+      "description": "TBL at BUF, 2-3 in overtime: TBL tie it 6-on-5 at 59:53, BUF win 3-on-3 at 61:46",
+      "files": {
+        "nhl/schedule_2023-10-17.json.gz": "01ab63d97ce9bf8f01978d4ae8c6cc3b0caee0d5cffc2c88e660a371380bb2d6",
+        "nhl/schedule_2023-10-17.meta.json": "ff3cb396a65da8235a782c77f13109f1ef5bafeea4784c08f020543d422ca311",
+        "nhl/play-by-play_2023020040.json.gz": "bdf6008d4395a6f93310da007d6bddbd9d40b3ff94faa176e884ec3f43378210",
+        "nhl/play-by-play_2023020040.meta.json": "fafe4c2ac707b34d61c19ac6fbc01df7862f65ca29ab6280f45685fc1638b39c",
+        "nhl/boxscore_2023020040.json.gz": "b57e514f4927c455be6225e13edd582a3cdfbf254fe846446982dbff89a504d7",
+        "nhl/boxscore_2023020040.meta.json": "6228d62ff60060aeeaad36babeea69b95325c7030d4b4494f9cd43942d6463e3",
+        "nhl/shiftcharts_2023020040.json.gz": "4939a37ce327d1f315ee31635d4e62610efce142d7468ed2f999c880a80b850f",
+        "nhl/shiftcharts_2023020040.meta.json": "626fa5c64fdd351a62c8c40753632e236448960540d786cccaaf04410d35a3dc"
+      }
+    },
+    {
+      "case": "shootout",
+      "game_id": 2023020032,
+      "season": 20232024,
+      "game_date": "2023-10-14",
+      "schedule": "nhl/schedule_2023-10-14.json.gz",
+      "description": "CAR at LAK, 6-5 in a shootout: LAK tie it 6-on-5 at 58:38, 5-5 after overtime",
+      "files": {
+        "nhl/schedule_2023-10-14.json.gz": "ee14f82d464ddb53eb14be7f175330458fac28a24d25aca73c6156b58d7769bb",
+        "nhl/schedule_2023-10-14.meta.json": "89f0e4bb9073d40eabe2ce91560e19f607556c8419443f3380efe3598bcdb955",
+        "nhl/play-by-play_2023020032.json.gz": "9e08484185fefe5c31331f0c0c35a99fc8b9f7cc0b77ddec9fac5fca6c62ad1c",
+        "nhl/play-by-play_2023020032.meta.json": "8fa4d8ea858d9ca0d2b49fffeac2a064af9d69d7c372f8e8e5fc4a1c525f4fe1",
+        "nhl/boxscore_2023020032.json.gz": "44d79d6763ecbf70a7ee0ac8bf2de08a833a221aacff18dbbdd3f18310fdfb32",
+        "nhl/boxscore_2023020032.meta.json": "f9da09238622c7639a824fa657ab2339d9d23faf4e77f28885f6aa067e1aece0",
+        "nhl/shiftcharts_2023020032.json.gz": "5fa78977d6533b1ded802ee40a9e378209ef9860775882dd4064748c3d683518",
+        "nhl/shiftcharts_2023020032.meta.json": "6bb5f48a11650231a45b3419a16135ea3ee6923fe12d0ef8d2dc001ab0d936e1"
+      }
+    },
+    {
+      "case": "late_empty_net",
+      "game_id": 2023020052,
+      "season": 20232024,
+      "game_date": "2023-10-19",
+      "schedule": "nhl/schedule_2023-10-19.json.gz",
+      "description": "TOR at FLA, 1-3: FLA score into the empty net at 59:59 while shorthanded, 4 on 6",
+      "files": {
+        "nhl/schedule_2023-10-19.json.gz": "a0e0921907ad2505053dc6d83eec9008aa74c76677d955f4c79b6748d77a9db9",
+        "nhl/schedule_2023-10-19.meta.json": "1c443703128ccaf9984b70b267f4604d4c265b9f11da8764d51500049d5301b1",
+        "nhl/play-by-play_2023020052.json.gz": "51468493eec7a6fd06b272fb533f16d50476df067d8b86e22e28ca5a42746d94",
+        "nhl/play-by-play_2023020052.meta.json": "1e33f8297c43ff55a4610159360c78657e36872cb9f2c59d77cf1c0c3bc3a648",
+        "nhl/boxscore_2023020052.json.gz": "6ed680aee87ebcf65d0530141302c9b6bae92c326ed2f2457c7e14ca89e7d9c5",
+        "nhl/boxscore_2023020052.meta.json": "b0081ec9ca8bca6667617dbcd7ec3914802a6dc52f3e24a89e2d4c8ea07e690b",
+        "nhl/shiftcharts_2023020052.json.gz": "5a9c9866bc9a6b34dd2e876d4c7ef54d9722d5b47901067834f16cc3fea3b781",
+        "nhl/shiftcharts_2023020052.meta.json": "50775e1631128fea2b0235c41c9edea59fa987a20a74b04fb26945f3f5b2f307"
+      }
+    },
+    {
+      "case": "five_on_three",
+      "game_id": 2023020019,
+      "season": 20232024,
+      "game_date": "2023-10-14",
+      "schedule": "nhl/schedule_2023-10-14.json.gz",
+      "description": "PHI at OTT, 2-5: PHI score 5-on-3 at 16:51 of the first period",
+      "files": {
+        "nhl/play-by-play_2023020019.json.gz": "da365b6e9cbfb7bfda2ea400b01ef671a6826a85eec24d53b59bd880905af010",
+        "nhl/play-by-play_2023020019.meta.json": "2876d0b4011159602ea73d994cefe914618fb9ff2362434c02d978ff916d183a",
+        "nhl/boxscore_2023020019.json.gz": "71e9655cd63243121e4324a90039bca10c72dc9b04089f582387403bd42ce094",
+        "nhl/boxscore_2023020019.meta.json": "758750bb493ecfc9d7f76197d5adbacffe07cfffd7b5f52c7b3408014c72b6d5",
+        "nhl/shiftcharts_2023020019.json.gz": "358abea005c45744e291e33de80d9b28b637855bddcb65e8e6316b68033f9924",
+        "nhl/shiftcharts_2023020019.meta.json": "2287d90debdee37d1e459c62c36ba39fb4210f989116cd18ca7e0c957ef15d66"
+      }
+    }
+  ]
+}
