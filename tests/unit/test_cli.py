@@ -19,7 +19,6 @@ COMMANDS = ["ingest", "rate", "predict", "backtest", "bets", "odds", "lake", "au
 STUBS = [
     ["rate"],
     ["predict"],
-    ["backtest"],
     ["bets"],
     ["odds", "backfill"],
 ]

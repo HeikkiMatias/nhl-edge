@@ -35,6 +35,9 @@ SEASON_ROLES: dict[int, SeasonRole] = {
     20252026: SeasonRole.ONE_TIME_TEST,
 }
 
+# The roles whose seasons may be inspected now: held-out seasons wait for their phase (#10).
+OPEN_ROLES = frozenset({SeasonRole.TRAINING, SeasonRole.TRAINING_FLAGGED, SeasonRole.DEVELOPMENT})
+
 DEVELOPMENT_SEASONS: tuple[int, ...] = tuple(
     season for season, role in SEASON_ROLES.items() if role is SeasonRole.DEVELOPMENT
 )
