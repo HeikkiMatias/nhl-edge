@@ -537,7 +537,7 @@ def _status_against_r2(local: "list[TableState]") -> None:
     commands that bring them in step. Skipped without R2 settings."""
     from nhl_edge.lake.r2 import R2Config
     from nhl_edge.lake.raw import RawStore
-    from nhl_edge.lake.status import compare, raw_lag, remote_tables, replay_window
+    from nhl_edge.lake.status import PREGAME_RAW, compare, raw_lag, remote_tables, replay_window
 
     # Tables rebuilt by a replay of their own raw responses, not by the NHL ingest.
     REPLAYED = {
@@ -565,11 +565,19 @@ def _status_against_r2(local: "list[TableState]") -> None:
             missing_here += diff.only_there
             missing_there += diff.only_here
             differ += diff.differ
+    store = RawStore.from_env(mirror=True)
     raw_behind = raw_ahead = False
-    for prefix, here_key, there_key in raw_lag(RawStore.from_env(mirror=True)):
+    for prefix, here_key, there_key in raw_lag(store):
         if here_key != there_key:
             raw_behind |= (here_key or "") < (there_key or "")
             raw_ahead |= (here_key or "") > (there_key or "")
+            typer.echo(f"  raw/{prefix}: newest here {here_key}, in R2 {there_key}")
+    # The pre-game polls have no replay into another raw source: only their two copies keep them.
+    polls_behind = polls_ahead = False
+    for prefix, here_key, there_key in raw_lag(store, PREGAME_RAW):
+        if here_key != there_key:
+            polls_behind |= (here_key or "") < (there_key or "")
+            polls_ahead |= (here_key or "") > (there_key or "")
             typer.echo(f"  raw/{prefix}: newest here {here_key}, in R2 {there_key}")
     # The replayed tables are rebuilt by their own replay, every other table by the NHL ingest.
     replayed_here = sorted(
@@ -594,6 +602,12 @@ def _status_against_r2(local: "list[TableState]") -> None:
         )
     for table in replayed_there:
         typer.echo(f"  R2 lacks {table} rows here: nhl lake sync-raw, then {REPLAYED[table]}")
+    if polls_behind:
+        typer.echo(
+            "  pre-game goalie polls are behind R2: nhl lake restore-raw --prefix nhl/pregame-"
+        )
+    if polls_ahead:
+        typer.echo("  R2 lacks pre-game goalie polls here: nhl lake sync-raw --prefix nhl/pregame-")
     if differ:
         # A size difference does not tell which copy is current, so no direction is suggested.
         tables = sorted({key.split("/")[0] for key in differ})
@@ -602,5 +616,5 @@ def _status_against_r2(local: "list[TableState]") -> None:
             "current before syncing either way"
         )
     in_step = not (missing_here or missing_there or replayed_here or replayed_there or differ)
-    if in_step and not (raw_behind or raw_ahead):
+    if in_step and not (raw_behind or raw_ahead or polls_behind or polls_ahead):
         typer.echo("  up to date with R2")
