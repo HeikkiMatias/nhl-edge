@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -20,12 +20,14 @@ NO_LISTINGS = pl.DataFrame(schema=game_audit.LISTED_SCHEMA)
 
 def odds(rows: list[tuple[int, int, str, str, str, float | None, int]]) -> pl.DataFrame:
     """sbr_odds rows as (season, game_id, market, quote, side, line, American price), with the
-    columns the audit reads."""
+    columns the audit reads. A game is dated its number of days after Monday, October 1 of the
+    season's first year (2018's), so 2018020001 is on 2018-10-02 and 2018020008 a week later."""
     return pl.DataFrame(
         [
             {
                 "season": season,
                 "game_id": game_id,
+                "game_date": date(season // 10_000, 10, 1) + timedelta(days=game_id % 1000),
                 "market": market,
                 "quote": quote,
                 "side": side,
@@ -38,6 +40,7 @@ def odds(rows: list[tuple[int, int, str, str, str, float | None, int]]) -> pl.Da
         schema={
             "season": pl.Int32,
             "game_id": pl.Int64,
+            "game_date": pl.Date,
             "market": pl.String,
             "quote": pl.String,
             "side": pl.String,
@@ -199,8 +202,27 @@ def test_vig_per_season_and_moneylines_below_100_percent() -> None:
     assert problems([], frame) == [
         "20182019: 1 moneylines sum below 100%, which de-vigging refuses, "
         "e.g. 2018020002 open (home +165, away +162)",
-        "20182019: median closing vig 2.4%, against 4.8% in 20172018",
+        "20182019: median closing vig 2.4%, against 4.8% in 20172018: a change of -2.3%, "
+        "-2.3% to -2.3% at 95%",
     ]
+
+
+def test_a_vig_shift_is_a_problem_only_when_its_whole_interval_is_beyond_a_point() -> None:
+    # 2018-19's median lies 1.2 points below 2017-18's, but its two weeks disagree: resampled,
+    # the change runs from -2.3 points to none, so the point estimate alone decides nothing.
+    frame = odds(
+        [
+            *moneyline(20172018, 2017020001, "close", -110, -110),
+            *moneyline(20172018, 2017020002, "close", -110, -110),
+            *moneyline(20182019, 2018020001, "close", -110, -110),
+            *moneyline(20182019, 2018020008, "close", -105, -105),
+        ]
+    )
+    shift = sbr_audit.vig_shifts(sbr_audit.moneylines(frame)).row(0, named=True)
+    assert shift["median"] - shift["previous"] < -sbr_audit.VIG_SHIFT
+    assert shift["low"] == pytest.approx(2 / 1.952380952 - 2 / 1.909090909)
+    assert shift["high"] == pytest.approx(0)
+    assert problems([], frame) == []
 
 
 def test_a_big_move_from_open_to_close_is_a_problem() -> None:
@@ -250,8 +272,20 @@ def test_a_clear_favourite_at_plus_one_and_a_half_is_a_problem() -> None:
     ]
 
 
-def test_prices_of_the_market_validation_season_are_not_read() -> None:
+def test_prices_of_the_market_validation_season_are_not_read(tmp_path: Path) -> None:
     assert sbr_audit.price_seasons([20182019, 20212022, 20222023]) == [20182019, 20212022]
+    # A held-out season keeps its join counts, but not its count of unusable prices.
+    reports, _ = sbr_audit.join_reports(
+        stored_2010(tmp_path), OLD_SCHEDULE, results_empty(OLD_SCHEDULE), [20102011], {20102011: 3}
+    )
+    row = sbr_audit.join_report(reports, NO_LISTINGS, held_out=[20102011]).row(0, named=True)
+    assert (row["matched"], row["missing_prices"]) == (3, None)
+    empty = sbr_audit.moneylines(odds([]))
+    no_moves, no_conflicts = sbr_audit.moves(empty), sbr_audit.puck_line_conflicts(odds([]), empty)
+    found = sbr_audit.problems(
+        reports, NO_LISTINGS, empty, no_moves, no_conflicts, held_out=[20102011]
+    )
+    assert found == []
 
 
 runner = CliRunner()

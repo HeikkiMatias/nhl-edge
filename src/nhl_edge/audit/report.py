@@ -93,13 +93,13 @@ def _sbr_section(
         )
         + ".\n\n"
         + sbr_audit.markdown_report(
-            sbr_audit.join_report(reports, listed),
+            sbr_audit.join_report(reports, listed, held_out),
             sbr_audit.vig_report(lines),
             moved,
             sbr_audit.puck_line_report(odds, conflicts),
         )
     )
-    found = sbr_audit.problems(reports, listed, lines, moved, conflicts, coverage)
+    found = sbr_audit.problems(reports, listed, lines, moved, conflicts, coverage, held_out)
     return Section("SBR odds", body, found)
 
 

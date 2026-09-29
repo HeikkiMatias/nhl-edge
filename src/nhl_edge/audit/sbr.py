@@ -13,7 +13,7 @@ does not inspect (the owner's decision on #10, 2026-09-29). Its join is still re
 that counts rows and reads no price.
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from datetime import date
 from itertools import pairwise
 
@@ -38,12 +38,18 @@ BIG_MOVE = 0.15
 # A closing moneyline favourite at least this likely should be the -1.5 side of the closing puck
 # line. Near even the two often disagree, since the puck line's price moves instead of its side.
 CLEAR_FAVOURITE = 0.55
-# A season's median vig this far from the season before's points to another book or source.
+# A season's median vig this far from the season before's points to another book or source. The
+# verdict rests on the weekly block bootstrap interval of the change (hard rule 7): the whole
+# interval must lie beyond it.
 VIG_SHIFT = 0.01
+DRAWS = 1000
+SEED = 20260929
+LEVEL = 0.95
 
 MONEYLINE_SCHEMA = {
     "season": pl.Int32,
     "game_id": pl.Int64,
+    "game_date": pl.Date,
     "quote": pl.String,
     "home": pl.Float64,
     "away": pl.Float64,
@@ -107,7 +113,11 @@ def unmatched(report: SeasonReport, listed: pl.DataFrame) -> list[tuple[date, st
     return [(d, a, b) for d, a, b in report.unmatched if (d, frozenset((a, b))) not in playoffs]
 
 
-def join_report(reports: list[SeasonReport], listed: pl.DataFrame) -> pl.DataFrame:
+def join_report(
+    reports: list[SeasonReport], listed: pl.DataFrame, held_out: Collection[int] = ()
+) -> pl.DataFrame:
+    """The join per season. A held-out season keeps its row counts, which read no price, but not
+    its count of unusable prices, which reads them."""
     rows = []
     for r in reports:
         left = len(unmatched(r, listed))
@@ -122,7 +132,7 @@ def join_report(reports: list[SeasonReport], listed: pl.DataFrame) -> pl.DataFra
                 "without_sbr": r.nhl_without_sbr,
                 "join_rate": r.join_rate,
                 "score_mismatches": len(r.score_mismatches),
-                "missing_prices": r.missing_prices,
+                "missing_prices": None if r.season in held_out else r.missing_prices,
             }
         )
     return pl.DataFrame(rows)
@@ -138,13 +148,14 @@ def moneylines(odds: pl.DataFrame) -> pl.DataFrame:
         return h2h.filter(pl.col("side") == name).select(
             "season",
             "game_id",
+            "game_date",
             "quote",
             pl.col("price_decimal").alias(name),
             pl.col("price_american").alias(f"{name}_american"),
         )
 
     # match_season keeps a price only with the other side's.
-    wide = side("home").join(side("away"), on=["season", "game_id", "quote"])
+    wide = side("home").join(side("away"), on=["season", "game_id", "game_date", "quote"])
     if wide.is_empty():
         return pl.DataFrame(schema=MONEYLINE_SCHEMA)
     prices = wide.select("home", "away").to_numpy()
@@ -188,6 +199,62 @@ def vig_report(lines: pl.DataFrame) -> pl.DataFrame:
             how="left",
         )
     return report.sort("season")
+
+
+def _median_draws(frame: pl.DataFrame, rng: np.random.Generator) -> np.ndarray:
+    """The season's median vig over DRAWS weekly block resamples: whole weeks (Monday to Sunday,
+    ET game date) drawn with replacement."""
+    weeks = [
+        np.asarray(values)
+        for values in frame.group_by(week=pl.col("game_date").dt.truncate("1w"))
+        .agg(pl.col("vig"))
+        .sort("week")["vig"]
+        .to_list()
+    ]
+    picks = rng.integers(0, len(weeks), size=(DRAWS, len(weeks)))
+    return np.array([np.median(np.concatenate([weeks[i] for i in row])) for row in picks])
+
+
+def vig_shifts(lines: pl.DataFrame) -> pl.DataFrame:
+    """For the open and the close, each season's median vig against the season before's, with
+    the weekly block bootstrap interval of the change. Weeks are resampled within each season."""
+    rng = np.random.default_rng(SEED)
+    fair = lines.filter(pl.col("p_home").is_not_null()).with_columns(vig=pl.col("overround") - 1)
+    tail = (1 - LEVEL) / 2 * 100
+    rows = []
+    for quote in ("open", "close"):
+        by_season = {
+            season: frame
+            for (season,), frame in fair.filter(pl.col("quote") == quote)
+            .sort("season", "game_id")
+            .group_by("season", maintain_order=True)
+        }
+        draws = {season: _median_draws(frame, rng) for season, frame in by_season.items()}
+        for before, season in pairwise(sorted(by_season)):
+            low, high = np.percentile(draws[season] - draws[before], [tail, 100 - tail])
+            rows.append(
+                {
+                    "quote": quote,
+                    "before": before,
+                    "season": season,
+                    "previous": by_season[before]["vig"].median(),
+                    "median": by_season[season]["vig"].median(),
+                    "low": float(low),
+                    "high": float(high),
+                }
+            )
+    return pl.DataFrame(
+        rows,
+        schema={
+            "quote": pl.String,
+            "before": pl.Int32,
+            "season": pl.Int32,
+            "previous": pl.Float64,
+            "median": pl.Float64,
+            "low": pl.Float64,
+            "high": pl.Float64,
+        },
+    )
 
 
 def moves(lines: pl.DataFrame) -> pl.DataFrame:
@@ -283,9 +350,10 @@ def problems(
     moved: pl.DataFrame,
     conflicts: pl.DataFrame,
     coverage: Iterable[str] = (),
+    held_out: Collection[int] = (),
 ) -> list[str]:
     """One line per season and kind of problem, naming example games, with the coverage problems
-    of join_reports and unpriced."""
+    of join_reports and unpriced. A held-out season's unusable prices are not counted."""
     found = list(coverage)
     for r in sorted(reports, key=lambda r: r.season):
         if r.nhl_without_sbr:
@@ -297,7 +365,7 @@ def problems(
         if left:
             examples = _examples([f"{d} {a} and {b}" for d, a, b in left])
             found.append(f"{r.season}: {len(left)} SBR games match no NHL game, e.g. {examples}")
-        if r.missing_prices:
+        if r.missing_prices and r.season not in held_out:
             found.append(
                 f"{r.season}: {r.missing_prices} SBR prices shown as NL, blank or malformed, "
                 "left out with the other side's"
@@ -321,14 +389,15 @@ def problems(
             f"{season}: {rows.height} moneylines sum below 100%, which de-vigging refuses, "
             f"e.g. {examples}"
         )
-    vig = vig_report(lines)
-    for quote, label in (("open", "opening"), ("close", "closing")):
-        medians = vig.select("season", f"{quote}_median").drop_nulls().rows()
-        for (before, previous), (season, median) in pairwise(medians):
-            if abs(median - previous) > VIG_SHIFT:
-                found.append(
-                    f"{season}: median {label} vig {median:.1%}, against {previous:.1%} in {before}"
-                )
+    labels = {"open": "opening", "close": "closing"}
+    for row in vig_shifts(lines).iter_rows(named=True):
+        if row["low"] > VIG_SHIFT or row["high"] < -VIG_SHIFT:
+            found.append(
+                f"{row['season']}: median {labels[row['quote']]} vig {row['median']:.1%}, against "
+                f"{row['previous']:.1%} in {row['before']}: a change of "
+                f"{row['median'] - row['previous']:+.1%}, {row['low']:+.1%} to {row['high']:+.1%} "
+                f"at {LEVEL:.0%}"
+            )
     big = moved.filter(pl.col("move") > BIG_MOVE)
     for (season,), rows in big.group_by("season", maintain_order=True):
         examples = _examples(
@@ -380,7 +449,8 @@ def markdown_report(
     parts += [
         f"| {r['season']} | {r['sbr_games']:,} | {r['matched']:,} | {r['playoffs']} "
         f"| {r['unmatched']} | {r['nhl_games']:,} | {r['without_sbr']:,} | {r['join_rate']:.1%} "
-        f"| {r['score_mismatches']} | {r['missing_prices']} |"
+        f"| {r['score_mismatches']} "
+        f"| {'held out' if r['missing_prices'] is None else r['missing_prices']} |"
         for r in joined.iter_rows(named=True)
     ]
     parts += [
