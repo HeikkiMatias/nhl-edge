@@ -110,7 +110,7 @@ SBR_TEAMS = {
 
 # When a price counts as observed (hard rule 1). SBR gives no time for either line. The close is
 # the last price before the start. The opener is taken as public at 10:00 US Eastern on the game
-# date, or at the start when that is earlier (proposed in #7, pending its ADR).
+# date, or at the start when that is earlier (ADR 0006).
 OPEN_PUBLIC_AT_ET = clock(10, 0)
 
 

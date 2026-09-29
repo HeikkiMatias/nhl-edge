@@ -163,7 +163,7 @@ At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<da
 - A game is two rows. The table keeps the opening and closing moneyline (`h2h`), the closing puck line from 2014-15 (`spreads`) and the opening and closing total. The first row's total price is the over: when it is the favourite, the over lands 53% of the time against 47% otherwise (2010-11 to 2021-22). A price shown as `NL` or blank is left out with the other side's.
 - SBR's final score includes OT and the shootout. The moneyline is the full-game line, the same market as the Odds API's `h2h`.
 - Rows match NHL regular-season games through `schedule`, on the game date and the pair of teams. The schedule says which team is home, since SBR lists neutral-site games as N and N and once lists H before V. Playoff rows are counted and left out.
-- `observed_utc`: the close at `start_utc`; the opener at 10:00 US Eastern on the game date, or the start when earlier. The opener's convention is pending its ADR (#7).
+- `observed_utc`: the close at `start_utc`; the opener at 10:00 US Eastern on the game date, or the start when earlier. The opener's time is ADR 0006.
 - Join on 2026-09-29: every regular-season game of 2010-11 to 2021-22 has an SBR row (100%). 2022-23 has 342 of 1,312 (26.1%), because the archive stops on 2022-11-27. 14 playoff games of 2020-21, played before the regular season ended, show as unmatched, and 5 games have a final score that disagrees with the NHL's.
 
 ## Reference files

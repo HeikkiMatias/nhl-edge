@@ -127,7 +127,7 @@ class SbrOdds(pa.DataFrameModel):
     its conversion. home and away come from the NHL schedule, not from SBR's rows.
 
     SBR gives no time for its prices, so observed_utc is a convention: the close at start_utc, and
-    the open at 10:00 US Eastern on game_date or the start when that is earlier (#7's ADR). It is
+    the open at 10:00 US Eastern on game_date or the start when that is earlier (ADR 0006). It is
     never after start_utc.
     """
 
