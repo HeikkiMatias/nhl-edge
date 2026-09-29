@@ -1,11 +1,13 @@
 """Test doubles shared by the unit tests."""
 
+import hashlib
 import io
 from typing import Any
 
 
 class MemoryBucket:
-    """In-memory stand-in for the boto3 S3 client, paging listings like R2 does."""
+    """In-memory stand-in for the boto3 S3 client, paging listings like R2 does. As in R2, an
+    object's ETag is the quoted MD5 of its bytes."""
 
     def __init__(self, page_size: int = 1000) -> None:
         self.objects: dict[str, bytes] = {}
@@ -28,7 +30,14 @@ class MemoryBucket:
         page = keys[start : start + self.page_size]
         more = start + self.page_size < len(keys)
         return {
-            "Contents": [{"Key": k, "Size": len(self.objects[k])} for k in page],
+            "Contents": [
+                {
+                    "Key": k,
+                    "Size": len(self.objects[k]),
+                    "ETag": f'"{hashlib.md5(self.objects[k]).hexdigest()}"',
+                }
+                for k in page
+            ],
             "IsTruncated": more,
             **({"NextContinuationToken": str(start + self.page_size)} if more else {}),
         }

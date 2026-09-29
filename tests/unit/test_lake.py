@@ -106,6 +106,42 @@ def test_pull_restores_a_table_on_a_fresh_machine(tmp_path: Path) -> None:
     assert Lake(tmp_path / "local").pull("games") == 0
 
 
+def test_pull_downloads_only_files_that_differ_from_the_local_copy(tmp_path: Path) -> None:
+    bucket = MemoryBucket()
+    laptop = Lake(tmp_path / "laptop", "b", bucket)
+    laptop.write("games", GAMES)
+    runner = Lake(tmp_path / "runner", "b", bucket)
+    assert runner.pull("games") == 2
+    bucket.gets.clear()
+    assert runner.pull("games") == 0
+    assert bucket.gets == []
+    # The laptop rewrites 2010-10-07, and the runner's 2010-10-08 is damaged at the same size.
+    laptop.write("games", GAMES.filter(pl.col("game_id") == 2010020004))
+    damaged = tmp_path / "runner" / OCT_8
+    damaged.write_bytes(bytes(len(damaged.read_bytes())))
+    assert runner.pull("games") == 2
+    assert sorted(bucket.gets) == [f"lake/{OCT_7}", f"lake/{OCT_8}"]
+    assert runner.read("games").equals(laptop.read("games"))
+
+
+def test_pull_can_be_limited_to_some_seasons(tmp_path: Path) -> None:
+    bucket = MemoryBucket(page_size=1)
+    Lake(tmp_path / "laptop", "b", bucket).write("games", GAMES)
+    other = "games/season=20112012/game_date=2011-10-06/part-0.parquet"
+    bucket.put_object(Key=f"lake/{other}", Body=b"another season")
+    runner = Lake(tmp_path / "runner", "b", bucket)
+    assert runner.pull("games", [20102011]) == 2
+    assert sorted(bucket.gets) == [f"lake/{OCT_7}", f"lake/{OCT_8}"]
+    assert not (tmp_path / "runner" / other).exists()
+    assert runner.pull("games", []) == 0
+
+
+@pytest.mark.parametrize("table", ["players", "odds_snapshots"])
+def test_pull_by_season_needs_a_table_partitioned_by_season(tmp_path: Path, table: str) -> None:
+    with pytest.raises(ValueError, match="not partitioned by season"):
+        Lake(tmp_path, "b", MemoryBucket()).pull(table, [20102011])
+
+
 def test_upsert_merges_by_key_and_keeps_rows_from_elsewhere(tmp_path: Path) -> None:
     bucket = MemoryBucket()
     Lake(tmp_path / "laptop", "b", bucket).upsert("players", players(1, 2))
