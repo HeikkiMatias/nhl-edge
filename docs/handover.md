@@ -15,6 +15,7 @@ Where the build stands at the end of the second phase 1 session, and how to pick
 - **Raw cache (R2 `raw/`):** about 61,700 responses. The laptop's `data/raw/` is the second copy (`nhl lake sync-raw` and `restore-raw`, #27).
 - **Nightly workflow (09:00 UTC):** ingest of the last 3 days, then the odds replay of the last 14 days, the contract test on a golden game (#6), and the R2 size check.
 - **Odds snapshots:** five slots a day, into Supabase and raw R2.
+- **Run times (#50):** no workflow has a GitHub `schedule`, which started runs 3 to 6 hours late. The Cloudflare Worker in `infra/timer` dispatches the odds slots, the hourly goalie poll and the nightly ingest on time (docs/data-sources.md, "When jobs run").
 - **Tests:** golden games in `tests/golden/` (owner-written only). Leakage tests per table in `tests/leakage/`.
 - **Closed in P1:** #4, #5, #6, #8, #20, #24, #25, #26, #27, #29.
 

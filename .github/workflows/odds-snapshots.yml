@@ -1,19 +1,8 @@
 name: odds-snapshots
 # Live Odds API snapshots into Supabase odds_snapshots (docs/data-sources.md, issue #3).
-# Slots are set in US Eastern time. Each slot has one cron line per UTC offset, and the CLI maps
-# the line that fired to a slot for today's offset, skipping the other half of the year, so no
-# edit is needed when DST starts or ends.
+# The Cloudflare Worker in infra/timer dispatches it at each slot, set in US Eastern time, with the
+# slot as input (issue #50): GitHub's own schedule started runs 3 to 6 hours late.
 on:
-  schedule:
-    - cron: "5 11 * * *"    # morning, EDT
-    - cron: "5 12 * * *"    # morning, EST
-    - cron: "45 16 * * *"   # midday, EDT
-    - cron: "45 17 * * *"   # midday, EST
-    - cron: "45 22 * * *"   # pre7, EDT
-    - cron: "45 23 * * *"   # pre8 in EDT, pre7 in EST
-    - cron: "45 0 * * *"    # pre8, EST
-    - cron: "45 1 * * *"    # pre10, EDT
-    - cron: "45 2 * * *"    # pre10, EST
   workflow_dispatch:
     inputs:
       slot:
@@ -41,16 +30,13 @@ jobs:
         # Daily Faceoff's starting goalies for their dates, stored raw in R2 (issues #42 and #48),
         # so the goalie state is on record at each odds slot. It runs before the snapshot, so every
         # goalie row is observed before the prices of the same slot and a point-in-time join can
-        # use it. The odds cron lines of the other half of the DST year skip.
+        # use it.
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          CRON: ${{ github.event.schedule }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
-          uv run nhl goalies poll --mirror-raw "${pick[@]}"
+        run: uv run nhl goalies poll --mirror-raw
       - name: Snapshot
         # Runs when the goalie poll failed too.
         if: always()
@@ -62,10 +48,8 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          CRON: ${{ github.event.schedule }}
           SLOT: ${{ inputs.slot }}
-          SKIP: ${{ github.event_name == 'schedule' || inputs.skip_if_no_games }}
+          SKIP: ${{ inputs.skip_if_no_games }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(--slot "$SLOT"); fi
           if [ "$SKIP" = "true" ]; then skip=--skip-if-no-games; else skip=--no-skip-if-no-games; fi
-          uv run nhl odds snapshot --regions eu --slot-plan free-tier "$skip" --mirror-raw "${pick[@]}"
+          uv run nhl odds snapshot --regions eu --slot-plan free-tier "$skip" --mirror-raw --slot "$SLOT"

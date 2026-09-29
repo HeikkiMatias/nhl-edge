@@ -5,9 +5,9 @@ name: ingest-nightly
 # night; responses already in R2 are reused, not fetched again. The Supabase read at the end of
 # every run keeps the free project from pausing in the off-season. Older gaps are caught up with
 # a manual run over a date range.
+# The Cloudflare Worker in infra/timer dispatches it with no inputs at 09:00 UTC (04:00 or 05:00 ET,
+# after every game of the night is final; issue #50).
 on:
-  schedule:
-    - cron: "0 9 * * *"  # 04:00 or 05:00 ET, after every game of the night is final
   workflow_dispatch:
     inputs:
       start:
