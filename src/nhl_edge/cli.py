@@ -366,7 +366,8 @@ def _status_against_r2(local: "list[TableState]") -> None:
         return
     typer.echo("\nAgainst R2:")
     missing_here: list[str] = []  # lake files R2 has and this machine lacks
-    missing_there: list[str] = []  # lake files this machine has that R2 lacks or holds otherwise
+    missing_there: list[str] = []  # lake files this machine has that R2 lacks
+    differ: list[str] = []  # lake files on both sides with different sizes
     for here, there in zip(local, remote_tables(Lake.from_env(mirror=True)), strict=True):
         diff = compare(here, there)
         if diff:
@@ -375,7 +376,8 @@ def _status_against_r2(local: "list[TableState]") -> None:
                 f"{len(diff.only_here):,} only here, {len(diff.differ):,} differ in size"
             )
             missing_here += diff.only_there
-            missing_there += diff.only_here + diff.differ
+            missing_there += diff.only_here
+            differ += diff.differ
     raw_behind = raw_ahead = False
     for prefix, here_key, there_key in raw_lag(RawStore.from_env(mirror=True)):
         if here_key != there_key:
@@ -392,5 +394,12 @@ def _status_against_r2(local: "list[TableState]") -> None:
         typer.echo(
             f"  R2 lacks what is here: nhl lake sync-raw, then nhl ingest {window} --replay --r2"
         )
-    if not (missing_here or missing_there or raw_behind or raw_ahead):
+    if differ:
+        # A size difference does not tell which copy is current, so no direction is suggested.
+        tables = sorted({key.split("/")[0] for key in differ})
+        typer.echo(
+            f"  {len(differ):,} files differ from R2 in {', '.join(tables)}: check which copy is "
+            "current before syncing either way"
+        )
+    if not (missing_here or missing_there or differ or raw_behind or raw_ahead):
         typer.echo("  up to date with R2")

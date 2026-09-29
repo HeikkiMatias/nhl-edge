@@ -258,7 +258,10 @@ def test_status_notices_a_file_that_differs_from_r2(
     bucket.objects["lake/players/part-0.parquet"] = b"older"
     result = runner.invoke(app, ["status"])
     assert "players: 0 files only in R2, 0 only here, 1 differ in size" in result.output
-    assert "R2 lacks what is here: nhl lake sync-raw" in result.output
+    assert "1 files differ from R2 in players: check which copy is current" in result.output
+    # Neither side is assumed newer, so no command that would overwrite one is suggested.
+    assert "R2 lacks" not in result.output
+    assert "behind R2" not in result.output
     assert pl.read_parquet(tmp_path / "data/lake/players/part-0.parquet").height == 1
 
 
