@@ -56,13 +56,13 @@ SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
 
 ## When jobs run
 
-GitHub Actions runs every job, but GitHub's own `schedule` started this repo's runs 3 to 6 hours late in September 2026, while a `workflow_dispatch` starts within seconds (#50). So no workflow has a `schedule`. The Cloudflare Worker in `infra/timer` fires every five minutes and dispatches the workflows due at that minute (`infra/timer/src/schedule.js`):
+GitHub Actions runs every job, but GitHub's own `schedule` started this repo's runs 3 to 6 hours late in September 2026, while a `workflow_dispatch` starts within seconds (#50). So the Cloudflare Worker in `infra/timer` fires every five minutes and dispatches the workflows due at that minute (`infra/timer/src/schedule.js`):
 
 - `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input.
 - `pregame-goalies.yml` at :50 of every hour from 12:50 to 02:50 UTC.
 - `ingest-nightly.yml` at 09:00 UTC.
 
-`infra/timer/README.md` covers setup. A failed dispatch shows as a failed cron event in the Cloudflare dashboard. Any workflow can also be started by hand from the Actions tab.
+The workflows keep their GitHub cron lines as a fallback. While the repository variable `TIMER_ACTIVE` is `true`, a scheduled run skips its job, so only the timer's dispatches run; set it to `false` to fall back to the late GitHub schedule, for example when the timer's token has expired. `infra/timer/README.md` covers setup. A failed dispatch shows as a failed cron event in the Cloudflare dashboard. Any workflow can also be started by hand from the Actions tab.
 
 ## NHL ingest
 
@@ -149,7 +149,7 @@ A game's chart is `complete` when it has no bad rows and every dressed player's 
 
 ## Odds snapshots
 
-`nhl odds snapshot` runs from `.github/workflows/odds-snapshots.yml`, dispatched at each slot with the slot's name (see When jobs run). Slots are set in US Eastern time, so nothing changes by hand when DST starts or ends. A run first checks the NHL schedule and makes no Odds API call when the slot has no regular-season or playoff game.
+`nhl odds snapshot` runs from `.github/workflows/odds-snapshots.yml`, dispatched at each slot with the slot's name (see When jobs run). Slots are set in US Eastern time, so nothing changes by hand when DST starts or ends. The fallback cron has one line per slot for each UTC offset, and the CLI maps the line that fired to a slot for the current offset. A run first checks the NHL schedule and makes no Odds API call when the slot has no regular-season or playoff game.
 
 | Slot | ET | UTC in EDT / EST | Markets | Runs when |
 | --- | --- | --- | --- | --- |

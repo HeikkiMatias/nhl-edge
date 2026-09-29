@@ -14,6 +14,10 @@ Each is dispatched on `main` through the GitHub API. A failed dispatch is retrie
 logged, and makes the cron event show as failed in the Cloudflare dashboard. It runs on the Workers
 free plan: one cron trigger and 288 short invocations a day.
 
+The workflows keep their GitHub cron lines as a fallback. While the repository variable
+`TIMER_ACTIVE` is `true`, a scheduled run skips its job, so each job runs once, on time. Until the
+Worker is deployed, or with the variable unset or `false`, the late GitHub schedule runs as before.
+
 ## Setup
 
 1. **GitHub token.** GitHub, Settings, Developer settings, Fine-grained personal access tokens,
@@ -31,8 +35,11 @@ free plan: one cron trigger and 288 short invocations a day.
 3. **Check** at the next due time, such as the next :50 between 12:50 and 02:50 UTC: the Actions tab
    shows a `pregame-goalies` run with the event `workflow_dispatch`, and `npx wrangler@4 tail`
    prints `dispatched pregame-goalies.yml {}`.
+4. **Switch off the late schedule:** GitHub, the repo's Settings, Secrets and variables, Actions,
+   Variables tab, New repository variable `TIMER_ACTIVE` with the value `true`.
 
-To renew the token, run `npx wrangler@4 secret put GITHUB_TOKEN` again. To change a time, edit
+To renew the token, run `npx wrangler@4 secret put GITHUB_TOKEN` again. If the Worker stops, set
+`TIMER_ACTIVE` to `false` and the GitHub schedule takes over, late. To change a time, edit
 `src/schedule.js`, run `npm test`, and deploy.
 
 ## Tests

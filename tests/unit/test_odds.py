@@ -30,7 +30,6 @@ ODDS_BODY = (FIXTURES / "odds_api" / "odds_eu_full_20260928T120053Z.json").read_
 SCHEDULE_BODY = (FIXTURES / "nhl_api" / "schedule_2026-09-28.json").read_bytes()
 SNAPSHOT = datetime(2026, 9, 28, 12, 0, 53, tzinfo=UTC)
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "odds-snapshots.yml"
-TIMER = Path(__file__).parents[2] / "infra" / "timer" / "src" / "schedule.js"
 EDT_DAY = date(2026, 10, 15)
 EST_DAY = date(2026, 12, 15)
 
@@ -145,6 +144,10 @@ def test_live_window_keeps_pre_game_quotes_within_36_hours() -> None:
 # Slots
 
 
+def workflow_crons() -> list[str]:
+    return re.findall(r'cron: "([^"]+)"', WORKFLOW.read_text())
+
+
 @pytest.mark.parametrize(
     ("cron", "summer", "winter"),
     [
@@ -167,18 +170,12 @@ def test_resolve_slot_in_both_halves_of_the_dst_year(
         assert (slot.name if slot else None) == expected
 
 
-def test_timer_dispatches_every_slot_at_its_eastern_time() -> None:
-    # The Worker in infra/timer starts the workflow at each slot (#50); its table must match the
-    # slot plan, and the workflow must accept every slot name as input.
-    block = re.search(r"ODDS_SLOTS = \{(.*?)\};", TIMER.read_text(), re.S)
-    assert block is not None
-    timer = dict(re.findall(r'"(\d\d:\d\d)": "(\w+)"', block[1]))
-    plan = {slot.et_time.strftime("%H:%M"): slot.name for slot in SLOT_PLANS["free-tier"]}
-    assert timer == plan
-    options = re.search(r"options: \[([^\]]*)\]", WORKFLOW.read_text())
-    assert options is not None
-    assert sorted(o.strip() for o in options[1].split(",")) == sorted(plan.values())
-    assert "schedule:" not in WORKFLOW.read_text()
+def test_workflow_serves_every_slot_once_on_any_day() -> None:
+    crons = workflow_crons()
+    names = sorted(slot.name for slot in SLOT_PLANS["free-tier"])
+    for day in (EDT_DAY, date(2026, 10, 31), date(2026, 11, 2), EST_DAY, date(2027, 3, 15)):
+        served = [resolve_slot("free-tier", cron, day) for cron in crons]
+        assert sorted(slot.name for slot in served if slot) == names, day
 
 
 def test_resolve_slot_rejects_non_daily_cron() -> None:

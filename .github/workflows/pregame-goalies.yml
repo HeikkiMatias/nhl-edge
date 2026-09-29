@@ -2,18 +2,23 @@ name: pregame-goalies
 # Pre-game goalie polls close to puck drop, NHL and Daily Faceoff (docs/data-sources.md, #42, #48).
 # The odds-snapshots workflow polls every game of the next 18 hours at each odds slot; this one
 # adds a poll at :50 every hour of the game window for the games starting within 75 minutes, so
-# each game gets one 10 to 70 minutes before its start. The Cloudflare Worker in infra/timer
-# dispatches it at :50 from 12:50 to 02:50 UTC (issue #50), which covers start times from 09:00 to
-# 23:00 ET in both EDT and EST, such as the 09:00 ET starts of games played in Europe; earlier
-# starts get the 07:05 ET slot poll. A run with no game in its window makes no gamecenter or Daily
-# Faceoff request.
+# each game gets one 10 to 70 minutes before its start. The hours (12:50 to 02:50 UTC) cover start
+# times from 09:00 to 23:00 ET in both EDT and EST, such as the 09:00 ET starts of games played in
+# Europe; earlier starts get the 07:05 ET slot poll. A run with no game in its window makes no
+# gamecenter or Daily Faceoff request. The Cloudflare Worker in infra/timer dispatches it at those
+# times (#50); the cron line is the fallback while the timer is off.
 on:
+  schedule:
+    - cron: "50 0-2,12-23 * * *"
   workflow_dispatch:
 concurrency: goalies
 permissions:
   contents: read
 jobs:
   poll:
+    # GitHub's schedule is the fallback: once the Cloudflare timer in infra/timer runs (#50), the
+    # repository variable TIMER_ACTIVE is true and only its on-time dispatches start this job.
+    if: github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
