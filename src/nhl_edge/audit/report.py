@@ -2,8 +2,8 @@
 under reports/audit/, named for the last day it covers.
 
 Each section lists its problems, so that every one can become an issue once the report is
-reviewed. Two sections wait for data that is not in the lake yet: the SBR odds (#7) and the
-pre-game data that would show when starting goalies are confirmed (#42 and #43).
+reviewed. One section waits for data that is not in the lake yet: the pre-game data that would
+show when starting goalies are confirmed (#42 and #43).
 """
 
 from dataclasses import dataclass, field
@@ -13,9 +13,11 @@ from pathlib import Path
 import polars as pl
 
 from nhl_edge.audit import games as game_audit
+from nhl_edge.audit import sbr as sbr_audit
 from nhl_edge.audit import snapshots as snapshot_audit
 from nhl_edge.backtest.seasons import SEASON_ROLES, SeasonRole
 from nhl_edge.ingest import shift_coverage
+from nhl_edge.ingest.sbr import SBR_SEASONS
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import Lake
 from nhl_edge.reference import check_games
@@ -43,11 +45,7 @@ def build(lake: Lake, store: RawStore, as_of: date) -> list[Section]:
             "schedule listings in the raw cache.\n\n" + game_audit.markdown_report(seasons),
             game_audit.problems(seasons, games, listed, as_of),
         ),
-        Section(
-            "SBR odds",
-            "Not yet: the SBR archive import is #7. This section will add the vig per season, "
-            "open against close, and team mapping errors.",
-        ),
+        _sbr_section(lake, store, listed, games, as_of),
         _shift_section(lake.read("shift_coverage").filter(pl.col("game_date") <= as_of)),
         _reference_section(games),
         _snapshot_section(lake, store, listed, as_of),
@@ -59,6 +57,50 @@ def build(lake: Lake, store: RawStore, as_of: date) -> list[Section]:
         ),
     ]
     return sections
+
+
+def _sbr_section(
+    lake: Lake, store: RawStore, listed: pl.DataFrame, games: pl.DataFrame, as_of: date
+) -> Section:
+    over = set(game_audit.seasons_over(listed, as_of))
+    seasons = [season for season in SBR_SEASONS if season in over]
+    if not seasons:
+        return Section("SBR odds", "No SBR season is over by the audit date.")
+    schedule = lake.read("schedule").filter(pl.col("game_date") <= as_of)
+    reports, pages, coverage = sbr_audit.join_reports(store, schedule, games, seasons)
+    priced = sbr_audit.price_seasons(seasons)
+    odds = lake.read("sbr_odds").filter(pl.col("season").is_in(priced))
+    coverage += sbr_audit.unpriced(odds, priced, pages)
+    if not reports and odds.is_empty():
+        return Section(
+            "SBR odds",
+            "No SBR season could be joined, and `sbr_odds` has no prices to check: run "
+            "`nhl odds sbr`.",
+            sorted(coverage),
+        )
+    lines = sbr_audit.moneylines(odds)
+    moved = sbr_audit.moves(lines)
+    conflicts = sbr_audit.puck_line_conflicts(odds, lines)
+    held_out = [season for season in seasons if season not in priced]
+    body = (
+        "The SBR archive for the seasons over by the audit date. Prices are de-vigged with the "
+        "multiplicative method (`market/devig.py`)"
+        + (
+            f"; the price checks leave out {', '.join(map(str, held_out))}, which phase 1 does "
+            "not inspect (#10)"
+            if held_out
+            else ""
+        )
+        + ".\n\n"
+        + sbr_audit.markdown_report(
+            sbr_audit.join_report(reports, listed, held_out),
+            sbr_audit.vig_report(lines),
+            moved,
+            sbr_audit.puck_line_report(odds, conflicts),
+        )
+    )
+    found = sbr_audit.problems(reports, listed, lines, moved, conflicts, coverage, held_out)
+    return Section("SBR odds", body, found)
 
 
 def _shift_section(coverage: pl.DataFrame) -> Section:
