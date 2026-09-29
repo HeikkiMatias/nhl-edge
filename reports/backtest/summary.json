@@ -1,6 +1,6 @@
 {
-  "version": "backtest-20260929-fb1bcf7",
-  "run_utc": "2026-09-29T13:32:19.171412+00:00",
+  "version": "backtest-20260929-12d2957",
+  "run_utc": "2026-09-29T13:40:21.786276+00:00",
   "seasons": [
     20182019,
     20212022
@@ -19,12 +19,14 @@
         "20182019": {
           "games": 1271,
           "priced": 1271,
+          "unsettled": 0,
           "refused": 0,
           "scored": 1271
         },
         "20212022": {
           "games": 1312,
           "priced": 1312,
+          "unsettled": 0,
           "refused": 0,
           "scored": 1312
         }
@@ -169,6 +171,7 @@
         "20182019": {
           "games": 1271,
           "priced": 1271,
+          "unsettled": 0,
           "refused": 0,
           "scored": 1271,
           "opener_differs_from_close": 1270
@@ -176,6 +179,7 @@
         "20212022": {
           "games": 1312,
           "priced": 1312,
+          "unsettled": 0,
           "refused": 3,
           "scored": 1309,
           "opener_differs_from_close": 1306

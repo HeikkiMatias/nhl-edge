@@ -4,7 +4,7 @@ Current production model, how it scored, and its known weaknesses. It is updated
 
 ## Current model
 
-None. Phase 1 has the market baseline B0 only: the de-vigged SBR moneyline, with nothing fitted. Backtest `backtest-20260929-fb1bcf7` on the development seasons 2018-19 and 2021-22.
+None. Phase 1 has the market baseline B0 only: the de-vigged SBR moneyline, with nothing fitted. Backtest `backtest-20260929-12d2957` on the development seasons 2018-19 and 2021-22.
 
 ## Metrics
 
@@ -23,7 +23,7 @@ Every metric is reported with a 95% weekly block bootstrap interval, pooled over
 
 | Component | Version | train_cutoff |
 | --- | --- | --- |
-| Backtest (B0) | backtest-20260929-fb1bcf7 | none: B0 fits nothing |
+| Backtest (B0) | backtest-20260929-12d2957 | none: B0 fits nothing |
 
 ## Known weaknesses
 
