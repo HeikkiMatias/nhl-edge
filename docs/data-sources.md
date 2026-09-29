@@ -22,6 +22,8 @@ NHL API (api-web.nhle.com)
   GET /v1/schedule/{YYYY-MM-DD}
   GET /v1/gamecenter/{gameId}/play-by-play
   GET /v1/gamecenter/{gameId}/boxscore
+  GET /v1/gamecenter/{gameId}/landing     # pre-game goalie poll only
+  GET /v1/gamecenter/{gameId}/right-rail  # pre-game goalie poll only
   GET /v1/roster/{team}/{season}          # season as 20252026
   GET /v1/player/{playerId}/landing       # bio + career stats by league
   GET /v1/player/{playerId}/game-log/{season}/{gameType}
@@ -152,6 +154,16 @@ At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<da
 - The Odds API historical endpoint is paid. The `guard-bash` hook blocks it unless Claude Code starts with `ALLOW_PAID_ODDS=1`.
 - MoneyPuck data is free for non-commercial use with attribution and must not be scraped. It is a sanity check, not a backtest input.
 - Daily Faceoff and RotoWire are manual references only, not part of the automated pipeline.
+
+## Pre-game goalies
+
+`nhl goalies poll` records what the NHL API says about each team's starting goalie before puck drop (#42), so the audit (#9, plan section 10) can tell whether and how early starters are confirmed. The ingest reads boxscores only after a game is final, and a pre-game state cannot be fetched after the fact, so this poll is the only record of it.
+
+- **When:** at every odds slot (07:05, 12:45, 18:45, 19:45 and 21:45 ET), as a step in `.github/workflows/odds-snapshots.yml` before the snapshot; it uses the odds cron lines and adds no runs. Those polls cover every regular-season or playoff game starting within 18 hours. `.github/workflows/pregame-goalies.yml` adds a poll at :50 of every hour from 12:50 to 02:50 UTC (15 runs a day) with `--within 75`, so every game starting between 09:00 and 23:00 ET, such as a 09:00 ET start in Europe, also gets one 10 to 70 minutes before its start. The slot poll runs before the odds snapshot, so its goalie rows are observed before the prices of the same slot.
+- **What:** for each game in the window that has not started, `GET /v1/gamecenter/{gameId}/boxscore`, `/landing` and `/right-rail`, always fetched fresh (three requests a game, throttled as every NHL call).
+- **Raw:** `nhl/pregame-boxscore/<ET game date>/<game_id>/<fetch stamp>`, `nhl/pregame-landing/...` and `nhl/pregame-right-rail/...`, mirrored to R2. They are kept apart from the ingest's `nhl/boxscore/`, which reuses the newest cached boxscore of a game: a pre-game copy there would stand in for the final one. They cannot be fetched again, so `nhl status` compares the whole key sets of each with R2 (`nhl lake sync-raw --prefix nhl/pregame-` or `restore-raw` brings them in step).
+- **Signal:** the boxscore's `playerByGameStats.<side>.goalies[].starter` flag, the same one `actual_lineups.starting_goalie` reads after the game. On 2026-09-29, seven to nine hours before FLA at CAR, the boxscore had no `playerByGameStats`, the right-rail had no goalie field, and the landing listed each team's goalies with season stats (`matchup.goalieComparison`) but flagged no starter. When, or whether, the flag appears before puck drop is what the poll measures. The landing and right-rail copies are kept so a later check can look for other signals.
+- **Table:** `nhl goalies replay` rebuilds the lake's `pregame_goalies` from the raw boxscores: one row per poll, game and team, with the goalies listed, how many carry the starter flag, and `starter_id` when exactly one does. `observed_utc` is the fetch time, when that state was public; a response fetched at or after the scheduled start gives no rows. The nightly workflow runs `nhl goalies replay --recent 4 --r2`: today, which the evening slots poll ahead, and the three game dates before it.
 
 ## Reference files
 

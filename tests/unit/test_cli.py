@@ -252,6 +252,36 @@ def test_status_shows_what_r2_has_that_this_machine_lacks(
     assert "R2 lacks" not in result.output
 
 
+def test_status_shows_pregame_polls_missing_here(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.raw import RawStore
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    # A runner polled a game's landing page, which only R2 holds: it cannot be fetched again.
+    # Both sides hold an earlier poll of a later game, whose key sorts after the missing one.
+    key = "pregame-landing/2026-09-29/2026020001/20260929T224500Z"
+    shared = "pregame-landing/2026-09-29/2026020005/20260929T110500Z"
+    RawStore(tmp_path / "runner", "test", bucket).put("nhl", key, b"{}", {})
+    RawStore(tmp_path / "runner", "test", bucket).put("nhl", shared, b"{}", {})
+    monkeypatch.chdir(tmp_path)
+    RawStore().put("nhl", shared, b"{}", {})
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "raw/nhl/pregame-landing/: 1 responses only in R2, 0 only here" in result.output
+    assert (
+        "pre-game goalie polls are behind R2: nhl lake restore-raw --prefix nhl/pregame-"
+        in result.output
+    )
+    assert "up to date with R2" not in result.output
+
+
 def test_status_notices_a_file_that_differs_from_r2(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
