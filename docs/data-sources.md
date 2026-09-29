@@ -54,6 +54,16 @@ SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
 - The Odds API free tier has 500 credits a month. A call costs 1 credit per market per region and returns every game. The slot plan uses about 300 credits a month. Store `last_update` with every quote.
 - Many EU books (13 of 20 on 2026-09-28, among them Marathonbet, Unibet, Betclic and 1xBet) quote the 3-way regulation line under the Odds API `h2h` key, with a `Draw` outcome. The parser stores those quotes as `h2h_3_way`, so `h2h` only holds the two-way moneyline including OT and the shootout. Pinnacle, Betsson and NordicBet quote the two-way line.
 
+## When jobs run
+
+GitHub Actions runs every job, but GitHub's own `schedule` started this repo's runs 3 to 6 hours late in September 2026, while a `workflow_dispatch` starts within seconds (#50). So the Cloudflare Worker in `infra/timer` fires every five minutes and dispatches the workflows due at that minute (`infra/timer/src/schedule.js`):
+
+- `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input.
+- `pregame-goalies.yml` at :50 of every hour from 12:50 to 02:50 UTC.
+- `ingest-nightly.yml` at 09:00 UTC.
+
+The workflows keep their GitHub cron lines as a fallback. While the repository variable `TIMER_ACTIVE` is `true`, a scheduled run skips its job, so only the timer's dispatches run; set it to `false` to fall back to the late GitHub schedule, for example when the timer's token has expired. `infra/timer/README.md` covers setup. A failed dispatch shows as a failed cron event in the Cloudflare dashboard. Any workflow can also be started by hand from the Actions tab.
+
 ## NHL ingest
 
 `nhl ingest` fills the lake's `games` and `players` tables, caches each game's raw feeds and parses them into the per-game tables below. A window is `--seasons 20102011-20252026` (a range or a comma list), `--start D --end D`, or `--recent N` (the last N US Eastern game dates up to yesterday). For each week of the window, it fetches the schedule and keeps the final (`OFF`) regular-season games. It fetches play-by-play, boxscore and shift chart for each of them and parses them (`--no-feeds` skips both and leaves the per-game tables alone), then the roster of every team that played, then the landing page of every player on those rosters or in those boxscores who is not yet in `players`. A season window first fetches the schedule at February 15 of its second year to read `regularSeasonStartDate` and `regularSeasonEndDate`. Games that are not final are skipped with a warning, and a later run picks them up. Playoffs are out of scope for v1.
@@ -139,7 +149,7 @@ A game's chart is `complete` when it has no bad rows and every dressed player's 
 
 ## Odds snapshots
 
-`nhl odds snapshot` runs from `.github/workflows/odds-snapshots.yml`. Slots are set in US Eastern time. The workflow has one cron line per slot for each UTC offset, and the CLI maps the line that fired to a slot for the current offset, so nothing changes by hand when DST starts or ends. A run first checks the NHL schedule and makes no Odds API call when the slot has no regular-season or playoff game.
+`nhl odds snapshot` runs from `.github/workflows/odds-snapshots.yml`, dispatched at each slot with the slot's name (see When jobs run). Slots are set in US Eastern time, so nothing changes by hand when DST starts or ends. The fallback cron has one line per slot for each UTC offset, and the CLI maps the line that fired to a slot for the current offset. A run first checks the NHL schedule and makes no Odds API call when the slot has no regular-season or playoff game.
 
 | Slot | ET | UTC in EDT / EST | Markets | Runs when |
 | --- | --- | --- | --- | --- |
@@ -166,7 +176,7 @@ At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<da
 
 `nhl goalies poll` records what the NHL API says about each team's starting goalie before puck drop (#42), so the audit (#9, plan section 10) can tell whether and how early starters are confirmed. The ingest reads boxscores only after a game is final, and a pre-game state cannot be fetched after the fact, so this poll is the only record of it.
 
-- **When:** at every odds slot (07:05, 12:45, 18:45, 19:45 and 21:45 ET), as a step in `.github/workflows/odds-snapshots.yml` before the snapshot; it uses the odds cron lines and adds no runs. Those polls cover every regular-season or playoff game starting within 18 hours. `.github/workflows/pregame-goalies.yml` adds a poll at :50 of every hour from 12:50 to 02:50 UTC (15 runs a day) with `--within 75`, so every game starting between 09:00 and 23:00 ET, such as a 09:00 ET start in Europe, also gets one 10 to 70 minutes before its start. The slot poll runs before the odds snapshot, so its goalie rows are observed before the prices of the same slot.
+- **When:** at every odds slot (07:05, 12:45, 18:45, 19:45 and 21:45 ET), as a step in `.github/workflows/odds-snapshots.yml` before the snapshot, so it adds no runs. Those polls cover every regular-season or playoff game starting within 18 hours. `.github/workflows/pregame-goalies.yml` adds a poll at :50 of every hour from 12:50 to 02:50 UTC (15 runs a day) with `--within 75`, so every game starting between 09:00 and 23:00 ET, such as a 09:00 ET start in Europe, also gets one 10 to 70 minutes before its start. The slot poll runs before the odds snapshot, so its goalie rows are observed before the prices of the same slot.
 - **What:** for each game in the window that has not started, `GET /v1/gamecenter/{gameId}/boxscore`, `/landing` and `/right-rail`, always fetched fresh (three requests a game, throttled as every NHL call).
 - **Raw:** `nhl/pregame-boxscore/<ET game date>/<game_id>/<fetch stamp>`, `nhl/pregame-landing/...` and `nhl/pregame-right-rail/...`, mirrored to R2. They are kept apart from the ingest's `nhl/boxscore/`, which reuses the newest cached boxscore of a game: a pre-game copy there would stand in for the final one. They cannot be fetched again, so `nhl status` compares the whole key sets of each with R2 (`nhl lake sync-raw --prefix nhl/pregame-` or `restore-raw` brings them in step).
 - **Signal:** the boxscore's `playerByGameStats.<side>.goalies[].starter` flag, the same one `actual_lineups.starting_goalie` reads after the game. On 2026-09-29, seven to nine hours before FLA at CAR, the boxscore had no `playerByGameStats`, the right-rail had no goalie field, and the landing listed each team's goalies with season stats (`matchup.goalieComparison`) but flagged no starter. When, or whether, the flag appears before puck drop is what the poll measures. The landing and right-rail copies are kept so a later check can look for other signals.

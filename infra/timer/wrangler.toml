@@ -1,0 +1,16 @@
+# Cloudflare Worker that dispatches the repo's scheduled workflows on time (issue #50, README.md).
+name = "nhl-edge-timer"
+main = "src/index.js"
+compatibility_date = "2026-06-01"
+# No public URL: the Worker only runs on its cron.
+workers_dev = false
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+GITHUB_REPO = "HeikkiMatias/nhl-edge"
+GITHUB_REF = "main"
+
+[observability]
+enabled = true

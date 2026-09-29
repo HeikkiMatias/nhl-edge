@@ -46,7 +46,7 @@ Data moves left to right and down. The market blend is the only path to a bet, s
 | Validation and tests | pandera, pytest | Schema checks on every table, fixtures for known games |
 | Code quality | ruff, pyright, pre-commit | Same checks locally, in hooks and in CI |
 | Entry point | Typer CLI: `nhl ingest`, `nhl rate`, `nhl predict`, `nhl backtest`, `nhl bets` | One interface for you, Claude Code and GitHub Actions |
-| Scheduling | GitHub Actions cron | No server to run; see section 8 for timing limits |
+| Scheduling | GitHub Actions, dispatched on time by a Cloudflare Worker cron | No server to run; GitHub's own cron started runs 3 to 6 hours late (#50) |
 | Dashboard | Next.js on Vercel, reading Supabase | Phase 9 only |
 
 ```text
@@ -564,7 +564,7 @@ Codex applies the section below when reviewing. It mirrors the hard rules in CLA
   and calls to paid endpoints such as the Odds API historical API.
 ```
 
-GitHub scheduled runs can start late under load, so the odds cron gives a rough closing line rather than an exact one. Section 9 covers the fix.
+GitHub scheduled runs started 3 to 6 hours late, so a Cloudflare Worker cron dispatches the workflows at the slot times instead (#50, `infra/timer`). Fixed slots still give a rough closing line rather than an exact one. Section 9 covers the fix.
 
 ## 9. Gaps and risks
 

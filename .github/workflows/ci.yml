@@ -12,3 +12,6 @@ jobs:
       - run: uv run pyright src
       - run: uv run pytest -m "not slow" -q
       - run: uv run pytest tests/leakage -q
+      - name: Timer Worker tests
+        run: node --test
+        working-directory: infra/timer
