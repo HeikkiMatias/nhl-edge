@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -7,7 +7,7 @@ import pandera.errors
 import polars as pl
 import pytest
 
-from nhl_edge.ingest.games import EXPECTED_GAMES, listed_games, parse_games
+from nhl_edge.ingest.games import EXPECTED_GAMES, listed_games, parse_games, schedule_of
 from nhl_edge.lake.schemas import Arenas
 from nhl_edge.reference import Reference, capacity_share, check_files, check_games, lineage
 
@@ -286,13 +286,17 @@ def test_a_later_home_game_at_a_second_arena_is_fine() -> None:
 
 
 def played(*games: tuple[str, str, date]) -> pl.DataFrame:
-    """Games as (home, venue, date), one id each."""
+    """Schedule rows as (home, venue, date), one id each, public the day before."""
+    days = [day for _, _, day in games]
     return pl.DataFrame(
         {
             "game_id": list(range(1, len(games) + 1)),
             "home": [home for home, _, _ in games],
             "venue": [venue for _, venue, _ in games],
-            "game_date": [day for _, _, day in games],
+            "game_date": days,
+            "observed_utc": [
+                datetime.combine(day, time(0), tzinfo=UTC) - timedelta(days=1) for day in days
+            ],
         }
     )
 
@@ -306,9 +310,9 @@ def shares(*games: tuple[str, str, date]) -> list[float]:
     """Each game's share as predicted on the morning of its date."""
     frame = played(*games)
     return [
-        capacity_share(frame.filter(pl.col("game_id") == game_id), game_day(day), REF)[
-            "capacity_share"
-        ].item()
+        capacity_share(frame, game_day(day), [game_id], REF)
+        .filter(pl.col("game_id") == game_id)["capacity_share"]
+        .item()
         for game_id, day in frame.select("game_id", "game_date").iter_rows()
     ]
 
@@ -334,13 +338,13 @@ def test_capacity_share_by_arena_and_date() -> None:
 
 def test_every_game_of_the_empty_arenas_week_is_limited() -> None:
     # The fixture week's home teams, Philadelphia and Toronto, had no spectators yet.
-    games = WEEKS["empty arenas 2021"]
-    morning = game_day(date(2021, 1, 13))
-    by_home = games.join(capacity_share(games, morning, REF), on="game_id").select(
-        "home", "capacity_share"
-    )
-    assert sorted(set(by_home["home"])) == ["PHI", "TOR"]
-    assert by_home["capacity_share"].to_list() == [0.0] * games.height
+    schedule = schedule_of(WEEKS["empty arenas 2021"])
+    by_home = [
+        (home, capacity_share(schedule, game_day(day), [game_id], REF)["capacity_share"].item())
+        for game_id, home, day in schedule.select("game_id", "home", "game_date").iter_rows()
+    ]
+    assert sorted({home for home, _ in by_home}) == ["PHI", "TOR"]
+    assert [share for _, share in by_home] == [0.0] * schedule.height
 
 
 ATTENDANCE_CASES: dict[str, tuple[pl.DataFrame, Reference, str]] = {

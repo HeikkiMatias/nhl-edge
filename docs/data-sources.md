@@ -196,7 +196,8 @@ Hand-compiled CSVs in `src/nhl_edge/reference/`, loaded and validated by `nhl_ed
   - `announced` is the date of the source reporting the limit. It is empty only for a limit in force from the first day of 2020-21, known before the season.
   - A limit ends either when the next one starts the day after, or when it is lifted. For a lift before its season ended, `ended_announced` and `ended_source` date and cite the lift's announcement.
   - Where a team played below the legal limit by choice, `limit` says so. The Maple Leafs played behind closed doors under Ontario's 1,000 cap, and the Jets admitted no one under Manitoba's 250 until at least January 11, 2022.
-- **Capacity share per game.** Features read shares through `capacity_share(games, prediction_utc)`:
+- **Capacity share per game.** Features read shares through `capacity_share(schedule, prediction_utc, predicting)`:
+  - It reads only the schedule rows `schedule_known_at` returns: games whose result is public, and the games being predicted once their schedule is public (ADR 0005). A game's venue and date stay hidden until then.
   - A source counts as public from 10:00 UTC the day after its date, the rule ADR 0003 sets for results.
   - A game takes the latest limit at its arena that started by its date and was public by the prediction.
   - That limit applies while it runs, and after its last day too while what ended it is not yet public.

@@ -12,7 +12,7 @@ tenures through coaches_known_at. An attendance limit counts from the day after 
 so features read capacity shares through capacity_share.
 """
 
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +20,7 @@ from pathlib import Path
 import pandera.polars as pa
 import polars as pl
 
-from nhl_edge.ingest.games import EXPECTED_GAMES, result_public
+from nhl_edge.ingest.games import EXPECTED_GAMES, result_public, schedule_known_at
 from nhl_edge.lake.schemas import (
     Arenas,
     AttendanceLimits,
@@ -134,19 +134,26 @@ def _public_by(announced: pl.Expr, prediction_utc: datetime) -> pl.Expr:
 
 
 def capacity_share(
-    games: pl.DataFrame, prediction_utc: datetime, ref: Reference | None = None
+    schedule: pl.DataFrame,
+    prediction_utc: datetime,
+    predicting: Collection[int],
+    ref: Reference | None = None,
 ) -> pl.DataFrame:
     """game_id and the share of its arena's seats open to spectators, as known at prediction_utc.
 
-    games needs game_id, game_date and venue (Schedule's columns). A game takes the latest limit
-    at its arena that started by its date and was announced by the prediction (10:00 UTC the day
-    after its source). That limit applies while it runs, and after its last day too while what
-    ended it is not yet known: the next limit's announcement, or the lift's (ended_announced). So
-    a game-day prediction reads Nashville's first home game with fans as empty, since the change
-    was reported the next day, and Montreal's game closed on the day itself as full. A game with
-    no known limit takes 1.
+    schedule has Schedule's columns. Only the games a prediction may see get a row, those
+    schedule_known_at returns: games whose result is public, and the games being predicted once
+    their schedule is public (ADR 0005). A game's venue and date are never read before then.
+
+    A game takes the latest limit at its arena that started by its date and was announced by the
+    prediction (10:00 UTC the day after its source). That limit applies while it runs, and after
+    its last day too while what ended it is not yet known: the next limit's announcement, or the
+    lift's (ended_announced). So a game-day prediction reads Nashville's first home game with
+    fans as empty, since the change was reported the next day, and Montreal's game closed on the
+    day itself as full. A game with no known limit takes 1.
     """
     ref = ref or Reference.load()
+    games = schedule_known_at(schedule, prediction_utc, predicting)
     limits = (
         ref.attendance_limits.sort("arena_id", "first_date")
         .with_columns(
