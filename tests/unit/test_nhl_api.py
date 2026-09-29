@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -266,14 +267,41 @@ def test_always_rule() -> None:
     assert always(b"", {}) is True
 
 
-def chart(*rows: tuple[int, int]) -> bytes:
-    """A shift chart body with one shift per (team id, period)."""
-    data = [{"typeCode": 517, "teamId": team, "period": period} for team, period in rows]
+GAME = 2026020001
+
+
+def shifts(team: int, period: int, players: int = 6, minutes: int = 20, game: int = GAME) -> list:
+    """Shift rows of one team in one period: each player on for the first `minutes` minutes."""
+    return [
+        {
+            "typeCode": 517,
+            "gameId": game,
+            "teamId": team,
+            "playerId": 8470000 + 100 * team + player,
+            "period": period,
+            "startTime": "00:00",
+            "endTime": f"{minutes:02d}:00",
+        }
+        for player in range(players)
+    ]
+
+
+def chart(*groups: list) -> bytes:
+    data = [row for group in groups for row in group]
     return json.dumps({"data": data, "total": len(data)}).encode()
 
 
-FULL = chart(*[(team, period) for team in (6, 13) for period in (1, 2, 3)])
-PARTIAL = chart((6, 1), (6, 2), (6, 3), (13, 1))  # one team's last two periods are missing
+FULL = chart(*[shifts(team, period) for team in (6, 13) for period in (1, 2, 3)])
+# One team's last two periods are missing.
+PARTIAL = chart(*[shifts(6, period) for period in (1, 2, 3)], shifts(13, 1))
+# Every period has rows, but the chart stops early in the third: one short shift for each team.
+TRUNCATED = chart(
+    *[shifts(team, period) for team in (6, 13) for period in (1, 2)],
+    shifts(6, 3, players=1, minutes=1),
+    shifts(13, 3, players=1, minutes=1),
+)
+# Complete in shape, but another game's rows.
+FOREIGN = chart(*[shifts(team, period, game=GAME + 1) for team in (6, 13) for period in (1, 2, 3)])
 EMPTY = b'{"data": [], "total": 0}'
 
 
@@ -282,9 +310,11 @@ EMPTY = b'{"data": [], "total": 0}'
     [
         (EMPTY, date(2026, 9, 27), True),  # the nightly run got nothing: fetch again
         (PARTIAL, date(2026, 9, 27), True),
+        (TRUNCATED, date(2026, 9, 27), True),
+        (FOREIGN, date(2026, 9, 27), True),
         (FULL, date(2026, 9, 27), False),
-        (EMPTY, date(2026, 9, 20), False),  # fetched a week or more after: the gap is the source's
-        (EMPTY, date(2026, 9, 22), True),  # 12:00 on the 28th is not yet a week after the 22nd
+        (EMPTY, date(2026, 9, 25), False),  # fetched 3 days or more after: the gap is the source's
+        (EMPTY, date(2026, 9, 26), True),  # 12:00 on the 28th is not yet 3 days after the 26th
     ],
 )
 def test_shift_chart_is_refetched_until_complete_or_settled(
@@ -294,7 +324,16 @@ def test_shift_chart_is_refetched_until_complete_or_settled(
         httpx.Response(200, content=cached), httpx.Response(200, content=FULL)
     )
     api = make_api(RawStore(tmp_path), handler)
-    api.shift_chart(20262027, 2026020001, played)  # the nightly run
-    response = api.shift_chart(20262027, 2026020001, played)  # the next night's lookback
+    api.shift_chart(20262027, GAME, played)  # the nightly run
+    response = api.shift_chart(20262027, GAME, played)  # the next night's lookback
     assert len(requests) == 1 + refetched
     assert (response.body == FULL) is (refetched or cached == FULL)
+
+
+def test_charts_settle_within_the_nightly_lookback() -> None:
+    # A chart must stay unsettled no longer than the nightly job looks back, or a late chart
+    # published after the game leaves the window would never be fetched.
+    workflow = Path(__file__).parents[2] / ".github" / "workflows" / "ingest-nightly.yml"
+    lookback = re.search(r"--recent (\d+)", workflow.read_text())
+    assert lookback is not None
+    assert timedelta(days=int(lookback[1])) == nhl_api.CHART_SETTLED

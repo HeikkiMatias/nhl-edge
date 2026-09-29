@@ -57,7 +57,7 @@ Raw responses go to `data/raw/nhl/<kind>/<entity>/<fetch stamp>.json.gz`, with a
 | --- | --- | --- |
 | `schedule` | `{date}` (a week from that date) | every regular-season game on the days used is final; the season-bounds probe once it was fetched after the season ended |
 | `play-by-play`, `boxscore` | `{season}/{game_id}` | always (fetched only for final games) |
-| `shiftcharts` | `{season}/{game_id}` | it lists shifts of both teams in each of periods 1 to 3, or it was fetched 7 days or more after the game. The NHL sometimes publishes a chart late, so the nightly lookback refetches an empty or partial one. After a week, a gap counts as the source's. |
+| `shiftcharts` | `{season}/{game_id}` | two teams each have valid shifts of this game adding up to at least four players' full period in each of periods 1 to 3, or it was fetched 3 days or more after the game. The NHL sometimes publishes a chart late or cut short, so the nightly lookback refetches it. The 3 days match the lookback (`--recent 3`, which a test ties together), and after that a gap counts as the source's. |
 | `roster` | `{season}/{team}` | it was fetched after the team's last ingested game was observed |
 | `player-landing` | `{player_id}` | always (bio and draft facts do not change) |
 
