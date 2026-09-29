@@ -1,6 +1,6 @@
 """One pandera schema per table. Every write validates against its schema."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Annotated
 
 import pandera.polars as pa
@@ -496,3 +496,169 @@ class ShiftCoverage(pa.DataFrameModel):
         return data.lazyframe.select(
             (pl.col("skater_mismatches") <= checked) & (pl.col("goalie_mismatches") <= checked)
         )
+
+
+# Reference files (src/nhl_edge/reference/): hand-compiled CSVs, not lake tables. They cover the
+# lake's seasons, 2010-11 on.
+ARENA_ID = r"^[a-z0-9_]+$"
+
+
+def valid_season(season: pl.Expr) -> pl.Expr:
+    """20232024: consecutive years. Null passes, for an open-ended last_season."""
+    return (season % 10_000 == season // 10_000 + 1).fill_null(True)
+
+
+def is_time_zone(tz: str) -> bool:
+    """A zone Polars can convert to, which is how features will use it."""
+    try:
+        pl.Series([datetime(2000, 1, 1)]).dt.replace_time_zone(tz)
+    except pl.exceptions.ComputeError:
+        return False
+    return True
+
+
+class Teams(pa.DataFrameModel):
+    """One NHL API team code (triCode) used from 2010-11 on, with the seasons it was used.
+
+    first_season is 20102011 for a code already in use then. last_season is null while the code
+    is in use. predecessor is the code the team continues under a new name or city: ATL became
+    WPG in 2011-12, PHX became ARI in 2014-15, and ARI became UTA in 2024-25, when the Coyotes'
+    players and staff moved to Utah. The NHL counts Utah as a new franchise (franchise_id 40), so
+    predecessor, not franchise_id, links codes that are one team. Known seasons ahead, so no
+    observed_utc.
+    """
+
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    franchise_id: pl.Int16 = pa.Field(ge=1)
+    name: pl.String = pa.Field(str_length={"min_value": 1})
+    first_season: pl.Int32 = pa.Field(ge=20102011)
+    last_season: pl.Int32 = pa.Field(nullable=True)
+    predecessor: pl.String = pa.Field(str_matches=TRI_CODE, nullable=True)
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = "team"
+
+    @pa.dataframe_check
+    def seasons_are_seasons(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            valid_season(pl.col("first_season")) & valid_season(pl.col("last_season"))
+        )
+
+    @pa.dataframe_check
+    def last_not_before_first(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("last_season") >= pl.col("first_season")).fill_null(True)
+        )
+
+
+class Arenas(pa.DataFrameModel):
+    """One building an NHL regular-season game was played in from 2010-11 on, home arena or
+    neutral site (European games, outdoor games, Lake Tahoe).
+
+    arena_id is the slug of name, the latest name the NHL API gave the building; Venues maps every
+    earlier name to it. latitude and longitude are WGS84 degrees and tz an IANA zone, for travel
+    and time-zone features. source is the Wikipedia article the coordinates come from. Buildings
+    don't move, so no observed_utc.
+    """
+
+    arena_id: pl.String = pa.Field(str_matches=ARENA_ID)
+    name: pl.String = pa.Field(str_length={"min_value": 1})
+    city: pl.String = pa.Field(str_length={"min_value": 1})
+    country: pl.String = pa.Field(str_matches=r"^[A-Z]{3}$")
+    latitude: pl.Float64 = pa.Field(ge=-90, le=90)
+    longitude: pl.Float64 = pa.Field(ge=-180, le=180)
+    tz: pl.String = pa.Field(str_matches=r"^(America|Europe)/[A-Za-z_/]+$")
+    source: pl.String = pa.Field(str_startswith="https://")
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = "arena_id"
+
+    @pa.dataframe_check
+    def tz_is_a_zone(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("tz").map_elements(is_time_zone, pl.Boolean))
+
+    @pa.dataframe_check
+    def names_are_unique(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("name").is_unique())
+
+
+class Venues(pa.DataFrameModel):
+    """Every venue name the NHL API gives a regular-season game (Schedule.venue), mapped to its
+    building. Renames of one building map to one arena_id: Pepsi Center and Ball Arena are both
+    ball_arena."""
+
+    venue: pl.String = pa.Field(str_length={"min_value": 1})
+    arena_id: pl.String = pa.Field(str_matches=ARENA_ID)
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = "venue"
+
+
+class HomeArenas(pa.DataFrameModel):
+    """The arena a team played its home games in, by season, from 2010-11 on.
+
+    A team has one primary home arena per season, its base for travel. NYI split its home games
+    between Barclays Center and the Nassau Coliseum in 2018-19 and 2019-20, so those seasons have
+    both, and the Coliseum, which had more of them, is primary. last_season is null while in use.
+    """
+
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    arena_id: pl.String = pa.Field(str_matches=ARENA_ID)
+    first_season: pl.Int32 = pa.Field(ge=20102011)
+    last_season: pl.Int32 = pa.Field(nullable=True)
+    primary: pl.Boolean
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["team", "arena_id", "first_season"]  # noqa: RUF012
+
+    @pa.dataframe_check
+    def seasons_are_seasons(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            valid_season(pl.col("first_season")) & valid_season(pl.col("last_season"))
+        )
+
+    @pa.dataframe_check
+    def last_not_before_first(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("last_season") >= pl.col("first_season")).fill_null(True)
+        )
+
+
+class CoachTenures(pa.DataFrameModel):
+    """One head coach's stint with a team, from his first to his last regular-season game.
+
+    team is the code at the first game. A stint runs on through a change of code (Tippett from PHX
+    to ARI, Tourigny from ARI to UTA), which Teams.predecessor links. last_game is null for a
+    current coach. A coach with two stints with a team has two rows. coach is null only for games
+    the NHL credits to no coach, which note explains, as it does interim and shared benches.
+
+    A stint's end is future information while it runs: features read tenures through
+    reference.coaches_known_at, never this table directly.
+    """
+
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    first_game: pl.Date
+    last_game: pl.Date = pa.Field(nullable=True)
+    coach: pl.String = pa.Field(nullable=True)
+    note: pl.String = pa.Field(nullable=True)
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["team", "first_game"]  # noqa: RUF012
+
+    @pa.dataframe_check
+    def last_not_before_first(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select((pl.col("last_game") >= pl.col("first_game")).fill_null(True))
+
+    @pa.dataframe_check
+    def uncredited_games_are_explained(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("coach").is_not_null() | pl.col("note").is_not_null())

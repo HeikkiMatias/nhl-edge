@@ -152,3 +152,39 @@ At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<da
 - The Odds API historical endpoint is paid. The `guard-bash` hook blocks it unless Claude Code starts with `ALLOW_PAID_ODDS=1`.
 - MoneyPuck data is free for non-commercial use with attribution and must not be scraped. It is a sanity check, not a backtest input.
 - Daily Faceoff and RotoWire are manual references only, not part of the automated pipeline.
+
+## Reference files
+
+Hand-compiled CSVs in `src/nhl_edge/reference/`, loaded and validated by `nhl_edge.reference` (schemas in `lake/schemas.py`). They cover the lake's seasons, 2010-11 on, and were compiled on 2026-09-29. `nhl audit reference` checks them against every game in the lake's `games` table and lists each problem.
+
+| File | One row per | Columns | Source |
+| --- | --- | --- | --- |
+| `teams.csv` | team code (triCode) | franchise_id, name, first_season, last_season, predecessor | NHL records API `franchise` and `team` |
+| `arenas.csv` | building | name, city, country, latitude, longitude, tz (IANA), source | Coordinates from the Wikipedia article in `source`. Zones by city |
+| `venues.csv` | venue name the NHL API gives | arena_id | The lake's `games`, and the 2026-27 schedule |
+| `home_arenas.csv` | team, arena and first season | last_season, primary | The lake's `games` |
+| `coaches.csv` | head coach's stint with a team | team, first_game, last_game, coach, note | NHL records API `coach-franchise-records`, split by hand where noted |
+
+- **Team codes.** ATL became WPG in 2011-12, PHX became ARI in 2014-15, and ARI became UTA in 2024-25. `predecessor` links the codes of one team.
+  - The NHL counts Utah as a new franchise (`franchise_id` 40), but the Coyotes' players and staff moved there, so UTA's predecessor is ARI.
+  - `first_season` is 20102011 for a code already in use then. `last_season` is empty while a code is in use.
+- **Arenas.**
+  - `arena_id` is the slug of the latest name the NHL API gave the building, and `venues.csv` maps every name to it. For example, Pepsi Center and Ball Arena both map to `ball_arena`, and Hartwall Areena, Hartwall Arena and Veikkaus Arena to `veikkaus_arena`.
+  - Neutral-site games (European games, outdoor games, Lake Tahoe) have their own arenas.
+  - The NHL records API gives coordinates for current arenas, but it lists Little Caesars Arena at Joe Louis Arena's, 1.8 km away. Every other current arena the API locates agrees with Wikipedia within 0.5 km.
+  - Each zone gives the same UTC offsets as the NHL schedule's `venueTimezone` for every 2026-27 game.
+- **Home arenas.** A team has one primary home arena per season, its base for travel. NYI split its home games between Barclays Center and the Nassau Coliseum in 2018-19 and 2019-20, so those seasons list both, and the Coliseum, which hosted more of them, is primary.
+- **Coach tenures.**
+  - The NHL record has one row per coach and franchise, with his first and last regular-season game. Where a coach had two stints with a team (Ruff with BUF, Sutter with CGY, Hitchcock with DAL, and others), the stints are split along the tenures between them.
+  - Every stint since 2010-11 matches the NHL's count of games coached, except where a note explains:
+    - two TBL games in March 2013 the NHL credits to no coach
+    - NJD 2014-15, when Scott Stevens, Adam Oates and general manager Lou Lamoriello shared the bench
+  - A stint runs through a change of code: Tippett from PHX to ARI, Tourigny from ARI to UTA.
+  - New coaches for 2026-27 (EDM, LAK, TOR, VAN, VGK) start at their team's first game. Their hire dates are in the note.
+- **Point in time.**
+  - Team codes, arenas, venues and home arenas are known seasons ahead, so they carry no `observed_utc`. A feature learns a game's venue from `schedule`, public a day before the game (ADR 0005).
+  - A coach's stint is different: its end is future information while it runs. Features read tenures through `coaches_known_at`:
+    - A stint counts as known from 10:00 UTC the morning after its first game, when that game's feeds show who coached (ADR 0003 and 0004).
+    - Its `last_game` becomes known only once the next stint is.
+  - This is conservative: most coaching changes are announced a day or more before the new coach's first game.
+- **Upkeep.** At a coaching change, end the old stint at its last game and add the new one from its first game. When the NHL uses a new venue name, add it to `venues.csv` (and the building to `arenas.csv` if new). Then run `nhl audit reference`.
