@@ -46,9 +46,9 @@ def _responses(paths: Iterable[str]) -> tuple[set[str], set[str]]:
     return bodies & sidecars, bodies ^ sidecars
 
 
-def _each(work: Callable[[str], None], raw_keys: Iterable[str], workers: int) -> None:
+def _each[T](work: Callable[[str], T], raw_keys: Iterable[str], workers: int) -> list[T]:
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        list(pool.map(work, sorted(raw_keys)))
+        return list(pool.map(work, sorted(raw_keys)))
 
 
 class RawStore:
@@ -207,11 +207,29 @@ class RawStore:
 
     def restore_from_r2(self, prefix: str = "", workers: int = WORKERS) -> CopyCounts:
         """Download every complete R2 response under prefix that is missing locally. Nothing
-        stored locally is overwritten: a response with any local file is skipped, and so is an
-        R2 body without its sidecar."""
+        stored locally is overwritten. A local body without its sidecar (a write or restore cut
+        off between its two files) is completed when it is byte-identical to R2's, and skipped
+        otherwise; an R2 body without its sidecar is skipped."""
         local, local_partial = self._local_responses(prefix)
         remote, remote_partial = self._remote_responses(prefix)
         missing = remote - local - local_partial
         _each(self._download, missing, workers)
-        skipped = len(remote_partial) + len(remote & local_partial)
-        return CopyCounts(len(local), len(remote), len(missing), skipped)
+        resumed = sum(_each(self._resume, remote & local_partial, workers))
+        skipped = len(remote_partial) + len(remote & local_partial) - resumed
+        return CopyCounts(len(local), len(remote), len(missing) + resumed, skipped)
+
+    def _resume(self, raw_key: str) -> bool:
+        """Add the missing sidecar of a local body that matches R2's body exactly."""
+        body_path = self.base_dir / f"{raw_key}{SUFFIX}"
+        sidecar_path = self.base_dir / f"{raw_key}{META}"
+        if not body_path.exists() or sidecar_path.exists():
+            return False
+        objects = self._objects()
+        remote_body = objects.get_object(Bucket=self.bucket, Key=f"{R2_RAW}{raw_key}{SUFFIX}")
+        if remote_body["Body"].read() != body_path.read_bytes():
+            return False
+        sidecar = objects.get_object(Bucket=self.bucket, Key=f"{R2_RAW}{raw_key}{META}")
+        tmp = sidecar_path.with_name(f"{sidecar_path.name}.tmp")
+        tmp.write_bytes(sidecar["Body"].read())
+        tmp.replace(sidecar_path)
+        return True

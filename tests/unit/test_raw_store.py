@@ -190,3 +190,24 @@ def test_an_interrupted_restore_leaves_nothing_and_resumes(tmp_path: Path) -> No
     counts = laptop.restore_from_r2()
     assert (counts.copied, counts.skipped) == (1, 0)
     assert laptop.get("odds/2026-09-28/a") == BODY
+
+
+def test_a_body_cut_off_from_its_sidecar_is_completed_if_it_matches(tmp_path: Path) -> None:
+    bucket = MemoryBucket()
+    runner = machine(tmp_path / "runner", bucket)
+    runner.put("odds", "2026-09-28/a", BODY, {"slot": "morning"})
+    runner.put("odds", "2026-09-28/b", b"[2]", {"slot": "midday"})
+    laptop = machine(tmp_path / "laptop", bucket)
+    # a: the process died between publishing the body and the sidecar; b: a body of its own.
+    for key, body in (("a", gzip.compress(BODY, mtime=0)), ("b", gzip.compress(b"[1]", mtime=0))):
+        path = tmp_path / f"laptop/odds/2026-09-28/{key}.json.gz"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+
+    counts = laptop.restore_from_r2()
+    assert (counts.copied, counts.skipped) == (1, 1)
+    assert laptop.meta("odds/2026-09-28/a") == {"slot": "morning"}
+    assert laptop.get("odds/2026-09-28/a") == BODY
+    assert not (tmp_path / "laptop/odds/2026-09-28/b.meta.json").exists()
+    assert gzip.decompress((tmp_path / "laptop/odds/2026-09-28/b.json.gz").read_bytes()) == b"[1]"
+    assert laptop.restore_from_r2().copied == 0
