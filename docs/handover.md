@@ -40,11 +40,13 @@ Where the build stands at the end of the first phase 1 session, and how to pick 
 
 ## Continuing in a cloud session
 
-1. **Environment.** On claude.ai/code, choose the `HeikkiMatias/nhl-edge` repository and set up its environment. Names as in `.env.example`:
-   - **Environment variables:** `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET` are needed to restore data. Leave the Supabase and Odds API keys out: none of the remaining P1 issues writes to them.
-   - **Network access:** it must reach `pypi.org` and `astral.sh` for uv, and `api.github.com`. For the data work it also needs `*.r2.cloudflarestorage.com`, `api-web.nhle.com`, `api.nhle.com` and `www.sportsbookreviewsonline.com` (#7). #8 and #26 also need general web access for research.
-   - **Setup script:** install uv if it is missing, then `uv sync`.
-   - **GitHub CLI:** the review workflow uses `gh`. If `gh auth status` fails in the session, add a `GH_TOKEN` with repo access.
+1. **Environment.** On claude.ai/code, select the cloud icon in the row above the message box, then **Add cloud environment**. The dialog holds the name, network access, environment variables and setup script.
+   - **Environment variables**, one `KEY=value` per line with names as in `.env.example`: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET`.
+     - Anyone who uses the environment can read them, so give it its own revocable R2 token, scoped to this bucket.
+     - Leave the Supabase and Odds API keys out: none of the remaining P1 issues writes to them.
+   - **Network access:** **Full** is simplest, since #8 and #26 need web research. For something tighter, pick **Custom**, keep the default allowlist (PyPI, GitHub) and add `*.r2.cloudflarestorage.com`, `api-web.nhle.com`, `api.nhle.com` and `www.sportsbookreviewsonline.com`.
+   - **Setup script:** none. Python 3.12 (Ubuntu 24.04), uv and `gh` are pre-installed. The SessionStart hook's `uv run` creates the virtualenv on the first start. If that times out, run `uv sync`.
+   - **GitHub:** no token needed. `gh` authenticates through the session's GitHub proxy, provided the Claude GitHub App is installed on the repository. Leave **Auto-fix** off on PRs: it answers review comments itself, bypassing the review budget and the owner's calls on P0s.
 2. **Data.** Issues #8 and #26 need no lake data. #7, #9 and #10 do. First run `uv run nhl lake restore-raw`, then `uv run nhl ingest --seasons 20102011-20252026 --replay` (no network, about 15 minutes) and `uv run nhl odds replay`. `uv run nhl status` should then say "up to date with R2".
 3. **Start.** Use this prompt:
 
