@@ -118,6 +118,8 @@ Shift chart rows the parser leaves out, counted in `shift_coverage`:
 | `foreign_rows` | teams not in the game | 2021020513 (WSH at NYI) lists every shift twice and STL and MIN shifts besides |
 | `bad_rows` | malformed times, shifts outside their period, a shift number repeated with other times | |
 
+The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (2025-04-08 to 2025-04-15). A live request on 2026-09-29 still gave none, so those games have no shifts and count as incomplete. No other game from 2010-11 on has an empty chart.
+
 A game's chart is `complete` when it has no bad rows and every dressed player's shifts add up to his boxscore time on ice within 60 seconds (a missing boxscore time counts as not adding up). At every unblocked shot except penalty shots, the players on the ice by the chart are also compared with `situationCode`, and `skater_mismatches` and `goalie_mismatches` count where they differ. RAPM drops the stints that contradict the strength state. `nhl audit shifts` prints the per-season summary, which is reviewed before RAPM depends on the charts.
 
 ## Odds snapshots
