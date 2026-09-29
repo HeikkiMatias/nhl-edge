@@ -112,6 +112,84 @@ class LakeOddsSnapshots(OddsSnapshots):
         return data.lazyframe.select(pl.col("game_id").is_null() == pl.col("game_type").is_null())
 
 
+SBR_MARKETS = ("h2h", "spreads", "totals")
+SBR_QUOTES = ("open", "close")
+SBR_KEY = ("game_id", "market", "side", "quote")
+
+
+class SbrOdds(pa.DataFrameModel):
+    """One SBR archive price (#7): the opening or closing line of one side of one market, for an
+    NHL regular-season game of 2010-11 to 2022-23.
+
+    h2h is the moneyline, settled on the full game including OT and the shootout, like the Odds
+    API's h2h. spreads is the closing puck line, from 2014-15, and line is the side's handicap.
+    totals has the line for over and under. price_american is as SBR prints it and price_decimal
+    its conversion. home and away come from the NHL schedule, not from SBR's rows.
+
+    SBR gives no time for its prices (ADR 0006). observed_utc is start_utc for every price, the
+    only time each was surely public, so known_at shows no SBR price before its game starts.
+    assumed_available_utc is E2's assumption of when the price could be bet: the close at
+    start_utc, the open at 10:00 US Eastern on game_date or the start when that is earlier. Only
+    E2 reads it, through sbr.assumed_available_at, never as observed_utc.
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=r"^[A-Z]{3}$")
+    away: pl.String = pa.Field(str_matches=r"^[A-Z]{3}$")
+    market: pl.String = pa.Field(isin=SBR_MARKETS)
+    side: pl.String = pa.Field(isin=["home", "away", "over", "under"])
+    line: pl.Float64 = pa.Field(nullable=True)
+    quote: pl.String = pa.Field(isin=SBR_QUOTES)
+    price_american: pl.Int32
+    price_decimal: pl.Float64 = pa.Field(gt=1)
+    observed_utc: UtcDatetime
+    assumed_available_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(SBR_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def home_is_not_away(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("home") != pl.col("away"))
+
+    @pa.dataframe_check
+    def line_null_only_for_h2h(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select((pl.col("market") == "h2h") == pl.col("line").is_null())
+
+    @pa.dataframe_check
+    def side_fits_market(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        team = pl.col("side").is_in(["home", "away"])
+        return data.lazyframe.select((pl.col("market") == "totals") != team)
+
+    @pa.dataframe_check
+    def american_price_is_valid(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("price_american").abs() >= 100)
+
+    @pa.dataframe_check
+    def observed_at_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("observed_utc") == pl.col("start_utc"))
+
+    @pa.dataframe_check
+    def assumed_no_later_than_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("assumed_available_utc") <= pl.col("start_utc"))
+
+    @pa.dataframe_check
+    def close_assumed_at_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        close = pl.col("quote") == "close"
+        assumed = pl.col("assumed_available_utc")
+        return data.lazyframe.select(~close | (assumed == pl.col("start_utc")))
+
+
 DECIDED_IN = ("REG", "OT", "SO")
 # No result counts as public sooner after its scheduled start (ADR 0003).
 MIN_RESULT_LAG = timedelta(hours=6)

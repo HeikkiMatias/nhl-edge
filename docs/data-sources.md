@@ -9,7 +9,7 @@ The fixed list of sources and endpoints. Work from this file instead of guessing
 | [NHL API](https://github.com/Zmalski/NHL-API-Reference) (api-web.nhle.com, api.nhle.com/stats/rest) | Schedule, play-by-play with shot coordinates, boxscores, shift charts, rosters, player bios and career stats, draft picks, team prospects | Free, unofficial and undocumented, no published rate limit; throttle to about 1 request per second and cache every response | Backbone: shifts for RAPM, shots for xG, rosters, schedule for rest and travel |
 | [MoneyPuck data](https://moneypuck.com/data.htm) | Shot-level data with xG for 2007 to 2026, skater, goalie, team and line stats by season and game, player bios | Free CSV downloads for non-commercial use, attribution required, no scraping | Sanity check for the simple in-house xG model and player stats; not a backtest input, since its xG was likely fitted across many seasons |
 | [The Odds API](https://the-odds-api.com/) | Live NHL moneyline, puck line and totals from EU books including Pinnacle; props per event | Free: 500 credits a month. Paid from $30 a month for 20,000 credits. Historical odds from 2020, paid plans only, 10 credits per market per region ([docs](https://the-odds-api.com/liveapi/guides/v4/)) | Live odds snapshots from day one on the free tier; historical backfill deferred to v2 |
-| [SBR odds archive](https://www.sportsbookreviewsonline.com/scoresoddsarchives/nhl/nhloddsarchives.htm) | Opening and closing moneylines, puck lines and totals, 2007-08 to 2022-23 | Free Excel files, no longer updated, book source not stated | Opening lines for the historical tradable test (E2), closes for the information test (E1); quality unknown until the phase 1 audit |
+| [SBR odds archive](https://www.sportsbookreviewsonline.com/scoresoddsarchives/nhl/nhloddsarchives.htm) | Opening and closing moneylines, puck lines and totals, 2007-08 to 2022-23 (2022-23 stops on 2022-11-27) | Free HTML tables (the Excel files are gone), no longer updated, book source not stated; answers 404 without a browser User-Agent | Opening lines for the historical tradable test (E2), closes for the information test (E1); quality unknown until the phase 1 audit |
 | [Elite Prospects API](https://developer.eliteprospects.com/) | Player stats across 900+ leagues including Liiga, SHL, CHL and AHL, draft and transfer history | Free Explorer tier: 1,000 calls a month, 10 per minute; current season free, history is a one-off purchase | Prospect and non-NHL stats for NHLe priors, used sparingly |
 | NHLe research ([Bacon](https://towardsdatascience.com/nhl-equivalency-and-prospect-projection-models-building-the-nhl-equivalency-model-part-2-6f275a45e22/), [HockeyStats](https://hockeystats.com/methodology/nhle)) | Published league translation factors and method | Free articles | Starting coefficients for offensive priors only, refit later on your own data |
 | [Daily Faceoff](https://www.dailyfaceoff.com/starting-goalies) | Projected lines, power play units, starting goalie status with report time and source | Web pages only; robots.txt allows them and disallows `/api/`; no terms of use found (2026-09-29) | Starting goalies logged at every goalie poll (#48), compared with the NHL's in the audit; other pages manual reference only |
@@ -40,6 +40,9 @@ NHL stats API (api.nhle.com/stats/rest)
 The Odds API (api.the-odds-api.com)
   GET /v4/sports/icehockey_nhl/odds?regions=eu&markets=h2h,spreads,totals&oddsFormat=decimal
   GET /v4/historical/sports/icehockey_nhl/odds?date={ISO8601}   # paid plans
+
+SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
+  GET /scoresoddsarchives/nhl-odds-{2010-11 .. 2022-23}/      # 2020-21 is nhl-odds-2021
 ```
 
 ## Access rules
@@ -176,6 +179,16 @@ The same `nhl goalies poll` also fetches Daily Faceoff's starting-goalies page f
 - **Raw:** each page untouched (HTML) as `dailyfaceoff/starting-goalies/<ET date>/<fetch stamp>`, mirrored to R2 and compared in full with R2 by `nhl status`.
 - **Parsed from** the JSON in the page's `__NEXT_DATA__` script (`props.pageProps.data`): per game `dateGmt` and, per side, the team name, goalie name and Daily Faceoff id, status (`NewsStrengthName`, such as Likely or Confirmed), `NewsCreatedAt` and `NewsSourceUrl`.
 - **Table:** `nhl goalies replay` also rebuilds the lake's `dailyfaceoff_goalies`: one row per page fetch, game and team with the goalie, status, `reported_utc` and source. `observed_utc` is the fetch time, not the report time, since a status can change. Games that had started at the fetch give no rows. Goalies stay names; the audit matches them to NHL player ids. There is no NHL `game_id`; `start_utc` and `team` identify the game.
+
+## SBR odds archive
+
+`nhl odds sbr` imports 2010-11 to 2022-23 into the lake's `sbr_odds` table, one partition per season (#7).
+- Each season is one HTML page. The site answers 404 unless the request sends a browser User-Agent, so `ingest/sbr.py` sends one. Pages are stored untouched under `sbr/<season>/` in the raw store, mirrored to `raw/sbr/` in R2, and never fetched again; `--replay` parses the stored pages only.
+- A game is two rows. The table keeps the opening and closing moneyline (`h2h`), the closing puck line from 2014-15 (`spreads`) and the opening and closing total. The first row's total price is the over: when it is the favourite, the over lands 53% of the time against 47% otherwise (2010-11 to 2021-22). A price shown as `NL` or blank is left out with the other side's.
+- SBR's final score includes OT and the shootout. The moneyline is the full-game line, the same market as the Odds API's `h2h`.
+- Rows match NHL regular-season games through `schedule`, on the game date and the pair of teams. The schedule says which team is home, since SBR lists neutral-site games as N and N and once lists H before V. Playoff rows are counted and left out.
+- Times (ADR 0006): SBR gives none, so `observed_utc` is `start_utc` for every price and `known_at` shows no SBR price before its game starts. `assumed_available_utc` is E2's assumption of when a price could be bet: the opener at 10:00 US Eastern on the game date (never before the game's schedule is public, never after the start), the close at the start. Only E2 reads it, through `assumed_available_at`, which also drops games already started.
+- Join on 2026-09-29: every regular-season game of 2010-11 to 2021-22 has an SBR row (100%). 2022-23 has 342 of 1,312 (26.1%), because the archive stops on 2022-11-27. 14 playoff games of 2020-21, played before the regular season ended, show as unmatched, and 5 games have a final score that disagrees with the NHL's.
 
 ## Reference files
 
