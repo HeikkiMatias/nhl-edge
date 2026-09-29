@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -104,7 +105,7 @@ def test_one_throttle_covers_both_hosts(tmp_path: Path) -> None:
     requests, handler = serve()
     api = make_api(RawStore(tmp_path), handler, clock=clock, min_interval_s=1.0)
     api.schedule_week(DAY, never)
-    api.shift_chart(20102011, 2010020003)
+    api.shift_chart(20102011, 2010020003, date(2010, 10, 7))
     assert [r.url.host for r in requests] == ["api-web.nhle.com", "api.nhle.com"]
     assert clock.sleeps == [1.0]
 
@@ -183,7 +184,7 @@ def test_raw_keys_and_urls_follow_the_layout(tmp_path: Path) -> None:
         api.schedule_week(DAY, never).raw_key,
         api.play_by_play(20102011, 2010020003).raw_key,
         api.boxscore(20102011, 2010020003).raw_key,
-        api.shift_chart(20102011, 2010020003).raw_key,
+        api.shift_chart(20102011, 2010020003, date(2010, 10, 7)).raw_key,
         api.roster("PHX", 20102011, never).raw_key,
         api.player_landing(8478402).raw_key,
     ]
@@ -263,3 +264,37 @@ def test_odds_schedule_always_fetches_fresh(tmp_path: Path) -> None:
 
 def test_always_rule() -> None:
     assert always(b"", {}) is True
+
+
+def chart(*rows: tuple[int, int]) -> bytes:
+    """A shift chart body with one shift per (team id, period)."""
+    data = [{"typeCode": 517, "teamId": team, "period": period} for team, period in rows]
+    return json.dumps({"data": data, "total": len(data)}).encode()
+
+
+FULL = chart(*[(team, period) for team in (6, 13) for period in (1, 2, 3)])
+PARTIAL = chart((6, 1), (6, 2), (6, 3), (13, 1))  # one team's last two periods are missing
+EMPTY = b'{"data": [], "total": 0}'
+
+
+@pytest.mark.parametrize(
+    ("cached", "played", "refetched"),
+    [
+        (EMPTY, date(2026, 9, 27), True),  # the nightly run got nothing: fetch again
+        (PARTIAL, date(2026, 9, 27), True),
+        (FULL, date(2026, 9, 27), False),
+        (EMPTY, date(2026, 9, 20), False),  # fetched a week or more after: the gap is the source's
+        (EMPTY, date(2026, 9, 22), True),  # 12:00 on the 28th is not yet a week after the 22nd
+    ],
+)
+def test_shift_chart_is_refetched_until_complete_or_settled(
+    tmp_path: Path, cached: bytes, played: date, refetched: bool
+) -> None:
+    requests, handler = sequence(
+        httpx.Response(200, content=cached), httpx.Response(200, content=FULL)
+    )
+    api = make_api(RawStore(tmp_path), handler)
+    api.shift_chart(20262027, 2026020001, played)  # the nightly run
+    response = api.shift_chart(20262027, 2026020001, played)  # the next night's lookback
+    assert len(requests) == 1 + refetched
+    assert (response.body == FULL) is (refetched or cached == FULL)
