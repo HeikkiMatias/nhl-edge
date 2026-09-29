@@ -67,9 +67,10 @@ def run(
     methods: Iterable[Method] = tuple(Method),
 ) -> tuple[pl.DataFrame, dict[str, dict[int, dict[str, int]]]]:
     """Every prediction for the test seasons, scored, and the coverage per experiment and season:
-    the season's games, those with a price, those whose market de-vigging refuses, and those
-    scored. E2's coverage also counts the games whose opener differs from the close, which sizes
-    how much E2's opener can have moved before its assumed time (ADR 0006)."""
+    the season's games, those with a price, those priced but without a result, those whose market
+    de-vigging refuses, and those scored. E2's coverage also counts the games whose opener differs
+    from the close, which sizes how much E2's opener can have moved before its assumed time
+    (ADR 0006)."""
     seasons = list(seasons)
     held_out = [season for season in seasons if season_role(season) not in OPEN_ROLES]
     if held_out:
@@ -82,7 +83,9 @@ def run(
         "game_id", close=pl.concat_list("home_price", "away_price")
     )
     for experiment in Experiment:
-        prices = market_prices(tested, experiment).join(results, on="game_id")
+        quoted = market_prices(tested, experiment)
+        unsettled = quoted.join(results, on="game_id", how="anti")
+        prices = quoted.join(results, on="game_id")
         dropped = prices.filter(refused(prices))
         moved = (
             prices.join(closes, on="game_id")
@@ -94,10 +97,11 @@ def run(
             in_season = pl.col("season") == season
             counts = {
                 "games": games.filter(in_season).height,
-                "priced": prices.filter(in_season).height,
+                "priced": quoted.filter(in_season).height,
+                "unsettled": unsettled.filter(in_season).height,
                 "refused": dropped.filter(in_season).height,
             }
-            counts["scored"] = counts["priced"] - counts["refused"]
+            counts["scored"] = counts["priced"] - counts["unsettled"] - counts["refused"]
             if experiment is Experiment.E2:
                 counts["opener_differs_from_close"] = moved.filter(in_season).height
             coverage[experiment][season] = counts

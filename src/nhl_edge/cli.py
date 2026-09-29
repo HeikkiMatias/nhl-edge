@@ -148,6 +148,7 @@ def backtest(
 
     from nhl_edge.backtest import reports, walk_forward
     from nhl_edge.backtest.seasons import OPEN_ROLES, season_role
+    from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.lake.tables import Lake
 
@@ -168,7 +169,18 @@ def backtest(
     if missing:
         typer.echo(f"no SBR prices for {missing} in the lake: run nhl odds sbr", err=True)
         raise typer.Exit(code=1)
-    predictions, coverage = walk_forward.run(sbr_odds, lake.read("games"), wanted)
+    games = lake.read("games")
+    # A season short of results would be scored on a subset of its games.
+    short = {
+        season: height
+        for season in wanted
+        if (height := games.filter(pl.col("season") == season).height) != EXPECTED_GAMES[season]
+    }
+    if short:
+        counts = ", ".join(f"{n:,} of {EXPECTED_GAMES[s]:,} in {s}" for s, n in short.items())
+        typer.echo(f"games has {counts}: run nhl ingest for those seasons", err=True)
+        raise typer.Exit(code=1)
+    predictions, coverage = walk_forward.run(sbr_odds, games, wanted)
     now = datetime.now(UTC)
     report = reports.summary(predictions, coverage, wanted, reports.version("backtest", now), now)
     path = reports.write(report, out)

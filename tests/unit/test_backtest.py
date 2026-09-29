@@ -1,6 +1,7 @@
 import csv
 import json
 import math
+import subprocess
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from nhl_edge.backtest import reports
 from nhl_edge.backtest.metrics import bootstrap, log_loss
 from nhl_edge.backtest.walk_forward import b0, outcomes, run
 from nhl_edge.cli import app
+from nhl_edge.ingest.games import EXPECTED_GAMES
 from nhl_edge.ingest.sbr import match_season, parse_season
 from nhl_edge.lake.schemas import Games, dtypes
 from nhl_edge.lake.tables import Lake
@@ -124,14 +126,22 @@ def test_run_scores_b0_for_both_experiments_and_every_method() -> None:
     counts = predictions.group_by("experiment", "method").len()
     assert set(counts["len"]) == {coverage["E1"][20212022]["priced"]}
     # BOS and DAL (2021020030) are not on the fixture page, so they have no price.
-    assert coverage["E1"][20212022] == {"games": 4, "priced": 3, "refused": 0, "scored": 3}
-    assert coverage["E2"][20212022] == {
-        "games": 4,
+    counts = {"games": 4, "priced": 3, "unsettled": 0, "refused": 0, "scored": 3}
+    assert coverage["E1"][20212022] == counts
+    assert coverage["E2"][20212022] == {**counts, "opener_differs_from_close": 3}
+
+
+def test_a_priced_game_without_a_result_is_counted_and_not_scored() -> None:
+    games = games_of(NEW_SCHEDULE, SCORES).filter(pl.col("game_id") != 2021020001)
+    predictions, coverage = run(sbr_odds_2021(), games, [20212022])
+    assert coverage["E1"][20212022] == {
+        "games": 3,
         "priced": 3,
+        "unsettled": 1,
         "refused": 0,
-        "scored": 3,
-        "opener_differs_from_close": 3,
+        "scored": 2,
     }
+    assert 2021020001 not in predictions["game_id"].to_list()
 
 
 def test_the_summary_pairs_each_method_with_the_multiplicative_one(tmp_path: Path) -> None:
@@ -158,8 +168,35 @@ def test_the_summary_pairs_each_method_with_the_multiplicative_one(tmp_path: Pat
     assert rows[0]["seasons"] == "20212022"
 
 
+def test_an_experiment_with_no_scored_game_keeps_its_coverage() -> None:
+    predictions, coverage = run(sbr_odds_2021(), games_of(NEW_SCHEDULE, SCORES), [20212022])
+    e1_only = predictions.filter(pl.col("experiment") == "E1")
+    report = reports.summary(e1_only, coverage, [20212022], "backtest-20260929-abc", NOW)
+    assert report["experiments"]["E2"]["models"] == {}
+    assert report["experiments"]["E2"]["coverage"]["20212022"]["priced"] == 3
+
+
 def test_the_version_names_the_component_date_and_commit(tmp_path: Path) -> None:
     assert reports.version("backtest", NOW, cwd=tmp_path) == "backtest-20260929-nogit"
+
+
+def test_the_version_says_when_the_code_has_uncommitted_changes(tmp_path: Path) -> None:
+    def git(*args: str) -> str:
+        done = subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True)
+        return done.stdout.strip()
+
+    git("init", "-q")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "model.py").write_text("SLOPE = 1\n")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "m")
+    sha = git("rev-parse", "--short", "HEAD")
+    # A report written outside the code leaves the version clean.
+    (tmp_path / "reports").mkdir()
+    (tmp_path / "reports" / "runs.csv").write_text("x\n")
+    assert reports.version("backtest", NOW, cwd=tmp_path) == f"backtest-20260929-{sha}"
+    (tmp_path / "src" / "model.py").write_text("SLOPE = 2\n")
+    assert reports.version("backtest", NOW, cwd=tmp_path) == f"backtest-20260929-{sha}-dirty"
 
 
 runner = CliRunner()
@@ -181,6 +218,10 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     lake = Lake()
     lake.write("sbr_odds", sbr_odds_2021())
     lake.write("games", games_of(NEW_SCHEDULE, SCORES))
+    short = runner.invoke(app, ["backtest", "--seasons", "20212022"])
+    assert short.exit_code == 1
+    assert "games has 4 of 1,312 in 20212022" in short.output
+    monkeypatch.setitem(EXPECTED_GAMES, 20212022, 4)
     result = runner.invoke(app, ["backtest", "--seasons", "20212022", "--out", "out"])
     assert result.exit_code == 0, result.output
     assert "E1 B0 multiplicative: log loss" in result.output

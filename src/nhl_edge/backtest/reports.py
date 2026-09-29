@@ -40,16 +40,24 @@ RUNS_FIELDS = [
 ]
 
 
+# The files whose uncommitted changes would make a run's metrics differ from its commit's.
+CODE_PATHS = ["src", "pyproject.toml", "uv.lock"]
+
+
+def _git(args: list[str], cwd: Path | None) -> str:
+    return subprocess.run(
+        ["git", *args], capture_output=True, text=True, check=True, cwd=cwd
+    ).stdout.strip()
+
+
 def version(component: str, now: datetime, cwd: Path | None = None) -> str:
-    """The artifact version <component>-<yyyymmdd>-<shortsha> (CLAUDE.md conventions)."""
+    """The artifact version <component>-<yyyymmdd>-<shortsha> (CLAUDE.md conventions), with
+    -dirty appended when the code has uncommitted changes, so the commit alone does not
+    reproduce the run."""
     try:
-        sha = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=cwd,
-        ).stdout.strip()
+        sha = _git(["rev-parse", "--short", "HEAD"], cwd)
+        if _git(["status", "--porcelain", "--", *CODE_PATHS], cwd):
+            sha += "-dirty"
     except (OSError, subprocess.CalledProcessError):
         sha = "nogit"
     return f"{component}-{now:%Y%m%d}-{sha}"
@@ -96,9 +104,9 @@ def summary(
     now: datetime,
 ) -> dict[str, Any]:
     experiments: dict[str, Any] = {}
-    for (experiment,), rows in predictions.sort("experiment").group_by(
-        "experiment", maintain_order=True
-    ):
+    # From coverage, so an experiment with no scored game still reports why.
+    for experiment in sorted(coverage):
+        rows = predictions.filter(pl.col("experiment") == experiment)
         models: dict[str, Any] = {}
         for (model,), by_model in rows.group_by("model", maintain_order=True):
             methods = {
