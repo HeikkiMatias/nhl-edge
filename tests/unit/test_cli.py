@@ -187,3 +187,23 @@ def test_restore_raw_reports_its_counts(tmp_path: Any, monkeypatch: pytest.Monke
         "raw/odds/: 1 responses here, 1 in R2; uploaded 0, skipped 0 incomplete here"
         in again.output
     )
+
+
+def test_odds_replay_reports_its_matches(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import Path
+
+    from nhl_edge.lake.raw import RawStore
+
+    fixtures = Path(__file__).parent / "fixtures"
+    monkeypatch.chdir(tmp_path)
+    store = RawStore()
+    odds = (fixtures / "odds_api/odds_eu_full_20260928T120053Z.json").read_bytes()
+    meta = {"fetched_utc": "2026-09-28T12:00:53+00:00", "slot": "morning"}
+    store.put("odds", "2026-09-28/s", odds, meta)
+    week = (fixtures / "nhl_api/schedule_2026-09-28.json").read_bytes()
+    store.put("nhl", "schedule/2026-09-28/20260928T120000Z", week, {"fetched_utc": "x"})
+    result = runner.invoke(app, ["odds", "replay"])
+    assert result.exit_code == 0, result.output
+    assert "odds replay 2026-09-28..2026-09-28: 1 snapshots" in result.output
+    assert "2 events; matched: regular season 2; unmatched 0" in result.output
+    assert runner.invoke(app, ["odds", "replay", "--end", "2026-09-28"]).exit_code == 2

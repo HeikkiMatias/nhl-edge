@@ -20,8 +20,10 @@ import polars as pl
 
 from nhl_edge.lake.r2 import ObjectStore, R2Config, list_keys
 from nhl_edge.lake.schemas import (
+    ODDS_KEY,
     ActualLineups,
     Games,
+    LakeOddsSnapshots,
     Players,
     Schedule,
     ShiftCoverage,
@@ -54,6 +56,7 @@ TABLES: dict[str, Table] = {
     "shifts": Table(Shifts, ("game_id", "player_id", "period", "shift_number"), BY_DATE),
     "actual_lineups": Table(ActualLineups, ("game_id", "player_id"), BY_DATE),
     "shift_coverage": Table(ShiftCoverage, ("game_id",), BY_DATE),
+    "odds_snapshots": Table(LakeOddsSnapshots, ODDS_KEY, ("snapshot_date",)),
 }
 # The tables parsed from each game's play-by-play, boxscore and shift chart.
 FEED_TABLES = ("shots", "shifts", "actual_lineups", "shift_coverage")

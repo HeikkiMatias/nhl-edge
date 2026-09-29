@@ -226,6 +226,77 @@ def backfill() -> None:
     _not_implemented("odds backfill", "deferred to v2")
 
 
+@odds_app.command()
+def replay(
+    start: Annotated[
+        datetime | None, typer.Option(formats=["%Y-%m-%d"], help="First snapshot date (UTC).")
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(formats=["%Y-%m-%d"], help="Last snapshot date (default: --start)."),
+    ] = None,
+    recent: Annotated[
+        int | None, typer.Option(min=1, help="Snapshot dates of the last N days, today included.")
+    ] = None,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="Restore the raw snapshots and schedules from R2 first, and mirror the table.",
+        ),
+    ] = False,
+) -> None:
+    """Rebuild the lake's odds_snapshots from the stored raw snapshots, matching each event to its
+    NHL game. Never calls the Odds API. Without a window, every stored snapshot is replayed."""
+    from datetime import UTC, timedelta
+
+    from nhl_edge.ingest.odds_lake import SCHEDULE_DAYS, SCHEDULE_PREFIX, replay_odds
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    if start is not None and recent is not None:
+        raise typer.BadParameter("pass at most one of --start and --recent")
+    if end is not None and start is None:
+        raise typer.BadParameter("--end needs --start")
+    dates = None
+    if start is not None:
+        first, last = start.date(), (end or start).date()
+        if last < first:
+            raise typer.BadParameter("--end is before --start")
+        dates = [first + timedelta(days=i) for i in range((last - first).days + 1)]
+    elif recent is not None:
+        today = datetime.now(UTC).date()
+        dates = [today - timedelta(days=i) for i in range(recent - 1, -1, -1)]
+
+    load_env()
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    if r2:
+        if dates is None:
+            prefixes = ["odds/", f"{SCHEDULE_PREFIX}/"]
+        else:
+            # Snapshots of the window, and the schedules that can list their games: events are
+            # priced up to about ten days ahead, and a schedule response covers seven days.
+            span = range(-SCHEDULE_DAYS - 1, (dates[-1] - dates[0]).days + 3 * SCHEDULE_DAYS)
+            prefixes = [f"odds/{day.isoformat()}/" for day in dates]
+            prefixes += [
+                f"{SCHEDULE_PREFIX}/{(dates[0] + timedelta(days=d)).isoformat()}/" for d in span
+            ]
+        restored = sum(store.restore_from_r2(prefix).copied for prefix in prefixes)
+        typer.echo(f"restored {restored} raw responses from R2")
+    report = replay_odds(store, Lake.from_env(mirror=r2), dates)
+    matched = ", ".join(f"{kind} {n}" for kind, n in sorted(report.matched.items())) or "none"
+    window = f"{report.dates[0]}..{report.dates[-1]}" if report.dates else "no snapshots"
+    typer.echo(
+        f"odds replay {window}: {report.snapshots} snapshots, {report.quotes:,} quotes, "
+        f"{report.events} events; matched: {matched}; unmatched {len(report.unmatched)}"
+    )
+    for event_id, home, away, commence in report.unmatched:
+        typer.echo(f"  unmatched {event_id}: {away} at {home}, {commence:%Y-%m-%d %H:%M} UTC")
+    for raw_key in report.incomplete:
+        typer.echo(f"warning: {raw_key} has no sidecar (an interrupted write), skipped")
+
+
 @lake_app.command()
 def size(
     max_gb: Annotated[

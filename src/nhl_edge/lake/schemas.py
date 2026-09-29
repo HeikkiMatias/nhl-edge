@@ -78,6 +78,30 @@ class OddsSnapshots(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("home") != pl.col("away"))
 
 
+class LakeOddsSnapshots(OddsSnapshots):
+    """The lake's history of every stored odds snapshot (Supabase keeps only a 36-hour window),
+    replayed from the raw responses by `nhl odds replay`.
+
+    Each quote keeps its OddsSnapshots columns and checks: snapshot_utc is when it was observed,
+    and h2h (two-way, full game) and h2h_3_way (regulation) stay apart. snapshot_date is the UTC
+    date of snapshot_utc, which partitions the table as the raw responses are laid out. game_id and
+    game_type (1 preseason, 2 regular season, 3 playoffs) come from the NHL schedule listing that
+    matches the event's teams and start; they are null for an event no listing matches.
+    """
+
+    snapshot_date: pl.Date
+    game_id: pl.Int64 = pa.Field(nullable=True)
+    game_type: pl.Int8 = pa.Field(isin=(1, 2, 3), nullable=True)
+
+    @pa.dataframe_check
+    def snapshot_date_is_the_utc_date(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("snapshot_date") == pl.col("snapshot_utc").dt.date())
+
+    @pa.dataframe_check
+    def matched_events_have_a_game_type(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("game_id").is_null() == pl.col("game_type").is_null())
+
+
 DECIDED_IN = ("REG", "OT", "SO")
 # No result counts as public sooner after its scheduled start (ADR 0003).
 MIN_RESULT_LAG = timedelta(hours=6)

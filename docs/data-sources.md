@@ -141,6 +141,12 @@ A game's chart is `complete` when it has no bad rows and every dressed player's 
 | pre10 | 21:45 | 01:45 / 02:45 | h2h | a game starts within 90 minutes |
 
 At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<date>/<snapshot>_<slot>_<regions>.json.gz` with a `.meta.json` sidecar (parameters without the key, credit headers), mirrored to `raw/odds/` in R2. Supabase `odds_snapshots` gets only pre-game quotes for games starting within 36 hours of the snapshot; the raw files keep every listed game for the lake. Games starting before 18:45 ET (weekend matinees) get the midday snapshot as their last pre-game quote.
+**Odds history in the lake.** `nhl odds replay` parses the stored raw snapshots into the lake's `odds_snapshots` table, partitioned by snapshot date (UTC). It never calls the Odds API.
+- Each quote keeps its snapshot time, so `available_at` filters the history as it does the live window. `h2h` (two-way, full game) and `h2h_3_way` (regulation) stay apart.
+- Each event gets the NHL `game_id` and `game_type` of the schedule listing with the same home and away teams whose start is nearest its commence time, within 12 hours. The two sources can differ by minutes (MTL at TOR on 2026-09-29: 23:00 UTC by the NHL, 23:10 by the Odds API).
+- The listings come from every raw NHL schedule response in the cache, since the odds job stores the schedule it checks on every run. Every listing counts, so an event priced before a postponement keeps the game it was priced for.
+- An event no listing covers yet, such as a game more than a week ahead at the time, keeps null ids until a later replay.
+- The nightly workflow runs `nhl odds replay --recent 14 --r2`: it restores the window's snapshots and schedules from R2, replays the last 14 days and mirrors the table. The report lists matches by game type and every unmatched event.
 - The Odds API historical endpoint is paid. The `guard-bash` hook blocks it unless Claude Code starts with `ALLOW_PAID_ODDS=1`.
 - MoneyPuck data is free for non-commercial use with attribution and must not be scraped. It is a sanity check, not a backtest input.
 - Daily Faceoff and RotoWire are manual references only, not part of the automated pipeline.
