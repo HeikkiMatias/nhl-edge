@@ -400,6 +400,28 @@ def audit_shifts(
     typer.echo(markdown_report(season_report(coverage)))
 
 
+@audit_app.command("reference")
+def audit_reference() -> None:
+    """Check the reference files (team codes, arenas, venues, home arenas, coach tenures) against
+    every game in the lake's games table."""
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.reference import check_games
+
+    games = Lake().read("games")
+    if games.is_empty():
+        typer.echo("no games in the lake: run nhl ingest", err=True)
+        raise typer.Exit(code=1)
+    problems = check_games(games)
+    typer.echo(
+        f"{games.height:,} games, {games['season'].min()} to {games['season'].max()}: "
+        f"{len(problems)} problems"
+    )
+    for problem in problems:
+        typer.echo(f"  {problem}")
+    if problems:
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def status(
     brief: Annotated[bool, typer.Option(help="One line, for the SessionStart hook.")] = False,

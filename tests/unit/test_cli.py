@@ -157,6 +157,32 @@ def test_audit_shifts_leaves_out_the_test_season_unless_asked(
     assert asked.output.splitlines()[2].startswith("| 20252026 | 1 |")
 
 
+def test_audit_reference_needs_games_in_the_lake(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["audit", "reference"])
+    assert result.exit_code == 1
+    assert "no games in the lake" in result.output
+
+
+def test_audit_reference_checks_every_game(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    import polars as pl
+    from test_reference import OPENING
+
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    Lake().write("games", OPENING)
+    clean = runner.invoke(app, ["audit", "reference"])
+    assert clean.exit_code == 0, clean.output
+    assert "3 games, 20102011 to 20102011: 0 problems" in clean.output
+    Lake().write("games", OPENING.with_columns(venue=pl.lit("Nowhere Arena")))
+    broken = runner.invoke(app, ["audit", "reference"])
+    assert broken.exit_code == 1
+    assert "venue 'Nowhere Arena' (3 games, e.g. 2010020003) is not in venues.csv" in broken.output
+
+
 def test_status_reports_an_empty_lake(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["status", "--brief"])
