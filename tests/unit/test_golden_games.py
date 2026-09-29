@@ -42,6 +42,10 @@ def test_the_manifest_matches_the_frozen_files() -> None:
     for case in CASES.values():
         for path, sha256 in case["files"].items():
             assert hashlib.sha256((GOLDEN_DIR / path).read_bytes()).hexdigest() == sha256, path
+    # Every frozen file is hashed in the manifest, and the manifest names no missing file.
+    listed = {path for case in CASES.values() for path in case["files"]}
+    frozen = {p.relative_to(GOLDEN_DIR).as_posix() for p in (GOLDEN_DIR / "nhl").iterdir()}
+    assert listed == frozen
 
 
 @pytest.mark.parametrize(

@@ -38,6 +38,6 @@ def live_bodies(api: NhlApi) -> dict[str, bytes]:
 def test_a_golden_game_parses_the_same_live(tmp_path: Path) -> None:
     api = NhlApi(RawStore(tmp_path))  # an empty cache, so every response is fetched live
     bodies = live_bodies(api)
-    assert api.requests == len(bodies)
+    assert api.cache_hits == 0  # all four live; retries of a transient error may add requests
     problems = drift(CASE, bodies.__getitem__)
     assert not problems, f"NHL API drift on golden game {CASE['game_id']}:\n" + "\n".join(problems)
