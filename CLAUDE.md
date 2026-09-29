@@ -47,11 +47,14 @@ and docs/decisions/ before changing a modeling choice.
 - After pushing or requesting a review, watch for Codex yourself in a background poll. It answers
   as a review with findings, a 👍 reaction on the PR, or a plain PR comment starting "Codex Review:
   Didn't find any major issues" that names the reviewed commit. Check all three.
-- The Bash guard blocks any command that names `data/raw/` or `tests/golden/` and writes a file,
-  heredoc text included. Write such files with the Write tool, or run a script from the scratchpad.
-- A fresh machine has no local data: `nhl lake restore-raw` (about 0.5 GB), then
-  `nhl ingest --seasons 20102011-20252026 --replay` and `nhl odds replay` rebuild the lake offline.
-  `nhl status` shows how this machine compares with R2. docs/handover.md has the current state.
+- Never write to `data/raw/` or `tests/golden/` (hard rule 10). The Bash guard also blocks a
+  command that only reads from them when its text contains a write elsewhere, such as a heredoc
+  that copies a real response into `tests/unit/fixtures/`. Split such a command, or read through
+  the project's own code (`RawStore`), rather than rewording it past the guard.
+- A fresh machine has no local data: `uv run nhl lake restore-raw` (about 0.5 GB), then
+  `uv run nhl ingest --seasons 20102011-20252026 --replay` and `uv run nhl odds replay` rebuild the
+  lake offline. `uv run nhl status` shows how this machine compares with R2. docs/handover.md has
+  the current state.
 
 ## Review budget (Codex)
 - Two rounds per PR: the automatic review, then one requested re-review after P0 or P1 fixes. A

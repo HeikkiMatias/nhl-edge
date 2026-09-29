@@ -20,7 +20,9 @@ Apply the review budget in CLAUDE.md to PR $ARGUMENTS (default: the PR for the c
    | P2 and below | Fix in this PR. If it needs a redesign or lies outside the PR's diff, ask me first |
    | A guard bypass that needs deliberate effort | Won't fix |
 
-   Show me the table (finding, label, decision, reason) and wait for my OK before changing anything.
+   Show me the table (finding, label, decision, reason). Wait for my OK only when a P0 or a
+   hard-rule finding would be answered "Won't fix", or a fix needs a redesign or reaches outside
+   the PR's diff. Otherwise apply the decisions the budget dictates.
 3. **Fix** the approved items in one commit, run
    `uv run ruff check . && uv run pyright src && uv run pytest -m "not slow" -q`, and push.
 4. **File** follow-ups with `gh issue create --milestone <current> --label <area>`, linking the PR.
@@ -32,4 +34,6 @@ Apply the review budget in CLAUDE.md to PR $ARGUMENTS (default: the PR for the c
    `gh pr comment <n> --body "@codex review"`. P2-only fixes get a reply but no new round. After
    round 2, request another round only when a P0 was fixed.
 7. **Report** readiness: CI (`gh pr checks <n>`), open P0s, unanswered findings, rounds used, follow-ups
-   filed. Merge only on my go-ahead, with `gh pr merge <n> --squash --delete-branch`.
+   filed. When it is ready and its issue is done, merge it yourself with
+   `gh pr merge <n> --squash --delete-branch` (CLAUDE.md, Workflow). A P0 you would answer
+   "Won't fix", an ADR or a scope change goes to me first.
