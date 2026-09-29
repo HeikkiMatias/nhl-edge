@@ -124,11 +124,12 @@ Shift chart coverage for older seasons varies, so phase 1 includes a coverage ch
 
 ## 4. Data model
 
-Fifteen tables cover v1. Every row records when its underlying fact became public (`observed_utc`), and every output of a fitted component records that component's `train_cutoff` and `artifact_version`. A prediction may only use rows observed before the prediction time and components trained only on earlier data. An `as_of` date alone is not enough: a rating dated January 2019 still leaks if its xG model or shrinkage was fitted on later seasons.
+Sixteen tables cover v1. Every row records when its underlying fact became public (`observed_utc`), and every output of a fitted component records that component's `train_cutoff` and `artifact_version`. A prediction may only use rows observed before the prediction time and components trained only on earlier data. An `as_of` date alone is not enough: a rating dated January 2019 still leaks if its xG model or shrinkage was fitted on later seasons.
 
 | Table | Grain | Key columns | Stored in |
 | --- | --- | --- | --- |
 | `games` | One per game | game\_id, season, start\_utc, home, away, final score, decided\_in (REG, OT, SO), flags (neutral site, no fans) | Lake, Supabase |
+| `schedule` | One per game | game\_id, season, start\_utc, home, away, venue, neutral\_site, limited\_attendance; no result columns, public 24 hours before the start (ADR 0005) | Lake |
 | `shots` | One per unblocked shot attempt | game\_id, event\_idx, period, seconds, x, y, shot\_type, strength, shooter\_id, goalie\_id, is\_goal, is\_empty\_net | Lake |
 | `shifts` | One per player shift | game\_id, player\_id, team, period, start\_s, end\_s | Lake |
 | `actual_lineups` | Game, player | team, role (F, D, G), sweater\_number, starting\_goalie, toi\_s, observed\_utc; from the boxscore, the only source for backtest lineups | Lake |

@@ -35,7 +35,7 @@ None yet. This is a point-in-time convention, not a tuned choice. Gate 1 (B2 aga
 - **Cost:** a result never feeds a prediction on its own game date. A matinee is not used for that evening's games, which loses at most one game in a rolling window of dozens.
 - **Backtest and live now know the same results.** The 09:00 UTC nightly ingest has last night's results before they count, and the morning predictions can use them.
 - **The rule can still be wrong in one case:** a game suspended and resumed on a later calendar day. None is known in 2010 to 2026; postponed games are listed on their rescheduled date. A known case would get an override.
-- **`observed_utc` covers the result columns only.** The schedule columns in the same row (teams, start, venue) were public long before the game. Issue #24 splits schedule from results before phase 2, so rest and travel features can read the current game's schedule without its result.
+- **`observed_utc` covers the result columns only.** The schedule columns in the same row (teams, start, venue) were public long before the game. Issue #24 split them out: the `schedule` table has no result columns and is public a day before the start (ADR 0005). Rest and travel features read it for the current game.
 - The Supabase `games` table stores the same `observed_utc`.
 
 ## Revisit when

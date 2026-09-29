@@ -11,11 +11,12 @@ from nhl_edge.ingest.games import (
     listed_games,
     parse_games,
     probe_date,
+    schedule_of,
     season_bounds,
     season_over,
     settled_on,
 )
-from nhl_edge.lake.schemas import Games
+from nhl_edge.lake.schemas import SCHEDULE_LEAD, Games
 
 FIXTURES = Path(__file__).parent / "fixtures" / "nhl_api"
 OPENING_WEEK = (FIXTURES / "schedule_2010-10-07.json").read_bytes()
@@ -140,3 +141,14 @@ def test_schema_rejects_impossible_games(change: dict[str, object], check: str) 
     )
     with pytest.raises(pandera.errors.SchemaError, match=check):
         Games.validate(bad)
+
+
+def test_the_schedule_is_the_pre_game_part_of_games() -> None:
+    schedule = schedule_of(OPENING)
+    shared = ["game_id", "season", "game_date", "start_utc", "home", "away", "venue"]
+    shared += ["neutral_site", "limited_attendance", "raw_key"]
+    assert schedule.select(shared).equals(OPENING.select(shared))
+    assert not {"home_score", "away_score", "decided_in"} & set(schedule.columns)
+    assert (schedule["observed_utc"] == schedule["start_utc"] - SCHEDULE_LEAD).all()
+    # Helsinki at 16:00 UTC: public from 16:00 UTC the day before.
+    assert schedule.row(0, named=True)["observed_utc"] == datetime(2010, 10, 6, 16, 0, tzinfo=UTC)

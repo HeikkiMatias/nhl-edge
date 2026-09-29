@@ -14,7 +14,7 @@ from typing import Any
 import polars as pl
 
 from nhl_edge.ingest.nhl_api import REGULAR_SEASON, Reuse, parse_utc
-from nhl_edge.lake.schemas import Games, dtypes
+from nhl_edge.lake.schemas import SCHEDULE_LEAD, Games, Schedule, dtypes
 
 FINAL = "OFF"
 # The API has no end-of-game time, and a delayed game can finish many hours after its scheduled
@@ -117,6 +117,18 @@ def parse_games(listed: list[tuple[date, dict[str, Any]]], raw_key: str) -> pl.D
     """The final games among those listed, validated against Games."""
     rows = [game_row(day, game, raw_key) for day, game in listed if game["gameState"] == FINAL]
     return Games.validate(pl.DataFrame(rows, schema=dtypes(Games)))
+
+
+def schedule_public_utc(start_utc: datetime) -> datetime:
+    """When a game's schedule counts as public: a day before its start (ADR 0005)."""
+    return start_utc - SCHEDULE_LEAD
+
+
+def schedule_of(games: pl.DataFrame) -> pl.DataFrame:
+    """The pre-game facts of final games, public a day before each start, validated against
+    Schedule. Derived from the same rows as games, so the two never disagree on a game."""
+    schedule = games.with_columns(observed_utc=pl.col("start_utc") - SCHEDULE_LEAD)
+    return Schedule.validate(schedule.select(list(dtypes(Schedule))))
 
 
 def results_known_at(games: pl.DataFrame, prediction_utc: datetime) -> pl.DataFrame:
