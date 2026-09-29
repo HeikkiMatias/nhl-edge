@@ -73,7 +73,7 @@ The landing page's `position` is today's, so it stays out of `players`. The boxs
 
 Lake tables live in `data/lake/<table>/`, and with `--r2` they are mirrored to `lake/<table>/` in R2. `games` is partitioned as `season=S/game_date=D/part-0.parquet`. An ingest makes its final games the whole content of the window's dates: it replaces their partitions and deletes a partition that no longer has games, locally and in R2. `players` is one file. `--supabase` upserts the games into Supabase `games` and ends with one small read, which keeps the free project from pausing.
 
-`.github/workflows/ingest-nightly.yml` runs `nhl ingest --recent 3 --r2 --supabase` at 09:00 UTC (04:00 or 05:00 ET, when every game of the night is final), then `nhl lake size --max-gb 8`, which fails the run above 8 GB. R2 is free up to 10 GB and has no spending cap. The three-day lookback picks up a game that was not final yet and a missed night. The earlier days come back from R2, not the NHL API. Older gaps are caught up with a manual run over a date range.
+`.github/workflows/ingest-nightly.yml` runs `nhl ingest --recent 3 --r2 --supabase` at 09:00 UTC (04:00 or 05:00 ET, when every game of the night is final). Then comes the contract test (`tests/contract/`): one golden game from `tests/golden/`, fetched live, must parse into exactly the tables its frozen copy gives, or the run fails. Last is `nhl lake size --max-gb 8`, which fails the run above 8 GB. R2 is free up to 10 GB and has no spending cap. The three-day lookback picks up a game that was not final yet and a missed night. The earlier days come back from R2, not the NHL API. Older gaps are caught up with a manual run over a date range.
 
 Regular-season games per season, which a season window checks against:
 

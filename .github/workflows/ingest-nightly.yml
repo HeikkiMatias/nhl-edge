@@ -43,6 +43,13 @@ jobs:
         run: |
           if [ -n "$START" ]; then window=(--start "$START" --end "${END:-$START}"); else window=(--recent 3); fi
           uv run nhl ingest "${window[@]}" --r2 --supabase
+      - name: Contract test on a golden game
+        # One golden game read live must parse as its frozen copy does (issue #6). A failure
+        # means the NHL API changed under the parsers.
+        if: always()
+        env:
+          NHL_CONTRACT: "1"
+        run: uv run pytest tests/contract -q
       - name: R2 bucket size
         if: always()
         run: uv run nhl lake size --max-gb 8
