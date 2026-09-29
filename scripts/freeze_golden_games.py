@@ -103,12 +103,12 @@ def main() -> int:
             week = api.schedule_week(case.game_date, settled_on({case.game_date}))
             files |= freeze(store, week, f"schedule_{case.game_date.isoformat()}")
             frozen_dates.add(case.game_date)
-        for kind, fetch in (
-            ("play-by-play", api.play_by_play),
-            ("boxscore", api.boxscore),
-            ("shiftcharts", api.shift_chart),
+        for kind, response in (
+            ("play-by-play", api.play_by_play(case.season, case.game_id)),
+            ("boxscore", api.boxscore(case.season, case.game_id)),
+            ("shiftcharts", api.shift_chart(case.season, case.game_id, case.game_date)),
         ):
-            files |= freeze(store, fetch(case.season, case.game_id), f"{kind}_{case.game_id}")
+            files |= freeze(store, response, f"{kind}_{case.game_id}")
         cases.append(
             {
                 "case": case.name,

@@ -56,7 +56,8 @@ Raw responses go to `data/raw/nhl/<kind>/<entity>/<fetch stamp>.json.gz`, with a
 | Kind | Entity | Cached copy reused when |
 | --- | --- | --- |
 | `schedule` | `{date}` (a week from that date) | every regular-season game on the days used is final; the season-bounds probe once it was fetched after the season ended |
-| `play-by-play`, `boxscore`, `shiftcharts` | `{season}/{game_id}` | always (fetched only for final games) |
+| `play-by-play`, `boxscore` | `{season}/{game_id}` | always (fetched only for final games) |
+| `shiftcharts` | `{season}/{game_id}` | two teams each have valid shifts of this game adding up to at least four players' full period in each of periods 1 to 3, or it was fetched 3 days or more after the game. The NHL sometimes publishes a chart late or cut short, so the nightly lookback refetches it. The 3 days match the lookback (`--recent 3`, which a test ties together), and after that a gap counts as the source's. |
 | `roster` | `{season}/{team}` | it was fetched after the team's last ingested game was observed |
 | `player-landing` | `{player_id}` | always (bio and draft facts do not change) |
 
@@ -123,7 +124,7 @@ Shift chart rows the parser leaves out, counted in `shift_coverage`:
 | `foreign_rows` | teams not in the game | 2021020513 (WSH at NYI) lists every shift twice and STL and MIN shifts besides |
 | `bad_rows` | malformed times, shifts outside their period, a shift number repeated with other times | |
 
-The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (2025-04-08 to 2025-04-15). A live request on 2026-09-29 still gave none, so those games have no shifts and count as incomplete. No other game from 2010-11 on has an empty chart.
+The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (2025-04-08 to 2025-04-15). A live request on 2026-09-29 still gave none, so those games have no shifts and count as incomplete. No other game from 2010-11 on has an empty chart. Those copies were fetched long after their games, so they count as settled and are not fetched again.
 
 A game's chart is `complete` when it has no bad rows and every dressed player's shifts add up to his boxscore time on ice within 60 seconds (a missing boxscore time counts as not adding up). At every unblocked shot except penalty shots, the players on the ice by the chart are also compared with `situationCode`, and `skater_mismatches` and `goalie_mismatches` count where they differ. RAPM drops the stints that contradict the strength state. `nhl audit shifts` prints the per-season summary, which is reviewed before RAPM depends on the charts.
 

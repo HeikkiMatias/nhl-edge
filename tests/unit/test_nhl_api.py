@@ -1,3 +1,5 @@
+import json
+import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -104,7 +106,7 @@ def test_one_throttle_covers_both_hosts(tmp_path: Path) -> None:
     requests, handler = serve()
     api = make_api(RawStore(tmp_path), handler, clock=clock, min_interval_s=1.0)
     api.schedule_week(DAY, never)
-    api.shift_chart(20102011, 2010020003)
+    api.shift_chart(20102011, 2010020003, date(2010, 10, 7))
     assert [r.url.host for r in requests] == ["api-web.nhle.com", "api.nhle.com"]
     assert clock.sleeps == [1.0]
 
@@ -183,7 +185,7 @@ def test_raw_keys_and_urls_follow_the_layout(tmp_path: Path) -> None:
         api.schedule_week(DAY, never).raw_key,
         api.play_by_play(20102011, 2010020003).raw_key,
         api.boxscore(20102011, 2010020003).raw_key,
-        api.shift_chart(20102011, 2010020003).raw_key,
+        api.shift_chart(20102011, 2010020003, date(2010, 10, 7)).raw_key,
         api.roster("PHX", 20102011, never).raw_key,
         api.player_landing(8478402).raw_key,
     ]
@@ -263,3 +265,75 @@ def test_odds_schedule_always_fetches_fresh(tmp_path: Path) -> None:
 
 def test_always_rule() -> None:
     assert always(b"", {}) is True
+
+
+GAME = 2026020001
+
+
+def shifts(team: int, period: int, players: int = 6, minutes: int = 20, game: int = GAME) -> list:
+    """Shift rows of one team in one period: each player on for the first `minutes` minutes."""
+    return [
+        {
+            "typeCode": 517,
+            "gameId": game,
+            "teamId": team,
+            "playerId": 8470000 + 100 * team + player,
+            "period": period,
+            "startTime": "00:00",
+            "endTime": f"{minutes:02d}:00",
+        }
+        for player in range(players)
+    ]
+
+
+def chart(*groups: list) -> bytes:
+    data = [row for group in groups for row in group]
+    return json.dumps({"data": data, "total": len(data)}).encode()
+
+
+FULL = chart(*[shifts(team, period) for team in (6, 13) for period in (1, 2, 3)])
+# One team's last two periods are missing.
+PARTIAL = chart(*[shifts(6, period) for period in (1, 2, 3)], shifts(13, 1))
+# Every period has rows, but the chart stops early in the third: one short shift for each team.
+TRUNCATED = chart(
+    *[shifts(team, period) for team in (6, 13) for period in (1, 2)],
+    shifts(6, 3, players=1, minutes=1),
+    shifts(13, 3, players=1, minutes=1),
+)
+# Complete in shape, but another game's rows.
+FOREIGN = chart(*[shifts(team, period, game=GAME + 1) for team in (6, 13) for period in (1, 2, 3)])
+EMPTY = b'{"data": [], "total": 0}'
+
+
+@pytest.mark.parametrize(
+    ("cached", "played", "refetched"),
+    [
+        (EMPTY, date(2026, 9, 27), True),  # the nightly run got nothing: fetch again
+        (PARTIAL, date(2026, 9, 27), True),
+        (TRUNCATED, date(2026, 9, 27), True),
+        (FOREIGN, date(2026, 9, 27), True),
+        (FULL, date(2026, 9, 27), False),
+        (EMPTY, date(2026, 9, 25), False),  # fetched 3 days or more after: the gap is the source's
+        (EMPTY, date(2026, 9, 26), True),  # 12:00 on the 28th is not yet 3 days after the 26th
+    ],
+)
+def test_shift_chart_is_refetched_until_complete_or_settled(
+    tmp_path: Path, cached: bytes, played: date, refetched: bool
+) -> None:
+    requests, handler = sequence(
+        httpx.Response(200, content=cached), httpx.Response(200, content=FULL)
+    )
+    api = make_api(RawStore(tmp_path), handler)
+    api.shift_chart(20262027, GAME, played)  # the nightly run
+    response = api.shift_chart(20262027, GAME, played)  # the next night's lookback
+    assert len(requests) == 1 + refetched
+    assert (response.body == FULL) is (refetched or cached == FULL)
+
+
+def test_charts_settle_within_the_nightly_lookback() -> None:
+    # A chart must stay unsettled no longer than the nightly job looks back, or a late chart
+    # published after the game leaves the window would never be fetched.
+    workflow = Path(__file__).parents[2] / ".github" / "workflows" / "ingest-nightly.yml"
+    lookback = re.search(r"--recent (\d+)", workflow.read_text())
+    assert lookback is not None
+    assert timedelta(days=int(lookback[1])) == nhl_api.CHART_SETTLED

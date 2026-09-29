@@ -20,9 +20,10 @@ from typing import Any
 import polars as pl
 
 from nhl_edge.ingest.feeds import FeedGame, clock_s
+from nhl_edge.ingest.nhl_api import SHIFT
 from nhl_edge.lake.schemas import OT_PERIOD, OT_S, PERIOD_S, Shifts, dtypes
 
-SHIFT = 517
+__all__ = ["SHIFT", "ShiftDrops", "parse_shifts", "shift_rows"]
 
 
 @dataclass(frozen=True)

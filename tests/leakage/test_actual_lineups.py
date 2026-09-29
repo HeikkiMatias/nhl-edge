@@ -10,6 +10,7 @@ games' boxscores:
   ADR 0004 accepts and #30 measures.
 """
 
+from datetime import date
 from pathlib import Path
 from typing import Any, cast
 
@@ -71,7 +72,7 @@ class FeedsOnly:
     def boxscore(self, season: int, game_id: int) -> Response:
         return self._serve("boxscore", season, game_id)
 
-    def shift_chart(self, season: int, game_id: int) -> Response:
+    def shift_chart(self, season: int, game_id: int, game_date: date) -> Response:
         return self._serve("shiftcharts", season, game_id)
 
     def roster(self, *args: object) -> Response:

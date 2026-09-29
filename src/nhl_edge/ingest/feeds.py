@@ -13,6 +13,9 @@ from datetime import date, datetime
 from typing import Any
 
 from nhl_edge.ingest.games import result_public_utc
+from nhl_edge.ingest.nhl_api import clock_s
+
+__all__ = ["FeedGame", "check_game_id", "clock_s"]
 
 
 @dataclass(frozen=True)
@@ -65,13 +68,3 @@ class FeedGame:
 def check_game_id(data: dict[str, Any], game_id: int, feed: str) -> None:
     if data.get("id") != game_id:
         raise ValueError(f"{feed} for {game_id} is for game {data.get('id')}")
-
-
-def clock_s(text: str | None) -> int | None:
-    """Seconds in an "MM:SS" clock, or None when the value is missing or malformed."""
-    if not text:
-        return None
-    minutes, sep, seconds = text.partition(":")
-    if not sep or not minutes.isdigit() or not seconds.isdigit():
-        return None
-    return int(minutes) * 60 + int(seconds)
