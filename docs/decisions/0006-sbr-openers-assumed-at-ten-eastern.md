@@ -1,6 +1,6 @@
 # 0006. SBR prices are observed at the start; E2 assumes the opener at 10:00 US Eastern
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-29
 
 ## Context
