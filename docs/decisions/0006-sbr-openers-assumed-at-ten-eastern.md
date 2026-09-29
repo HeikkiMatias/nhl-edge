@@ -24,8 +24,12 @@ A fixed lead of six hours before each start was also considered. It gives games 
 Option 2, chosen by the owner on 2026-09-29 in the #7 project thread. It replaces option 1, which the owner chose earlier the same day before the Codex review.
 
 - **`sbr_odds.observed_utc` is `start_utc` for every price.** `known_at` therefore shows no SBR price before its game starts. The schema requires `observed_utc == start_utc`.
-- **`sbr_odds.assumed_available_utc` is when E2 may bet at the price.** For the close it is `start_utc`. For the opener it is 10:00 US Eastern on `game_date`, or `start_utc` when that is earlier (`OPEN_ASSUMED_AT_ET` and `open_assumed_utc` in `ingest/sbr.py`). The schema requires it to be no later than the start, and exactly the start for the close.
-- **Only E2 reads it**, through `assumed_available_at(frame, prediction_utc)` in `ingest/sbr.py`. That function name is how a reviewer finds every use of the assumption.
+- **`sbr_odds.assumed_available_utc` is when E2 may bet at the price.** For the close it is `start_utc`. For the opener it is 10:00 US Eastern on `game_date` (`OPEN_ASSUMED_AT_ET` and `open_assumed_utc` in `ingest/sbr.py`), with two limits:
+  - It is never before the game's schedule is public (`schedule.observed_utc`, ADR 0005), since the row carries the start. So the Lake Tahoe game 2020020290, re-timed on its game day and public at 20:00 UTC, has its opener assumed at 20:00 UTC, not 15:00 UTC.
+  - It is never after the start.
+
+  The schema requires it to be no later than the start, and exactly the start for the close.
+- **Only E2 reads it**, through `assumed_available_at(frame, prediction_utc)` in `ingest/sbr.py`. That selector also drops games that have started by the prediction time, as `odds.available_at` does for live quotes, since a pre-game price is no longer executable then. The function name is how a reviewer finds every use of the assumption.
 
 Over 14,245 matched games the assumed opener comes a median 9.5 hours before the start (range 0 to 13 hours). Only one game is capped at its start: 2010020024, BOS at PHX in Prague, which started at exactly 10:00 EDT.
 
@@ -42,7 +46,8 @@ None yet. This is a point-in-time convention, not a tuned choice. The first run 
 - **Live comparison:** 10:00 ET falls between the live morning (07:05 ET) and midday (12:45 ET) snapshots. Live E2 uses each snapshot's own time, not this rule.
 - **Tests:** `tests/leakage/test_sbr_odds.py` covers:
   - every price observed at its start, so `known_at` shows none before it
-  - E2 seeing only openers on game-day morning, and no close before the start
+  - E2 seeing only openers on game-day morning, no close before the start, and no price once the game has started
+  - an opener waiting for a schedule made public after 10:00 ET
   - the 10:00 ET boundary in EDT and EST
   - the cap for an early start
   - schema rejections of an early `observed_utc` or a late assumed time

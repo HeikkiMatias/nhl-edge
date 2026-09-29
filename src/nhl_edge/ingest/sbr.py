@@ -111,8 +111,9 @@ SBR_TEAMS = {
 
 # SBR gives no time for either line, so every price is observed_utc at its game's start: the only
 # time it was surely public (hard rule 1). E2 alone assumes the opener was up at 10:00 US Eastern
-# on the game date, or the start when that is earlier, and says so by reading
-# assumed_available_utc through assumed_available_at (ADR 0006).
+# on the game date, and says so by reading assumed_available_utc through assumed_available_at
+# (ADR 0006). The row also carries the game's start, so it is never assumed available before
+# the schedule is public (schedule.observed_utc, ADR 0005).
 OPEN_ASSUMED_AT_ET = clock(10, 0)
 
 
@@ -134,17 +135,25 @@ def american_to_decimal(price: int) -> float:
     return 1 + (price / 100 if price > 0 else 100 / -price)
 
 
-def open_assumed_utc(game_date: date, start_utc: datetime) -> datetime:
+def open_assumed_utc(
+    game_date: date, start_utc: datetime, schedule_public_utc: datetime
+) -> datetime:
+    """10:00 US Eastern on the game date, or when the game's schedule became public if that is
+    later (a game re-timed at short notice), and never after the start."""
     assumed = datetime.combine(game_date, OPEN_ASSUMED_AT_ET, tzinfo=ET).astimezone(UTC)
-    return min(assumed, start_utc)
+    return min(max(assumed, schedule_public_utc), start_utc)
 
 
 def assumed_available_at(frame: pl.DataFrame, prediction_utc: datetime) -> pl.DataFrame:
     """The sbr_odds rows E2 may bet at when predicting at prediction_utc: assumed available
-    strictly before it. For E2 only, since the opener's time is an assumption, not an observation
-    (ADR 0006); every other reader uses known_at on observed_utc, which shows no SBR price before
-    its game starts."""
-    return frame.filter(pl.col("assumed_available_utc") < prediction_utc)
+    strictly before it, for games that have not started by then, since a pre-game price for a game
+    under way is no longer executable (as odds.available_at). For E2 only, since the opener's time
+    is an assumption, not an observation (ADR 0006); every other reader uses known_at on
+    observed_utc, which shows no SBR price before its game starts."""
+    return frame.filter(
+        pl.col("assumed_available_utc") < prediction_utc,
+        pl.col("start_utc") > prediction_utc,
+    )
 
 
 class _Rows(HTMLParser):
@@ -317,10 +326,10 @@ def match_season(
     """
     season = games[0].season if games else 0
     report = SeasonReport(season, sbr_games=len(games), nhl_games=schedule.height)
-    by_teams: dict[tuple[date, frozenset[str]], tuple[int, datetime, str, str]] = {
-        (game_date, frozenset((home, away))): (game_id, start, home, away)
-        for game_id, game_date, start, home, away in schedule.select(
-            "game_id", "game_date", "start_utc", "home", "away"
+    by_teams: dict[tuple[date, frozenset[str]], tuple[int, datetime, str, str, datetime]] = {
+        (game_date, frozenset((home, away))): (game_id, start, home, away, public)
+        for game_id, game_date, start, home, away, public in schedule.select(
+            "game_id", "game_date", "start_utc", "home", "away", "observed_utc"
         ).iter_rows()
     }
     finals = {
@@ -341,7 +350,7 @@ def match_season(
             else:
                 report.unmatched.append((game.game_date, *game.teams))
             continue
-        game_id, start_utc, home, away = found
+        game_id, start_utc, home, away, schedule_public_utc = found
         seen.add(game_id)
         report.matched += 1
         home_index = game.teams.index(home)
@@ -354,7 +363,7 @@ def match_season(
                 )
             )
         assumed = {
-            "open": open_assumed_utc(game.game_date, start_utc),
+            "open": open_assumed_utc(game.game_date, start_utc, schedule_public_utc),
             "close": start_utc,
         }
         for market, quote, team, side, line, price in game.quotes:
@@ -485,6 +494,9 @@ def import_seasons(
         body, raw_key = archive.page(season)
         games = parse_season(body, season)
         frame, report = match_season(games, season_schedule, results.filter(in_season), raw_key)
+        if frame.is_empty():
+            # Writing nothing would leave an earlier import's partition in place.
+            raise ValueError(f"{season}: no SBR price matched a game; nothing was written")
         frames[season] = SbrOdds.validate(frame)
         reports.append(report)
     return frames, reports

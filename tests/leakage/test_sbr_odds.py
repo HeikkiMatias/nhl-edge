@@ -1,7 +1,8 @@
 """Point-in-time rules for the SBR archive (ADR 0006). SBR gives no time for its prices, so every
 price is observed at its game's start and known_at never shows one before puck drop. E2 alone
 reads assumed_available_utc, through assumed_available_at: the opener from 10:00 US Eastern on the
-game date (or the start when that is earlier), the close only at the start."""
+game date (or once the schedule is public, if later), the close only at the start, and neither once
+the game has started."""
 
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -22,7 +23,9 @@ SJS_ARI = datetime(2021, 10, 13, 18, tzinfo=UTC)
 MORNING = datetime(2021, 10, 12, 14, 0, 1, tzinfo=UTC)  # 10:00:01 EDT on TBL_PIT's date
 
 
-def table(sjs_ari_start: datetime = SJS_ARI) -> pl.DataFrame:
+def table(
+    sjs_ari_start: datetime = SJS_ARI, sjs_ari_public: datetime | None = None
+) -> pl.DataFrame:
     sched = pl.DataFrame(
         [
             (2021020001, 20212022, date(2021, 10, 12), TBL_PIT, "TBL", "PIT"),
@@ -37,6 +40,12 @@ def table(sjs_ari_start: datetime = SJS_ARI) -> pl.DataFrame:
         observed_utc=pl.col("start_utc") - timedelta(days=1),
         raw_key=pl.lit("k"),
     )
+    if sjs_ari_public is not None:
+        sched = sched.with_columns(
+            observed_utc=pl.when(pl.col("game_id") == 2021020010)
+            .then(pl.lit(sjs_ari_public))
+            .otherwise(pl.col("observed_utc"))
+        )
     sched = sched.cast(dtypes(Schedule)).select(list(dtypes(Schedule)))  # type: ignore[arg-type]
     frame, _ = match_season(
         parse_season(PAGE, 20212022), sched, pl.DataFrame(schema=dtypes(Games)), "k"
@@ -71,6 +80,24 @@ def test_e2_never_sees_a_close_before_the_start() -> None:
     assert 2021020001 not in closes["game_id"].to_list()
 
 
+def test_e2_sees_no_price_once_the_game_has_started() -> None:
+    # After puck drop neither the opener nor the close can still be bet.
+    # 11:00 EDT the next day: TBL_PIT is over, SJS_ARI's opener is up and its start is ahead.
+    usable = assumed_available_at(table(), datetime(2021, 10, 13, 15, tzinfo=UTC))
+    assert set(usable["game_id"]) == {2021020010}
+    assert set(usable["quote"]) == {"open"}
+
+
+def test_the_opener_waits_for_a_schedule_made_public_after_ten_eastern() -> None:
+    # Like the Lake Tahoe game re-timed on its game day (SCHEDULE_PUBLIC_OVERRIDES): the row
+    # carries the new start, so E2 sees it only once the new time is public.
+    public = datetime(2021, 10, 13, 16, tzinfo=UTC)  # 12:00 EDT, after 10:00 ET
+    frame = table(sjs_ari_public=public)
+    opens = frame.filter((pl.col("game_id") == 2021020010) & (pl.col("quote") == "open"))
+    assert (opens["assumed_available_utc"] == public).all()
+    assert 2021020010 not in assumed_available_at(frame, public)["game_id"].to_list()
+
+
 def test_the_assumed_opener_is_never_later_than_an_early_start() -> None:
     early = datetime(2021, 10, 13, 9, tzinfo=UTC)  # 05:00 EDT, before 10:00 ET
     frame = table(early)
@@ -87,7 +114,7 @@ def test_the_assumed_opener_is_never_later_than_an_early_start() -> None:
 )
 def test_the_opener_is_assumed_at_ten_eastern(game_date: date, expected: datetime) -> None:
     late = expected + timedelta(hours=12)
-    assert open_assumed_utc(game_date, late) == expected
+    assert open_assumed_utc(game_date, late, expected - timedelta(days=1)) == expected
 
 
 def test_the_schema_rejects_an_observed_time_before_the_start() -> None:

@@ -352,3 +352,18 @@ def test_import_refuses_a_season_whose_schedule_is_incomplete(tmp_path: Path) ->
     with pytest.raises(ValueError, match="2 of 20102011's 3 games"):
         import_seasons(archive, [20102011], partial, results_empty(partial), FIXTURE_GAMES)
     assert seen == []
+
+
+def test_import_refuses_a_season_where_no_price_matched(tmp_path: Path) -> None:
+    # Writing nothing would leave an earlier import's rows for the season in place.
+    store = RawStore(tmp_path / "raw")
+    store.put("sbr", "20102011/20260929T120000Z", OLD, {"fetched_utc": NOW.isoformat()})
+    elsewhere = OLD_SCHEDULE.with_columns(home=pl.lit("BOS"), away=pl.lit("BUF"))
+    with pytest.raises(ValueError, match="no SBR price matched"):
+        import_seasons(
+            SbrArchive(store, offline=True),
+            [20102011],
+            elsewhere,
+            results_empty(elsewhere),
+            FIXTURE_GAMES,
+        )

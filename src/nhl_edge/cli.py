@@ -281,9 +281,9 @@ def sbr(
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
+    # import_seasons refuses a season with no prices, so every season's partition is replaced.
     for frame in frames.values():
-        if frame.height:
-            lake.write("sbr_odds", frame)
+        lake.write("sbr_odds", frame)
     typer.echo("\n".join(report_lines(reports)))
     total = pl.concat(frames.values()).height if frames else 0
     typer.echo(
