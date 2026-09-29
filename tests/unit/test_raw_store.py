@@ -163,3 +163,30 @@ def test_sync_and_restore_need_r2(tmp_path: Path) -> None:
         RawStore(tmp_path).sync_to_r2()
     with pytest.raises(ValueError, match="needs R2"):
         RawStore(tmp_path).restore_from_r2()
+
+
+class FlakyBucket(MemoryBucket):
+    """Fails the first download of each sidecar, like a transient R2 or network error."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failed: set[str] = set()
+
+    def get_object(self, **kwargs: object) -> dict[str, object]:
+        key = str(kwargs["Key"])
+        if key.endswith(".meta.json") and key not in self.failed:
+            self.failed.add(key)
+            raise ConnectionError(f"reset while reading {key}")
+        return super().get_object(**kwargs)
+
+
+def test_an_interrupted_restore_leaves_nothing_and_resumes(tmp_path: Path) -> None:
+    bucket = FlakyBucket()
+    machine(tmp_path / "runner", bucket).put("odds", "2026-09-28/a", BODY, {"slot": "morning"})
+    laptop = machine(tmp_path / "laptop", bucket)
+    with pytest.raises(ConnectionError):
+        laptop.restore_from_r2()
+    assert not [p for p in (tmp_path / "laptop").rglob("*") if p.is_file()]
+    counts = laptop.restore_from_r2()
+    assert (counts.copied, counts.skipped) == (1, 0)
+    assert laptop.get("odds/2026-09-28/a") == BODY

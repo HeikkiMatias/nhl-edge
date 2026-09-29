@@ -148,15 +148,24 @@ class RawStore:
         return raw_key
 
     def _download(self, raw_key: str) -> None:
-        """Copy one complete response from R2, body first as in put, each file through a
-        temporary name."""
+        """Copy one complete response from R2. Both files are staged under temporary names
+        first and published, body first as in put, only once both have arrived, so a failed
+        download leaves nothing behind and the next restore retries it."""
         objects = self._objects()
-        for suffix in (SUFFIX, META):
-            body = objects.get_object(Bucket=self.bucket, Key=f"{R2_RAW}{raw_key}{suffix}")
-            path = self.base_dir / f"{raw_key}{suffix}"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_name(f"{path.name}.tmp")
-            tmp.write_bytes(body["Body"].read())
+        staged: list[tuple[Path, Path]] = []
+        try:
+            for suffix in (SUFFIX, META):
+                body = objects.get_object(Bucket=self.bucket, Key=f"{R2_RAW}{raw_key}{suffix}")
+                path = self.base_dir / f"{raw_key}{suffix}"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_name(f"{path.name}.tmp")
+                tmp.write_bytes(body["Body"].read())
+                staged.append((tmp, path))
+        except BaseException:
+            for tmp, _ in staged:
+                tmp.unlink(missing_ok=True)
+            raise
+        for tmp, path in staged:
             tmp.replace(path)
 
     def _objects(self) -> ObjectStore:
