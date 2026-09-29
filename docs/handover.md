@@ -62,7 +62,7 @@ Where the build stands at the end of the second phase 1 session, and how to pick
 2. **Data.** #7, #9 and #10 need the lake.
    - First run `uv run nhl lake restore-raw` (about 1.1 GB), then `uv run nhl ingest --seasons 20102011-20252026 --replay` (no network) and `uv run nhl odds replay`. Together they took about 80 minutes in a cloud session. Run them in the background and work meanwhile.
    - `uv run nhl status` should then say "up to date with R2".
-   - A lake table can also be read straight from R2 into memory (`list_keys` and `get_object`, as `Lake.pull` does), which is enough for a check over `games` or `schedule`.
+   - A lake table can also be read straight from R2 into memory (`list_keys` and `get_object`), which is enough for a check over `games` or `schedule`.
 3. **Start.** Use this prompt:
 
    > Read CLAUDE.md and docs/handover.md. Continue P1 with #7: start in plan mode, then branch, PR, review triage and merge as CLAUDE.md describes. Then #9 and #10 in that order. Stop and ask me before any ADR, any won't-fix on a P0, or anything outside an issue's scope.

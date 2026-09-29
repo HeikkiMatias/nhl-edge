@@ -64,19 +64,33 @@ class R2Config:
         return cast(ObjectStore, client)
 
 
-def list_keys(objects: ObjectStore, bucket: str, prefix: str) -> list[tuple[str, int]]:
-    """Every (key, size) under a prefix, following list_objects_v2 pagination."""
-    keys: list[tuple[str, int]] = []
+def _contents(objects: ObjectStore, bucket: str, prefix: str) -> list[dict[str, Any]]:
+    """Every listed object under a prefix, following list_objects_v2 pagination."""
+    items: list[dict[str, Any]] = []
     token: str | None = None
     while True:
         kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix}
         if token is not None:
             kwargs["ContinuationToken"] = token
         page = objects.list_objects_v2(**kwargs)
-        keys.extend((item["Key"], int(item["Size"])) for item in page.get("Contents", []))
+        items.extend(page.get("Contents", []))
         if not page.get("IsTruncated"):
-            return keys
+            return items
         token = page["NextContinuationToken"]
+
+
+def list_keys(objects: ObjectStore, bucket: str, prefix: str) -> list[tuple[str, int]]:
+    """Every (key, size) under a prefix."""
+    return [(item["Key"], int(item["Size"])) for item in _contents(objects, bucket, prefix)]
+
+
+def list_etags(objects: ObjectStore, bucket: str, prefix: str) -> dict[str, str]:
+    """Every key under a prefix with its ETag, unquoted. For an object stored with one
+    put_object, as the lake writes them, R2's ETag is the MD5 of its bytes."""
+    return {
+        item["Key"]: str(item.get("ETag", "")).strip('"')
+        for item in _contents(objects, bucket, prefix)
+    }
 
 
 def bucket_usage(objects: ObjectStore, bucket: str, prefix: str = "") -> tuple[int, int]:

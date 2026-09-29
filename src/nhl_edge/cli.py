@@ -276,8 +276,9 @@ def sbr(
         typer.echo(f"restored {restored} raw SBR pages from R2")
     lake = Lake.from_env(mirror=r2)
     if r2:
-        lake.pull("schedule")
-        lake.pull("games")
+        # Only the imported seasons, and only files this machine lacks or holds differently.
+        pulled = lake.pull("schedule", wanted) + lake.pull("games", wanted)
+        typer.echo(f"pulled {pulled} schedule and games files from R2")
     schedule, results = lake.read("schedule"), lake.read("games")
     archive = SbrArchive(store, offline=replay)
     try:

@@ -6,11 +6,14 @@ idempotent. Unpartitioned tables are one file, <table>/part-0.parquet, rewritten
 write validates against the table's pandera schema.
 
 The local copy is what readers use. A fresh machine, such as the nightly runner, pulls a table
-from R2 before a read-modify-write.
+from R2 before a read-modify-write. A pull downloads only the files that differ from the local
+copy, and can be limited to some seasons.
 """
 
+import hashlib
 import io
 from collections.abc import Collection
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -18,7 +21,7 @@ from pathlib import Path
 import pandera.polars as pa
 import polars as pl
 
-from nhl_edge.lake.r2 import ObjectStore, R2Config, list_keys
+from nhl_edge.lake.r2 import ObjectStore, R2Config, list_etags, list_keys
 from nhl_edge.lake.schemas import (
     DAILYFACEOFF_GOALIES_KEY,
     ODDS_KEY,
@@ -41,6 +44,7 @@ from nhl_edge.lake.schemas import (
 LAKE_DIR = Path("data/lake")
 R2_PREFIX = "lake"
 PART = "part-0.parquet"
+PULL_WORKERS = 16
 
 
 @dataclass(frozen=True)
@@ -153,15 +157,39 @@ class Lake:
             return spec.empty()
         return pl.read_parquet(paths).sort(spec.key)
 
-    def pull(self, table: str) -> int:
-        """Download the table's files from R2 over the local copy. Returns the number of files."""
-        if self.objects is None:
+    def pull(
+        self, table: str, seasons: Collection[int] | None = None, workers: int = PULL_WORKERS
+    ) -> int:
+        """Download the table's files from R2 over the local copy, or only the given seasons'
+        partitions of a table partitioned by season. A local file whose MD5 equals R2's ETag is
+        already the same bytes and is not downloaded again. Returns the number of files
+        downloaded."""
+        spec = TABLES[table]
+        if seasons is not None and spec.partition_by[:1] != ("season",):
+            raise ValueError(f"{table} is not partitioned by season")
+        objects = self.objects
+        if objects is None:
             return 0
-        keys = list_keys(self.objects, self.bucket or "", f"{R2_PREFIX}/{table}/")
-        for r2_key, _ in keys:
-            body = self.objects.get_object(Bucket=self.bucket, Key=r2_key)["Body"].read()
+        root = f"{R2_PREFIX}/{table}/"
+        prefixes = [root] if seasons is None else [f"{root}season={s}/" for s in sorted(seasons)]
+        listed: dict[str, str] = {}
+        for prefix in prefixes:
+            listed |= list_etags(objects, self.bucket or "", prefix)
+        stale = sorted(key for key, etag in listed.items() if not self._same_bytes(key, etag))
+
+        def download(r2_key: str) -> None:
+            body = objects.get_object(Bucket=self.bucket, Key=r2_key)["Body"].read()
             self._write_local(r2_key.removeprefix(f"{R2_PREFIX}/"), body)
-        return len(keys)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(download, stale))
+        return len(stale)
+
+    def _same_bytes(self, r2_key: str, etag: str) -> bool:
+        path = self.base_dir / r2_key.removeprefix(f"{R2_PREFIX}/")
+        if not path.is_file():
+            return False
+        return hashlib.md5(path.read_bytes(), usedforsecurity=False).hexdigest() == etag
 
     def upsert(self, table: str, frame: pl.DataFrame) -> pl.DataFrame:
         """Merge rows into an unpartitioned table by its key, new rows winning, and write it back.
