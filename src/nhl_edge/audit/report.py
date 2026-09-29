@@ -31,8 +31,9 @@ class Section:
 
 
 def build(lake: Lake, store: RawStore, as_of: date) -> list[Section]:
-    """Every section of the report, over data up to and including as_of (an ET game date)."""
-    games = lake.read("games")
+    """Every section of the report, over data up to and including as_of (an ET game date): games
+    and shift charts dated after it, and snapshot runs for later slot days, are left out."""
+    games = lake.read("games").filter(pl.col("game_date") <= as_of)
     listed = game_audit.listed_games(store)
     seasons = game_audit.season_report(games, listed, as_of)
     sections = [
@@ -47,9 +48,9 @@ def build(lake: Lake, store: RawStore, as_of: date) -> list[Section]:
             "Not yet: the SBR archive import is #7. This section will add the vig per season, "
             "open against close, and team mapping errors.",
         ),
-        _shift_section(lake.read("shift_coverage")),
+        _shift_section(lake.read("shift_coverage").filter(pl.col("game_date") <= as_of)),
         _reference_section(games),
-        _snapshot_section(lake, store, as_of),
+        _snapshot_section(lake, store, listed, as_of),
         Section(
             "Starting goalies",
             "Not yet: the pre-game goalie poll (#43) logs the NHL's pre-game data from 2026-27 "
@@ -84,19 +85,19 @@ def _reference_section(games: pl.DataFrame) -> Section:
     )
 
 
-def _snapshot_section(lake: Lake, store: RawStore, as_of: date) -> Section:
+def _snapshot_section(lake: Lake, store: RawStore, listed: pl.DataFrame, as_of: date) -> Section:
     runs = snapshot_audit.slot_runs(store).filter(pl.col("slot_day") <= as_of)
     if runs.is_empty():
         return Section("Live odds snapshots", "No stored odds snapshots.", ["no odds snapshots"])
     first = runs["slot_day"].min()
     assert isinstance(first, date)
     days = [first + timedelta(days=i) for i in range((as_of - first).days + 1)]
-    due = snapshot_audit.due_slots(lake.read("schedule"), days)
+    due = snapshot_audit.due_slots(listed, days)
     odds = lake.read("odds_snapshots").filter(pl.col("raw_key").is_in(runs["raw_key"].implode()))
     events = snapshot_audit.event_matches(odds)
     body = (
         f"Every stored `nhl odds snapshot` run from {first} to {as_of} (ET), against the slots "
-        "due on the days games were played.\n\n"
+        "due for the listed regular-season and playoff games.\n\n"
         + snapshot_audit.markdown_report(
             snapshot_audit.slot_report(runs, due),
             snapshot_audit.quote_age(odds),

@@ -5,6 +5,10 @@ The listings are the schedule responses under nhl/schedule/ in the raw cache: th
 weeks and the odds job's daily checks. They name every game, final or not, so a game that was
 listed but never became final, or a final game no listing names, shows up here. A game counts at
 its newest listing, the one that knows about any postponement.
+
+A season is compared with its expected length only once it is over by the audit date: on its last
+listed regular-season date, or July 1 of its second year when no listing names it (no regular
+season runs into July). So a season missing from both the lake and the raw cache is still found.
 """
 
 import json
@@ -13,14 +17,18 @@ from datetime import date
 import polars as pl
 
 from nhl_edge.ingest.games import EXPECTED_GAMES
-from nhl_edge.ingest.nhl_api import REGULAR_SEASON
+from nhl_edge.ingest.nhl_api import REGULAR_SEASON, parse_utc
 from nhl_edge.ingest.odds_lake import SCHEDULE_PREFIX, dated_raw_keys, is_complete
 from nhl_edge.lake.raw import RawStore
 
 LISTED_SCHEMA = {
     "game_id": pl.Int64,
     "season": pl.Int32,
+    "game_type": pl.Int8,
     "game_date": pl.Date,
+    "start_utc": pl.Datetime("us", "UTC"),
+    "home": pl.String,
+    "away": pl.String,
     "game_state": pl.String,
     "listed_key": pl.String,
 }
@@ -31,7 +39,7 @@ COUNTS = ["team_twice_a_day", "repeated_matchups", "not_listed", "date_differs",
 
 
 def listed_games(store: RawStore) -> pl.DataFrame:
-    """Every regular-season game in the cached schedule listings, at its newest listing."""
+    """Every game in the cached schedule listings, of every game type, at its newest listing."""
     rows = []
     for keys in dated_raw_keys(SCHEDULE_PREFIX, store).values():
         for raw_key in keys:
@@ -42,12 +50,15 @@ def listed_games(store: RawStore) -> pl.DataFrame:
                     {
                         "game_id": game["id"],
                         "season": game["season"],
+                        "game_type": game["gameType"],
                         "game_date": date.fromisoformat(day["date"]),
+                        "start_utc": parse_utc(game["startTimeUTC"]),
+                        "home": game["homeTeam"]["abbrev"],
+                        "away": game["awayTeam"]["abbrev"],
                         "game_state": game["gameState"],
                         "listed_key": raw_key,
                     }
                     for game in day["games"]
-                    if game["gameType"] == REGULAR_SEASON
                 )
     listed = pl.DataFrame(rows, schema=LISTED_SCHEMA)
     # Keys end in the fetch stamp, so the newest listing of a game has the largest stamp.
@@ -61,6 +72,7 @@ def disagreements(
     """The games on which the games table and the listings disagree, by kind: season, game_id and
     the listed state. A listed game counts as missing only if it was dated on or before as_of, the
     last day the audit covers, so games still to be played are not."""
+    listed = listed.filter(pl.col("game_type") == REGULAR_SEASON)
     listing = listed.select("game_id", listed_date="game_date", listed_state="game_state")
     unlisted = games.join(listing, on="game_id", how="anti").with_columns(
         listed_state=pl.lit(None, pl.String)
@@ -84,26 +96,43 @@ def _count(grouped: pl.DataFrame, name: str) -> pl.DataFrame:
     return grouped.filter(pl.col("len") > 1).group_by("season").agg(pl.len().alias(name))
 
 
+def seasons_over(listed: pl.DataFrame, as_of: date) -> list[int]:
+    """The seasons of EXPECTED_GAMES whose regular season is over by as_of."""
+    last_listed = dict(
+        listed.filter(pl.col("game_type") == REGULAR_SEASON)
+        .group_by("season")
+        .agg(pl.col("game_date").max())
+        .iter_rows()
+    )
+    return [
+        season
+        for season in EXPECTED_GAMES
+        if as_of >= last_listed.get(season, date(season % 10_000, 7, 1))
+    ]
+
+
 def season_report(games: pl.DataFrame, listed: pl.DataFrame, as_of: date) -> pl.DataFrame:
-    """One row per season in games: its games against its expected length, gaps in its game
-    numbers, duplicates, and the disagreements with the listings."""
+    """One row per season in games or over by as_of: its games against its expected length once
+    it is over, gaps in its game numbers, duplicates, and the disagreements with the listings."""
+    over = seasons_over(listed, as_of)
+    seasons = sorted(set(games["season"].to_list()) | set(over))
+    expected = {season: EXPECTED_GAMES[season] for season in over}
     teams = pl.concat(
         [
             games.select("season", "game_date", team="home"),
             games.select("season", "game_date", team="away"),
         ]
     )
-    report = (
-        games.group_by("season")
-        .agg(
-            pl.len().alias("games"),
-            ((pl.col("game_id") % 10_000).max() - pl.len()).alias("number_gaps"),
-        )
-        .with_columns(
-            pl.col("season").replace_strict(EXPECTED_GAMES, default=None).alias("expected")
-        )
+    report = pl.DataFrame({"season": seasons}, schema={"season": pl.Int32}).with_columns(
+        pl.col("season")
+        .replace_strict(expected, default=None, return_dtype=pl.Int64)
+        .alias("expected")
     )
     parts = [
+        games.group_by("season").agg(
+            pl.len().alias("games"),
+            ((pl.col("game_id") % 10_000).max() - pl.len()).alias("number_gaps"),
+        ),
         teams.group_by("season", "team")
         .len()
         .group_by("season")
@@ -120,7 +149,7 @@ def season_report(games: pl.DataFrame, listed: pl.DataFrame, as_of: date) -> pl.
     for part in parts:
         report = report.join(part, on="season", how="left")
     return (
-        report.with_columns(pl.col(COUNTS).fill_null(0))
+        report.with_columns(pl.col("games", "number_gaps", "teams", *COUNTS).fill_null(0))
         .select(
             "season",
             "games",
@@ -144,7 +173,8 @@ def problems(
         season = row["season"]
         if row["expected"] is not None and row["games"] != row["expected"]:
             lines.append(f"{season}: {row['games']} games, expected {row['expected']}")
-        if row["number_gaps"]:
+        if row["expected"] is not None and row["number_gaps"]:
+            # Under way, a postponed game leaves a gap until it is played.
             lines.append(f"{season}: {row['number_gaps']} game numbers missing below the highest")
         if row["team_twice_a_day"]:
             lines.append(f"{season}: {row['team_twice_a_day']} times a team plays twice a day")
@@ -175,11 +205,8 @@ def markdown_report(report: pl.DataFrame) -> str:
     lines = []
     for r in report.iter_rows(named=True):
         expected = f"{r['expected']:,}" if r["expected"] is not None else "under way"
-        per_team = (
-            str(r["team_games_min"])
-            if r["team_games_min"] == r["team_games_max"]
-            else f"{r['team_games_min']} to {r['team_games_max']}"
-        )
+        low, high = r["team_games_min"], r["team_games_max"]
+        per_team = "" if low is None else str(low) if low == high else f"{low} to {high}"
         lines.append(
             f"| {r['season']} | {r['games']:,} | {expected} | {r['teams']} | {per_team} "
             f"| {r['number_gaps']} | {r['team_twice_a_day']} | {r['repeated_matchups']} "

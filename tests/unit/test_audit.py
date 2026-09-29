@@ -19,7 +19,7 @@ WEEK_2010 = (FIXTURES / "schedule_2010-10-07.json").read_bytes()
 WEEK_2026 = (FIXTURES / "schedule_2026-09-28.json").read_bytes()
 # OPENING's games: MIN and CAR in Helsinki on 2010-10-07 and 2010-10-08, CHI at COL on 2010-10-07.
 HELSINKI, CHI_AT_COL, HELSINKI_REMATCH = 2010020003, 2010020004, 2010020008
-OPENING_DAY = date(2010, 10, 7)
+OPENING_DAY, LAST_LISTED = date(2010, 10, 7), date(2010, 10, 8)
 
 
 def listed_2010(tmp_path: Path) -> pl.DataFrame:
@@ -46,12 +46,13 @@ def test_each_game_counts_at_its_newest_listing(tmp_path: Path) -> None:
 
 
 def test_a_short_season_and_its_number_gaps_are_problems(tmp_path: Path) -> None:
+    # The trimmed fixture lists the season through 2010-10-08, so by then it counts as over.
     listed = listed_2010(tmp_path)
-    row = season_row(OPENING, listed, OPENING_DAY)
+    row = season_row(OPENING, listed, LAST_LISTED)
     assert (row["games"], row["expected"], row["teams"], row["number_gaps"]) == (3, 1230, 4, 5)
     assert [row[name] for name in game_audit.COUNTS] == [0, 0, 0, 0, 0]
-    report = game_audit.season_report(OPENING, listed, OPENING_DAY)
-    assert game_audit.problems(report, OPENING, listed, OPENING_DAY) == [
+    report = game_audit.season_report(OPENING, listed, LAST_LISTED)
+    assert game_audit.problems(report, OPENING, listed, LAST_LISTED) == [
         "20102011: 3 games, expected 1230",
         "20102011: 5 game numbers missing below the highest",
     ]
@@ -82,6 +83,28 @@ def test_a_listed_game_is_missing_only_once_its_date_is_covered(tmp_path: Path) 
         "20102011: 1 games listed by the audit date but not in games, e.g. 2010020008 (OFF)"
         in game_audit.problems(report, games, listed, date(2010, 10, 8))
     )
+
+
+def test_an_expected_season_with_no_games_is_found_once_over(tmp_path: Path) -> None:
+    listed = listed_2010(tmp_path)
+    # 2011-12 has no games and no listing: over from July 1, 2012, the day it could not reach.
+    before = game_audit.season_report(OPENING, listed, date(2012, 6, 30))
+    assert 20112012 not in before["season"].to_list()
+    report = game_audit.season_report(OPENING, listed, date(2012, 7, 1))
+    row = report.filter(pl.col("season") == 20112012).row(0, named=True)
+    assert (row["games"], row["expected"], row["teams"]) == (0, 1230, 0)
+    assert "20112012: 0 games, expected 1230" in game_audit.problems(
+        report, OPENING, listed, date(2012, 7, 1)
+    )
+
+
+def test_a_season_under_way_is_not_held_to_its_length(tmp_path: Path) -> None:
+    # Listed through 2010-10-08, so on 2010-10-07 the season is under way: no count or gap check.
+    listed = listed_2010(tmp_path)
+    games = OPENING.filter(pl.col("game_date") <= date(2010, 10, 7))
+    report = game_audit.season_report(games, listed, date(2010, 10, 7))
+    assert report.row(0, named=True)["expected"] is None
+    assert game_audit.problems(report, games, listed, date(2010, 10, 7)) == []
 
 
 def test_a_game_dated_differently_from_its_listing_is_found(tmp_path: Path) -> None:
@@ -122,16 +145,19 @@ def test_a_run_belongs_to_the_et_day_of_its_slot(tmp_path: Path) -> None:
     assert credits.rows() == [(date(2026, 9, 29), 3, 5, 478)]
 
 
-def schedule(*starts: datetime) -> pl.DataFrame:
+def schedule(*starts: datetime, game_type: int = 2) -> pl.DataFrame:
+    """Listed games (as audit.games.listed_games gives them) starting at the given times."""
     return pl.DataFrame(
         {
             "game_id": [2026020001 + i for i in range(len(starts))],
+            "game_type": [game_type] * len(starts),
             "start_utc": list(starts),
             "home": ["CAR"] * len(starts),
             "away": ["FLA"] * len(starts),
         },
         schema={
             "game_id": pl.Int64,
+            "game_type": pl.Int8,
             "start_utc": pl.Datetime("us", "UTC"),
             "home": pl.String,
             "away": pl.String,
@@ -164,6 +190,15 @@ def test_a_slot_is_due_when_the_job_would_have_priced_a_game() -> None:
     assert not any(due_on(idle, date(2026, 9, 28)).values())
 
 
+def test_playoff_games_make_slots_due_and_preseason_games_do_not() -> None:
+    day, start = date(2027, 4, 20), datetime(2027, 4, 20, 23, tzinfo=UTC)  # 19:00 EDT
+    playoffs = snapshot_audit.due_slots(schedule(start, game_type=3), [day])
+    assert due_on(playoffs, day)["morning"] is True
+    assert due_on(playoffs, day)["pre7"] is True
+    preseason = snapshot_audit.due_slots(schedule(start, game_type=1), [day])
+    assert not any(due_on(preseason, day).values())
+
+
 def runs_frame(*rows: tuple[str, date, float]) -> pl.DataFrame:
     return pl.DataFrame(
         [
@@ -190,7 +225,9 @@ def test_missed_and_late_slots_are_problems_and_manual_runs_are_not() -> None:
     runs = runs_frame(
         ("morning", idle_day, 56.0),  # a manual run on a day without games
         ("morning", game_day, 15.0),
+        ("morning", game_day, 95.0),  # a retry after the on-time run: not late
         ("pre7", game_day, 30.0),
+        ("pre7", game_day, 50.0),  # a second late run: one problem per slot day
     )
     report = {
         row["slot"]: row for row in snapshot_audit.slot_report(runs, due).iter_rows(named=True)
@@ -203,6 +240,7 @@ def test_missed_and_late_slots_are_problems_and_manual_runs_are_not() -> None:
     ]
     assert report["morning"]["delay_max_min"] == 15.0
     assert [report["midday"][k] for k in ("due", "landed", "missed")] == [1, 0, 1]
+    assert report["pre7"]["delay_max_min"] == 30.0
     no_events = snapshot_audit.event_matches(pl.DataFrame(schema=EVENT_COLUMNS))
     assert snapshot_audit.problems(runs, due, no_events, game_day) == [
         "2026-09-29 midday: due, no snapshot stored",
@@ -289,6 +327,11 @@ def test_audit_report_writes_every_section(tmp_path: Path, monkeypatch: pytest.M
         assert f"\n## {title}\n" in text
     assert "- 20102011: 3 games, expected 1230" in text
     assert "- no odds snapshots" in text
+    # A report to an earlier date leaves out the games after it.
+    earlier = runner.invoke(app, ["audit", "report", "--as-of", "2010-10-07"])
+    assert earlier.exit_code == 0, earlier.output
+    text = (tmp_path / "reports" / "audit" / "2010-10-07.md").read_text()
+    assert "| 20102011 | 2 | under way |" in text
 
 
 def test_audit_report_needs_games_and_a_date(

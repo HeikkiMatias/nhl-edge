@@ -3,8 +3,9 @@ old its moneyline quotes were, how many events matched an NHL game, and the Odds
 
 Every stored response under odds/ in the raw cache is one run of `nhl odds snapshot`, with its
 slot, fetch time and credit counts in the sidecar. A slot was due on an ET day when the job would
-have called the Odds API (slot_has_games) given the games played that day, read from schedule. A
-game postponed on the day is not in schedule, so a slot due only for it counts as not due.
+have called the Odds API (slot_has_games) given the day's games, regular season and playoffs, as
+the cached NHL schedule listings last show them (audit.games.listed_games). A game moved off the
+day by a later listing counts on its new date only, so a slot due only for it counts as not due.
 
 A run belongs to the ET day of its slot time, which is the ET day it was fetched on, or the day
 before when the fetch came before that day's slot time: a run can start late but never early.
@@ -15,7 +16,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import polars as pl
 
-from nhl_edge.ingest.nhl_api import REGULAR_SEASON, ScheduledGame, parse_utc
+from nhl_edge.ingest.nhl_api import ScheduledGame, parse_utc
 from nhl_edge.ingest.odds import ET, SLOT_PLANS, SOURCE, Slot, slot_has_games
 from nhl_edge.ingest.odds_lake import dated_raw_keys, is_complete
 from nhl_edge.lake.raw import RawStore
@@ -72,13 +73,12 @@ def slot_runs(store: RawStore, plan: str = PLAN) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=RUNS_SCHEMA).sort("fetched_utc")
 
 
-def due_slots(schedule: pl.DataFrame, days: Iterable[date], plan: str = PLAN) -> pl.DataFrame:
+def due_slots(listed: pl.DataFrame, days: Iterable[date], plan: str = PLAN) -> pl.DataFrame:
     """For every ET day and slot of the plan, whether the slot was due: whether the job, run at
-    the slot time, would have found a game to price."""
-    games = [
-        ScheduledGame(row["game_id"], REGULAR_SEASON, row["start_utc"], row["home"], row["away"])
-        for row in schedule.select("game_id", "start_utc", "home", "away").iter_rows(named=True)
-    ]
+    the slot time, would have found a game to price among the listed games (game_id, game_type,
+    start_utc, home, away), which slot_has_games narrows to regular season and playoffs."""
+    columns = ("game_id", "game_type", "start_utc", "home", "away")
+    games = [ScheduledGame(*row) for row in listed.select(columns).iter_rows()]
     rows = [
         {
             "slot_day": day,
@@ -169,13 +169,19 @@ def problems(runs: pl.DataFrame, due: pl.DataFrame, events: pl.DataFrame, as_of:
     matched, one line each. A later event can still match once the nightly ingest caches the
     schedule week that lists it."""
     due_days = due.filter("due").select("slot_day", "slot")
-    ran = runs.select("slot_day", "slot").unique()
-    missed = due_days.join(ran, on=["slot_day", "slot"], how="anti").sort("slot_day")
-    late = runs.join(due_days, on=["slot_day", "slot"]).filter(
-        pl.col("delay_min") > LATE.total_seconds() / 60
+    # A slot day is judged by its first run: a retry or manual rerun after it is not late.
+    first = runs.sort("fetched_utc").unique(["slot_day", "slot"], keep="first")
+    missed = due_days.join(first, on=["slot_day", "slot"], how="anti").sort("slot_day")
+    late = (
+        first.join(due_days, on=["slot_day", "slot"])
+        .filter(pl.col("delay_min") > LATE.total_seconds() / 60)
+        .sort("slot_day", "fetched_utc")
     )
     started = pl.col("commence_time_utc").dt.convert_time_zone(ET.key).dt.date() <= as_of
-    lines = [f"{day} {slot}: due, no snapshot stored" for day, slot in missed.iter_rows()]
+    lines = [
+        f"{day} {slot}: due, no snapshot stored"
+        for day, slot in missed.select("slot_day", "slot").iter_rows()
+    ]
     lines += [
         f"{row['slot_day']} {row['slot']}: stored {row['delay_min']:.0f} minutes after its slot "
         f"time ({row['raw_key']})"
