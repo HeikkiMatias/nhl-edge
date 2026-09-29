@@ -12,7 +12,8 @@ The fixed list of sources and endpoints. Work from this file instead of guessing
 | [SBR odds archive](https://www.sportsbookreviewsonline.com/scoresoddsarchives/nhl/nhloddsarchives.htm) | Opening and closing moneylines, puck lines and totals, 2007-08 to 2022-23 | Free Excel files, no longer updated, book source not stated | Opening lines for the historical tradable test (E2), closes for the information test (E1); quality unknown until the phase 1 audit |
 | [Elite Prospects API](https://developer.eliteprospects.com/) | Player stats across 900+ leagues including Liiga, SHL, CHL and AHL, draft and transfer history | Free Explorer tier: 1,000 calls a month, 10 per minute; current season free, history is a one-off purchase | Prospect and non-NHL stats for NHLe priors, used sparingly |
 | NHLe research ([Bacon](https://towardsdatascience.com/nhl-equivalency-and-prospect-projection-models-building-the-nhl-equivalency-model-part-2-6f275a45e22/), [HockeyStats](https://hockeystats.com/methodology/nhle)) | Published league translation factors and method | Free articles | Starting coefficients for offensive priors only, refit later on your own data |
-| [Daily Faceoff](https://www.dailyfaceoff.com/), [RotoWire](https://www.rotowire.com/hockey/starting-goalies.php) | Projected lines, power play units, starting goalie status | Web pages only, no API; check terms before automating | Optional manual reference only; not part of the automated pipeline |
+| [Daily Faceoff](https://www.dailyfaceoff.com/starting-goalies) | Projected lines, power play units, starting goalie status with report time and source | Web pages only; robots.txt allows them and disallows `/api/`; no terms of use found (2026-09-29) | Starting goalies logged at every goalie poll (#48), compared with the NHL's in the audit; other pages manual reference only |
+| [RotoWire](https://www.rotowire.com/hockey/starting-goalies.php) | Projected lines and starting goalies | Terms forbid scraping and any automated access without written consent | Manual reference only; never automated |
 | Static files you create | Arena coordinates and time zones, team abbreviation history, coach tenures | One-off CSVs in the repo | Travel, rest and coach-change features |
 
 ## Endpoints
@@ -24,6 +25,9 @@ NHL API (api-web.nhle.com)
   GET /v1/gamecenter/{gameId}/boxscore
   GET /v1/gamecenter/{gameId}/landing     # pre-game goalie poll only
   GET /v1/gamecenter/{gameId}/right-rail  # pre-game goalie poll only
+
+Daily Faceoff (www.dailyfaceoff.com), HTML page, never /api/
+  GET /starting-goalies/{YYYY-MM-DD}      # US Eastern date
   GET /v1/roster/{team}/{season}          # season as 20252026
   GET /v1/player/{playerId}/landing       # bio + career stats by league
   GET /v1/player/{playerId}/game-log/{season}/{gameType}
@@ -153,7 +157,7 @@ At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<da
 - The nightly workflow runs `nhl odds replay --recent 14 --r2`: it restores the window's snapshots and schedules from R2, replays the last 14 days and mirrors the table. The report lists matches by game type and every unmatched event.
 - The Odds API historical endpoint is paid. The `guard-bash` hook blocks it unless Claude Code starts with `ALLOW_PAID_ODDS=1`.
 - MoneyPuck data is free for non-commercial use with attribution and must not be scraped. It is a sanity check, not a backtest input.
-- Daily Faceoff and RotoWire are manual references only, not part of the automated pipeline.
+- Daily Faceoff's starting-goalies page is fetched at the goalie polls only (#48), about one request a date per run; its other pages stay manual references. RotoWire's terms forbid automated access, so it is never fetched.
 
 ## Pre-game goalies
 
@@ -164,6 +168,14 @@ At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<da
 - **Raw:** `nhl/pregame-boxscore/<ET game date>/<game_id>/<fetch stamp>`, `nhl/pregame-landing/...` and `nhl/pregame-right-rail/...`, mirrored to R2. They are kept apart from the ingest's `nhl/boxscore/`, which reuses the newest cached boxscore of a game: a pre-game copy there would stand in for the final one. They cannot be fetched again, so `nhl status` compares the whole key sets of each with R2 (`nhl lake sync-raw --prefix nhl/pregame-` or `restore-raw` brings them in step).
 - **Signal:** the boxscore's `playerByGameStats.<side>.goalies[].starter` flag, the same one `actual_lineups.starting_goalie` reads after the game. On 2026-09-29, seven to nine hours before FLA at CAR, the boxscore had no `playerByGameStats`, the right-rail had no goalie field, and the landing listed each team's goalies with season stats (`matchup.goalieComparison`) but flagged no starter. When, or whether, the flag appears before puck drop is what the poll measures. The landing and right-rail copies are kept so a later check can look for other signals.
 - **Table:** `nhl goalies replay` rebuilds the lake's `pregame_goalies` from the raw boxscores: one row per poll, game and team, with the goalies listed, how many carry the starter flag, and `starter_id` when exactly one does. `observed_utc` is the fetch time, when that state was public; a response fetched at or after the scheduled start gives no rows. The nightly workflow runs `nhl goalies replay --recent 4 --r2`: today, which the evening slots poll ahead, and the three game dates before it.
+
+### Daily Faceoff starting goalies
+
+The same `nhl goalies poll` also fetches Daily Faceoff's starting-goalies page for each US Eastern date that has a game in the poll window (#48; `--no-daily-faceoff` skips it), so the audit can compare how early and how accurately each source names the starter. On 2026-09-29 at 12:10 UTC, Daily Faceoff already listed Tristan Jarry as EDM's confirmed starter for that night, reported the day before, while the NHL flagged no one.
+
+- **Raw:** each page untouched (HTML) as `dailyfaceoff/starting-goalies/<ET date>/<fetch stamp>`, mirrored to R2 and compared in full with R2 by `nhl status`.
+- **Parsed from** the JSON in the page's `__NEXT_DATA__` script (`props.pageProps.data`): per game `dateGmt` and, per side, the team name, goalie name and Daily Faceoff id, status (`NewsStrengthName`, such as Likely or Confirmed), `NewsCreatedAt` and `NewsSourceUrl`.
+- **Table:** `nhl goalies replay` also rebuilds the lake's `dailyfaceoff_goalies`: one row per page fetch, game and team with the goalie, status, `reported_utc` and source. `observed_utc` is the fetch time, not the report time, since a status can change. Games that had started at the fetch give no rows. Goalies stay names; the audit matches them to NHL player ids. There is no NHL `game_id`; `start_utc` and `team` identify the game.
 
 ## Reference files
 
