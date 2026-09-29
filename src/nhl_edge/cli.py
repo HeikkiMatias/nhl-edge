@@ -402,8 +402,8 @@ def audit_shifts(
 
 @audit_app.command("reference")
 def audit_reference() -> None:
-    """Check the reference files (team codes, arenas, venues, home arenas, coach tenures) against
-    every game in the lake's games table."""
+    """Check the reference files (team codes, arenas, venues, home arenas, coach tenures,
+    attendance limits) against every game in the lake's games table."""
     from nhl_edge.lake.tables import Lake
     from nhl_edge.reference import check_games
 

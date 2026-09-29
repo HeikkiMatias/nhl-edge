@@ -164,6 +164,7 @@ Hand-compiled CSVs in `src/nhl_edge/reference/`, loaded and validated by `nhl_ed
 | `venues.csv` | venue name the NHL API gives | arena_id | The lake's `games`, and the 2026-27 schedule |
 | `home_arenas.csv` | team, arena and first season | last_season, primary | The lake's `games` |
 | `coaches.csv` | head coach's stint with a team | team, first_game, last_game, coach, note | NHL records API `coach-franchise-records`, split by hand where noted |
+| `attendance_limits.csv` | limit on spectators at one arena over a date range | first_date, last_date, capacity_share, limit, announced, source, ended_announced, ended_source | The 2020-21 and 2021-22 NHL season articles on Wikipedia and the news sources they cite, one per row in `source`. Seat counts from the NHL records API `team` |
 
 - **Team codes.** ATL became WPG in 2011-12, PHX became ARI in 2014-15, and ARI became UTA in 2024-25. `predecessor` links the codes of one team.
   - The NHL counts Utah as a new franchise (`franchise_id` 40), but the Coyotes' players and staff moved there, so UTA's predecessor is ARI.
@@ -188,4 +189,18 @@ Hand-compiled CSVs in `src/nhl_edge/reference/`, loaded and validated by `nhl_ed
     - Its `last_game` becomes known only once the next stint is.
     - The `note` stays out, since it was written with hindsight.
   - This is conservative: most coaching changes are announced a day or more before the new coach's first game.
-- **Upkeep.** At a coaching change, end the old stint at its last game and add the new one from its first game. When the NHL uses a new venue name, add it to `venues.csv` (and the building to `arenas.csv` if new). Then run `nhl audit reference`.
+- **Attendance limits.** `games.limited_attendance` marks the 2020-21 season as a whole. `attendance_limits.csv` has each arena's limits by date:
+  - 2020-21: every arena from the season's first day, 2021-01-13, to its last, 2021-05-19. Canadian arenas and Lake Tahoe had no spectators. Arizona, Dallas and Florida admitted crowds from the start. The other US arenas opened from their own dates, from Nashville on January 26 to Chicago on May 9. Playoff-only changes are left out.
+  - 2021-22: the Omicron limits in Canada, from mid-December 2021 to March 2022. Ontario went from 50% to 1,000 spectators to closed doors to 500 to 50%. Quebec went from closed doors to 50%. Manitoba went from 50% to 250 to 50%. Alberta and BC stayed at 50%.
+  - `capacity_share` is the share of seats open (0 means no spectators). A head-count limit is divided by the arena's seats, and `limit` keeps the wording.
+  - `announced` is the date of the source reporting the limit. It is empty only for a limit in force from the first day of 2020-21, known before the season.
+  - A limit ends either when the next one starts the day after, or when it is lifted. For a lift before its season ended, `ended_announced` and `ended_source` date and cite the lift's announcement.
+  - Where a team played below the legal limit by choice, `limit` says so. The Maple Leafs played behind closed doors under Ontario's 1,000 cap, and the Jets admitted no one under Manitoba's 250 until at least January 11, 2022.
+- **Capacity share per game.** Features read shares through `capacity_share(schedule, prediction_utc, predicting)`:
+  - It reads only the schedule rows `schedule_known_at` returns: games whose result is public, and the games being predicted once their schedule is public (ADR 0005). A game's venue and date stay hidden until then.
+  - A source counts as public from 10:00 UTC the day after its date, the rule ADR 0003 sets for results.
+  - A game takes the latest limit at its arena that started by its date and was public by the prediction.
+  - That limit applies while it runs, and after its last day too while what ended it is not yet public.
+  - So a game-day prediction reads Nashville's first game with fans (January 26, 2021, reported the next day) as empty, and Montreal's game closed on the day itself (December 16, 2021) as full.
+  - A prediction the day before Tampa Bay's May 7, 2021 game sees 3,800 fans, and one that morning sees 4,200.
+- **Upkeep.** When a limit is imposed, changed or lifted, add or close its row with the sources' dates. At a coaching change, end the old stint at its last game and add the new one from its first game. When the NHL uses a new venue name, add it to `venues.csv` (and the building to `arenas.csv` if new). Then run `nhl audit reference`.

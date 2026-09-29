@@ -1,4 +1,5 @@
-"""Reference files: team codes, arenas, venue names, home arenas and coach tenures.
+"""Reference files: team codes, arenas, venue names, home arenas, coach tenures and attendance
+limits.
 
 Hand-compiled CSVs next to this module, from the sources docs/data-sources.md lists. They cover
 the lake's seasons, 2010-11 on, and `nhl audit reference` checks them against every game in
@@ -7,10 +8,11 @@ the lake's seasons, 2010-11 on, and `nhl audit reference` checks them against ev
 Team codes, arenas, venues and home arenas are known seasons ahead, so they carry no observed_utc.
 A feature learns a game's venue from `schedule`, public a day before the game (ADR 0005). A
 coach's stint is different: its end is future information while it runs, so features read
-tenures through coaches_known_at.
+tenures through coaches_known_at. An attendance limit counts from the day after it was announced,
+so features read capacity shares through capacity_share.
 """
 
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,8 +20,16 @@ from pathlib import Path
 import pandera.polars as pa
 import polars as pl
 
-from nhl_edge.ingest.games import EXPECTED_GAMES, result_public
-from nhl_edge.lake.schemas import Arenas, CoachTenures, HomeArenas, Teams, Venues, dtypes
+from nhl_edge.ingest.games import EXPECTED_GAMES, result_public, schedule_known_at
+from nhl_edge.lake.schemas import (
+    Arenas,
+    AttendanceLimits,
+    CoachTenures,
+    HomeArenas,
+    Teams,
+    Venues,
+    dtypes,
+)
 
 REFERENCE_DIR = Path(__file__).parent
 # An open-ended last_season, for range joins.
@@ -52,6 +62,10 @@ def load_coaches() -> pl.DataFrame:
     return _load("coaches", CoachTenures)
 
 
+def load_attendance_limits() -> pl.DataFrame:
+    return _load("attendance_limits", AttendanceLimits)
+
+
 @dataclass(frozen=True)
 class Reference:
     teams: pl.DataFrame
@@ -59,10 +73,18 @@ class Reference:
     venues: pl.DataFrame
     home_arenas: pl.DataFrame
     coaches: pl.DataFrame
+    attendance_limits: pl.DataFrame
 
     @classmethod
     def load(cls) -> "Reference":
-        return cls(load_teams(), load_arenas(), load_venues(), load_home_arenas(), load_coaches())
+        return cls(
+            load_teams(),
+            load_arenas(),
+            load_venues(),
+            load_home_arenas(),
+            load_coaches(),
+            load_attendance_limits(),
+        )
 
 
 def lineage(teams: pl.DataFrame) -> dict[str, str]:
@@ -105,6 +127,63 @@ def coaches_known_at(
     )
 
 
+def _public_by(announced: pl.Expr, prediction_utc: datetime) -> pl.Expr:
+    """Whether a source dated announced was public by prediction_utc: from 10:00 UTC the next
+    day, the rule ADR 0003 sets for results. A null date means known all along."""
+    return announced.is_null() | (result_public(announced) < prediction_utc)
+
+
+def capacity_share(
+    schedule: pl.DataFrame,
+    prediction_utc: datetime,
+    predicting: Collection[int],
+    ref: Reference | None = None,
+) -> pl.DataFrame:
+    """game_id and the share of its arena's seats open to spectators, as known at prediction_utc.
+
+    schedule has Schedule's columns. Only the games a prediction may see get a row, those
+    schedule_known_at returns: games whose result is public, and the games being predicted once
+    their schedule is public (ADR 0005). A game's venue and date are never read before then.
+
+    A game takes the latest limit at its arena that started by its date and was announced by the
+    prediction (10:00 UTC the day after its source). That limit applies while it runs, and after
+    its last day too while what ended it is not yet known: the next limit's announcement, or the
+    lift's (ended_announced). So a game-day prediction reads Nashville's first home game with
+    fans as empty, since the change was reported the next day, and Montreal's game closed on the
+    day itself as full. A game with no known limit takes 1.
+    """
+    ref = ref or Reference.load()
+    games = schedule_known_at(schedule, prediction_utc, predicting)
+    limits = (
+        ref.attendance_limits.sort("arena_id", "first_date")
+        .with_columns(
+            known=_public_by(pl.col("announced"), prediction_utc),
+            lift_known=_public_by(pl.col("ended_announced"), prediction_utc),
+            replaced=pl.col("first_date").shift(-1).over("arena_id")
+            == pl.col("last_date") + pl.duration(days=1),
+        )
+        .with_columns(successor_known=pl.col("known").shift(-1).over("arena_id").fill_null(False))
+    )
+    latest = (
+        games.select("game_id", "game_date", "venue")
+        .join(ref.venues, on="venue")
+        .join(limits.filter("known"), on="arena_id")
+        .filter(pl.col("first_date") <= pl.col("game_date"))
+        .sort("first_date")
+        .group_by("game_id")
+        .last()
+    )
+    ended_unknown = pl.when(pl.col("replaced").fill_null(False)).then(~pl.col("successor_known"))
+    applies = (pl.col("game_date") <= pl.col("last_date")) | ended_unknown.otherwise(
+        ~pl.col("lift_known")
+    )
+    return (
+        games.select("game_id")
+        .join(latest.filter(applies).select("game_id", "capacity_share"), on="game_id", how="left")
+        .with_columns(pl.col("capacity_share").fill_null(1.0))
+    )
+
+
 def team_games(games: pl.DataFrame) -> pl.DataFrame:
     """One row per team per game: game_id, season, game_date, team and is_home."""
     columns = ["game_id", "season", "game_date"]
@@ -140,6 +219,7 @@ def check_games(games: pl.DataFrame, ref: Reference | None = None) -> list[str]:
         *_venue_problems(games, ref),
         *_home_arena_problems(games, ref),
         *_coach_problems(games, ref),
+        *_attendance_problems(games, ref),
     ]
 
 
@@ -171,6 +251,20 @@ def _file_problems(ref: Reference) -> Iterator[str]:
         last = seasons.get(predecessor)
         if last is None or last + 10_001 != first:
             yield f"teams.csv: {team} starts in {first}, not the season after {predecessor} ends"
+    for arena in _missing(ref.attendance_limits, "arena_id", arena_ids):
+        yield f"attendance_limits.csv: arena {arena} is not in arenas.csv"
+    overlapping = (
+        ref.attendance_limits.sort("arena_id", "first_date")
+        .with_columns(next_first=pl.col("first_date").shift(-1).over("arena_id"))
+        .filter(pl.col("last_date") >= pl.col("next_first"))
+    )
+    for arena, first, next_first in overlapping.select(
+        "arena_id", "first_date", "next_first"
+    ).iter_rows():
+        yield (
+            f"attendance_limits.csv: the {arena} limit from {first} overlaps the one from "
+            f"{next_first}"
+        )
     try:
         line = lineage(ref.teams)
     except ValueError as exc:
@@ -330,3 +424,67 @@ def _coach_problems(games: pl.DataFrame, ref: Reference) -> Iterator[str]:
         off = ends.join(game_days, left_on=["line", column], right_on=["line", "day"], how="anti")
         for team, day in off.select("team", column).sort("team", column).iter_rows():
             yield f"coaches.csv: {team} {column} {day} is not a game of that team"
+
+
+def _attendance_problems(games: pl.DataFrame, ref: Reference) -> Iterator[str]:
+    limits = ref.attendance_limits
+    in_force = (
+        games.join(ref.venues, on="venue")
+        .join(limits, on="arena_id")
+        .filter(pl.col("game_date").is_between(pl.col("first_date"), pl.col("last_date")))
+    )
+    # A season flagged as limited has a limit at every game.
+    if "limited_attendance" in games.columns:
+        unlimited = games.filter("limited_attendance").join(in_force, on="game_id", how="anti")
+        for (season,), rows in sorted(unlimited.group_by("season")):
+            yield (
+                f"{season} is limited_attendance, but attendance_limits.csv has no limit for "
+                f"{_examples(rows['game_id'])}"
+            )
+    # A limit with no announcement date was in force from its season's first day.
+    starts = games.group_by("season").agg(season_first=pl.col("game_date").min())
+    late = (
+        limits.filter(pl.col("announced").is_null())
+        .join(starts, left_on=_season_of(pl.col("first_date")), right_on="season")
+        .filter(pl.col("first_date") > pl.col("season_first"))
+    )
+    for arena, first in late.select("arena_id", "first_date").sort("arena_id").iter_rows():
+        yield (
+            f"attendance_limits.csv: the {arena} limit from {first} has no announcement date "
+            "but starts after its season's first day"
+        )
+    # A limit with no next one the day after was lifted. When a game at its arena follows in the
+    # same season, the lift's announcement decides that game's share, so it must be recorded.
+    lifted = (
+        limits.sort("arena_id", "first_date")
+        .with_columns(next_first=pl.col("first_date").shift(-1).over("arena_id"))
+        .filter(
+            pl.col("ended_announced").is_null()
+            & (
+                pl.col("next_first").is_null()
+                | (pl.col("next_first") > pl.col("last_date") + pl.duration(days=1))
+            )
+        )
+    )
+    after = (
+        games.join(ref.venues, on="venue")
+        .join(lifted, on="arena_id")
+        .filter(
+            (pl.col("game_date") > pl.col("last_date"))
+            & (_season_of(pl.col("game_date")) == _season_of(pl.col("last_date")))
+        )
+    )
+    for arena, first, last in (
+        after.select("arena_id", "first_date", "last_date").unique().sort("arena_id").iter_rows()
+    ):
+        yield (
+            f"attendance_limits.csv: the {arena} limit from {first} ends on {last}, before a "
+            "game there that season, without the lift's announcement date"
+        )
+
+
+def _season_of(day: pl.Expr) -> pl.Expr:
+    """20202021 for a date from July 2020 to June 2021: the season it falls in."""
+    year = day.dt.year()
+    first = pl.when(day.dt.month() >= 7).then(year).otherwise(year - 1)
+    return (first * 10_001 + 1).cast(pl.Int32)
