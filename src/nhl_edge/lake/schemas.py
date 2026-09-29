@@ -190,6 +190,74 @@ class SbrOdds(pa.DataFrameModel):
         return data.lazyframe.select(~close | (assumed == pl.col("start_utc")))
 
 
+SBR_SUSPECT_FLAGS = ("big_move", "extreme_open", "swapped", "below_100")
+
+
+class SbrSuspectOpeners(pa.DataFrameModel):
+    """One SBR game whose opening moneyline is likely wrong (#56), with the evidence: each team's
+    American price at the open and at the close, the multiplicative de-vigged home probability at
+    each, the move between them, the gap between the close and the opener with its sides swapped,
+    and the home team's closing puck line (null before 2014-15). Each flag is one criterion of
+    ingest/sbr_suspect.py, and a row meets at least one. The close columns are null when SBR has
+    no close; p_open is null exactly when the opener sums below 100%.
+
+    The flags read the close, public only at the start (ADR 0006), so observed_utc is start_utc:
+    the list is hindsight, for E2's report, never a model input. raw_key is the SBR page.
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=r"^[A-Z]{3}$")
+    away: pl.String = pa.Field(str_matches=r"^[A-Z]{3}$")
+    open_home: pl.Int32
+    open_away: pl.Int32
+    close_home: pl.Int32 = pa.Field(nullable=True)
+    close_away: pl.Int32 = pa.Field(nullable=True)
+    p_open: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_close: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    move: pl.Float64 = pa.Field(ge=0, le=1, nullable=True)
+    unswapped_gap: pl.Float64 = pa.Field(ge=0, le=1, nullable=True)
+    close_home_line: pl.Float64 = pa.Field(nullable=True)
+    big_move: pl.Boolean
+    extreme_open: pl.Boolean
+    swapped: pl.Boolean
+    below_100: pl.Boolean
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = "game_id"
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def home_is_not_away(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("home") != pl.col("away"))
+
+    @pa.dataframe_check
+    def american_prices_are_valid(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        prices = pl.col("open_home", "open_away", "close_home", "close_away")
+        return data.lazyframe.select((prices.abs() >= 100).fill_null(True))
+
+    @pa.dataframe_check
+    def meets_a_criterion(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.any_horizontal(*SBR_SUSPECT_FLAGS))
+
+    @pa.dataframe_check
+    def below_100_has_no_opening_probability(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("below_100") == pl.col("p_open").is_null())
+
+    @pa.dataframe_check
+    def observed_at_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("observed_utc") == pl.col("start_utc"))
+
+
 DECIDED_IN = ("REG", "OT", "SO")
 # No result counts as public sooner after its scheduled start (ADR 0003).
 MIN_RESULT_LAG = timedelta(hours=6)
