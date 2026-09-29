@@ -11,6 +11,7 @@ from nhl_edge.ingest.games import (
     listed_games,
     parse_games,
     probe_date,
+    result_public,
     schedule_of,
     season_bounds,
     season_over,
@@ -152,3 +153,8 @@ def test_the_schedule_is_the_pre_game_part_of_games() -> None:
     assert (schedule["observed_utc"] == schedule["start_utc"] - SCHEDULE_LEAD).all()
     # Helsinki at 16:00 UTC: public from 16:00 UTC the day before.
     assert schedule.row(0, named=True)["observed_utc"] == datetime(2010, 10, 6, 16, 0, tzinfo=UTC)
+
+
+def test_result_public_expression_matches_the_rule() -> None:
+    expression = OPENING.select(result_public(pl.col("game_date"))).to_series()
+    assert (expression == OPENING["observed_utc"]).all()

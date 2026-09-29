@@ -159,11 +159,11 @@ class Schedule(pa.DataFrameModel):
 
     observed_utc is when the schedule counts as public: 24 hours before start_utc (ADR 0005). The
     NHL publishes each season's schedule in the summer and gives postponed games new dates days or
-    weeks ahead, so a day is conservative. Rest, travel and home-ice features read this table
-    through games.schedule_known_at: games that had started, plus the games being predicted. Not
-    other upcoming games, because the table holds only games that were played, and a game missing
-    from tomorrow's slate would reveal a postponement. Results come from Games, public the morning
-    after.
+    weeks ahead, so a day is conservative; a game re-timed at shorter notice gets a later time
+    (games.SCHEDULE_PUBLIC_OVERRIDES). Rest, travel and home-ice features read this table through
+    games.schedule_known_at: games whose result is public, plus the games being predicted. Not
+    other games, because the table holds only games that were played, and a missing or delayed
+    game would reveal how it turned out. Results come from Games, public the morning after.
     """
 
     game_id: pl.Int64

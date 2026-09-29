@@ -28,6 +28,21 @@ def result_public_utc(game_date: date) -> datetime:
     return datetime.combine(game_date + timedelta(days=1), RESULT_PUBLIC_AT)
 
 
+def result_public(game_date: pl.Expr) -> pl.Expr:
+    """result_public_utc as a Polars expression over a Date column."""
+    after = timedelta(days=1, hours=RESULT_PUBLIC_AT.hour, minutes=RESULT_PUBLIC_AT.minute)
+    return game_date.cast(pl.Datetime("us")).dt.replace_time_zone("UTC") + after
+
+
+# Games whose schedule became public later than a day before their start (ADR 0005), with the
+# latest moment it can have become public.
+SCHEDULE_PUBLIC_OVERRIDES: dict[int, datetime] = {
+    # PHI at BOS, Lake Tahoe: moved from 15:00 to 19:30 ET on 2021-02-21 after the sun delayed the
+    # previous day's game there. The move was public by the original 15:00 ET puck drop at latest.
+    2020020290: datetime(2021, 2, 21, 20, 0, tzinfo=UTC),
+}
+
+
 # Played without fans or with capped crowds throughout.
 LIMITED_ATTENDANCE_SEASONS = frozenset({20202021})
 # Regular-season games per season: the 2012-13 lockout, the 2019-20 pause and the 56-game 2020-21
@@ -121,27 +136,34 @@ def parse_games(listed: list[tuple[date, dict[str, Any]]], raw_key: str) -> pl.D
 
 def schedule_of(games: pl.DataFrame) -> pl.DataFrame:
     """The pre-game facts of final games, validated against Schedule. A game's schedule counts as
-    public SCHEDULE_LEAD (a day) before its start (ADR 0005). Derived from the same rows as games,
-    so the two never disagree on a game."""
-    schedule = games.with_columns(observed_utc=pl.col("start_utc") - SCHEDULE_LEAD)
+    public SCHEDULE_LEAD (a day) before its start, or later for a game re-timed at short notice
+    (SCHEDULE_PUBLIC_OVERRIDES, ADR 0005). Derived from the same rows as games, so the two never
+    disagree on a game."""
+    override = pl.col("game_id").replace_strict(
+        SCHEDULE_PUBLIC_OVERRIDES, default=None, return_dtype=pl.Datetime("us", "UTC")
+    )
+    schedule = games.with_columns(
+        observed_utc=pl.coalesce(override, pl.col("start_utc") - SCHEDULE_LEAD)
+    )
     return Schedule.validate(schedule.select(list(dtypes(Schedule))))
 
 
 def schedule_known_at(
     schedule: pl.DataFrame, prediction_utc: datetime, predicting: Collection[int]
 ) -> pl.DataFrame:
-    """The schedule a prediction at prediction_utc may use: games that had started by then, plus
-    the games being predicted once their schedule is public.
+    """The schedule a prediction at prediction_utc may use: games already played, whose result is
+    public by then (ADR 0003), plus the games being predicted once their schedule is public.
 
-    Not other upcoming games, even public ones: the table holds only games that went on to be
-    played, so a game postponed at short notice is missing from it, and its absence would reveal
-    the postponement before it was announced.
+    Not other games, even public ones. The table holds only games that went on to be played, so a
+    game postponed at short notice is missing from it, and a game delayed past its scheduled start
+    is in it: until its result is public, a row's presence or absence would reveal how the game
+    turned out to be played.
     """
-    started = pl.col("start_utc") < prediction_utc
+    played = result_public(pl.col("game_date")) < prediction_utc
     predicted = pl.col("game_id").is_in(list(predicting)) & (
         pl.col("observed_utc") < prediction_utc
     )
-    return schedule.filter(started | predicted)
+    return schedule.filter(played | predicted)
 
 
 def results_known_at(games: pl.DataFrame, prediction_utc: datetime) -> pl.DataFrame:

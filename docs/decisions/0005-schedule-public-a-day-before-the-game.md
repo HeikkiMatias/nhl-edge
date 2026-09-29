@@ -18,7 +18,7 @@ The schedule needs its own timestamp. The API doesn't say when a game was schedu
 
 ## Decision
 
-Option 3. `schedule.observed_utc = start_utc − 24 h`, set in `schedule_of` (`ingest/games.py`) from `SCHEDULE_LEAD`. The schema rejects an `observed_utc` earlier than that, which would leak. It allows a later one before the start, for an override.
+Option 3. `schedule.observed_utc = start_utc − 24 h`, set in `schedule_of` (`ingest/games.py`) from `SCHEDULE_LEAD`. A game known to have been re-timed at shorter notice gets a later time from `SCHEDULE_PUBLIC_OVERRIDES`: the latest moment the change can have become public. The schema rejects an `observed_utc` earlier than a day before the start, which would leak. It allows a later one before the start, for an override. No point-in-time schedule snapshots exist for 2010-26, so the rule plus overrides for known cases is as exact as the data allows.
 
 - **The schedule is its own table.** `schedule` holds the pre-game columns of each final regular-season game and no result columns, so reading it can never reveal a score.
 - **`games` is unchanged.** It keeps its result timestamp and its teams and date, so results read on their own.
@@ -30,19 +30,20 @@ None yet. This is a point-in-time convention, not a tuned choice. The first run 
 
 ## Consequences
 
-- **Where features read.** Features read `schedule` through `schedule_known_at(schedule, prediction_utc, predicting)`: the games that had started by the prediction time, plus the games being predicted once public. Anything about outcomes reads `games` through `results_known_at`.
-- **Why not every public row.** `schedule` holds only games that went on to be played, so a game postponed at short notice is missing from it. Any upcoming game other than the ones predicted would say something about the future, such as a "plays tomorrow" input.
+- **Where features read.** Features read `schedule` through `schedule_known_at(schedule, prediction_utc, predicting)`: the games already played, whose result is public by the prediction time (ADR 0003), plus the games being predicted once public. Anything about outcomes reads `games` through `results_known_at`.
+- **Why not every public row.** `schedule` holds only games that went on to be played. A game postponed at short notice is missing, and a game delayed past its scheduled start is present. Until a game's result is public, its row's presence or absence would say how it turned out, as would a "plays tomorrow" input. So another game only shows once its result is public. A team's previous game, even the night before a back-to-back, is public by 10:00 UTC, before the 11:05 UTC slot.
 - **Tests.** `tests/leakage/test_schedule.py` covers:
   - the locked column set
   - the exact 24-hour boundary
   - on game day, the schedule is known and the result is not
-  - upcoming games stay hidden
+  - other games show only once their result is public, including the suspended Lake Tahoe game
+  - the moved Lake Tahoe game's override
   - the schema's rejection of an earlier `observed_utc`
 - **Final games only.** `schedule` covers the same final regular-season games as `games`, derived from the same parsed rows. Upcoming games for live predictions come from the schedule endpoint when phase 5 needs them.
-- **The rule can be wrong** if a game was re-timed or re-dated less than 24 hours before it started. One case is known.
-  - The Lake Tahoe game PHI at BOS was moved from 15:00 to 19:30 ET on 2021-02-21, after the sun delayed the previous day's game there. It is stored at its moved start, so its schedule counts as public from 19:30 ET on 2021-02-20.
-  - When the move was announced is unverified. If it came later that evening, the new start time was visible a few hours early.
-  - The teams and date were public long before. Only the rest hours of that one game could shift, so it gets no override for now.
+- **The rule can be wrong** if a game was re-timed or re-dated less than 24 hours before it started. One case is known, and it has an override.
+  - The Lake Tahoe game PHI at BOS (2020020290) was moved from 15:00 to 19:30 ET on 2021-02-21, after the sun delayed the previous day's game there. It is stored at its moved start.
+  - When the move was announced is unverified, but it was public by the original 15:00 ET puck drop at the latest.
+  - So its schedule counts as public from 20:00 UTC on 2021-02-21, not 24 h before the new start.
 
 ## Revisit when
 
