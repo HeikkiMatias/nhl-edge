@@ -6,6 +6,7 @@ only once the next stint is known.
 Team codes, arenas, venues and home arenas are known seasons ahead and need no such rule. A
 game's venue reaches features through the schedule (tests/leakage/test_schedule.py)."""
 
+import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -88,5 +89,6 @@ def test_features_read_coaches_only_through_the_selector() -> None:
     features = Path(nhl_edge.features.__file__).parent
     for module in features.rglob("*.py"):
         source = module.read_text(encoding="utf-8")
-        for raw in ("load_coaches", "coaches.csv", "Reference.load", ".coaches"):
-            assert raw not in source, f"{module.name} reads {raw}; use coaches_known_at"
+        for raw in (r"load_coaches", r"coaches\.csv", r"\.coaches\b"):
+            assert not re.search(raw, source), f"{module.name} reads {raw}; use coaches_known_at"
+    assert not re.search(r"\.coaches\b", "reference.coaches_known_at(coaches, teams, t)")
