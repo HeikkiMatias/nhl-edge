@@ -89,6 +89,24 @@ def test_shifts_that_do_not_add_up_make_the_chart_incomplete() -> None:
     assert (row["players_toi_off"], row["complete"]) == (1, False)
 
 
+def test_a_malformed_situation_code_is_not_checked() -> None:
+    shots, shifts, lineups, drops = parsed(MTL_ARI)
+    first = pl.int_range(pl.len()) == 0
+    garbled = shots.with_columns(
+        pl.when(first).then(pl.lit("15a1")).otherwise("situation_code").alias("situation_code")
+    )
+    row = coverage(MTL_ARI, (garbled, shifts, lineups, drops))
+    assert row["shots_checked"] == coverage(MTL_ARI)["shots_checked"] - 1
+
+
+def test_a_player_without_boxscore_time_on_ice_makes_the_chart_incomplete() -> None:
+    shots, shifts, lineups, drops = parsed(MTL_ARI)
+    first = pl.int_range(pl.len()) == 0
+    no_toi = lineups.with_columns(pl.when(first).then(None).otherwise("toi_s").alias("toi_s"))
+    row = coverage(MTL_ARI, (shots, shifts, no_toi, drops))
+    assert (row["players_toi_off"], row["complete"]) == (1, False)
+
+
 def test_bad_rows_make_the_chart_incomplete_and_drops_do_not() -> None:
     shots, shifts, lineups, _ = parsed(MTL_ARI)
     dropped = coverage(MTL_ARI, (shots, shifts, lineups, ShiftDrops(dropped=6, foreign=3)))

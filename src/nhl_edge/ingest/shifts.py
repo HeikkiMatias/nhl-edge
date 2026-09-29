@@ -9,7 +9,8 @@ dropped and counted for shift_coverage:
   new row ids, and many 2023-24 charts repeat a shift under the next shift numbers)
 - foreign: rows of teams not in the game (2021020513, WSH at NYI, lists its own shifts twice and
   STL and MIN shifts besides)
-- bad: malformed times, shifts outside their period, and a shift number repeated with other times
+- bad: malformed times or periods, shifts outside their period, and a shift number repeated with
+  other times
 """
 
 import json
@@ -50,6 +51,9 @@ def shift_rows(
         period = row.get("period") or 0
         if period > OT_PERIOD:
             dropped += 1
+            continue
+        if period < 1:
+            bad += 1
             continue
         start, end = clock_s(row.get("startTime")), clock_s(row.get("endTime"))
         if start is not None and (

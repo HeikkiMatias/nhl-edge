@@ -20,7 +20,7 @@ def on_ice_counts(
     to what the situationCode says. A player is on the ice at second t when start_s < t <= end_s;
     a player missing from the lineup counts as a skater."""
     code = pl.col("situation_code")
-    checked = shots.filter(~pl.col("is_penalty_shot") & code.is_not_null()).select(
+    checked = shots.filter(~pl.col("is_penalty_shot") & code.str.contains(r"^[0-9]{4}$")).select(
         "event_id",
         "period",
         "seconds",
@@ -69,7 +69,10 @@ def shift_coverage(
     )
     players = lineups.select("player_id", "toi_s").join(shift_toi, on="player_id", how="left")
     without_shifts = players.filter((pl.col("toi_s") > 0) & pl.col("shift_toi").is_null()).height
-    toi_off = players.filter((pl.col("shift_toi") - pl.col("toi_s")).abs() > TOI_TOLERANCE_S).height
+    toi_off = players.filter(
+        ((pl.col("shift_toi") - pl.col("toi_s")).abs() > TOI_TOLERANCE_S)
+        | pl.col("toi_s").is_null()
+    ).height
 
     counts = on_ice_counts(game, shots, shifts, lineups)
     skaters_differ = (pl.col("home_skaters_on") != pl.col("home_skaters")) | (

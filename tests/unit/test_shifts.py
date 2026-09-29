@@ -100,6 +100,9 @@ def shift(**changes: Any) -> dict[str, Any]:
         {"endTime": "", "duration": "00:40"},  # no end, yet a duration
         {"playerId": None},
         {"shiftNumber": None},
+        {"period": 0},
+        {"period": None},
+        {"period": -1},
     ],
 )
 def test_malformed_rows_are_bad(changes: dict[str, Any]) -> None:

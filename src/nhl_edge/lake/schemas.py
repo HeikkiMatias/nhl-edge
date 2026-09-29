@@ -359,7 +359,8 @@ class ShiftCoverage(pa.DataFrameModel):
     rows, which carry no play; foreign_rows belong to teams not in the game; bad_rows are
     malformed. Players: players_without_shifts dressed with time on ice but have no shift, and
     players_toi_off have summed shifts more than TOI_TOLERANCE_S away from their boxscore time on
-    ice. complete means no bad rows and every dressed player's shifts add up.
+    ice, or no boxscore time on ice to check against. complete means no bad rows and every dressed
+    player's shifts add up.
 
     Strength: at every unblocked shot except penalty shots (shots_checked), the skaters and
     goalies on the ice from the shifts are compared with situationCode. skater_mismatches and
