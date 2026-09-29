@@ -1,8 +1,10 @@
 name: odds-snapshots
 # Live Odds API snapshots into Supabase odds_snapshots (docs/data-sources.md, issue #3).
-# Slots are set in US Eastern time. Each slot has one cron line per UTC offset, and the CLI maps
-# the line that fired to a slot for today's offset, skipping the other half of the year, so no
-# edit is needed when DST starts or ends.
+# Slots are set in US Eastern time. The Cloudflare Worker in infra/timer dispatches it at each slot
+# with the slot as input (#50), since GitHub's schedule started runs 3 to 6 hours late. The cron
+# lines below are the fallback while the timer is off: each slot has one line per UTC offset, and
+# the CLI maps the line that fired to a slot for today's offset, skipping the other half of the
+# year, so no edit is needed when DST starts or ends.
 on:
   schedule:
     - cron: "5 11 * * *"    # morning, EDT
@@ -30,6 +32,9 @@ permissions:
   contents: read
 jobs:
   snapshot:
+    # GitHub's schedule is the fallback: once the Cloudflare timer in infra/timer runs (#50), the
+    # repository variable TIMER_ACTIVE is true and only its on-time dispatches start this job.
+    if: github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

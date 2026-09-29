@@ -4,7 +4,8 @@ name: ingest-nightly
 # raw response mirrored to R2. The lookback picks up a game that was not final yet and a missed
 # night; responses already in R2 are reused, not fetched again. The Supabase read at the end of
 # every run keeps the free project from pausing in the off-season. Older gaps are caught up with
-# a manual run over a date range.
+# a manual run over a date range. The Cloudflare Worker in infra/timer dispatches it at 09:00 UTC
+# (#50); the cron line is the fallback while the timer is off.
 on:
   schedule:
     - cron: "0 9 * * *"  # 04:00 or 05:00 ET, after every game of the night is final
@@ -23,6 +24,9 @@ permissions:
   contents: read
 jobs:
   ingest:
+    # GitHub's schedule is the fallback: once the Cloudflare timer in infra/timer runs (#50), the
+    # repository variable TIMER_ACTIVE is true and only its on-time dispatches start this job.
+    if: github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
