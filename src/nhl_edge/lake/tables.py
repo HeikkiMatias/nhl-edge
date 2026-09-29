@@ -12,14 +12,22 @@ from R2 before a read-modify-write.
 import io
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pandera.polars as pa
 import polars as pl
 
 from nhl_edge.lake.r2 import ObjectStore, R2Config, list_keys
-from nhl_edge.lake.schemas import Games, Players, dtypes
+from nhl_edge.lake.schemas import (
+    ActualLineups,
+    Games,
+    Players,
+    ShiftCoverage,
+    Shifts,
+    Shots,
+    dtypes,
+)
 
 LAKE_DIR = Path("data/lake")
 R2_PREFIX = "lake"
@@ -36,10 +44,22 @@ class Table:
         return pl.DataFrame(schema=dtypes(self.schema))
 
 
+BY_DATE = ("season", "game_date")
 TABLES: dict[str, Table] = {
-    "games": Table(Games, ("game_id",), ("season", "game_date")),
+    "games": Table(Games, ("game_id",), BY_DATE),
     "players": Table(Players, ("player_id",)),
+    "shots": Table(Shots, ("game_id", "event_id"), BY_DATE),
+    "shifts": Table(Shifts, ("game_id", "player_id", "period", "shift_number"), BY_DATE),
+    "actual_lineups": Table(ActualLineups, ("game_id", "player_id"), BY_DATE),
+    "shift_coverage": Table(ShiftCoverage, ("game_id",), BY_DATE),
 }
+# The tables parsed from each game's play-by-play, boxscore and shift chart.
+FEED_TABLES = ("shots", "shifts", "actual_lineups", "shift_coverage")
+
+
+def known_at(frame: pl.DataFrame, prediction_utc: datetime) -> pl.DataFrame:
+    """The rows a prediction at prediction_utc may use: observed strictly before that moment."""
+    return frame.filter(pl.col("observed_utc") < prediction_utc)
 
 
 def _partition_value(value: object) -> str:

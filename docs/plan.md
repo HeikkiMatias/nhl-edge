@@ -124,20 +124,22 @@ Shift chart coverage for older seasons varies, so phase 1 includes a coverage ch
 
 ## 4. Data model
 
-Thirteen tables cover v1. Every row records when its underlying fact became public (`observed_utc`), and every output of a fitted component records that component's `train_cutoff` and `artifact_version`. A prediction may only use rows observed before the prediction time and components trained only on earlier data. An `as_of` date alone is not enough: a rating dated January 2019 still leaks if its xG model or shrinkage was fitted on later seasons.
+Fifteen tables cover v1. Every row records when its underlying fact became public (`observed_utc`), and every output of a fitted component records that component's `train_cutoff` and `artifact_version`. A prediction may only use rows observed before the prediction time and components trained only on earlier data. An `as_of` date alone is not enough: a rating dated January 2019 still leaks if its xG model or shrinkage was fitted on later seasons.
 
 | Table | Grain | Key columns | Stored in |
 | --- | --- | --- | --- |
 | `games` | One per game | game\_id, season, start\_utc, home, away, final score, decided\_in (REG, OT, SO), flags (neutral site, no fans) | Lake, Supabase |
 | `shots` | One per unblocked shot attempt | game\_id, event\_idx, period, seconds, x, y, shot\_type, strength, shooter\_id, goalie\_id, is\_goal, is\_empty\_net | Lake |
 | `shifts` | One per player shift | game\_id, player\_id, team, period, start\_s, end\_s | Lake |
+| `actual_lineups` | Game, player | team, role (F, D, G), sweater\_number, starting\_goalie, toi\_s, observed\_utc; from the boxscore, the only source for backtest lineups | Lake |
+| `shift_coverage` | One per game | shift rows kept and dropped, players whose shifts do not match their time on ice, on-ice counts that contradict the strength state, complete | Lake |
 | `stints` | One per unchanged on-ice group | game\_id, stint\_id, seconds, home\_skaters, away\_skaters, strength, score\_state, zone\_start, xgf, xga, xg\_version | Lake (RAPM input) |
 | `players` | One per player | player\_id, name, birth\_date, position, shoots, draft\_year, draft\_overall | Lake, Supabase |
 | `player_league_seasons` | Player, season, league | gp, goals, assists, age\_at\_season, observed\_utc | Lake (NHLe input) |
 | `team_ratings` | Team, as\_of | ev\_off, ev\_def, pp, pk, sd, train\_cutoff, artifact\_version | Lake; latest in Supabase |
 | `player_ratings` | Player, as\_of, component | component (ev\_off, ev\_def, pp, pk, finishing, penalties), mean, sd, train\_cutoff, artifact\_version | Lake; latest in Supabase |
 | `goalie_ratings` | Goalie, as\_of | saves\_above\_expected\_per\_shot, sd, train\_cutoff, artifact\_version | Lake; latest in Supabase |
-| `lineups` | Game, team, as\_of, player | source (projected, actual), p\_available, expected\_toi by strength, pp\_unit, p\_start for goalies, observed\_utc | Lake, Supabase |
+| `lineups` | Game, team, as\_of, player | projected from earlier `actual_lineups`: source (projected, actual), p\_available, expected\_toi by strength, pp\_unit, p\_start for goalies, observed\_utc | Lake, Supabase |
 | `odds_snapshots` | Snapshot, game, book, market, side | snapshot\_utc, last\_update\_utc, line, price\_decimal, is\_closing\_proxy | Supabase live; lake for history |
 | `predictions` | Game, predicted\_utc, model | market\_price\_used, p\_b1, p\_b2, p\_b3, p\_blend, uncertainty\_score, goalie\_confirmed, artifact versions | Supabase |
 | `bets` | One per bet (paper or real) | placed\_utc, side, price\_pinnacle, price\_best\_eu, best\_eu\_book, stake\_units, p\_blend, prob\_gap, exp\_return, close\_proxy\_pinnacle, clv, result, pnl\_units | Supabase |

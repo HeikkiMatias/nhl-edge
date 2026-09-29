@@ -42,6 +42,7 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.pyright]
 include = ["src", "tests"]
+extraPaths = ["tests/unit"]  # shared test helpers, as pytest's pythonpath
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 venvPath = "."
