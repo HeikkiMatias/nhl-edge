@@ -16,8 +16,13 @@ from nhl_edge.lake.tables import R2_PREFIX, TABLES, Lake
 GAME_DATE = "game_date="
 # The raw responses that grow every day, from the nightly ingest and the odds snapshots.
 DAILY_RAW = ("nhl/schedule/", "odds/")
-# The pre-game goalie polls (#42), which cannot be fetched again once the game has started.
-PREGAME_RAW = ("nhl/pregame-boxscore/", "nhl/pregame-landing/", "nhl/pregame-right-rail/")
+# The pre-game goalie polls (#42, #48), which cannot be fetched again once the game has started.
+PREGAME_RAW = (
+    "nhl/pregame-boxscore/",
+    "nhl/pregame-landing/",
+    "nhl/pregame-right-rail/",
+    "dailyfaceoff/",
+)
 
 
 def partition_dates(keys: Iterable[str]) -> list[str]:

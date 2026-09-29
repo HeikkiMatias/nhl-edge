@@ -275,10 +275,7 @@ def test_status_shows_pregame_polls_missing_here(
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0, result.output
     assert "raw/nhl/pregame-landing/: 1 responses only in R2, 0 only here" in result.output
-    assert (
-        "pre-game goalie polls are behind R2: nhl lake restore-raw --prefix nhl/pregame-"
-        in result.output
-    )
+    assert "pre-game goalie polls are behind R2: nhl lake restore-raw copies them" in result.output
     assert "up to date with R2" not in result.output
 
 

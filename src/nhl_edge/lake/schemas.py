@@ -622,6 +622,50 @@ class PregameGoalies(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("starters_flagged") <= pl.col("goalies_listed"))
 
 
+DAILYFACEOFF_GOALIES_KEY = ("start_utc", "team", "observed_utc")
+
+
+class DailyFaceoffGoalies(pa.DataFrameModel):
+    """One team of one game in a Daily Faceoff starting-goalies page fetched before the start
+    (#48): the goalie it expects to start and the status of that report.
+
+    observed_utc is the fetch time, which is when a prediction may use the row: a status can
+    change, so reported_utc (Daily Faceoff's own time for the report, null without one) only
+    shows how early it was published. status is Daily Faceoff's label, such as Likely or
+    Confirmed, and null before any report. Goalies are kept by name and Daily Faceoff id.
+    There is no NHL game_id; start_utc and team identify the game.
+    """
+
+    season: pl.Int32
+    game_date: pl.Date
+    start_utc: UtcDatetime
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    is_home: pl.Boolean
+    goalie_name: pl.String = pa.Field(nullable=True)
+    dfo_goalie_id: pl.Int64 = pa.Field(nullable=True)
+    status: pl.String = pa.Field(nullable=True)
+    reported_utc: UtcDatetime = pa.Field(nullable=True)
+    source_url: pl.String = pa.Field(nullable=True)
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(DAILYFACEOFF_GOALIES_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def observed_before_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("observed_utc") < pl.col("start_utc"))
+
+    @pa.dataframe_check
+    def reported_not_after_observed(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        reported = pl.col("reported_utc")
+        return data.lazyframe.select(
+            reported.is_null() | (reported <= pl.col("observed_utc") + CLOCK_SKEW)
+        )
+
+
 # Reference files (src/nhl_edge/reference/): hand-compiled CSVs, not lake tables. They cover the
 # lake's seasons, 2010-11 on.
 ARENA_ID = r"^[a-z0-9_]+$"
