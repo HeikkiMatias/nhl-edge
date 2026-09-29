@@ -27,6 +27,7 @@ app.add_typer(audit_app, name="audit")
 
 DEFAULT_BACKTEST_SEASONS = ",".join(str(season) for season in DEVELOPMENT_SEASONS)
 DEFAULT_BACKTEST_OUT = Path("reports/backtest")
+DEFAULT_AUDIT_OUT = Path("reports/audit")
 
 
 def _not_implemented(command: str, phase: str) -> NoReturn:
@@ -420,6 +421,44 @@ def audit_reference() -> None:
         typer.echo(f"  {problem}")
     if problems:
         raise typer.Exit(code=1)
+
+
+@audit_app.command("report")
+def audit_report(
+    out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_AUDIT_OUT,
+    as_of: Annotated[
+        str | None,
+        typer.Option(
+            help="Last ET game date the report covers, as 2026-10-15. Default: yesterday."
+        ),
+    ] = None,
+) -> None:
+    """Write the data audit report (#9) to <out>/<as-of>.md: games per season, shift coverage,
+    reference files and live odds snapshots, from the local lake and raw cache."""
+    from datetime import UTC, date
+
+    from nhl_edge.audit.report import build, markdown
+    from nhl_edge.ingest.nhl_ingest import yesterday_et
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+
+    now = datetime.now(UTC)
+    try:
+        last = date.fromisoformat(as_of) if as_of else yesterday_et(now)
+    except ValueError:
+        raise typer.BadParameter(f"not a date: {as_of}", param_hint="--as-of") from None
+    lake = Lake()
+    if lake.read("games").is_empty():
+        typer.echo("no games in the lake: run nhl ingest", err=True)
+        raise typer.Exit(code=1)
+    sections = build(lake, RawStore(), last)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{last.isoformat()}.md"
+    path.write_text(markdown(sections, last, now))
+    total = sum(len(section.problems) for section in sections)
+    typer.echo(f"{path}: {total} problems")
+    for section in sections:
+        typer.echo(f"  {section.title}: {len(section.problems)}")
 
 
 @app.command()

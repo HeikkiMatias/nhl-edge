@@ -1,0 +1,188 @@
+"""Missing and duplicate games: the games table against each season's length (EXPECTED_GAMES) and
+against every regular-season game the cached NHL schedule listings name.
+
+The listings are the schedule responses under nhl/schedule/ in the raw cache: the nightly ingest's
+weeks and the odds job's daily checks. They name every game, final or not, so a game that was
+listed but never became final, or a final game no listing names, shows up here. A game counts at
+its newest listing, the one that knows about any postponement.
+"""
+
+import json
+from datetime import date
+
+import polars as pl
+
+from nhl_edge.ingest.games import EXPECTED_GAMES
+from nhl_edge.ingest.nhl_api import REGULAR_SEASON
+from nhl_edge.ingest.odds_lake import SCHEDULE_PREFIX, dated_raw_keys, is_complete
+from nhl_edge.lake.raw import RawStore
+
+LISTED_SCHEMA = {
+    "game_id": pl.Int64,
+    "season": pl.Int32,
+    "game_date": pl.Date,
+    "game_state": pl.String,
+    "listed_key": pl.String,
+}
+# How many game ids a problem line names.
+EXAMPLES = 5
+# The season report's counts after number_gaps; the last three follow disagreements' kinds.
+COUNTS = ["team_twice_a_day", "repeated_matchups", "not_listed", "date_differs", "missing"]
+
+
+def listed_games(store: RawStore) -> pl.DataFrame:
+    """Every regular-season game in the cached schedule listings, at its newest listing."""
+    rows = []
+    for keys in dated_raw_keys(SCHEDULE_PREFIX, store).values():
+        for raw_key in keys:
+            if not is_complete(store, raw_key):
+                continue
+            for day in json.loads(store.get(raw_key))["gameWeek"]:
+                rows.extend(
+                    {
+                        "game_id": game["id"],
+                        "season": game["season"],
+                        "game_date": date.fromisoformat(day["date"]),
+                        "game_state": game["gameState"],
+                        "listed_key": raw_key,
+                    }
+                    for game in day["games"]
+                    if game["gameType"] == REGULAR_SEASON
+                )
+    listed = pl.DataFrame(rows, schema=LISTED_SCHEMA)
+    # Keys end in the fetch stamp, so the newest listing of a game has the largest stamp.
+    stamp = pl.col("listed_key").str.split("/").list.last()
+    return listed.sort(stamp, "listed_key").unique("game_id", keep="last").sort("game_id")
+
+
+def disagreements(
+    games: pl.DataFrame, listed: pl.DataFrame, as_of: date
+) -> dict[str, pl.DataFrame]:
+    """The games on which the games table and the listings disagree, by kind: season, game_id and
+    the listed state. A listed game counts as missing only if it was dated on or before as_of, the
+    last day the audit covers, so games still to be played are not."""
+    listing = listed.select("game_id", listed_date="game_date", listed_state="game_state")
+    unlisted = games.join(listing, on="game_id", how="anti").with_columns(
+        listed_state=pl.lit(None, pl.String)
+    )
+    moved = games.join(listing, on="game_id").filter(pl.col("listed_date") != pl.col("game_date"))
+    missing = (
+        listed.filter(pl.col("game_date") <= as_of)
+        .join(games.select("game_id"), on="game_id", how="anti")
+        .rename({"game_state": "listed_state"})
+    )
+    columns = ["season", "game_id", "listed_state"]
+    return {
+        "final but in no listing": unlisted.select(columns),
+        "dated differently from their newest listing": moved.select(columns),
+        "listed by the audit date but not in games": missing.select(columns),
+    }
+
+
+def _count(grouped: pl.DataFrame, name: str) -> pl.DataFrame:
+    """How many groups per season hold more than one game."""
+    return grouped.filter(pl.col("len") > 1).group_by("season").agg(pl.len().alias(name))
+
+
+def season_report(games: pl.DataFrame, listed: pl.DataFrame, as_of: date) -> pl.DataFrame:
+    """One row per season in games: its games against its expected length, gaps in its game
+    numbers, duplicates, and the disagreements with the listings."""
+    teams = pl.concat(
+        [
+            games.select("season", "game_date", team="home"),
+            games.select("season", "game_date", team="away"),
+        ]
+    )
+    report = (
+        games.group_by("season")
+        .agg(
+            pl.len().alias("games"),
+            ((pl.col("game_id") % 10_000).max() - pl.len()).alias("number_gaps"),
+        )
+        .with_columns(
+            pl.col("season").replace_strict(EXPECTED_GAMES, default=None).alias("expected")
+        )
+    )
+    parts = [
+        teams.group_by("season", "team")
+        .len()
+        .group_by("season")
+        .agg(
+            pl.len().alias("teams"),
+            pl.col("len").min().alias("team_games_min"),
+            pl.col("len").max().alias("team_games_max"),
+        ),
+        _count(teams.group_by("season", "game_date", "team").len(), "team_twice_a_day"),
+        _count(games.group_by("season", "game_date", "home", "away").len(), "repeated_matchups"),
+    ]
+    for name, frame in zip(COUNTS[2:], disagreements(games, listed, as_of).values(), strict=True):
+        parts.append(frame.group_by("season").agg(pl.len().alias(name)))
+    for part in parts:
+        report = report.join(part, on="season", how="left")
+    return (
+        report.with_columns(pl.col(COUNTS).fill_null(0))
+        .select(
+            "season",
+            "games",
+            "expected",
+            "teams",
+            "team_games_min",
+            "team_games_max",
+            "number_gaps",
+            *COUNTS,
+        )
+        .sort("season")
+    )
+
+
+def problems(
+    report: pl.DataFrame, games: pl.DataFrame, listed: pl.DataFrame, as_of: date
+) -> list[str]:
+    """One line per season and kind of problem, naming example games."""
+    lines = []
+    for row in report.iter_rows(named=True):
+        season = row["season"]
+        if row["expected"] is not None and row["games"] != row["expected"]:
+            lines.append(f"{season}: {row['games']} games, expected {row['expected']}")
+        if row["number_gaps"]:
+            lines.append(f"{season}: {row['number_gaps']} game numbers missing below the highest")
+        if row["team_twice_a_day"]:
+            lines.append(f"{season}: {row['team_twice_a_day']} times a team plays twice a day")
+        if row["repeated_matchups"]:
+            lines.append(f"{season}: {row['repeated_matchups']} matchups repeated on one date")
+    for label, frame in disagreements(games, listed, as_of).items():
+        by_season = (
+            frame.sort("game_id")
+            .group_by("season", maintain_order=True)
+            .agg(pl.col("game_id"), pl.col("listed_state"))
+            .sort("season")
+        )
+        for season, ids, states in by_season.iter_rows():
+            examples = ", ".join(
+                f"{game_id} ({state})" if state else str(game_id)
+                for game_id, state in list(zip(ids, states, strict=True))[:EXAMPLES]
+            )
+            lines.append(f"{season}: {len(ids)} games {label}, e.g. {examples}")
+    return lines
+
+
+def markdown_report(report: pl.DataFrame) -> str:
+    header = (
+        "| Season | Games | Expected | Teams | Games per team | Number gaps | Team twice a day "
+        "| Repeated matchups | Not listed | Date differs | Listed, not in games |\n"
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+    )
+    lines = []
+    for r in report.iter_rows(named=True):
+        expected = f"{r['expected']:,}" if r["expected"] is not None else "under way"
+        per_team = (
+            str(r["team_games_min"])
+            if r["team_games_min"] == r["team_games_max"]
+            else f"{r['team_games_min']} to {r['team_games_max']}"
+        )
+        lines.append(
+            f"| {r['season']} | {r['games']:,} | {expected} | {r['teams']} | {per_team} "
+            f"| {r['number_gaps']} | {r['team_twice_a_day']} | {r['repeated_matchups']} "
+            f"| {r['not_listed']} | {r['date_differs']} | {r['missing']} |"
+        )
+    return "\n".join([header, *lines])
