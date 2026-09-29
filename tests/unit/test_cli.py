@@ -477,5 +477,7 @@ def test_status_sends_sbr_drift_to_the_sbr_import(
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["status"])
     against = result.output.split("Against R2:")[1]
-    assert "sbr_odds is behind R2: nhl odds sbr --replay --r2" in against
+    assert (
+        "sbr_odds is behind R2: nhl odds sbr --replay --r2 --seasons 20182019 restores" in against
+    )
     assert "nhl ingest" not in against

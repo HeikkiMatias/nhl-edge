@@ -633,6 +633,28 @@ def status(
     typer.echo("  20262027+ live")
 
 
+# Replayed tables whose command takes --seasons: sbr_odds refuses a season whose schedule is
+# incomplete here, so its command names only the seasons that drifted.
+SEASON_SCOPED = frozenset({"sbr_odds"})
+
+
+def _replay_command(command: str, table: str, keys: list[str]) -> str:
+    """The replay command for a table, with --seasons from its drifted partition keys (such as
+    sbr_odds/season=20182019/part-0.parquet) when the table is season-scoped."""
+    if table not in SEASON_SCOPED:
+        return command
+    seasons = sorted(
+        {
+            part.removeprefix("season=")
+            for key in keys
+            if key.split("/")[0] == table
+            for part in key.split("/")
+            if part.startswith("season=")
+        }
+    )
+    return f"{command} --seasons {','.join(seasons)}" if seasons else command
+
+
 def _status_against_r2(local: "list[TableState]") -> None:
     """Which lake files and daily raw responses differ between this machine and R2, with the
     commands that bring them in step. Skipped without R2 settings."""
@@ -697,6 +719,7 @@ def _status_against_r2(local: "list[TableState]") -> None:
     replayed_there = sorted(
         {key.split("/")[0] for key in missing_there if key.split("/")[0] in REPLAYED}
     )
+    drifted_here, drifted_there = missing_here, missing_there
     missing_here = [key for key in missing_here if key.split("/")[0] not in REPLAYED]
     missing_there = [key for key in missing_there if key.split("/")[0] not in REPLAYED]
     if missing_here or raw_behind:
@@ -705,14 +728,16 @@ def _status_against_r2(local: "list[TableState]") -> None:
             f"  this machine is behind R2: nhl lake restore-raw, then nhl ingest {window} --replay"
         )
     for table in replayed_here:
-        typer.echo(f"  {table} is behind R2: {REPLAYED[table]} restores and rebuilds it")
+        command = _replay_command(REPLAYED[table], table, drifted_here)
+        typer.echo(f"  {table} is behind R2: {command} restores and rebuilds it")
     if missing_there or raw_ahead:
         window = replay_window(missing_there) or "--recent 3"
         typer.echo(
             f"  R2 lacks what is here: nhl lake sync-raw, then nhl ingest {window} --replay --r2"
         )
     for table in replayed_there:
-        typer.echo(f"  R2 lacks {table} rows here: nhl lake sync-raw, then {REPLAYED[table]}")
+        command = _replay_command(REPLAYED[table], table, drifted_there)
+        typer.echo(f"  R2 lacks {table} rows here: nhl lake sync-raw, then {command}")
     if polls_behind:
         typer.echo(
             "  pre-game goalie polls are behind R2: nhl lake restore-raw --prefix nhl/pregame-"
