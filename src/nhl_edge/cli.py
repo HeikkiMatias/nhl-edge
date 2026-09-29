@@ -257,23 +257,31 @@ def size(
 def audit_shifts(
     seasons: Annotated[
         str | None,
-        typer.Option(help="Seasons as 20232024, a comma list or a range; default: all."),
+        typer.Option(
+            help="Seasons as 20232024, a comma list or a range. Default: every season that may "
+            "inform design, which leaves out the one-time test season."
+        ),
     ] = None,
 ) -> None:
     """Shift chart coverage per season, from the lake's shift_coverage table."""
     import polars as pl
 
+    from nhl_edge.backtest.seasons import SEASON_ROLES, SeasonRole
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.ingest.shift_coverage import markdown_report, season_report
     from nhl_edge.lake.tables import Lake
 
     coverage = Lake().read("shift_coverage")
-    if seasons is not None:
+    if seasons is None:
+        # The report informs design choices, such as which charts RAPM trusts, so the one-time
+        # test season (and live seasons) are shown only when asked for by name.
+        wanted = [s for s, role in SEASON_ROLES.items() if role is not SeasonRole.ONE_TIME_TEST]
+    else:
         try:
             wanted = parse_seasons(seasons)
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="--seasons") from None
-        coverage = coverage.filter(pl.col("season").is_in(wanted))
+    coverage = coverage.filter(pl.col("season").is_in(wanted))
     if coverage.is_empty():
         typer.echo("no shift coverage in the lake for these seasons: run nhl ingest", err=True)
         raise typer.Exit(code=1)

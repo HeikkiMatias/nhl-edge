@@ -211,8 +211,9 @@ class Shots(pa.DataFrameModel):
     goalie is off the ice. They are null for the few shots whose situationCode is missing.
 
     observed_utc is when the game's play-by-play counts as public: 10:00 UTC the morning after
-    game_date, the rule ADR 0003 sets for results. A backfilled feed includes post-game scoring
-    changes, so shooter_id on a goal is the corrected scorer (ADR 0004).
+    game_date, the rule ADR 0003 sets for results. A backfilled feed includes post-game
+    corrections live did not have: shooter_id on a goal is the corrected scorer, and a shot record
+    may have been added, removed or fixed (ADR 0004).
     """
 
     game_id: pl.Int64
@@ -313,8 +314,9 @@ class ActualLineups(pa.DataFrameModel):
     starting_goalie is the boxscore's starter flag, one per team. toi_s is time on ice in seconds.
 
     These are the only source for backtest lineups (hard rule 9), and never a game's own:
-    observed_utc is 10:00 UTC the morning after game_date, as for Shots. Box score stats that
-    post-game corrections change (goals, assists, points, plus-minus, decision) stay out.
+    observed_utc is 10:00 UTC the morning after game_date, as for Shots. Scoring stats (goals,
+    assists, points, plus-minus, decision) stay out. A backfilled toi_s can include a post-game
+    correction live did not have (ADR 0004).
     """
 
     game_id: pl.Int64

@@ -15,29 +15,32 @@ So the backtest reads corrected feeds, and live reads first versions. The leakag
 ## Options
 
 1. **Fetch time as `observed_utc`.** It is right for live, but every backfilled row would be observed in 2026, which makes 2010-26 useless for a point-in-time backtest.
-2. **10:00 UTC the morning after the game date, as for results (ADR 0003), with the backfilled copies used as fetched.** The tables keep the fields corrections leave alone, plus the goal scorer. The cost is that a backtest credits a few goals to their corrected scorer, where live would still see the first one.
-3. **As 2, without the goal scorer.** Every column would be free of corrections. But per-shooter finishing (φ in B3) needs to know who scored.
+2. **10:00 UTC the morning after the game date, as for results (ADR 0003), with the backfilled copies used as fetched.** The tables keep the facts the models need and leave out the scoring credits they do not. The cost is that a backtest can see a corrected value (a goal's scorer, a shot record, a time on ice) where live would still see the first one.
+3. **As 2, without the goal scorer.** One correction-prone column fewer. But per-shooter finishing (φ in B3) needs to know who scored, and shot records and time on ice would still carry corrections.
 4. **Refetch live feeds N days later, and date correction-prone fields at game date + N.** Backtest and live would match. But N is unknown (corrections can come weeks later), and it adds requests and a second timestamp per table.
 
 ## Decision
 
-Option 2. A correction records a past event more accurately. It carries no news about any later game, so it is not look-ahead. It is only a small gap between backtest and live inputs, in the backtest's favor. The tables keep:
+Option 2. Under hard rule 1 a correction published after the morning-after timestamp is look-ahead: the backtest sees a value live did not have at that time. It is accepted here as small, because a correction records the same past event more accurately and carries no news about any later game. It still favours the backtest, and it is unmeasured (#30). The tables keep:
 
 - **`shots`:** where, when and at what strength (coordinates, shot type, `situationCode`), plus `shooter_id`.
 - **`shifts`:** who was on the ice when.
 - **`actual_lineups`:** who dressed, in which role, the starting goalie, and time on ice.
 
-Assists, points, plus-minus, penalty minutes, shot totals, the goalie decision and the position code stay out. A leakage test locks each column set. The goal scorer is the one kept field that corrections move. It feeds only per-shooter finishing, which is shrunk toward 1 over hundreds of shots, so a moved credit barely changes it.
+Assists, points, plus-minus, penalty minutes, shot totals, the goalie decision and the position code stay out. A leakage test locks each column set, but no test can catch a corrected value in a kept column. Kept columns corrections can change:
+- **Goal scorer.** Scoring changes move it most often. It feeds only per-shooter finishing, which is shrunk toward 1 over hundreds of shots, so a moved credit barely changes it.
+- **Shot records.** A shot can be added, removed or reclassified (on goal or missed), and its coordinates or type fixed.
+- **Time on ice.** It can be fixed in the boxscore and the shift chart.
 
 ## Backtest evidence
 
-None yet. The correction rate itself is unmeasured. It can be measured by refetching a sample of recent games a week after the nightly copy and diffing the two. Phase 2's first backtest with shots-based team strength (B2 against B1) is the first run that relies on this decision.
+None yet. The correction rate itself is unmeasured. #30 measures it by refetching two weeks of 2026-27 games 7 days after the nightly copy and diffing the parsed rows, before phase 2's first backtest with shots-based team strength (B2 against B1) relies on this decision.
 
 ## Consequences
 
 - Every row of the four tables has `observed_utc = result_public_utc(game_date)`. A game's own shots, shifts and lineup never feed a prediction for it (hard rules 1 and 9). `tests/leakage/test_shots.py`, `test_shifts.py`, `test_actual_lineups.py` and `test_shift_coverage.py` check this.
 - A feature that wants assists, points or other scoring credits needs a new decision first. Adding the column also breaks a locked leakage test.
-- Live finishing ratings use first-version credits for the latest games, and the backtest uses corrected ones. This makes the backtest very slightly optimistic for B3 only.
+- Live ratings use first versions for the latest games, and the backtest uses corrected ones. This makes the backtest slightly optimistic, by an amount #30 measures.
 
 ## Revisit when
 

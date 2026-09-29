@@ -3,9 +3,9 @@ after its game date, like its result (ADR 0003, ADR 0004): the live pipeline fet
 result, so no prediction for a game ever sees that game's own shots, even one made hours after the
 puck dropped.
 
-A backfilled play-by-play includes post-game corrections. The table keeps only what corrections
-leave alone (where, when, at what strength) plus the shooter, whose credit on a goal can move
-(ADR 0004). Assists and other scoring credits stay out, and the column set is locked here."""
+A backfilled play-by-play includes post-game corrections. Assists and other scoring credits stay
+out, and the column set is locked here. Corrected values in the kept columns (a goal's scorer, a
+fixed shot record) are a small look-ahead that ADR 0004 accepts and #30 measures."""
 
 import pytest
 from feed_fixtures import MTL_ARI, OPENING_WEEK_GAMES, assert_public_the_morning_after, parsed_feeds

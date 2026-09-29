@@ -4,9 +4,10 @@ games' boxscores:
   (ADR 0003, ADR 0004), so no prediction for a game sees who dressed for it.
 - Lineups are read from boxscores and never from cached rosters, which are an after-the-fact view
   of a season.
-- A backfilled boxscore includes post-game corrections, so the stats they change (goals, assists,
-  points, plus-minus, penalty minutes, shots, decision) stay out. So does the position code, which
-  is the position listed today. The column set is locked here.
+- Scoring stats that post-game corrections change most (goals, assists, points, plus-minus,
+  penalty minutes, shots, decision) stay out. So does the position code, which is the position
+  listed today. The column set is locked here. A corrected time on ice is a small look-ahead that
+  ADR 0004 accepts and #30 measures.
 """
 
 from pathlib import Path

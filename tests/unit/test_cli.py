@@ -134,3 +134,24 @@ def test_audit_shifts_prints_one_row_per_season(
     assert [line.split(" | ")[0] for line in lines[2:]] == ["| 20102011", "| 20222023"]
     only_new = runner.invoke(app, ["audit", "shifts", "--seasons", "20222023"])
     assert only_new.output.splitlines()[2].startswith("| 20222023 | 1 | 1 (100.0%)")
+
+
+def test_audit_shifts_leaves_out_the_test_season_unless_asked(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+    from feed_fixtures import MTL_ARI, parsed_feeds
+
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    row = parsed_feeds(MTL_ARI)["shift_coverage"]
+    Lake().write("shift_coverage", row)
+    test_season = row.with_columns(
+        game_id=pl.lit(2025020060, pl.Int64), season=pl.lit(20252026, pl.Int32)
+    )
+    Lake().write("shift_coverage", test_season)
+    default = runner.invoke(app, ["audit", "shifts"])
+    assert [line.split(" | ")[0] for line in default.output.splitlines()[2:]] == ["| 20222023"]
+    asked = runner.invoke(app, ["audit", "shifts", "--seasons", "20252026"])
+    assert asked.output.splitlines()[2].startswith("| 20252026 | 1 |")
