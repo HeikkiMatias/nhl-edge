@@ -21,10 +21,12 @@ import polars as pl
 from nhl_edge.lake.r2 import ObjectStore, R2Config, list_keys
 from nhl_edge.lake.schemas import (
     ODDS_KEY,
+    SBR_KEY,
     ActualLineups,
     Games,
     LakeOddsSnapshots,
     Players,
+    SbrOdds,
     Schedule,
     ShiftCoverage,
     Shifts,
@@ -57,6 +59,7 @@ TABLES: dict[str, Table] = {
     "actual_lineups": Table(ActualLineups, ("game_id", "player_id"), BY_DATE),
     "shift_coverage": Table(ShiftCoverage, ("game_id",), BY_DATE),
     "odds_snapshots": Table(LakeOddsSnapshots, ODDS_KEY, ("snapshot_date",)),
+    "sbr_odds": Table(SbrOdds, SBR_KEY, ("season",)),
 }
 # Partition columns replace_dates can replace a date at a time.
 DATE_PARTITIONS = ("game_date", "snapshot_date")
