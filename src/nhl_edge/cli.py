@@ -343,7 +343,7 @@ def status(
     for state in states:
         rows = compact(state.rows or 0)
         latest = f", to {state.latest}" if state.latest else ""
-        typer.echo(f"  {state.table:<16}{rows:>8} rows in {state.files:,} files{latest}")
+        typer.echo(f"  {state.table:<16}{rows:>8} rows in {len(state.files):,} files{latest}")
     _status_against_r2(states)
     typer.echo("\nSeason roles (docs/plan.md section 5):")
     for season, role in SEASON_ROLES.items():
@@ -352,11 +352,11 @@ def status(
 
 
 def _status_against_r2(local: "list[TableState]") -> None:
-    """How far this machine is behind R2: tables whose newest date or file count differ, and the
-    newest daily raw responses on each side. Skipped quietly without R2 settings."""
+    """Which lake files and daily raw responses differ between this machine and R2, with the
+    commands that bring them in step. Skipped without R2 settings."""
     from nhl_edge.lake.r2 import R2Config
     from nhl_edge.lake.raw import RawStore
-    from nhl_edge.lake.status import raw_lag, remote_tables
+    from nhl_edge.lake.status import compare, raw_lag, remote_tables, replay_window
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
 
@@ -365,25 +365,32 @@ def _status_against_r2(local: "list[TableState]") -> None:
         typer.echo("\nR2: not configured, so no comparison with the mirror")
         return
     typer.echo("\nAgainst R2:")
-    behind = ahead = False
+    missing_here: list[str] = []  # lake files R2 has and this machine lacks
+    missing_there: list[str] = []  # lake files this machine has that R2 lacks or holds otherwise
     for here, there in zip(local, remote_tables(Lake.from_env(mirror=True)), strict=True):
-        if (here.files, here.latest) != (there.files, there.latest):
-            behind |= (here.latest or "") < (there.latest or "") or here.files < there.files
-            ahead |= (here.latest or "") > (there.latest or "") or here.files > there.files
+        diff = compare(here, there)
+        if diff:
             typer.echo(
-                f"  {here.table}: here {here.files:,} files to {here.latest}, "
-                f"R2 {there.files:,} to {there.latest}"
+                f"  {diff.table}: {len(diff.only_there):,} files only in R2, "
+                f"{len(diff.only_here):,} only here, {len(diff.differ):,} differ in size"
             )
+            missing_here += diff.only_there
+            missing_there += diff.only_here + diff.differ
+    raw_behind = raw_ahead = False
     for prefix, here_key, there_key in raw_lag(RawStore.from_env(mirror=True)):
         if here_key != there_key:
-            behind |= (here_key or "") < (there_key or "")
-            ahead |= (here_key or "") > (there_key or "")
+            raw_behind |= (here_key or "") < (there_key or "")
+            raw_ahead |= (here_key or "") > (there_key or "")
             typer.echo(f"  raw/{prefix}: newest here {here_key}, in R2 {there_key}")
-    if behind:
+    if missing_here or raw_behind:
+        window = replay_window(missing_here) or "--recent 3"
         typer.echo(
-            "  this machine is behind R2: run nhl lake restore-raw, then nhl ingest --replay"
+            f"  this machine is behind R2: nhl lake restore-raw, then nhl ingest {window} --replay"
         )
-    if ahead:
-        typer.echo("  R2 lacks what is here: run nhl lake sync-raw, and ingest with --r2")
-    if not (behind or ahead):
+    if missing_there or raw_ahead:
+        window = replay_window(missing_there) or "--recent 3"
+        typer.echo(
+            f"  R2 lacks what is here: nhl lake sync-raw, then nhl ingest {window} --replay --r2"
+        )
+    if not (missing_here or missing_there or raw_behind or raw_ahead):
         typer.echo("  up to date with R2")

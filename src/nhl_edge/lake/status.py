@@ -1,35 +1,52 @@
 """What the lake holds, for `nhl status`: rows and the newest game date per table, read from parquet
-metadata and partition names so the SessionStart hook stays fast and offline. With R2, the same for
-the mirror, and the newest raw responses on each side, to show when this machine is behind.
+metadata and partition names so the SessionStart hook stays fast and offline. With R2, which files
+differ from the mirror, and the newest raw responses on each side, to show when this machine is
+behind or ahead.
 """
 
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 
 import polars as pl
 
 from nhl_edge.lake.r2 import list_keys
-from nhl_edge.lake.raw import SUFFIX, RawStore
+from nhl_edge.lake.raw import META, R2_RAW, SUFFIX, RawStore
 from nhl_edge.lake.tables import R2_PREFIX, TABLES, Lake
 
 GAME_DATE = "game_date="
-SIDECAR = ".meta.json"
-R2_RAW = "raw/"
 # The raw responses that grow every day, from the nightly ingest and the odds snapshots.
 DAILY_RAW = ("nhl/schedule/", "odds/")
+
+
+def partition_dates(keys: Iterable[str]) -> list[str]:
+    return [
+        part.removeprefix(GAME_DATE)
+        for key in keys
+        for part in key.split("/")
+        if part.startswith(GAME_DATE)
+    ]
 
 
 @dataclass(frozen=True)
 class TableState:
     table: str
-    files: int
-    rows: int | None  # None where only file names were read (R2)
-    latest: str | None  # the newest game_date partition, for tables partitioned by date
+    files: Mapping[str, int]  # file key under the lake root: size in bytes
+    rows: int | None = None  # None where only the listing was read (R2)
+    latest: str | None = field(init=False)  # the newest game_date partition, if dated
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "latest", max(partition_dates(self.files), default=None))
 
 
-def latest_date(keys: Iterable[str]) -> str | None:
-    dates = [part.removeprefix(GAME_DATE) for key in keys for part in key.split("/")]
-    return max((d for d in dates if len(d) == 10 and d[4] == "-"), default=None)
+@dataclass(frozen=True)
+class TableDiff:
+    table: str
+    only_here: list[str]
+    only_there: list[str]
+    differ: list[str]
+
+    def __bool__(self) -> bool:
+        return bool(self.only_here or self.only_there or self.differ)
 
 
 def local_tables(lake: Lake) -> list[TableState]:
@@ -37,8 +54,8 @@ def local_tables(lake: Lake) -> list[TableState]:
     for table in TABLES:
         paths = sorted((lake.base_dir / table).rglob("*.parquet"))
         rows = pl.scan_parquet(paths).select(pl.len()).collect().item() if paths else 0
-        keys = [path.relative_to(lake.base_dir).as_posix() for path in paths]
-        states.append(TableState(table, len(paths), rows, latest_date(keys)))
+        files = {path.relative_to(lake.base_dir).as_posix(): path.stat().st_size for path in paths}
+        states.append(TableState(table, files, rows))
     return states
 
 
@@ -47,19 +64,29 @@ def remote_tables(lake: Lake) -> list[TableState]:
         raise ValueError("comparing with R2 needs a mirrored lake")
     states = []
     for table in TABLES:
-        keys = [
-            key for key, _ in list_keys(lake.objects, lake.bucket or "", f"{R2_PREFIX}/{table}/")
-        ]
-        states.append(TableState(table, len(keys), None, latest_date(keys)))
+        listed = list_keys(lake.objects, lake.bucket or "", f"{R2_PREFIX}/{table}/")
+        files = {key.removeprefix(f"{R2_PREFIX}/"): size for key, size in listed}
+        states.append(TableState(table, files))
     return states
 
 
+def compare(here: TableState, there: TableState) -> TableDiff:
+    """Files only on this machine, only in R2, and on both with different sizes."""
+    shared = here.files.keys() & there.files.keys()
+    return TableDiff(
+        here.table,
+        sorted(here.files.keys() - there.files.keys()),
+        sorted(there.files.keys() - here.files.keys()),
+        sorted(key for key in shared if here.files[key] != there.files[key]),
+    )
+
+
 def newest_raw(paths: Iterable[str]) -> str | None:
-    """The newest complete response among raw paths: keys end in a UTC fetch stamp or carry a date,
-    so the lexically largest complete key is the newest."""
+    """The newest complete response among raw paths: keys carry a date and end in a UTC fetch
+    stamp, so the lexically largest complete key is the newest."""
     listed = list(paths)
     bodies = {path.removesuffix(SUFFIX) for path in listed if path.endswith(SUFFIX)}
-    complete = bodies & {path.removesuffix(SIDECAR) for path in listed if path.endswith(SIDECAR)}
+    complete = bodies & {path.removesuffix(META) for path in listed if path.endswith(META)}
     return max(complete, default=None)
 
 
@@ -71,7 +98,8 @@ def raw_lag(
         raise ValueError("comparing with R2 needs a mirrored raw store")
     rows = []
     for prefix in prefixes:
-        local = (store.base_dir / prefix).rglob("*") if (store.base_dir / prefix).exists() else []
+        root = store.base_dir / prefix
+        local = root.rglob("*") if root.exists() else []
         here = newest_raw(
             path.relative_to(store.base_dir).as_posix() for path in local if path.is_file()
         )
@@ -79,6 +107,12 @@ def raw_lag(
         there = newest_raw(key.removeprefix(R2_RAW) for key, _ in remote)
         rows.append((prefix, here, there))
     return rows
+
+
+def replay_window(keys: Iterable[str]) -> str | None:
+    """`--start A --end B` covering the game dates of the given partition keys, or None."""
+    dates = partition_dates(keys)
+    return f"--start {min(dates)} --end {max(dates)}" if dates else None
 
 
 def compact(n: int) -> str:
@@ -91,10 +125,20 @@ def compact(n: int) -> str:
 
 
 def brief_line(states: list[TableState]) -> str:
-    """One line for the SessionStart hook."""
+    """One line for the SessionStart hook: the newest date, rows per table, and any table that
+    lags that date or is missing."""
     present = [state for state in states if state.files]
     if not present:
         return "lake empty: run nhl ingest"
-    latest = max((s.latest for s in present if s.latest), default=None)
+    newest = max((s.latest for s in present if s.latest), default=None)
     counts = ", ".join(f"{s.table} {compact(s.rows or 0)}" for s in present)
-    return f"lake to {latest}: {counts}" if latest else f"lake: {counts}"
+    parts = [f"lake to {newest}: {counts}" if newest else f"lake: {counts}"]
+    behind = [
+        f"{s.table} to {s.latest}" for s in present if newest and s.latest and s.latest < newest
+    ]
+    if behind:
+        parts.append(f"behind: {', '.join(behind)}")
+    missing = [s.table for s in states if not s.files]
+    if missing:
+        parts.append(f"missing: {', '.join(missing)}")
+    return " · ".join(parts)
