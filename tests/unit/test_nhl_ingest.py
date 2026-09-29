@@ -9,6 +9,7 @@ import httpx
 import polars as pl
 import pytest
 from fakes import MemoryBucket
+from feed_fixtures import OPENING_WEEK_GAMES, feed
 
 from nhl_edge.ingest import nhl_api
 from nhl_edge.ingest.nhl_api import NhlApi, NotCachedError
@@ -20,20 +21,25 @@ from nhl_edge.ingest.nhl_ingest import (
     recent_days,
     yesterday_et,
 )
+from nhl_edge.ingest.players import boxscore_player_ids, roster_player_ids
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.supabase import Supabase
-from nhl_edge.lake.tables import Lake
+from nhl_edge.lake.tables import FEED_TABLES, Lake
 
 FIXTURES = Path(__file__).parent / "fixtures" / "nhl_api"
 OPENING_WEEK = (FIXTURES / "schedule_2010-10-07.json").read_bytes()
 UPCOMING_WEEK = (FIXTURES / "schedule_2026-09-28.json").read_bytes()
-BOXSCORE = (FIXTURES / "boxscore_2010020003.json").read_bytes()
 ROSTER = (FIXTURES / "roster_PHX_20102011.json").read_bytes()
 LANDING = (FIXTURES / "landing_8478402.json").read_bytes()
 OPENING = DateRange(date(2010, 10, 7), date(2010, 10, 8))
 NOW = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
-# Two forwards, two defensemen and a goalie per roster; 10 players dressed per boxscore.
-PLAYERS = 15
+# The fixture roster (five players) is served for every team, and the opening week's boxscores
+# add everyone dressed.
+PLAYERS = len(
+    roster_player_ids(ROSTER).union(
+        *(boxscore_player_ids(feed("boxscore", game_id)) for game_id in OPENING_WEEK_GAMES)
+    )
+)
 
 
 @pytest.fixture(autouse=True)
@@ -60,13 +66,15 @@ class FakeNhl:
         self.calls: Counter[str] = Counter()
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        # A shift chart is asked for by query string: cayenneExp=gameId=2010020003
+        chart_id = int(request.url.params.get("cayenneExp", "gameId=0").removeprefix("gameId="))
         routes: list[tuple[str, str, Callable[[re.Match[str]], bytes]]] = [
             ("schedule", r"/v1/schedule/2011-02-15", lambda m: probe_body()),
             ("schedule", r"/v1/schedule/2010-10-07", lambda m: OPENING_WEEK),
             ("schedule", r"/v1/schedule/2026-09-29", lambda m: UPCOMING_WEEK),
-            ("pbp", r"/v1/gamecenter/(\d+)/play-by-play", lambda m: f'{{"id": {m[1]}}}'.encode()),
-            ("boxscore", r"/v1/gamecenter/\d+/boxscore", lambda m: BOXSCORE),
-            ("shifts", r"/stats/rest/en/shiftcharts", lambda m: b'{"data": [], "total": 0}'),
+            ("pbp", r"/v1/gamecenter/(\d+)/play-by-play", lambda m: game_feed("play-by-play", m)),
+            ("boxscore", r"/v1/gamecenter/(\d+)/boxscore", lambda m: game_feed("boxscore", m)),
+            ("shifts", r"/stats/rest/en/shiftcharts", lambda m: feed("shiftcharts", chart_id)),
             ("roster", r"/v1/roster/[A-Z]{3}/\d{8}", lambda m: ROSTER),
             ("landing", r"/v1/player/(\d+)/landing", lambda m: landing(int(m[1]))),
         ]
@@ -76,6 +84,10 @@ class FakeNhl:
                 self.calls[name] += 1
                 return httpx.Response(200, content=body(match))
         return httpx.Response(404)
+
+
+def game_feed(kind: str, match: re.Match[str]) -> bytes:
+    return feed(kind, int(match[1]))
 
 
 def fail(request: httpx.Request) -> httpx.Response:
@@ -99,9 +111,16 @@ def make_api(
     )
 
 
-def ingest(api: NhlApi, lake: Lake, lines: list[str], supabase: Supabase | None = None) -> Ingest:
+def ingest(
+    api: NhlApi,
+    lake: Lake,
+    lines: list[str],
+    supabase: Supabase | None = None,
+    *,
+    feeds: bool = True,
+) -> Ingest:
     return Ingest(
-        api=api, lake=lake, supabase=supabase, feeds=True, players=True, echo=lines.append
+        api=api, lake=lake, supabase=supabase, feeds=feeds, players=True, echo=lines.append
     )
 
 
@@ -129,6 +148,42 @@ def test_first_run_writes_games_players_and_caches_every_feed(tmp_path: Path) ->
         assert len(list((tmp_path / "raw" / "nhl" / kind / "20102011").iterdir())) == 3
 
 
+def test_feeds_are_parsed_into_the_per_game_tables(tmp_path: Path) -> None:
+    lines: list[str] = []
+    lake = Lake(tmp_path / "lake")
+    [summary] = ingest(make_api(RawStore(tmp_path / "raw"), FakeNhl()), lake, lines).run([OPENING])
+
+    games = set(OPENING_WEEK_GAMES)
+    for table in FEED_TABLES:
+        assert set(lake.read(table)["game_id"]) == games, table
+    coverage = lake.read("shift_coverage")
+    assert coverage["complete"].all()
+    assert lake.read("actual_lineups").height == 3 * 40
+    assert (summary.shots, summary.shifts) == (
+        lake.read("shots").height,
+        lake.read("shifts").height,
+    )
+    assert summary.shift_charts_complete == 3
+    assert lines[-1].endswith(
+        f"; {summary.shots} shots, {summary.shifts} shifts, shift charts complete in 3 of 3 games"
+    )
+    # Partitioned like games, by season and game date.
+    dates = {p.parent.name for p in (tmp_path / "lake" / "shots").rglob("*.parquet")}
+    assert dates == {"game_date=2010-10-07", "game_date=2010-10-08"}
+
+
+def test_no_feeds_leaves_the_per_game_tables_alone(tmp_path: Path) -> None:
+    store, lake = RawStore(tmp_path / "raw"), Lake(tmp_path / "lake")
+    ingest(make_api(store, FakeNhl()), lake, []).run([OPENING])
+    before = {table: lake.read(table) for table in FEED_TABLES}
+    fake, lines = FakeNhl(), []
+    ingest(make_api(store, fake), lake, lines, feeds=False).run([OPENING])
+    assert fake.calls["pbp"] + fake.calls["boxscore"] + fake.calls["shifts"] == 0
+    for table in FEED_TABLES:
+        assert lake.read(table).equals(before[table]), table
+    assert "shifts" not in lines[-1]
+
+
 def test_rerun_is_served_from_the_cache(tmp_path: Path) -> None:
     store, lake = RawStore(tmp_path / "raw"), Lake(tmp_path / "lake")
     ingest(make_api(store, FakeNhl()), lake, []).run([OPENING])
@@ -143,7 +198,8 @@ def test_replay_rebuilds_identical_tables_offline(tmp_path: Path) -> None:
     online, replayed = Lake(tmp_path / "lake"), Lake(tmp_path / "rebuilt")
     ingest(make_api(store, FakeNhl()), online, []).run([OPENING])
     ingest(make_api(store, fail, offline=True), replayed, []).run([OPENING])
-    for table in ("games", "players"):
+    for table in ("games", "players", *FEED_TABLES):
+        assert replayed.read(table).height > 0
         assert replayed.read(table).equals(online.read(table))
 
 

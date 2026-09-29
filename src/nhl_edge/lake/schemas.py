@@ -151,8 +151,9 @@ class Players(pa.DataFrameModel):
 
     Only facts fixed before a player's NHL debut belong here, which is why the table has no
     observed_utc: fetched_utc records provenance. Anything that changes over a career (position,
-    team, stats, injuries) goes in a table with observed_utc; the landing page's position is the
-    one listed today, so a player's position comes from each game's boxscore instead.
+    team, stats, injuries) goes in a table with observed_utc. The landing page's position is the
+    one listed today, and so is the boxscore's position code: the role a player had in a game (F,
+    D or G) comes from the boxscore group he is listed in (ActualLineups.role).
     """
 
     player_id: pl.Int64
@@ -173,4 +174,238 @@ class Players(pa.DataFrameModel):
     def drafted_or_not(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(
             pl.col("draft_year").is_null() == pl.col("draft_overall").is_null()
+        )
+
+
+# Regular-season periods: three of 20 minutes, then one 5-minute overtime. The shootout (period 5)
+# is not play and has no rows in the per-game tables.
+PERIOD_S = 1200
+OT_PERIOD = 4
+OT_S = 300
+
+
+def period_start_s(period: pl.Expr) -> pl.Expr:
+    """Elapsed game seconds at the start of a period."""
+    return (period.cast(pl.Int32) - 1) * PERIOD_S
+
+
+def period_end_s(period: pl.Expr) -> pl.Expr:
+    """Elapsed game seconds at the end of a period."""
+    return period_start_s(period) + pl.when(period == OT_PERIOD).then(OT_S).otherwise(PERIOD_S)
+
+
+SHOT_EVENTS = ("shot-on-goal", "missed-shot", "goal")
+ZONES = ("O", "N", "D")
+ROLES = ("F", "D", "G")
+
+
+class Shots(pa.DataFrameModel):
+    """One unblocked shot attempt (shot on goal, missed shot or goal) in play-by-play, periods 1
+    to 4. Shootout attempts are not shots and are left out; penalty shots are kept and flagged.
+
+    seconds is elapsed game time, (period - 1) * 1200 plus the period clock. team is the shooting
+    team. x and y are rink feet, turned so the shooting team attacks the net at x = +89: the API
+    gives raw rink coordinates, and the attack direction per team and period is inferred from the
+    offensive-zone shots. Strength is the shooting team's view of situationCode: skaters_for and
+    skaters_against (6 means that team's goalie is pulled), and is_empty_net when the defending
+    goalie is off the ice. They are null for the few shots whose situationCode is missing.
+
+    observed_utc is when the game's play-by-play counts as public: 10:00 UTC the morning after
+    game_date, the rule ADR 0003 sets for results. A backfilled feed includes post-game
+    corrections live did not have: shooter_id on a goal is the corrected scorer, and a shot record
+    may have been added, removed or fixed (ADR 0004).
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    event_id: pl.Int32
+    sort_order: pl.Int32
+    period: pl.Int8 = pa.Field(ge=1, le=OT_PERIOD)
+    seconds: pl.Int32 = pa.Field(ge=0)
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    is_home: pl.Boolean
+    event_type: pl.String = pa.Field(isin=SHOT_EVENTS)
+    is_goal: pl.Boolean
+    shooter_id: pl.Int64
+    goalie_id: pl.Int64 = pa.Field(nullable=True)
+    shot_type: pl.String = pa.Field(nullable=True)
+    zone: pl.String = pa.Field(isin=ZONES, nullable=True)
+    x: pl.Int16 = pa.Field(ge=-100, le=100, nullable=True)
+    y: pl.Int16 = pa.Field(ge=-43, le=43, nullable=True)
+    skaters_for: pl.Int8 = pa.Field(ge=0, le=6, nullable=True)
+    skaters_against: pl.Int8 = pa.Field(ge=0, le=6, nullable=True)
+    strength: pl.String = pa.Field(str_matches=r"^[0-6]v[0-6]$", nullable=True)
+    is_empty_net: pl.Boolean
+    is_penalty_shot: pl.Boolean
+    situation_code: pl.String = pa.Field(nullable=True)
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "event_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def goal_flag_matches_event(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("is_goal") == (pl.col("event_type") == "goal"))
+
+    @pa.dataframe_check
+    def seconds_inside_the_period(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        seconds, period = pl.col("seconds"), pl.col("period")
+        return data.lazyframe.select(
+            (seconds >= period_start_s(period)) & (seconds <= period_end_s(period))
+        )
+
+
+class Shifts(pa.DataFrameModel):
+    """One player shift from the shift chart (type 517 rows), periods 1 to 4.
+
+    start_s and end_s are elapsed game seconds, like Shots.seconds. A player is on the ice for an
+    event at second t when start_s < t <= end_s. team comes from the shift's teamId, mapped
+    through the game's two teams. The parser drops zero-length placeholders, rows of teams not in
+    the game, shootout rows and malformed rows, and ShiftCoverage counts them.
+
+    observed_utc is 10:00 UTC the morning after game_date, as for Shots.
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    player_id: pl.Int64
+    period: pl.Int8 = pa.Field(ge=1, le=OT_PERIOD)
+    shift_number: pl.Int16 = pa.Field(ge=1)
+    start_s: pl.Int32 = pa.Field(ge=0)
+    end_s: pl.Int32
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = [  # noqa: RUF012 (pandera config)
+            "game_id",
+            "player_id",
+            "period",
+            "shift_number",
+        ]
+
+    @pa.dataframe_check
+    def ends_after_it_starts(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("end_s") > pl.col("start_s"))
+
+    @pa.dataframe_check
+    def inside_its_period(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        period = pl.col("period")
+        return data.lazyframe.select(
+            (pl.col("start_s") >= period_start_s(period))
+            & (pl.col("end_s") <= period_end_s(period))
+        )
+
+
+class ActualLineups(pa.DataFrameModel):
+    """One player dressed for a game, from the boxscore's playerByGameStats.
+
+    role is the group the boxscore lists him in: F (forwards), D (defense) or G (goalies). That
+    is how he was used in this game. The boxscore's position code is left out, because it is the
+    position listed today (Brent Burns is listed D in the forwards group all through 2013-14).
+    starting_goalie is the boxscore's starter flag, one per team. toi_s is time on ice in seconds.
+
+    These are the only source for backtest lineups (hard rule 9), and never a game's own:
+    observed_utc is 10:00 UTC the morning after game_date, as for Shots. Scoring stats (goals,
+    assists, points, plus-minus, decision) stay out. A backfilled toi_s can include a post-game
+    correction live did not have (ADR 0004).
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    is_home: pl.Boolean
+    player_id: pl.Int64
+    role: pl.String = pa.Field(isin=ROLES)
+    sweater_number: pl.Int16 = pa.Field(ge=0, le=99, nullable=True)
+    starting_goalie: pl.Boolean
+    toi_s: pl.Int32 = pa.Field(ge=0, nullable=True)
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "player_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def starters_are_goalies(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(~pl.col("starting_goalie") | (pl.col("role") == "G"))
+
+    @pa.dataframe_check
+    def one_starting_goalie_per_team(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        starters = pl.col("starting_goalie").cast(pl.Int32).sum().over("game_id", "team")
+        return data.lazyframe.select(starters == 1)
+
+
+# A player's summed shift time may differ from his boxscore time on ice by this much before the
+# game's shift chart counts as incomplete.
+TOI_TOLERANCE_S = 60
+
+
+class ShiftCoverage(pa.DataFrameModel):
+    """How far one game's shift chart can be trusted (docs/plan.md section 9).
+
+    Shift rows: shift_rows kept in Shifts; dropped_rows are zero-length placeholders and shootout
+    rows, which carry no play; foreign_rows belong to teams not in the game; bad_rows are
+    malformed. Players: players_without_shifts dressed with time on ice but have no shift, and
+    players_toi_off have summed shifts more than TOI_TOLERANCE_S away from their boxscore time on
+    ice, or no boxscore time on ice to check against. complete means no bad rows and every dressed
+    player's shifts add up.
+
+    Strength: at every unblocked shot except penalty shots (shots_checked), the skaters and
+    goalies on the ice from the shifts are compared with situationCode. skater_mismatches and
+    goalie_mismatches count the shots where they differ. RAPM drops stints that contradict it.
+
+    observed_utc is 10:00 UTC the morning after game_date, as for Shots; raw_key is the shift
+    chart's.
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    shift_rows: pl.Int32 = pa.Field(ge=0)
+    dropped_rows: pl.Int32 = pa.Field(ge=0)
+    foreign_rows: pl.Int32 = pa.Field(ge=0)
+    bad_rows: pl.Int32 = pa.Field(ge=0)
+    players_dressed: pl.Int16 = pa.Field(ge=0)
+    players_without_shifts: pl.Int16 = pa.Field(ge=0)
+    players_toi_off: pl.Int16 = pa.Field(ge=0)
+    shots_checked: pl.Int32 = pa.Field(ge=0)
+    skater_mismatches: pl.Int32 = pa.Field(ge=0)
+    goalie_mismatches: pl.Int32 = pa.Field(ge=0)
+    complete: pl.Boolean
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = "game_id"
+
+    @pa.dataframe_check
+    def complete_means_no_gaps(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("complete")
+            == (
+                (pl.col("bad_rows") == 0)
+                & (pl.col("players_without_shifts") == 0)
+                & (pl.col("players_toi_off") == 0)
+            )
+        )
+
+    @pa.dataframe_check
+    def mismatches_within_shots(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        checked = pl.col("shots_checked")
+        return data.lazyframe.select(
+            (pl.col("skater_mismatches") <= checked) & (pl.col("goalie_mismatches") <= checked)
         )

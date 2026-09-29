@@ -1,23 +1,25 @@
-"""`nhl ingest`: NHL games and players into the lake, with the raw per-game feeds cached for the
-shot, shift and lineup parsers.
+"""`nhl ingest`: NHL games, players and the per-game tables into the lake.
 
 A window is a season or a date range. For each week of it: fetch the schedule, keep the final
-regular-season games, and fetch play-by-play, boxscore and shift chart for each (feeds). Then fetch
-the rosters of every team that played, and a landing page for every player on them or in the
-boxscores who is not in the players table yet. Games are written as whole game_date partitions,
-players merged by player_id, and games upserted to Supabase. Every response goes to the raw store
-first, and cached copies are reused by the rules in nhl_api, so a stopped backfill restarts where it
-left off and --replay rebuilds the tables with no network at all.
+regular-season games, and fetch play-by-play, boxscore and shift chart for each (feeds), parsed
+into shots, shifts, actual_lineups and shift_coverage. Then fetch the rosters of every team that
+played, and a landing page for every player on them or in the boxscores who is not in the players
+table yet. Games and the per-game tables are written as whole game_date partitions, players merged
+by player_id, and games upserted to Supabase. Every response goes to the raw store first, and
+cached copies are reused by the rules in nhl_api, so a stopped backfill restarts where it left off
+and --replay rebuilds the tables with no network at all.
 """
 
 import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import polars as pl
 
+from nhl_edge.ingest.feeds import FeedGame
 from nhl_edge.ingest.games import (
     EXPECTED_GAMES,
     FINAL,
@@ -28,6 +30,7 @@ from nhl_edge.ingest.games import (
     season_over,
     settled_on,
 )
+from nhl_edge.ingest.lineups import parse_actual_lineups
 from nhl_edge.ingest.nhl_api import (
     NhlApi,
     NotCachedError,
@@ -40,9 +43,12 @@ from nhl_edge.ingest.players import (
     parse_players,
     roster_player_ids,
 )
+from nhl_edge.ingest.shift_coverage import shift_coverage
+from nhl_edge.ingest.shifts import parse_shifts
+from nhl_edge.ingest.shots import parse_shots
 from nhl_edge.lake.schemas import Games, dtypes
 from nhl_edge.lake.supabase import Supabase
-from nhl_edge.lake.tables import TABLES, Lake
+from nhl_edge.lake.tables import FEED_TABLES, TABLES, Lake
 
 ET = ZoneInfo("America/New_York")
 WEEK = timedelta(days=7)
@@ -75,6 +81,9 @@ class Summary:
     players_missing: list[int] = field(default_factory=list)
     requests: int = 0
     cache_hits: int = 0
+    shots: int = 0
+    shifts: int = 0
+    shift_charts_complete: int = 0
 
 
 def yesterday_et(now: datetime) -> date:
@@ -142,6 +151,7 @@ class Ingest:
         summary = Summary(label)
 
         frames = [pl.DataFrame(schema=dtypes(Games))]
+        feed_frames = {table: [TABLES[table].empty()] for table in FEED_TABLES}
         boxscore_ids: set[int] = set()
         week = start
         while week <= end:
@@ -155,10 +165,8 @@ class Ingest:
             games = parse_games(listed, response.raw_key)
             frames.append(games)
             if self.feeds:
-                for season, game_id in games.select("season", "game_id").iter_rows():
-                    api.play_by_play(season, game_id)
-                    boxscore_ids |= boxscore_player_ids(api.boxscore(season, game_id).body)
-                    api.shift_chart(season, game_id)
+                for game in games.iter_rows(named=True):
+                    boxscore_ids |= self.game_feeds(game, feed_frames)
             self.echo(
                 f"{label} week {week.isoformat()}: {games.height} final games, "
                 f"{api.requests - requests} requests, {api.cache_hits - hits} cache hits so far"
@@ -171,14 +179,37 @@ class Ingest:
         # that drops a game also drops its stale partition.
         window_days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
         self.lake.replace_dates("games", games, window_days)
+        if self.feeds:
+            # Written only when the feeds were read, so --no-feeds leaves these tables alone.
+            parsed = {table: pl.concat(parts) for table, parts in feed_frames.items()}
+            for table, frame in parsed.items():
+                self.lake.replace_dates(table, frame, window_days)
+            summary.shots, summary.shifts = parsed["shots"].height, parsed["shifts"].height
+            summary.shift_charts_complete = parsed["shift_coverage"].filter("complete").height
         if games.height and self.supabase is not None:
             self.supabase.upsert("games", games, TABLES["games"].key)
         if self.players:
             self.ingest_players(games, boxscore_ids, summary)
 
         summary.requests, summary.cache_hits = api.requests - requests, api.cache_hits - hits
-        _report(summary, window, self.echo)
+        _report(summary, window, self.echo, feeds=self.feeds)
         return summary
+
+    def game_feeds(self, game: dict[str, Any], frames: dict[str, list[pl.DataFrame]]) -> set[int]:
+        """Fetch (or reuse) a game's play-by-play, boxscore and shift chart, parse them into the
+        per-game tables, and return the ids of the players dressed."""
+        season, game_id = game["season"], game["game_id"]
+        pbp = self.api.play_by_play(season, game_id)
+        box = self.api.boxscore(season, game_id)
+        chart = self.api.shift_chart(season, game_id)
+        feed_game = FeedGame.from_boxscore(game, box.body)
+        shots = parse_shots(pbp.body, feed_game, pbp.raw_key)
+        shifts, drops = parse_shifts(chart.body, feed_game, chart.raw_key)
+        lineups = parse_actual_lineups(box.body, feed_game, box.raw_key)
+        coverage = shift_coverage(feed_game, shots, shifts, lineups, drops, chart.raw_key)
+        for table, frame in zip(FEED_TABLES, (shots, shifts, lineups, coverage), strict=True):
+            frames[table].append(frame)
+        return boxscore_player_ids(box.body)
 
     def ingest_players(self, games: pl.DataFrame, boxscore_ids: set[int], summary: Summary) -> None:
         """Rosters of every team that played, then landing pages for players not yet in the table.
@@ -216,11 +247,17 @@ class Ingest:
             self.lake.upsert("players", parse_players(rows))
 
 
-def _report(summary: Summary, window: Window, echo: Echo) -> None:
+def _report(summary: Summary, window: Window, echo: Echo, *, feeds: bool) -> None:
     echo(
         f"{summary.label}: {summary.listed} regular-season games listed, {summary.written} final "
         f"written; players {summary.players_seen} seen, {summary.players_parsed} parsed; "
         f"{summary.requests} NHL requests, {summary.cache_hits} cache hits"
+        + (
+            f"; {summary.shots} shots, {summary.shifts} shifts, shift charts complete in "
+            f"{summary.shift_charts_complete} of {summary.written} games"
+            if feeds
+            else ""
+        )
     )
     if summary.not_final:
         states = ", ".join(f"{game_id} {state}" for game_id, state in summary.not_final)

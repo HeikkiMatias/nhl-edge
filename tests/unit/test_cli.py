@@ -15,7 +15,7 @@ def plain(text: str) -> str:
     return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", text).split())
 
 
-COMMANDS = ["ingest", "rate", "predict", "backtest", "bets", "odds", "lake", "status"]
+COMMANDS = ["ingest", "rate", "predict", "backtest", "bets", "odds", "lake", "audit", "status"]
 STUBS = [
     ["rate"],
     ["predict"],
@@ -107,3 +107,51 @@ def test_lake_size_fails_above_the_limit(
     assert result.exit_code == exit_code
     assert f"R2 bucket test: 2 objects, {gb:.3f} GB (limit 8 GB)" in result.output
     assert ("above the 8 GB limit" in result.output) is (exit_code == 1)
+
+
+def test_audit_shifts_needs_coverage_in_the_lake(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["audit", "shifts"])
+    assert result.exit_code == 1
+    assert "no shift coverage in the lake" in result.output
+
+
+def test_audit_shifts_prints_one_row_per_season(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from feed_fixtures import MTL_ARI, OPENING_WEEK_GAMES, parsed_feeds
+
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    for game_id in (*OPENING_WEEK_GAMES, MTL_ARI):
+        Lake().write("shift_coverage", parsed_feeds(game_id)["shift_coverage"])
+    result = runner.invoke(app, ["audit", "shifts"])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert [line.split(" | ")[0] for line in lines[2:]] == ["| 20102011", "| 20222023"]
+    only_new = runner.invoke(app, ["audit", "shifts", "--seasons", "20222023"])
+    assert only_new.output.splitlines()[2].startswith("| 20222023 | 1 | 1 (100.0%)")
+
+
+def test_audit_shifts_leaves_out_the_test_season_unless_asked(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+    from feed_fixtures import MTL_ARI, parsed_feeds
+
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    row = parsed_feeds(MTL_ARI)["shift_coverage"]
+    Lake().write("shift_coverage", row)
+    test_season = row.with_columns(
+        game_id=pl.lit(2025020060, pl.Int64), season=pl.lit(20252026, pl.Int32)
+    )
+    Lake().write("shift_coverage", test_season)
+    default = runner.invoke(app, ["audit", "shifts"])
+    assert [line.split(" | ")[0] for line in default.output.splitlines()[2:]] == ["| 20222023"]
+    asked = runner.invoke(app, ["audit", "shifts", "--seasons", "20252026"])
+    assert asked.output.splitlines()[2].startswith("| 20252026 | 1 |")

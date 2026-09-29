@@ -47,7 +47,7 @@ The Odds API (api.the-odds-api.com)
 
 ## NHL ingest
 
-`nhl ingest` fills the lake's `games` and `players` tables and caches the raw per-game feeds that the shot, shift and lineup parsers read (#5). A window is `--seasons 20102011-20252026` (a range or a comma list), `--start D --end D`, or `--recent N` (the last N US Eastern game dates up to yesterday). For each week of the window, it fetches the schedule and keeps the final (`OFF`) regular-season games. It fetches play-by-play, boxscore and shift chart for each of them (`--no-feeds` skips these), then the roster of every team that played, then the landing page of every player on those rosters or in those boxscores who is not yet in `players`. A season window first fetches the schedule at February 15 of its second year to read `regularSeasonStartDate` and `regularSeasonEndDate`. Games that are not final are skipped with a warning, and a later run picks them up. Playoffs are out of scope for v1.
+`nhl ingest` fills the lake's `games` and `players` tables, caches each game's raw feeds and parses them into the per-game tables below. A window is `--seasons 20102011-20252026` (a range or a comma list), `--start D --end D`, or `--recent N` (the last N US Eastern game dates up to yesterday). For each week of the window, it fetches the schedule and keeps the final (`OFF`) regular-season games. It fetches play-by-play, boxscore and shift chart for each of them and parses them (`--no-feeds` skips both and leaves the per-game tables alone), then the roster of every team that played, then the landing page of every player on those rosters or in those boxscores who is not yet in `players`. A season window first fetches the schedule at February 15 of its second year to read `regularSeasonStartDate` and `regularSeasonEndDate`. Games that are not final are skipped with a warning, and a later run picks them up. Playoffs are out of scope for v1.
 
 One throttle at about 1 request per second covers both NHL hosts. Timeouts, 429 and 5xx are retried 3 times with backoff of 5, 10 and 20 s (longer when the API sends `Retry-After`); a 404 is not retried.
 
@@ -67,7 +67,7 @@ Two cached responses reflect later knowledge, so neither may feed a point-in-tim
   - The boxscores fill these gaps, which is why player ids come from both.
 - A boxscore fetched years later includes post-game stat corrections. It may be used only after its game's `observed_utc`.
 
-The landing page's `position` is today's, so it stays out of `players`. Each game's boxscore gives the position at game time.
+The landing page's `position` is today's, so it stays out of `players`. The boxscore's position code is today's too: Brent Burns is listed `D` in the forwards group through his 2013-14 season at forward. The group a player is listed in (forwards, defense, goalies) is his role in that game, and `actual_lineups.role` comes from it.
 
 `--replay` reads only the local raw cache, never the network, and fails on a miss. It re-parses every player, so a parser fix reaches old rows. The odds job's schedule check always fetches fresh.
 
@@ -88,6 +88,39 @@ Regular-season games per season, which a season window checks against:
 | 2021-22 to 2025-26 | 1,312 | SEA joins |
 
 The 16 seasons come to 19,152 games. With the feeds this is about 64,000 requests, roughly 18 hours at 1 request per second, and about 0.65 GB gzipped in R2.
+
+## Per-game tables
+
+`nhl ingest` parses each final game's three feeds into four lake tables, partitioned like `games` (`season=S/game_date=D/`) and replaced a whole game date at a time. `--replay` rebuilds them from the raw cache. The parsers are in `src/nhl_edge/ingest/` (`shots.py`, `shifts.py`, `lineups.py`, `shift_coverage.py`), and the schemas in `lake/schemas.py` document every column.
+
+| Table | From | Grain | What it holds |
+| --- | --- | --- | --- |
+| `shots` | play-by-play | one unblocked attempt | shots on goal, missed shots and goals in periods 1 to 4, with time, shooter, goalie, coordinates, shot type and strength |
+| `shifts` | shift chart | one player shift | team, period and start and end in elapsed game seconds |
+| `actual_lineups` | boxscore | one dressed player | role (F, D, G), sweater number, starting goalie and time on ice |
+| `shift_coverage` | all three | one game | how far the shift chart can be trusted (below) |
+
+Every row counts as public at 10:00 UTC the morning after its game date, like the game's result (ADR 0003). A game's own shots, shifts and lineup never feed a prediction for it, and backtest lineups come only from earlier games' boxscores (hard rule 9). The backfilled feeds were fetched years after the games and include post-game corrections, which live does not see. The tables leave out scoring credits, but corrections can still change kept values: a goal's scorer, a shot record, time on ice. ADR 0004 accepts this small look-ahead, and #30 measures it.
+
+Conventions:
+- Times are elapsed game seconds: (period − 1) × 1200 plus the period clock. Overtime is period 4 and lasts 300 seconds. The shootout is not play and has no rows.
+- `situationCode` has four digits: away goalie in net, away skaters, home skaters, home goalie in net. A pulled goalie shows as 6 skaters. `shots` turns it into the shooting team's view: `skaters_for`, `skaters_against`, `strength` (such as `5v4`) and `is_empty_net`. It is missing for 22 shots in two games (2010020124, 2013020971), which leaves their strength null.
+- Penalty shots are 1 skater against 0 with the defending goalie in. `shots` keeps and flags them (`is_penalty_shot`).
+- Coordinates are rink feet, turned so the shooting team attacks the net at x = +89 (y turns with x). Before 2019-20 the feed does not say which end a team attacks. The direction is inferred per team and period from the median x of its offensive-zone shots, and it agreed with `homeTeamDefendingSide` in all 954 team-periods checked (2019-20 onward). A few old plays have a zone code that contradicts their coordinates.
+- A player is on the ice for an event at second t when `start_s < t <= end_s`.
+- Boxscores flag one starting goalie per team in every game from 2010-11 on. Teams dress 17 to 21 players.
+
+Shift chart rows the parser leaves out, counted in `shift_coverage`:
+
+| Count | Rows | Seen in |
+| --- | --- | --- |
+| `dropped_rows` | zero-length shifts, shootout (period 5) rows, and repeats of a kept shift (same player, period and times, under the same or another shift number) | blank-ended `00:00` placeholders in 174 games of 2019-20; 2022020041 lists 14 shifts twice; many 2023-24 charts repeat a shift under the next shift numbers |
+| `foreign_rows` | teams not in the game | 2021020513 (WSH at NYI) lists every shift twice and STL and MIN shifts besides |
+| `bad_rows` | malformed times, shifts outside their period, a shift number repeated with other times | |
+
+The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (2025-04-08 to 2025-04-15). A live request on 2026-09-29 still gave none, so those games have no shifts and count as incomplete. No other game from 2010-11 on has an empty chart.
+
+A game's chart is `complete` when it has no bad rows and every dressed player's shifts add up to his boxscore time on ice within 60 seconds (a missing boxscore time counts as not adding up). At every unblocked shot except penalty shots, the players on the ice by the chart are also compared with `situationCode`, and `skater_mismatches` and `goalie_mismatches` count where they differ. RAPM drops the stints that contradict the strength state. `nhl audit shifts` prints the per-season summary, which is reviewed before RAPM depends on the charts.
 
 ## Odds snapshots
 
