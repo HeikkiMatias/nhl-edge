@@ -126,9 +126,11 @@ class SbrOdds(pa.DataFrameModel):
     totals has the line for over and under. price_american is as SBR prints it and price_decimal
     its conversion. home and away come from the NHL schedule, not from SBR's rows.
 
-    SBR gives no time for its prices, so observed_utc is a convention: the close at start_utc, and
-    the open at 10:00 US Eastern on game_date or the start when that is earlier (ADR 0006). It is
-    never after start_utc.
+    SBR gives no time for its prices (ADR 0006). observed_utc is start_utc for every price, the
+    only time each was surely public, so known_at shows no SBR price before its game starts.
+    assumed_available_utc is E2's assumption of when the price could be bet: the close at
+    start_utc, the open at 10:00 US Eastern on game_date or the start when that is earlier. Only
+    E2 reads it, through sbr.assumed_available_at, never as observed_utc.
     """
 
     game_id: pl.Int64
@@ -144,6 +146,7 @@ class SbrOdds(pa.DataFrameModel):
     price_american: pl.Int32
     price_decimal: pl.Float64 = pa.Field(gt=1)
     observed_utc: UtcDatetime
+    assumed_available_utc: UtcDatetime
     raw_key: pl.String
 
     class Config(pa.DataFrameModel.Config):
@@ -173,13 +176,18 @@ class SbrOdds(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("price_american").abs() >= 100)
 
     @pa.dataframe_check
-    def observed_no_later_than_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
-        return data.lazyframe.select(pl.col("observed_utc") <= pl.col("start_utc"))
+    def observed_at_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("observed_utc") == pl.col("start_utc"))
 
     @pa.dataframe_check
-    def close_observed_at_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+    def assumed_no_later_than_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("assumed_available_utc") <= pl.col("start_utc"))
+
+    @pa.dataframe_check
+    def close_assumed_at_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
         close = pl.col("quote") == "close"
-        return data.lazyframe.select(~close | (pl.col("observed_utc") == pl.col("start_utc")))
+        assumed = pl.col("assumed_available_utc")
+        return data.lazyframe.select(~close | (assumed == pl.col("start_utc")))
 
 
 DECIDED_IN = ("REG", "OT", "SO")

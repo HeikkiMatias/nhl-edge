@@ -109,10 +109,11 @@ SBR_TEAMS = {
     "winnipegjets": "WPG",
 }
 
-# When a price counts as observed (hard rule 1). SBR gives no time for either line. The close is
-# the last price before the start. The opener is taken as public at 10:00 US Eastern on the game
-# date, or at the start when that is earlier (ADR 0006).
-OPEN_PUBLIC_AT_ET = clock(10, 0)
+# SBR gives no time for either line, so every price is observed_utc at its game's start: the only
+# time it was surely public (hard rule 1). E2 alone assumes the opener was up at 10:00 US Eastern
+# on the game date, or the start when that is earlier, and says so by reading
+# assumed_available_utc through assumed_available_at (ADR 0006).
+OPEN_ASSUMED_AT_ET = clock(10, 0)
 
 
 def sbr_key(name: str) -> str:
@@ -133,9 +134,17 @@ def american_to_decimal(price: int) -> float:
     return 1 + (price / 100 if price > 0 else 100 / -price)
 
 
-def open_observed_utc(game_date: date, start_utc: datetime) -> datetime:
-    public = datetime.combine(game_date, OPEN_PUBLIC_AT_ET, tzinfo=ET).astimezone(UTC)
-    return min(public, start_utc)
+def open_assumed_utc(game_date: date, start_utc: datetime) -> datetime:
+    assumed = datetime.combine(game_date, OPEN_ASSUMED_AT_ET, tzinfo=ET).astimezone(UTC)
+    return min(assumed, start_utc)
+
+
+def assumed_available_at(frame: pl.DataFrame, prediction_utc: datetime) -> pl.DataFrame:
+    """The sbr_odds rows E2 may bet at when predicting at prediction_utc: assumed available
+    strictly before it. For E2 only, since the opener's time is an assumption, not an observation
+    (ADR 0006); every other reader uses known_at on observed_utc, which shows no SBR price before
+    its game starts."""
+    return frame.filter(pl.col("assumed_available_utc") < prediction_utc)
 
 
 class _Rows(HTMLParser):
@@ -344,8 +353,8 @@ def match_season(
                     f"SBR {score[0]}-{score[1]}, NHL {finals[game_id][0]}-{finals[game_id][1]}",
                 )
             )
-        observed = {
-            "open": open_observed_utc(game.game_date, start_utc),
+        assumed = {
+            "open": open_assumed_utc(game.game_date, start_utc),
             "close": start_utc,
         }
         for market, quote, team, side, line, price in game.quotes:
@@ -365,7 +374,8 @@ def match_season(
                     "quote": quote,
                     "price_american": price,
                     "price_decimal": american_to_decimal(price),
-                    "observed_utc": observed[quote],
+                    "observed_utc": start_utc,
+                    "assumed_available_utc": assumed[quote],
                     "raw_key": raw_key,
                 }
             )

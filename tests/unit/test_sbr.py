@@ -249,7 +249,7 @@ def test_a_final_score_that_disagrees_with_the_nhl_is_reported() -> None:
     assert report.score_mismatches == [(2010020500, "SBR 3-2, NHL 3-1")]
 
 
-def test_each_price_has_its_decimal_and_observed_time() -> None:
+def test_each_price_has_its_decimal_and_times() -> None:
     frame, _ = match_season(
         parse_season(OLD, 20102011), OLD_SCHEDULE, results_empty(OLD_SCHEDULE), "k"
     )
@@ -257,10 +257,14 @@ def test_each_price_has_its_decimal_and_observed_time() -> None:
         (pl.col("game_id") == 2010020600) & (pl.col("market") == "h2h") & (pl.col("side") == "away")
     )
     by_quote = {
-        q: (d, t) for q, d, t in row.select("quote", "price_decimal", "observed_utc").iter_rows()
+        q: (d, observed, assumed)
+        for q, d, observed, assumed in row.select(
+            "quote", "price_decimal", "observed_utc", "assumed_available_utc"
+        ).iter_rows()
     }
-    assert by_quote["open"] == (2.5, datetime(2011, 1, 2, 15, tzinfo=UTC))  # 10:00 EST
-    assert by_quote["close"] == (2.4, datetime(2011, 1, 2, 23, tzinfo=UTC))
+    start = datetime(2011, 1, 2, 23, tzinfo=UTC)
+    assert by_quote["open"] == (2.5, start, datetime(2011, 1, 2, 15, tzinfo=UTC))  # 10:00 EST
+    assert by_quote["close"] == (2.4, start, start)
 
 
 def page_client(pages: dict[str, bytes], seen: list[httpx.Request]) -> httpx.Client:

@@ -438,6 +438,7 @@ def test_status_sends_sbr_drift_to_the_sbr_import(
         "price_american": -150,
         "price_decimal": 1.0 + 100 / 150,
         "observed_utc": start,
+        "assumed_available_utc": start,
         "raw_key": "sbr/20182019/x",
     }
     Lake(tmp_path / "runner", "test", bucket).write(
