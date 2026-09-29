@@ -1,6 +1,6 @@
 """One pandera schema per table. Every write validates against its schema."""
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Annotated
 
 import pandera.polars as pa
@@ -666,15 +666,23 @@ class CoachTenures(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("coach").is_not_null() | pl.col("note").is_not_null())
 
 
+# Seasons whose first day came with spectator limits already in force, known before the season.
+LIMITED_SEASON_STARTS = (date(2021, 1, 13),)
+
+
 class AttendanceLimits(pa.DataFrameModel):
     """A limit on spectators at one arena over a date range, from first_date to last_date.
 
     capacity_share is the share of the arena's seats that could be filled: 0 means no spectators.
     A head-count limit is divided by the arena's seating capacity, as limit shows. A game at an
-    arena and date no row covers had no limit. announced is the date of the source reporting the
-    limit. It is null for a limit in force from the season's first day, known before the season
-    (no spectators at the start of 2020-21). Features read shares through
-    reference.capacity_share, which uses a limit only once it was announced.
+    arena and date no row covers had no limit.
+
+    announced is the date of the source reporting the limit (source). It is null only for a limit
+    in force from the first day of a season that started under limits (LIMITED_SEASON_STARTS), known
+    before the season. A limit ends either when the next one starts the day after, or when it is
+    lifted: ended_announced is then the date of the source reporting the lift (ended_source). It is
+    null when a limit ended with its season or event. Features read shares through
+    reference.capacity_share, which uses a limit, and a lift, only once announced.
     """
 
     arena_id: pl.String = pa.Field(str_matches=ARENA_ID)
@@ -684,6 +692,8 @@ class AttendanceLimits(pa.DataFrameModel):
     limit: pl.String = pa.Field(str_length={"min_value": 1})
     announced: pl.Date = pa.Field(nullable=True)
     source: pl.String = pa.Field(str_startswith="https://")
+    ended_announced: pl.Date = pa.Field(nullable=True)
+    ended_source: pl.String = pa.Field(str_startswith="https://", nullable=True)
 
     class Config(pa.DataFrameModel.Config):
         strict = True
@@ -698,3 +708,16 @@ class AttendanceLimits(pa.DataFrameModel):
     def announced_while_in_force_or_before(cls, data: pa.PolarsData) -> pl.LazyFrame:
         # A limit reported only after it ended would never apply to a game.
         return data.lazyframe.select((pl.col("announced") <= pl.col("last_date")).fill_null(True))
+
+    @pa.dataframe_check
+    def unannounced_only_from_a_limited_season_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("announced").is_not_null()
+            | pl.col("first_date").is_in(list(LIMITED_SEASON_STARTS))
+        )
+
+    @pa.dataframe_check
+    def a_lift_has_its_source(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("ended_announced").is_null() == pl.col("ended_source").is_null()
+        )

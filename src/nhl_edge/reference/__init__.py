@@ -127,53 +127,52 @@ def coaches_known_at(
     )
 
 
-def capacity_share(games: pl.DataFrame, ref: Reference | None = None) -> pl.DataFrame:
-    """game_id and the share of its arena's seats open to spectators, as known the day before.
+def _public_by(announced: pl.Expr, prediction_utc: datetime) -> pl.Expr:
+    """Whether a source dated announced was public by prediction_utc: from 10:00 UTC the next
+    day, the rule ADR 0003 sets for results. A null date means known all along."""
+    return announced.is_null() | (result_public(announced) < prediction_utc)
 
-    games needs game_id, game_date and venue (Schedule's columns). A game takes the limit in force
-    at its arena on its date once that limit was announced, before the game's date, like the
-    schedule it joins (ADR 0005). Until then the regime the limit replaced still reads as current:
-    the day before Nashville first admitted fans, 0; the day before Montreal's arena was closed on
-    game day, full. A game no limit covers takes 1. Limits were lifted with at least a day's
-    notice, so a lifted limit reads as lifted.
+
+def capacity_share(
+    games: pl.DataFrame, prediction_utc: datetime, ref: Reference | None = None
+) -> pl.DataFrame:
+    """game_id and the share of its arena's seats open to spectators, as known at prediction_utc.
+
+    games needs game_id, game_date and venue (Schedule's columns). A game takes the latest limit
+    at its arena that started by its date and was announced by the prediction (10:00 UTC the day
+    after its source). That limit applies while it runs, and after its last day too while what
+    ended it is not yet known: the next limit's announcement, or the lift's (ended_announced). So
+    a game-day prediction reads Nashville's first home game with fans as empty, since the change
+    was reported the next day, and Montreal's game closed on the day itself as full. A game with
+    no known limit takes 1.
     """
     ref = ref or Reference.load()
-    limits = ref.attendance_limits
-    known = pl.col("announced").is_null() | (pl.col("announced") < pl.col("game_date"))
-    in_force = (
+    limits = (
+        ref.attendance_limits.sort("arena_id", "first_date")
+        .with_columns(
+            known=_public_by(pl.col("announced"), prediction_utc),
+            lift_known=_public_by(pl.col("ended_announced"), prediction_utc),
+            replaced=pl.col("first_date").shift(-1).over("arena_id")
+            == pl.col("last_date") + pl.duration(days=1),
+        )
+        .with_columns(successor_known=pl.col("known").shift(-1).over("arena_id").fill_null(False))
+    )
+    latest = (
         games.select("game_id", "game_date", "venue")
-        .join(ref.venues, on="venue", how="left")
-        .join(limits, on="arena_id", how="left")
-        .filter(pl.col("game_date").is_between(pl.col("first_date"), pl.col("last_date")))
+        .join(ref.venues, on="venue")
+        .join(limits.filter("known"), on="arena_id")
+        .filter(pl.col("first_date") <= pl.col("game_date"))
+        .sort("first_date")
+        .group_by("game_id")
+        .last()
     )
-    # The limit each unannounced one replaced: the same arena's limit ending the day before.
-    before = limits.select(
-        "arena_id",
-        "announced",
-        replaced_share="capacity_share",
-        next_first=pl.col("last_date") + pl.duration(days=1),
+    ended_unknown = pl.when(pl.col("replaced").fill_null(False)).then(~pl.col("successor_known"))
+    applies = (pl.col("game_date") <= pl.col("last_date")) | ended_unknown.otherwise(
+        ~pl.col("lift_known")
     )
-    replaced = (
-        in_force.filter(~known)
-        .join(
-            before,
-            left_on=["arena_id", "first_date"],
-            right_on=["arena_id", "next_first"],
-            how="left",
-            suffix="_before",
-        )
-        .select(
-            "game_id",
-            capacity_share=pl.when(
-                pl.col("announced_before").is_null()
-                | (pl.col("announced_before") < pl.col("game_date"))
-            ).then("replaced_share"),
-        )
-    )
-    shares = pl.concat([in_force.filter(known).select("game_id", "capacity_share"), replaced])
     return (
         games.select("game_id")
-        .join(shares, on="game_id", how="left")
+        .join(latest.filter(applies).select("game_id", "capacity_share"), on="game_id", how="left")
         .with_columns(pl.col("capacity_share").fill_null(1.0))
     )
 
@@ -437,16 +436,9 @@ def _attendance_problems(games: pl.DataFrame, ref: Reference) -> Iterator[str]:
             )
     # A limit with no announcement date was in force from its season's first day.
     starts = games.group_by("season").agg(season_first=pl.col("game_date").min())
-    year = pl.col("first_date").dt.year()
     late = (
         limits.filter(pl.col("announced").is_null())
-        .with_columns(
-            season=pl.when(pl.col("first_date").dt.month() >= 7)
-            .then(year * 10_001 + 1)
-            .otherwise((year - 1) * 10_001 + 1)
-            .cast(pl.Int32)
-        )
-        .join(starts, on="season")
+        .join(starts, left_on=_season_of(pl.col("first_date")), right_on="season")
         .filter(pl.col("first_date") > pl.col("season_first"))
     )
     for arena, first in late.select("arena_id", "first_date").sort("arena_id").iter_rows():
@@ -454,3 +446,38 @@ def _attendance_problems(games: pl.DataFrame, ref: Reference) -> Iterator[str]:
             f"attendance_limits.csv: the {arena} limit from {first} has no announcement date "
             "but starts after its season's first day"
         )
+    # A limit with no next one the day after was lifted. When a game at its arena follows in the
+    # same season, the lift's announcement decides that game's share, so it must be recorded.
+    lifted = (
+        limits.sort("arena_id", "first_date")
+        .with_columns(next_first=pl.col("first_date").shift(-1).over("arena_id"))
+        .filter(
+            pl.col("ended_announced").is_null()
+            & (
+                pl.col("next_first").is_null()
+                | (pl.col("next_first") > pl.col("last_date") + pl.duration(days=1))
+            )
+        )
+    )
+    after = (
+        games.join(ref.venues, on="venue")
+        .join(lifted, on="arena_id")
+        .filter(
+            (pl.col("game_date") > pl.col("last_date"))
+            & (_season_of(pl.col("game_date")) == _season_of(pl.col("last_date")))
+        )
+    )
+    for arena, first, last in (
+        after.select("arena_id", "first_date", "last_date").unique().sort("arena_id").iter_rows()
+    ):
+        yield (
+            f"attendance_limits.csv: the {arena} limit from {first} ends on {last}, before a "
+            "game there that season, without the lift's announcement date"
+        )
+
+
+def _season_of(day: pl.Expr) -> pl.Expr:
+    """20202021 for a date from July 2020 to June 2021: the season it falls in."""
+    year = day.dt.year()
+    first = pl.when(day.dt.month() >= 7).then(year).otherwise(year - 1)
+    return (first * 10_001 + 1).cast(pl.Int32)

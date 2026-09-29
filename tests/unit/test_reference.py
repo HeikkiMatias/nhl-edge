@@ -297,8 +297,20 @@ def played(*games: tuple[str, str, date]) -> pl.DataFrame:
     )
 
 
+def game_day(day: date) -> datetime:
+    """The morning odds slot on a game's date, 11:05 UTC."""
+    return datetime(day.year, day.month, day.day, 11, 5, tzinfo=UTC)
+
+
 def shares(*games: tuple[str, str, date]) -> list[float]:
-    return capacity_share(played(*games), REF).sort("game_id")["capacity_share"].to_list()
+    """Each game's share as predicted on the morning of its date."""
+    frame = played(*games)
+    return [
+        capacity_share(frame.filter(pl.col("game_id") == game_id), game_day(day), REF)[
+            "capacity_share"
+        ].item()
+        for game_id, day in frame.select("game_id", "game_date").iter_rows()
+    ]
 
 
 def test_capacity_share_by_arena_and_date() -> None:
@@ -323,7 +335,10 @@ def test_capacity_share_by_arena_and_date() -> None:
 def test_every_game_of_the_empty_arenas_week_is_limited() -> None:
     # The fixture week's home teams, Philadelphia and Toronto, had no spectators yet.
     games = WEEKS["empty arenas 2021"]
-    by_home = games.join(capacity_share(games, REF), on="game_id").select("home", "capacity_share")
+    morning = game_day(date(2021, 1, 13))
+    by_home = games.join(capacity_share(games, morning, REF), on="game_id").select(
+        "home", "capacity_share"
+    )
     assert sorted(set(by_home["home"])) == ["PHI", "TOR"]
     assert by_home["capacity_share"].to_list() == [0.0] * games.height
 
@@ -379,6 +394,35 @@ ATTENDANCE_CASES: dict[str, tuple[pl.DataFrame, Reference, str]] = {
         "the united_center limit from 2021-05-09 has no announcement date",
     ),
 }
+
+
+VANCOUVER_AFTER_THE_LIFT = pl.DataFrame(
+    {
+        "game_id": [2021020870],
+        "season": pl.Series([20212022], dtype=pl.Int32),
+        "game_date": [date(2022, 2, 19)],
+        "home": ["VAN"],
+        "away": ["TOR"],
+        "venue": ["Rogers Arena"],
+        "neutral_site": [False],
+    }
+)
+ATTENDANCE_CASES["lift without its announcement"] = (
+    VANCOUVER_AFTER_THE_LIFT,
+    replace(
+        REF,
+        attendance_limits=REF.attendance_limits.with_columns(
+            ended_announced=pl.when(pl.col("arena_id") == "rogers_arena")
+            .then(None)
+            .otherwise("ended_announced")
+        ),
+    ),
+    "the rogers_arena limit from 2021-12-20 ends on 2022-02-16, before a game there that season",
+)
+
+
+def test_the_real_lift_is_recorded() -> None:
+    assert check_games(VANCOUVER_AFTER_THE_LIFT, REF) == []
 
 
 @pytest.mark.parametrize("case", list(ATTENDANCE_CASES))
