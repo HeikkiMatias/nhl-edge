@@ -119,16 +119,29 @@ def parse_games(listed: list[tuple[date, dict[str, Any]]], raw_key: str) -> pl.D
     return Games.validate(pl.DataFrame(rows, schema=dtypes(Games)))
 
 
-def schedule_public_utc(start_utc: datetime) -> datetime:
-    """When a game's schedule counts as public: a day before its start (ADR 0005)."""
-    return start_utc - SCHEDULE_LEAD
-
-
 def schedule_of(games: pl.DataFrame) -> pl.DataFrame:
-    """The pre-game facts of final games, public a day before each start, validated against
-    Schedule. Derived from the same rows as games, so the two never disagree on a game."""
+    """The pre-game facts of final games, validated against Schedule. A game's schedule counts as
+    public SCHEDULE_LEAD (a day) before its start (ADR 0005). Derived from the same rows as games,
+    so the two never disagree on a game."""
     schedule = games.with_columns(observed_utc=pl.col("start_utc") - SCHEDULE_LEAD)
     return Schedule.validate(schedule.select(list(dtypes(Schedule))))
+
+
+def schedule_known_at(
+    schedule: pl.DataFrame, prediction_utc: datetime, predicting: Collection[int]
+) -> pl.DataFrame:
+    """The schedule a prediction at prediction_utc may use: games that had started by then, plus
+    the games being predicted once their schedule is public.
+
+    Not other upcoming games, even public ones: the table holds only games that went on to be
+    played, so a game postponed at short notice is missing from it, and its absence would reveal
+    the postponement before it was announced.
+    """
+    started = pl.col("start_utc") < prediction_utc
+    predicted = pl.col("game_id").is_in(list(predicting)) & (
+        pl.col("observed_utc") < prediction_utc
+    )
+    return schedule.filter(started | predicted)
 
 
 def results_known_at(games: pl.DataFrame, prediction_utc: datetime) -> pl.DataFrame:

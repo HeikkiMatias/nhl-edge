@@ -1,6 +1,6 @@
 # 0005. A game's schedule counts as public a day before it starts
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-29
 
 ## Context
@@ -18,7 +18,7 @@ The schedule needs its own timestamp. The API doesn't say when a game was schedu
 
 ## Decision
 
-Option 3. `schedule.observed_utc = start_utc − 24 h` (`SCHEDULE_LEAD`, `schedule_public_utc` in `ingest/games.py`), and the schema checks it.
+Option 3. `schedule.observed_utc = start_utc − 24 h`, set in `schedule_of` (`ingest/games.py`) from `SCHEDULE_LEAD`. The schema rejects an `observed_utc` earlier than that, which would leak. It allows a later one before the start, for an override.
 
 - **The schedule is its own table.** `schedule` holds the pre-game columns of each final regular-season game and no result columns, so reading it can never reveal a score.
 - **`games` is unchanged.** It keeps its result timestamp and its teams and date, so results read on their own.
@@ -30,9 +30,19 @@ None yet. This is a point-in-time convention, not a tuned choice. The first run 
 
 ## Consequences
 
-- **Where features read.** A feature about the game being predicted reads `schedule` through `known_at`. Anything about outcomes reads `games` through `results_known_at`. `tests/leakage/test_schedule.py` locks the schedule's column set, and checks that on game day the schedule is known and the result is not.
+- **Where features read.** Features read `schedule` through `schedule_known_at(schedule, prediction_utc, predicting)`: the games that had started by the prediction time, plus the games being predicted once public. Anything about outcomes reads `games` through `results_known_at`.
+- **Why not every public row.** `schedule` holds only games that went on to be played, so a game postponed at short notice is missing from it. Any upcoming game other than the ones predicted would say something about the future, such as a "plays tomorrow" input.
+- **Tests.** `tests/leakage/test_schedule.py` covers:
+  - the locked column set
+  - the exact 24-hour boundary
+  - on game day, the schedule is known and the result is not
+  - upcoming games stay hidden
+  - the schema's rejection of an earlier `observed_utc`
 - **Final games only.** `schedule` covers the same final regular-season games as `games`, derived from the same parsed rows. Upcoming games for live predictions come from the schedule endpoint when phase 5 needs them.
-- **The rule can be wrong** if a game was re-timed or re-dated less than 24 hours before it started. None is known. A known case would get an override.
+- **The rule can be wrong** if a game was re-timed or re-dated less than 24 hours before it started. One case is known.
+  - The Lake Tahoe game PHI at BOS was moved from 15:00 to 19:30 ET on 2021-02-21, after the sun delayed the previous day's game there. It is stored at its moved start, so its schedule counts as public from 19:30 ET on 2021-02-20.
+  - When the move was announced is unverified. If it came later that evening, the new start time was visible a few hours early.
+  - The teams and date were public long before. Only the rest hours of that one game could shift, so it gets no override for now.
 
 ## Revisit when
 
