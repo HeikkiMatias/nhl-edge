@@ -1,0 +1,29 @@
+name: pregame-goalies
+# Pre-game goalie polls close to puck drop (docs/data-sources.md, issue #42). The odds-snapshots
+# workflow polls every game of the next 18 hours at each odds slot; this one adds a poll at :50
+# every hour of the game window for the games starting within 75 minutes, so each game gets one
+# 10 to 70 minutes before its start. The hours (12:50 to 02:50 UTC) cover start times from 09:00
+# to 23:00 ET in both EDT and EST, such as the 09:00 ET starts of games played in Europe; earlier
+# starts get the 07:05 ET slot poll. A run with no game in its window makes no gamecenter request.
+on:
+  schedule:
+    - cron: "50 0-2,12-23 * * *"
+  workflow_dispatch:
+concurrency: goalies
+permissions:
+  contents: read
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --frozen
+      - name: Poll
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: uv run nhl goalies poll --within 75 --mirror-raw

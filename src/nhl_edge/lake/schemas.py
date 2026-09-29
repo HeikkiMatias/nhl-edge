@@ -576,6 +576,52 @@ class ShiftCoverage(pa.DataFrameModel):
         )
 
 
+PREGAME_GOALIES_KEY = ("game_id", "team", "observed_utc")
+
+
+class PregameGoalies(pa.DataFrameModel):
+    """One team of one game at one pre-game poll (#42): what the gamecenter boxscore said about its
+    goalies at observed_utc, the fetch time, which is when that state was public.
+
+    goalies_listed counts the goalies in playerByGameStats (0 while the boxscore has none),
+    starters_flagged those with the starter flag, and starter_id is the flagged goalie when
+    exactly one is. A null starter_id is a finding, not a gap: nothing confirmed yet. Only
+    responses fetched before start_utc are kept. Actual starters come from actual_lineups.
+    """
+
+    season: pl.Int32
+    game_date: pl.Date
+    game_id: pl.Int64
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    is_home: pl.Boolean
+    start_utc: UtcDatetime
+    observed_utc: UtcDatetime
+    game_state: pl.String
+    goalies_listed: pl.Int16 = pa.Field(ge=0)
+    starters_flagged: pl.Int16 = pa.Field(ge=0)
+    starter_id: pl.Int64 = pa.Field(nullable=True)
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(PREGAME_GOALIES_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def observed_before_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("observed_utc") < pl.col("start_utc"))
+
+    @pa.dataframe_check
+    def starter_only_when_one_is_flagged(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("starter_id").is_not_null() == (pl.col("starters_flagged") == 1)
+        )
+
+    @pa.dataframe_check
+    def flagged_within_listed(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("starters_flagged") <= pl.col("goalies_listed"))
+
+
 # Reference files (src/nhl_edge/reference/): hand-compiled CSVs, not lake tables. They cover the
 # lake's seasons, 2010-11 on.
 ARENA_ID = r"^[a-z0-9_]+$"
