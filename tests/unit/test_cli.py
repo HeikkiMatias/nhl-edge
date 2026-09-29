@@ -155,3 +155,35 @@ def test_audit_shifts_leaves_out_the_test_season_unless_asked(
     assert [line.split(" | ")[0] for line in default.output.splitlines()[2:]] == ["| 20222023"]
     asked = runner.invoke(app, ["audit", "shifts", "--seasons", "20252026"])
     assert asked.output.splitlines()[2].startswith("| 20252026 | 1 |")
+
+
+@pytest.mark.parametrize("command", ["sync-raw", "restore-raw"])
+def test_raw_sync_commands_need_r2(monkeypatch: pytest.MonkeyPatch, command: str) -> None:
+    for name in R2_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    result = runner.invoke(app, ["lake", command])
+    assert result.exit_code == 1
+
+
+def test_restore_raw_reports_its_counts(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.raw import RawStore
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    bucket = MemoryBucket()
+    RawStore(tmp_path / "runner", "test", bucket).put("odds", "2026-09-29/a", b"[]", {})
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["lake", "restore-raw", "--prefix", "odds/"])
+    assert result.exit_code == 0, result.output
+    assert (
+        "raw/odds/: 1 responses in R2, 0 here; downloaded 1, skipped 0 incomplete" in result.output
+    )
+    again = runner.invoke(app, ["lake", "sync-raw", "--prefix", "odds/"])
+    assert (
+        "raw/odds/: 1 responses here, 1 in R2; uploaded 0, skipped 0 incomplete here"
+        in again.output
+    )

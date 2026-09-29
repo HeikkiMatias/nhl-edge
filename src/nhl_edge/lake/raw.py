@@ -4,11 +4,18 @@ Each response body is written byte-for-byte, gzipped, as data/raw/<source>/<key>
 <key>.meta.json sidecar (fetch time, request parameters without secrets, status, headers). When R2
 is configured, both files are mirrored to raw/<source>/ in the lake bucket, and a lookup that
 misses locally falls back to R2. A stored response is never overwritten.
+
+A response is complete once its sidecar exists: the body is always written first, locally and in
+R2, so a body alone is an interrupted write. sync_to_r2 and restore_from_r2 copy complete responses
+the other side lacks, which keeps the local cache a second copy of R2 (docs/plan.md section 10)
+and lets a fresh machine replay.
 """
 
 import gzip
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +23,32 @@ from nhl_edge.lake.r2 import ObjectStore, R2Config, list_keys
 
 RAW_DIR = Path("data/raw")
 SUFFIX = ".json.gz"
+META = ".meta.json"
+R2_RAW = "raw/"
+WORKERS = 16
+
+
+@dataclass(frozen=True)
+class CopyCounts:
+    """Responses under a prefix on each side, and what one sync or restore did."""
+
+    local: int
+    remote: int
+    copied: int
+    skipped: int
+
+
+def _responses(paths: Iterable[str]) -> tuple[set[str], set[str]]:
+    """Complete and incomplete raw keys among file paths relative to the raw root."""
+    listed = list(paths)
+    bodies = {path.removesuffix(SUFFIX) for path in listed if path.endswith(SUFFIX)}
+    sidecars = {path.removesuffix(META) for path in listed if path.endswith(META)}
+    return bodies & sidecars, bodies ^ sidecars
+
+
+def _each(work: Callable[[str], None], raw_keys: Iterable[str], workers: int) -> None:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(work, sorted(raw_keys)))
 
 
 class RawStore:
@@ -111,11 +144,65 @@ class RawStore:
         if not complete:
             return None
         raw_key = f"{prefix}/{max(complete)}"
-        for suffix in (SUFFIX, ".meta.json"):  # body first, as in put
-            body = self.objects.get_object(Bucket=self.bucket, Key=f"raw/{raw_key}{suffix}")
+        self._download(raw_key)
+        return raw_key
+
+    def _download(self, raw_key: str) -> None:
+        """Copy one complete response from R2, body first as in put, each file through a
+        temporary name."""
+        objects = self._objects()
+        for suffix in (SUFFIX, META):
+            body = objects.get_object(Bucket=self.bucket, Key=f"{R2_RAW}{raw_key}{suffix}")
             path = self.base_dir / f"{raw_key}{suffix}"
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_name(f"{path.name}.tmp")
             tmp.write_bytes(body["Body"].read())
             tmp.replace(path)
-        return raw_key
+
+    def _objects(self) -> ObjectStore:
+        if self.objects is None:
+            raise ValueError("syncing the raw cache needs R2: pass a bucket and an object store")
+        return self.objects
+
+    def _local_responses(self, prefix: str) -> tuple[set[str], set[str]]:
+        paths = (
+            path.relative_to(self.base_dir).as_posix()
+            for path in self.base_dir.rglob("*")
+            if path.is_file()
+        )
+        return _responses(path for path in paths if path.startswith(prefix))
+
+    def _remote_responses(self, prefix: str) -> tuple[set[str], set[str]]:
+        keys = list_keys(self._objects(), self.bucket or "", f"{R2_RAW}{prefix}")
+        return _responses(key.removeprefix(R2_RAW) for key, _ in keys)
+
+    def sync_to_r2(self, prefix: str = "", workers: int = WORKERS) -> CopyCounts:
+        """Upload every complete local response under prefix that R2 lacks, body first. A local
+        body without its sidecar is an interrupted write and is left alone (skipped)."""
+        objects = self._objects()
+        local, partial = self._local_responses(prefix)
+        remote, _ = self._remote_responses(prefix)
+        missing = local - remote
+
+        def upload(raw_key: str) -> None:
+            for suffix, content_type in ((SUFFIX, "application/gzip"), (META, "application/json")):
+                objects.put_object(
+                    Bucket=self.bucket,
+                    Key=f"{R2_RAW}{raw_key}{suffix}",
+                    Body=(self.base_dir / f"{raw_key}{suffix}").read_bytes(),
+                    ContentType=content_type,
+                )
+
+        _each(upload, missing, workers)
+        return CopyCounts(len(local), len(remote), len(missing), len(partial))
+
+    def restore_from_r2(self, prefix: str = "", workers: int = WORKERS) -> CopyCounts:
+        """Download every complete R2 response under prefix that is missing locally. Nothing
+        stored locally is overwritten: a response with any local file is skipped, and so is an
+        R2 body without its sidecar."""
+        local, local_partial = self._local_responses(prefix)
+        remote, remote_partial = self._remote_responses(prefix)
+        missing = remote - local - local_partial
+        _each(self._download, missing, workers)
+        skipped = len(remote_partial) + len(remote & local_partial)
+        return CopyCounts(len(local), len(remote), len(missing), skipped)

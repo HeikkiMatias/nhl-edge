@@ -253,6 +253,42 @@ def size(
         raise typer.Exit(code=1)
 
 
+PrefixOption = Annotated[
+    str, typer.Option(help="Only raw keys starting with this, such as odds/ or nhl/schedule/.")
+]
+WorkersOption = Annotated[int, typer.Option(min=1, help="Parallel transfers.")]
+
+
+@lake_app.command("sync-raw")
+def sync_raw(prefix: PrefixOption = "", workers: WorkersOption = 16) -> None:
+    """Upload local raw responses that R2 lacks, such as those cached without --r2."""
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.settings import load_env
+
+    load_env()
+    counts = RawStore.from_env(mirror=True, flag="nhl lake sync-raw").sync_to_r2(prefix, workers)
+    typer.echo(
+        f"raw/{prefix}: {counts.local} responses here, {counts.remote} in R2; uploaded "
+        f"{counts.copied}, skipped {counts.skipped} incomplete here"
+    )
+
+
+@lake_app.command("restore-raw")
+def restore_raw(prefix: PrefixOption = "", workers: WorkersOption = 16) -> None:
+    """Download raw responses from R2 that are missing here, never overwriting a local file. Keeps
+    this machine a second copy of the raw cache and lets --replay run anywhere."""
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.settings import load_env
+
+    load_env()
+    store = RawStore.from_env(mirror=True, flag="nhl lake restore-raw")
+    counts = store.restore_from_r2(prefix, workers)
+    typer.echo(
+        f"raw/{prefix}: {counts.remote} responses in R2, {counts.local} here; downloaded "
+        f"{counts.copied}, skipped {counts.skipped} incomplete"
+    )
+
+
 @audit_app.command("shifts")
 def audit_shifts(
     seasons: Annotated[
