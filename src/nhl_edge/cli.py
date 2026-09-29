@@ -229,6 +229,79 @@ def backfill() -> None:
     _not_implemented("odds backfill", "deferred to v2")
 
 
+@odds_app.command()
+def replay(
+    start: Annotated[
+        datetime | None, typer.Option(formats=["%Y-%m-%d"], help="First snapshot date (UTC).")
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(formats=["%Y-%m-%d"], help="Last snapshot date (default: --start)."),
+    ] = None,
+    recent: Annotated[
+        int | None, typer.Option(min=1, help="Snapshot dates of the last N days, today included.")
+    ] = None,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="Restore the raw snapshots and schedules from R2 first, and mirror the table.",
+        ),
+    ] = False,
+) -> None:
+    """Rebuild the lake's odds_snapshots from the stored raw snapshots, matching each event to its
+    NHL game. Never calls the Odds API. Without a window, every stored snapshot is replayed."""
+    from datetime import UTC, timedelta
+
+    from nhl_edge.ingest.odds_lake import SCHEDULE_DAYS, SCHEDULE_PREFIX, replay_odds
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    if start is not None and recent is not None:
+        raise typer.BadParameter("pass at most one of --start and --recent")
+    if end is not None and start is None:
+        raise typer.BadParameter("--end needs --start")
+    dates = None
+    if start is not None:
+        first, last = start.date(), (end or start).date()
+        if last < first:
+            raise typer.BadParameter("--end is before --start")
+        dates = [first + timedelta(days=i) for i in range((last - first).days + 1)]
+    elif recent is not None:
+        today = datetime.now(UTC).date()
+        dates = [today - timedelta(days=i) for i in range(recent - 1, -1, -1)]
+
+    load_env()
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    if r2:
+        if dates is None:
+            prefixes = ["odds/", f"{SCHEDULE_PREFIX}/"]
+        else:
+            # Snapshots of the window, and the schedules that can list their games: events are
+            # priced up to about ten days ahead, and a schedule response covers seven days.
+            span = range(-SCHEDULE_DAYS - 1, (dates[-1] - dates[0]).days + 3 * SCHEDULE_DAYS)
+            prefixes = [f"odds/{day.isoformat()}/" for day in dates]
+            prefixes += [
+                f"{SCHEDULE_PREFIX}/{(dates[0] + timedelta(days=d)).isoformat()}/" for d in span
+            ]
+        restored = sum(store.restore_from_r2(prefix).copied for prefix in prefixes)
+        typer.echo(f"restored {restored} raw responses from R2")
+    report = replay_odds(store, Lake.from_env(mirror=r2), dates)
+    matched = ", ".join(f"{kind} {n}" for kind, n in sorted(report.matched.items())) or "none"
+    window = f"{report.dates[0]}..{report.dates[-1]}" if report.dates else "no snapshots"
+    typer.echo(
+        f"odds replay {window}: {report.snapshots} snapshots, {report.quotes:,} quotes, "
+        f"{report.events} events; matched: {matched}; unmatched {len(report.unmatched)}"
+    )
+    for event_id, home, away, commence in report.unmatched:
+        typer.echo(f"  unmatched {event_id}: {away} at {home}, {commence:%Y-%m-%d %H:%M} UTC")
+    if report.in_play:
+        typer.echo(f"  left out {report.in_play:,} quotes on games already under way")
+    for raw_key in report.incomplete:
+        typer.echo(f"warning: {raw_key} has no sidecar (an interrupted write), skipped")
+
+
 @lake_app.command()
 def size(
     max_gb: Annotated[
@@ -357,6 +430,8 @@ def _status_against_r2(local: "list[TableState]") -> None:
     from nhl_edge.lake.r2 import R2Config
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.status import compare, raw_lag, remote_tables, replay_window
+
+    ODDS_TABLE = "odds_snapshots"
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
 
@@ -384,15 +459,26 @@ def _status_against_r2(local: "list[TableState]") -> None:
             raw_behind |= (here_key or "") < (there_key or "")
             raw_ahead |= (here_key or "") > (there_key or "")
             typer.echo(f"  raw/{prefix}: newest here {here_key}, in R2 {there_key}")
+    # odds_snapshots is rebuilt by the odds replay, every other table by the NHL ingest.
+    odds_here = [key for key in missing_here if key.startswith(f"{ODDS_TABLE}/")]
+    odds_there = [key for key in missing_there if key.startswith(f"{ODDS_TABLE}/")]
+    missing_here = [key for key in missing_here if key not in odds_here]
+    missing_there = [key for key in missing_there if key not in odds_there]
     if missing_here or raw_behind:
         window = replay_window(missing_here) or "--recent 3"
         typer.echo(
             f"  this machine is behind R2: nhl lake restore-raw, then nhl ingest {window} --replay"
         )
+    if odds_here:
+        typer.echo("  odds_snapshots is behind R2: nhl odds replay --r2 restores and rebuilds it")
     if missing_there or raw_ahead:
         window = replay_window(missing_there) or "--recent 3"
         typer.echo(
             f"  R2 lacks what is here: nhl lake sync-raw, then nhl ingest {window} --replay --r2"
+        )
+    if odds_there:
+        typer.echo(
+            "  R2 lacks odds_snapshots rows here: nhl lake sync-raw, then nhl odds replay --r2"
         )
     if differ:
         # A size difference does not tell which copy is current, so no direction is suggested.
@@ -401,5 +487,6 @@ def _status_against_r2(local: "list[TableState]") -> None:
             f"  {len(differ):,} files differ from R2 in {', '.join(tables)}: check which copy is "
             "current before syncing either way"
         )
-    if not (missing_here or missing_there or differ or raw_behind or raw_ahead):
+    in_step = not (missing_here or missing_there or odds_here or odds_there or differ)
+    if in_step and not (raw_behind or raw_ahead):
         typer.echo("  up to date with R2")

@@ -43,6 +43,12 @@ jobs:
         run: |
           if [ -n "$START" ]; then window=(--start "$START" --end "${END:-$START}"); else window=(--recent 3); fi
           uv run nhl ingest "${window[@]}" --r2 --supabase
+      - name: Odds history into the lake
+        # The last 14 days of stored odds snapshots, each event matched to its NHL game (issue
+        # #20). Events are priced up to about ten days ahead and a schedule response lists seven
+        # days, so a snapshot is replayed until the schedules cached since list all its games.
+        if: always()
+        run: uv run nhl odds replay --recent 14 --r2
       - name: Contract test on a golden game
         # One golden game read live must parse as its frozen copy does (issue #6). A failure
         # means the NHL API changed under the parsers.

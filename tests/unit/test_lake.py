@@ -73,7 +73,7 @@ def test_replacing_dates_leaves_other_dates_alone(tmp_path: Path) -> None:
     assert lake.read("games").height == 3
     lake.replace_dates("games", GAMES.head(0), {date(2010, 10, 8)})
     assert lake.read("games")["game_id"].to_list() == [2010020003, 2010020004]
-    with pytest.raises(ValueError, match="not partitioned by game_date"):
+    with pytest.raises(ValueError, match="not partitioned by a date"):
         lake.replace_dates("players", players(1), {date(2010, 10, 8)})
 
 

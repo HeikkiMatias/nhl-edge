@@ -20,8 +20,10 @@ import polars as pl
 
 from nhl_edge.lake.r2 import ObjectStore, R2Config, list_keys
 from nhl_edge.lake.schemas import (
+    ODDS_KEY,
     ActualLineups,
     Games,
+    LakeOddsSnapshots,
     Players,
     Schedule,
     ShiftCoverage,
@@ -54,7 +56,10 @@ TABLES: dict[str, Table] = {
     "shifts": Table(Shifts, ("game_id", "player_id", "period", "shift_number"), BY_DATE),
     "actual_lineups": Table(ActualLineups, ("game_id", "player_id"), BY_DATE),
     "shift_coverage": Table(ShiftCoverage, ("game_id",), BY_DATE),
+    "odds_snapshots": Table(LakeOddsSnapshots, ODDS_KEY, ("snapshot_date",)),
 }
+# Partition columns replace_dates can replace a date at a time.
+DATE_PARTITIONS = ("game_date", "snapshot_date")
 # The tables parsed from each game's play-by-play, boxscore and shift chart.
 FEED_TABLES = ("shots", "shifts", "actual_lineups", "shift_coverage")
 
@@ -117,13 +122,15 @@ class Lake:
         return sorted(files)
 
     def replace_dates(self, table: str, frame: pl.DataFrame, dates: Collection[date]) -> list[str]:
-        """Make the frame the whole content of the given game dates: write its partitions, then
-        delete any partition for those dates that the frame no longer has, locally and in R2, so
-        a replay or parser fix that drops games leaves nothing stale. Returns the keys written."""
-        if "game_date" not in TABLES[table].partition_by:
-            raise ValueError(f"{table} is not partitioned by game_date")
-        written = self.write(table, frame)
-        days = {f"game_date={day.isoformat()}" for day in dates}
+        """Make the frame the whole content of the given dates (game_date, or snapshot_date for
+        odds): write its partitions, then delete any partition for those dates that the frame no
+        longer has, locally and in R2, so a replay or parser fix that drops rows leaves nothing
+        stale. Returns the keys written."""
+        column = TABLES[table].partition_by[-1] if TABLES[table].partition_by else ""
+        if column not in DATE_PARTITIONS:
+            raise ValueError(f"{table} is not partitioned by a date")
+        written = self.write(table, frame) if frame.height else []
+        days = {f"{column}={day.isoformat()}" for day in dates}
         for key in self._file_keys(table) - set(written):
             if key.split("/")[-2] in days:
                 self._delete(key)
