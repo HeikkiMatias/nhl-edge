@@ -22,8 +22,10 @@ from nhl_edge.ingest.games import EXPECTED_GAMES, result_public
 from nhl_edge.lake.schemas import Arenas, CoachTenures, HomeArenas, Teams, Venues, dtypes
 
 REFERENCE_DIR = Path(__file__).parent
-# An open-ended last_season or last_game, for range joins.
+# An open-ended last_season, for range joins.
 OPEN_SEASON = 99_999_999
+# What coaches_known_at returns.
+KNOWN_COACH_COLUMNS = ("team", "first_game", "last_game", "coach")
 
 
 def _load(name: str, schema: type[pa.DataFrameModel]) -> pl.DataFrame:
@@ -89,7 +91,8 @@ def coaches_known_at(
     0004). So a stint counts as known from the morning after its first game, and its last_game
     only once the team's next stint is known; until then last_game is null, as for a stint still
     running. A new coach therefore counts from the morning after his first game, which is
-    conservative: most changes are announced a day or more ahead.
+    conservative: most changes are announced a day or more ahead. The note stays out: it was
+    written with hindsight, such as how many games of a shared bench the NHL credits to whom.
     """
     line = pl.col("team").replace_strict(lineage(teams))
     next_first = pl.col("first_game").shift(-1).over(line, order_by="first_game")
@@ -97,6 +100,7 @@ def coaches_known_at(
     return (
         coaches.with_columns(last_game=pl.when(successor_known).then("last_game"))
         .filter(result_public(pl.col("first_game")) < prediction_utc)
+        .select(KNOWN_COACH_COLUMNS)
         .sort("team", "first_game")
     )
 
@@ -250,6 +254,27 @@ def _home_arena_problems(games: pl.DataFrame, ref: Reference) -> Iterator[str]:
     )
     for team, season, count in primaries.sort("team", "season").iter_rows():
         yield f"{team} has {count or 0} primary home arenas in {season} in home_arenas.csv"
+    # The primary arena is where the team's first home game of the season in games is played.
+    openers = (
+        games.filter(~pl.col("neutral_site"))
+        .sort("game_date", "game_id")
+        .group_by("home", "season")
+        .first()
+        .join(ref.venues, on="venue")
+        .join(
+            home.filter("primary").select("team", "season", primary_arena="arena_id"),
+            left_on=["home", "season"],
+            right_on=["team", "season"],
+        )
+        .filter(pl.col("arena_id") != pl.col("primary_arena"))
+    )
+    for team, season, venue, game_id in (
+        openers.sort("home", "season").select("home", "season", "venue", "game_id").iter_rows()
+    ):
+        yield (
+            f"{team}'s first home game in {season} ({game_id}) is at {venue}, not its primary "
+            "home arena in home_arenas.csv"
+        )
     located = games.join(ref.venues, on="venue").join(
         home.select("team", "season", "arena_id", at_home=pl.lit(True)),
         left_on=["home", "season", "arena_id"],

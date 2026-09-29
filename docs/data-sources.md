@@ -173,7 +173,7 @@ Hand-compiled CSVs in `src/nhl_edge/reference/`, loaded and validated by `nhl_ed
   - Neutral-site games (European games, outdoor games, Lake Tahoe) have their own arenas.
   - The NHL records API gives coordinates for current arenas, but it lists Little Caesars Arena at Joe Louis Arena's, 1.8 km away. Every other current arena the API locates agrees with Wikipedia within 0.5 km.
   - Each zone gives the same UTC offsets as the NHL schedule's `venueTimezone` for every 2026-27 game.
-- **Home arenas.** A team has one primary home arena per season, its base for travel. NYI split its home games between Barclays Center and the Nassau Coliseum in 2018-19 and 2019-20, so those seasons list both, and the Coliseum, which hosted more of them, is primary.
+- **Home arenas.** A team has one primary home arena per season, its base for travel: the arena of its first home game that season, public with the schedule before the season starts. NYI split its home games between Barclays Center and the Nassau Coliseum in 2018-19 and 2019-20, so those seasons list both. Barclays is primary in 2018-19 and the Coliseum in 2019-20.
 - **Coach tenures.**
   - The NHL record has one row per coach and franchise, with his first and last regular-season game. Where a coach had two stints with a team (Ruff with BUF, Sutter with CGY, Hitchcock with DAL, and others), the stints are split along the tenures between them.
   - Every stint since 2010-11 matches the NHL's count of games coached, except where a note explains:
@@ -186,5 +186,6 @@ Hand-compiled CSVs in `src/nhl_edge/reference/`, loaded and validated by `nhl_ed
   - A coach's stint is different: its end is future information while it runs. Features read tenures through `coaches_known_at`:
     - A stint counts as known from 10:00 UTC the morning after its first game, when that game's feeds show who coached (ADR 0003 and 0004).
     - Its `last_game` becomes known only once the next stint is.
+    - The `note` stays out, since it was written with hindsight.
   - This is conservative: most coaching changes are announced a day or more before the new coach's first game.
 - **Upkeep.** At a coaching change, end the old stint at its last game and add the new one from its first game. When the NHL uses a new venue name, add it to `venues.csv` (and the building to `arenas.csv` if new). Then run `nhl audit reference`.

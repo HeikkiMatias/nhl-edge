@@ -7,11 +7,19 @@ Team codes, arenas, venues and home arenas are known seasons ahead and need no s
 game's venue reaches features through the schedule (tests/leakage/test_schedule.py)."""
 
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import polars as pl
 
+import nhl_edge.features
 from nhl_edge.ingest.games import result_public_utc
-from nhl_edge.reference import coaches_known_at, lineage, load_coaches, load_teams
+from nhl_edge.reference import (
+    KNOWN_COACH_COLUMNS,
+    coaches_known_at,
+    lineage,
+    load_coaches,
+    load_teams,
+)
 
 COACHES, TEAMS = load_coaches(), load_teams()
 SECOND = timedelta(seconds=1)
@@ -65,3 +73,20 @@ def test_a_stint_keeps_running_through_a_change_of_code() -> None:
     known = coaches_known_at(COACHES, TEAMS, datetime(2025, 1, 15, 11, 5, tzinfo=UTC))
     tourigny = known.filter(pl.col("coach") == "André Tourigny").row(0, named=True)
     assert (tourigny["team"], tourigny["last_game"]) == ("ARI", None)
+
+
+def test_the_hindsight_note_stays_out() -> None:
+    # Notes were written after the fact, such as how the NHL split a shared bench's games.
+    known = coaches_known_at(COACHES, TEAMS, datetime(2015, 1, 15, 11, 5, tzinfo=UTC))
+    assert (
+        tuple(known.columns) == KNOWN_COACH_COLUMNS == ("team", "first_game", "last_game", "coach")
+    )
+
+
+def test_features_read_coaches_only_through_the_selector() -> None:
+    # coaches.csv holds every stint's end, so a feature reading it directly would see the future.
+    features = Path(nhl_edge.features.__file__).parent
+    for module in features.rglob("*.py"):
+        source = module.read_text(encoding="utf-8")
+        for raw in ("load_coaches", "coaches.csv", "Reference.load", ".coaches"):
+            assert raw not in source, f"{module.name} reads {raw}; use coaches_known_at"

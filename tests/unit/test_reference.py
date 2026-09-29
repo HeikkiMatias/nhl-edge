@@ -171,6 +171,23 @@ CASES: dict[str, tuple[pl.DataFrame, Reference, str]] = {
         ),
         "COL has 2 primary home arenas in 20102011",
     ),
+    "primary arena is not where the season opens": (
+        OPENING,
+        replace(
+            REF,
+            home_arenas=pl.concat(
+                [
+                    REF.home_arenas.with_columns(
+                        primary=pl.col("primary") & (pl.col("team") != "COL")
+                    ),
+                    REF.home_arenas.filter(pl.col("team") == "COL").with_columns(
+                        arena_id=pl.lit("coors_field"), primary=pl.lit(True)
+                    ),
+                ]
+            ),
+        ),
+        "COL's first home game in 20102011 (2010020004) is at Pepsi Center, not its primary",
+    ),
     "no coach": (
         OPENING,
         replace(REF, coaches=without(REF.coaches, **COL_SACCO)),

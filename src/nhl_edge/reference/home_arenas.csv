@@ -22,9 +22,10 @@ MTL,centre_bell,20102011,,true
 NJD,prudential_center,20102011,,true
 NSH,bridgestone_arena,20102011,,true
 NYI,nassau_veterans_memorial_coliseum,20102011,20142015,true
-NYI,barclays_center,20152016,20172018,true
-NYI,barclays_center,20182019,20192020,false
-NYI,nassau_veterans_memorial_coliseum,20182019,20202021,true
+NYI,barclays_center,20152016,20182019,true
+NYI,barclays_center,20192020,20192020,false
+NYI,nassau_veterans_memorial_coliseum,20182019,20182019,false
+NYI,nassau_veterans_memorial_coliseum,20192020,20202021,true
 NYI,ubs_arena,20212022,,true
 NYR,madison_square_garden,20102011,,true
 OTT,canadian_tire_centre,20102011,,true

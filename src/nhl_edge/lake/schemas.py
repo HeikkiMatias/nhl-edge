@@ -603,9 +603,11 @@ class Venues(pa.DataFrameModel):
 class HomeArenas(pa.DataFrameModel):
     """The arena a team played its home games in, by season, from 2010-11 on.
 
-    A team has one primary home arena per season, its base for travel. NYI split its home games
-    between Barclays Center and the Nassau Coliseum in 2018-19 and 2019-20, so those seasons have
-    both, and the Coliseum, which had more of them, is primary. last_season is null while in use.
+    A team has one primary home arena per season, its base for travel: the arena of its first
+    home game that season, which the schedule makes public before the season starts. NYI split its
+    home games between Barclays Center and the Nassau Coliseum in 2018-19 and 2019-20, so those
+    seasons list both: Barclays is primary in 2018-19 and the Coliseum in 2019-20. last_season is
+    null while in use.
     """
 
     team: pl.String = pa.Field(str_matches=TRI_CODE)
