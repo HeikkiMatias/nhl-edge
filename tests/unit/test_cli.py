@@ -265,12 +265,16 @@ def test_status_shows_pregame_polls_missing_here(
     bucket = MemoryBucket()
     monkeypatch.setattr(R2Config, "client", lambda self: bucket)
     # A runner polled a game's landing page, which only R2 holds: it cannot be fetched again.
+    # Both sides hold an earlier poll of a later game, whose key sorts after the missing one.
     key = "pregame-landing/2026-09-29/2026020001/20260929T224500Z"
+    shared = "pregame-landing/2026-09-29/2026020005/20260929T110500Z"
     RawStore(tmp_path / "runner", "test", bucket).put("nhl", key, b"{}", {})
+    RawStore(tmp_path / "runner", "test", bucket).put("nhl", shared, b"{}", {})
     monkeypatch.chdir(tmp_path)
+    RawStore().put("nhl", shared, b"{}", {})
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0, result.output
-    assert f"raw/nhl/pregame-landing/: newest here None, in R2 nhl/{key}" in result.output
+    assert "raw/nhl/pregame-landing/: 1 responses only in R2, 0 only here" in result.output
     assert (
         "pre-game goalie polls are behind R2: nhl lake restore-raw --prefix nhl/pregame-"
         in result.output

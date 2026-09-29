@@ -181,3 +181,36 @@ def test_replay_rebuilds_the_table_from_the_raw_polls(tmp_path: Path) -> None:
     confirmed = table.filter(pl.col("starter_id").is_not_null())
     assert set(confirmed["starter_id"]) == {CAR_STARTER, FLA_STARTER}
     assert (confirmed["observed_utc"] == near).all()
+
+
+def test_a_failed_page_does_not_stop_the_others(tmp_path: Path) -> None:
+    store = RawStore(tmp_path / "raw")
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path.startswith("/v1/schedule/"):
+            return httpx.Response(200, content=WEEK)
+        if request.url.path == "/v1/gamecenter/2026020001/landing":
+            return httpx.Response(404)
+        if request.url.path.endswith("/boxscore"):
+            return httpx.Response(200, content=BOXSCORE)
+        return httpx.Response(200, content=b"{}")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url=nhl_api.BASE_URL)
+    calls = iter(range(10_000))
+    api = NhlApi(
+        store,
+        client,
+        min_interval_s=0.0,
+        now=lambda: MORNING + timedelta(seconds=next(calls)),
+        sleep=lambda _: None,
+    )
+    messages: list[str] = []
+    report = run_poll(nhl=api, now=MORNING, echo=messages.append)
+    assert report.failed == [2026020001]
+    assert report.games == 5
+    assert "/v1/gamecenter/2026020001/right-rail" in paths
+    assert store.latest("nhl/pregame-right-rail/2026-09-29/2026020001") is not None
+    assert store.latest("nhl/pregame-boxscore/2026-09-29/2026020001") is not None
+    assert any("FLA at CAR landing" in message for message in messages)

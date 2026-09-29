@@ -29,6 +29,7 @@ from nhl_edge.ingest.nhl_api import (
     REGULAR_SEASON,
     NhlApi,
     NhlApiError,
+    Response,
     ScheduledGame,
     never,
     parse_utc,
@@ -124,18 +125,27 @@ def run_poll(
         return report
     frames = []
     for game in games:
-        try:
-            boxscore = nhl.fetch(
-                BOXSCORE, entity(game), f"/v1/gamecenter/{game.game_id}/boxscore", never
-            )
-            for kind, page in ((LANDING, "landing"), (RIGHT_RAIL, "right-rail")):
-                nhl.fetch(kind, entity(game), f"/v1/gamecenter/{game.game_id}/{page}", never)
-        except NhlApiError as exc:
-            echo(f"::warning::goalie poll: {game.away} at {game.home} ({game.game_id}): {exc}")
+        # Each page gets its own attempt: a pre-game state missed now cannot be fetched later.
+        pages: dict[str, Response] = {}
+        for kind, page in (
+            (BOXSCORE, "boxscore"),
+            (LANDING, "landing"),
+            (RIGHT_RAIL, "right-rail"),
+        ):
+            try:
+                pages[kind] = nhl.fetch(
+                    kind, entity(game), f"/v1/gamecenter/{game.game_id}/{page}", never
+                )
+            except NhlApiError as exc:
+                echo(f"::warning::goalie poll: {game.away} at {game.home} {page}: {exc}")
+        if len(pages) < 3:
             report.failed.append(game.game_id)
-            continue
-        frames.append(parse_pregame_goalies(boxscore.body, boxscore.fetched_utc, boxscore.raw_key))
-        report.games += 1
+        if BOXSCORE in pages:
+            boxscore = pages[BOXSCORE]
+            frames.append(
+                parse_pregame_goalies(boxscore.body, boxscore.fetched_utc, boxscore.raw_key)
+            )
+            report.games += 1
     rows = pl.concat(frames) if frames else pl.DataFrame(schema=dtypes(PregameGoalies))
     report.teams = rows.height
     report.flagged = rows.filter(pl.col("starter_id").is_not_null()).height

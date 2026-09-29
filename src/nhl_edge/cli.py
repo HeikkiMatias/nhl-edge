@@ -537,7 +537,14 @@ def _status_against_r2(local: "list[TableState]") -> None:
     commands that bring them in step. Skipped without R2 settings."""
     from nhl_edge.lake.r2 import R2Config
     from nhl_edge.lake.raw import RawStore
-    from nhl_edge.lake.status import PREGAME_RAW, compare, raw_lag, remote_tables, replay_window
+    from nhl_edge.lake.status import (
+        PREGAME_RAW,
+        compare,
+        raw_lag,
+        raw_sets,
+        remote_tables,
+        replay_window,
+    )
 
     # Tables rebuilt by a replay of their own raw responses, not by the NHL ingest.
     REPLAYED = {
@@ -574,11 +581,13 @@ def _status_against_r2(local: "list[TableState]") -> None:
             typer.echo(f"  raw/{prefix}: newest here {here_key}, in R2 {there_key}")
     # The pre-game polls have no replay into another raw source: only their two copies keep them.
     polls_behind = polls_ahead = False
-    for prefix, here_key, there_key in raw_lag(store, PREGAME_RAW):
-        if here_key != there_key:
-            polls_behind |= (here_key or "") < (there_key or "")
-            polls_ahead |= (here_key or "") > (there_key or "")
-            typer.echo(f"  raw/{prefix}: newest here {here_key}, in R2 {there_key}")
+    for prefix, only_here, only_there in raw_sets(store, PREGAME_RAW):
+        if only_here or only_there:
+            polls_behind |= only_there > 0
+            polls_ahead |= only_here > 0
+            typer.echo(
+                f"  raw/{prefix}: {only_there:,} responses only in R2, {only_here:,} only here"
+            )
     # The replayed tables are rebuilt by their own replay, every other table by the NHL ingest.
     replayed_here = sorted(
         {key.split("/")[0] for key in missing_here if key.split("/")[0] in REPLAYED}
