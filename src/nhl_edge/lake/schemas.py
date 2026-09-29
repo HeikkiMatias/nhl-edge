@@ -84,9 +84,13 @@ class LakeOddsSnapshots(OddsSnapshots):
 
     Each quote keeps its OddsSnapshots columns and checks: snapshot_utc is when it was observed,
     and h2h (two-way, full game) and h2h_3_way (regulation) stay apart. snapshot_date is the UTC
-    date of snapshot_utc, which partitions the table as the raw responses are laid out. game_id and
-    game_type (1 preseason, 2 regular season, 3 playoffs) come from the NHL schedule listing that
-    matches the event's teams and start; they are null for an event no listing matches.
+    date of snapshot_utc, which partitions the table as the raw responses are laid out. Only
+    pre-game quotes are kept: a game under way has live prices. game_id and game_type (1 preseason,
+    2 regular season, 3 playoffs) come from the NHL schedule listing that matches the event's teams
+    and start; they are null for an event no listing matches. They are keys, not observed facts:
+    anything joined through game_id still goes through its own point-in-time selector, and a
+    closing proxy keys on the event and its commence time, since quotes priced before a
+    postponement carry the rescheduled game's id.
     """
 
     snapshot_date: pl.Date
@@ -96,6 +100,11 @@ class LakeOddsSnapshots(OddsSnapshots):
     @pa.dataframe_check
     def snapshot_date_is_the_utc_date(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(pl.col("snapshot_date") == pl.col("snapshot_utc").dt.date())
+
+    @pa.dataframe_check
+    def pre_game_quotes_only(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        # A game under way has live prices that move with the score.
+        return data.lazyframe.select(pl.col("commence_time_utc") > pl.col("snapshot_utc"))
 
     @pa.dataframe_check
     def matched_events_have_a_game_type(cls, data: pa.PolarsData) -> pl.LazyFrame:

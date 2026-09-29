@@ -296,6 +296,8 @@ def replay(
     )
     for event_id, home, away, commence in report.unmatched:
         typer.echo(f"  unmatched {event_id}: {away} at {home}, {commence:%Y-%m-%d %H:%M} UTC")
+    if report.in_play:
+        typer.echo(f"  left out {report.in_play:,} quotes on games already under way")
     for raw_key in report.incomplete:
         typer.echo(f"warning: {raw_key} has no sidecar (an interrupted write), skipped")
 

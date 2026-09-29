@@ -66,3 +66,21 @@ def test_the_lake_history_keeps_each_quote_when_it_was_observed(tmp_path: Path) 
     assert available_at(history, prediction_utc=MORNING).is_empty()
     later = FLORIDA_AT_CAROLINA + timedelta(minutes=1)
     assert set(available_at(history, prediction_utc=later)["home"]) == {"TOR"}
+
+
+def test_the_lake_history_leaves_out_games_under_way(tmp_path: Path) -> None:
+    # A snapshot half an hour into FLA at CAR still lists it, with live prices. The history keeps
+    # only TOR's pre-game quotes, so the last quote of any event is a pre-game one.
+    from nhl_edge.ingest.odds_lake import replay_odds
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+
+    in_play = FLORIDA_AT_CAROLINA + timedelta(minutes=30)
+    store = RawStore(tmp_path / "raw")
+    store.put("odds", "2026-09-29/live", BODY, {"fetched_utc": in_play.isoformat(), "slot": "pre7"})
+    lake = Lake(tmp_path / "lake")
+    report = replay_odds(store, lake)
+    history = lake.read("odds_snapshots")
+    assert report.in_play > 0
+    assert set(history["home"]) == {"TOR"}
+    assert (history["commence_time_utc"] > history["snapshot_utc"]).all()

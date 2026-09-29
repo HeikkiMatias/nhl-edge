@@ -3,7 +3,8 @@ without calling the Odds API, with each event matched to its NHL game.
 
 Supabase keeps only a 36-hour window of quotes; the raw responses under odds/<date>/ keep every
 listed game. Each is parsed with parse_odds, using its sidecar's fetch time as the snapshot time,
-and written to the lake's odds_snapshots table, one partition per snapshot date.
+and written to the lake's odds_snapshots table, one partition per snapshot date. Quotes for games
+already under way are left out, as in Supabase.
 
 Events are matched against every NHL schedule listing in the raw cache (nhl/schedule/<date>/): the
 odds job stores the schedule it checks on every run, and the nightly ingest one per day, with all
@@ -48,6 +49,7 @@ class ReplayReport:
     matched: Counter[str] = field(default_factory=Counter)
     unmatched: list[tuple[str, str, str, datetime]] = field(default_factory=list)
     incomplete: list[str] = field(default_factory=list)
+    in_play: int = 0
     dates: list[date] = field(default_factory=list)
 
 
@@ -135,6 +137,14 @@ def replay_odds(store: RawStore, lake: Lake, dates: Collection[date] | None = No
     if not frames:
         return report
     quotes = pl.concat(frames)
+    # The Odds API also lists games under way, with live prices that move with the score. The
+    # history keeps pre-game quotes only, as Supabase does, so no closing proxy can pick one up;
+    # the raw responses keep everything.
+    pre_game = pl.col("commence_time_utc") > pl.col("snapshot_utc")
+    report.in_play = quotes.filter(~pre_game).height
+    quotes = quotes.filter(pre_game)
+    if quotes.is_empty():
+        return report
     commence = pl.col("commence_time_utc").dt.date()
     first, last = quotes.select(commence.min().alias("first"), commence.max().alias("last")).row(0)
     listings = nhl_listings(store, first - timedelta(days=1), last)
