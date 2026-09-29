@@ -64,15 +64,19 @@ def _sbr_section(
 ) -> Section:
     over = set(game_audit.seasons_over(listed, as_of))
     seasons = [season for season in SBR_SEASONS if season in over]
+    if not seasons:
+        return Section("SBR odds", "No SBR season is over by the audit date.")
     schedule = lake.read("schedule").filter(pl.col("game_date") <= as_of)
-    reports = sbr_audit.join_reports(store, schedule, games, seasons)
+    reports, coverage = sbr_audit.join_reports(store, schedule, games, seasons)
     priced = sbr_audit.price_seasons(seasons)
     odds = lake.read("sbr_odds").filter(pl.col("season").is_in(priced))
+    coverage += sbr_audit.unpriced(odds, priced)
     if not reports and odds.is_empty():
         return Section(
             "SBR odds",
-            "No SBR pages in the raw cache and no SBR prices in the lake.",
-            ["no SBR odds: run nhl odds sbr"],
+            "No SBR season could be joined, and `sbr_odds` has no prices to check: run "
+            "`nhl odds sbr`.",
+            sorted(coverage),
         )
     lines = sbr_audit.moneylines(odds)
     moved = sbr_audit.moves(lines)
@@ -95,7 +99,7 @@ def _sbr_section(
             sbr_audit.puck_line_report(odds, conflicts),
         )
     )
-    found = sbr_audit.problems(reports, listed, lines, moved, conflicts)
+    found = sbr_audit.problems(reports, listed, lines, moved, conflicts, coverage)
     return Section("SBR odds", body, found)
 
 

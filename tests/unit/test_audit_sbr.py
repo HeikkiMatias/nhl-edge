@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from nhl_edge.audit import games as game_audit
 from nhl_edge.audit import sbr as sbr_audit
 from nhl_edge.cli import app
+from nhl_edge.ingest.games import EXPECTED_GAMES
 from nhl_edge.ingest.sbr import SeasonReport, american_to_decimal, match_season, parse_season
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import Lake
@@ -82,18 +83,46 @@ def stored_2010(tmp_path: Path) -> RawStore:
     return store
 
 
+# The 2010-11 fixture page shows the Rangers' opener on 2010-12-31 as NL.
+NL_OPENER = "20102011: 1 SBR prices shown as NL, blank or malformed, left out with the other side's"
+
+
 def test_the_join_is_rerun_from_the_stored_page(tmp_path: Path) -> None:
     # Without the 2010-12-31 game in the schedule, SBR's NYR and STL row matches nothing.
     schedule = OLD_SCHEDULE.filter(pl.col("game_id") != 2010020500)
-    reports = sbr_audit.join_reports(
-        stored_2010(tmp_path), schedule, results_empty(schedule), [20102011, 20112012]
+    reports, coverage = sbr_audit.join_reports(
+        stored_2010(tmp_path), schedule, results_empty(schedule), [20102011], {20102011: 2}
     )
-    assert [r.season for r in reports] == [20102011]  # no stored page for 2011-12
+    assert coverage == []
     row = sbr_audit.join_report(reports, NO_LISTINGS).row(0, named=True)
     assert (row["sbr_games"], row["matched"], row["playoffs"], row["unmatched"]) == (4, 2, 1, 1)
-    assert (row["nhl_games"], row["without_sbr"]) == (2, 0)
+    assert (row["nhl_games"], row["without_sbr"], row["missing_prices"]) == (2, 0, 1)
     assert problems(reports) == [
-        "20102011: 1 SBR games match no NHL game, e.g. 2010-12-31 NYR and STL"
+        "20102011: 1 SBR games match no NHL game, e.g. 2010-12-31 NYR and STL",
+        NL_OPENER,
+    ]
+
+
+def test_a_season_without_a_page_or_a_full_schedule_is_not_joined(tmp_path: Path) -> None:
+    # A schedule short of the season would pass its later games' SBR rows off as playoffs.
+    reports, coverage = sbr_audit.join_reports(
+        stored_2010(tmp_path),
+        OLD_SCHEDULE,
+        results_empty(OLD_SCHEDULE),
+        [20102011, 20112012],
+        {20102011: 4, 20112012: 1230},
+    )
+    assert reports == []
+    assert coverage == [
+        "20102011: the schedule has 3 of 4 games, so the SBR join is not checked",
+        "20112012: no SBR page in the raw cache, so its join is not checked",
+    ]
+
+
+def test_a_season_whose_prices_are_read_needs_sbr_odds_rows() -> None:
+    frame = odds(moneyline(20182019, 2018020001, "close", -110, -110))
+    assert sbr_audit.unpriced(frame, [20182019, 20212022]) == [
+        "20212022: no SBR prices in sbr_odds"
     ]
 
 
@@ -101,8 +130,8 @@ def test_an_unmatched_row_the_listings_name_as_a_playoff_game_is_not_a_problem(
     tmp_path: Path,
 ) -> None:
     schedule = OLD_SCHEDULE.filter(pl.col("game_id") != 2010020500)
-    reports = sbr_audit.join_reports(
-        stored_2010(tmp_path), schedule, results_empty(schedule), [20102011]
+    reports, _ = sbr_audit.join_reports(
+        stored_2010(tmp_path), schedule, results_empty(schedule), [20102011], {20102011: 2}
     )
     # As in 2020-21: a playoff game before the regular season's last date.
     listed = pl.DataFrame(
@@ -123,7 +152,7 @@ def test_an_unmatched_row_the_listings_name_as_a_playoff_game_is_not_a_problem(
     )
     row = sbr_audit.join_report(reports, listed).row(0, named=True)
     assert (row["playoffs"], row["unmatched"]) == (2, 0)
-    assert problems(reports, listed=listed) == []
+    assert problems(reports, listed=listed) == [NL_OPENER]
 
 
 def test_nhl_games_without_sbr_prices_and_score_mismatches_are_problems(tmp_path: Path) -> None:
@@ -133,9 +162,12 @@ def test_nhl_games_without_sbr_prices_and_score_mismatches_are_problems(tmp_path
     )
     schedule = pl.concat([OLD_SCHEDULE, extra])
     scores = results([(2010020001, 3, 4), (2010020500, 3, 1), (2010020600, 4, 2)], schedule)
-    reports = sbr_audit.join_reports(stored_2010(tmp_path), schedule, scores, [20102011])
+    reports, _ = sbr_audit.join_reports(
+        stored_2010(tmp_path), schedule, scores, [20102011], {20102011: 4}
+    )
     assert problems(reports) == [
         "20102011: SBR prices for 3 of 4 games (75.0%)",
+        NL_OPENER,
         "20102011: 1 SBR final scores differ from the NHL's, e.g. 2010020500 (SBR 3-2, NHL 3-1)",
     ]
 
@@ -227,6 +259,8 @@ runner = CliRunner()
 
 def test_audit_report_has_the_sbr_section(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
+    # The fixture schedule stands in for the whole season.
+    monkeypatch.setitem(EXPECTED_GAMES, 20102011, 3)
     lake, store = Lake(), RawStore()
     lake.write("games", OPENING)
     # The lake's schedule is public a day before each start (ADR 0005).
@@ -247,4 +281,4 @@ def test_audit_report_has_the_sbr_section(tmp_path: Path, monkeypatch: pytest.Mo
     early = runner.invoke(app, ["audit", "report", "--as-of", "2010-10-07"])
     assert early.exit_code == 0, early.output
     text = (tmp_path / "reports" / "audit" / "2010-10-07.md").read_text()
-    assert "- no SBR odds: run nhl odds sbr" in text
+    assert "\n## SBR odds\n\nNo SBR season is over by the audit date.\n" in text

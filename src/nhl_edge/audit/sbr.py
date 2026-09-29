@@ -13,7 +13,7 @@ does not inspect (the owner's decision on #10, 2026-09-29). Its join is still re
 that counts rows and reads no price.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import date
 from itertools import pairwise
 
@@ -22,6 +22,7 @@ import polars as pl
 
 from nhl_edge.audit.games import EXAMPLES
 from nhl_edge.backtest.seasons import SeasonRole, season_role
+from nhl_edge.ingest.games import EXPECTED_GAMES
 from nhl_edge.ingest.nhl_api import PLAYOFFS
 from nhl_edge.ingest.sbr import SOURCE, SeasonReport, match_season, parse_season
 from nhl_edge.lake.raw import RawStore
@@ -59,22 +60,40 @@ def price_seasons(seasons: Iterable[int]) -> list[int]:
 
 
 def join_reports(
-    store: RawStore, schedule: pl.DataFrame, games: pl.DataFrame, seasons: Iterable[int]
-) -> list[SeasonReport]:
-    """Each season's stored SBR page joined to the NHL's games, as `nhl odds sbr` reports it.
-    A season whose page is not in the raw cache is left out."""
-    reports = []
+    store: RawStore,
+    schedule: pl.DataFrame,
+    games: pl.DataFrame,
+    seasons: Iterable[int],
+    expected_games: Mapping[int, int] = EXPECTED_GAMES,
+) -> tuple[list[SeasonReport], list[str]]:
+    """Each season's stored SBR page joined to the NHL's games, as `nhl odds sbr` reports it, and
+    a problem for each season it cannot join: one with no stored page, or one whose schedule is
+    short of the season's games, since match_season takes every SBR row after the schedule's last
+    date for a playoff game (as import_seasons, which refuses such a season)."""
+    reports, found = [], []
     for season in seasons:
         raw_key = store.latest(f"{SOURCE}/{season}")
-        if raw_key is None:
-            continue
         in_season = pl.col("season") == season
+        season_schedule = schedule.filter(in_season)
+        if raw_key is None:
+            found.append(f"{season}: no SBR page in the raw cache, so its join is not checked")
+            continue
+        if season_schedule.height != expected_games[season]:
+            found.append(
+                f"{season}: the schedule has {season_schedule.height:,} of "
+                f"{expected_games[season]:,} games, so the SBR join is not checked"
+            )
+            continue
         parsed = parse_season(store.get(raw_key), season)
-        _, report = match_season(
-            parsed, schedule.filter(in_season), games.filter(in_season), raw_key
-        )
+        _, report = match_season(parsed, season_schedule, games.filter(in_season), raw_key)
         reports.append(report)
-    return reports
+    return reports, found
+
+
+def unpriced(odds: pl.DataFrame, priced: Iterable[int]) -> list[str]:
+    """A problem for each season whose prices the audit reads but sbr_odds lacks."""
+    have = set(odds["season"].unique().to_list())
+    return [f"{season}: no SBR prices in sbr_odds" for season in priced if season not in have]
 
 
 def unmatched(report: SeasonReport, listed: pl.DataFrame) -> list[tuple[date, str, str]]:
@@ -263,9 +282,11 @@ def problems(
     lines: pl.DataFrame,
     moved: pl.DataFrame,
     conflicts: pl.DataFrame,
+    coverage: Iterable[str] = (),
 ) -> list[str]:
-    """One line per season and kind of problem, naming example games."""
-    found = []
+    """One line per season and kind of problem, naming example games, with the coverage problems
+    of join_reports and unpriced."""
+    found = list(coverage)
     for r in sorted(reports, key=lambda r: r.season):
         if r.nhl_without_sbr:
             found.append(
@@ -276,6 +297,11 @@ def problems(
         if left:
             examples = _examples([f"{d} {a} and {b}" for d, a, b in left])
             found.append(f"{r.season}: {len(left)} SBR games match no NHL game, e.g. {examples}")
+        if r.missing_prices:
+            found.append(
+                f"{r.season}: {r.missing_prices} SBR prices shown as NL, blank or malformed, "
+                "left out with the other side's"
+            )
         if r.score_mismatches:
             examples = _examples([f"{g} ({text})" for g, text in r.score_mismatches])
             found.append(
