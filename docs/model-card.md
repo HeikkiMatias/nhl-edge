@@ -4,7 +4,7 @@ Current production model, how it scored, and its known weaknesses. It is updated
 
 ## Current model
 
-None. Phase 1 has the two market baselines. B0 is the de-vigged SBR moneyline, with nothing fitted. B1 is the recalibrated market, a logistic regression on B0's log-odds fitted per test season on the earlier seasons. Backtest `backtest-20260929-31f72de` on the development seasons 2018-19 and 2021-22.
+None. Phase 1 has the two market baselines. B0 is the de-vigged SBR moneyline, with nothing fitted. B1 is the recalibrated market, a logistic regression on B0's log-odds fitted per test season on the earlier seasons. Backtest `backtest-20260930-9b649c5` on the development seasons 2018-19 and 2021-22.
 
 ## Metrics
 
@@ -24,10 +24,10 @@ Every metric is reported with a 95% weekly block bootstrap interval, pooled over
 
 | Component | Version | train_cutoff |
 | --- | --- | --- |
-| Backtest (B0, B1) | backtest-20260929-31f72de | per fold, below |
+| Backtest (B0, B1, E2 without implausible openers) | backtest-20260930-9b649c5 | per fold, below |
 | B0 | the de-vigged market (multiplicative) | none: B0 fits nothing |
-| B1, 2018-19 fold (E1 and E2) | backtest-20260929-31f72de | 2018-04-09 10:00 UTC |
-| B1, 2021-22 fold (E1 and E2) | backtest-20260929-31f72de | 2021-05-20 10:00 UTC |
+| B1, 2018-19 fold (E1 and E2) | backtest-20260930-9b649c5 | 2018-04-09 10:00 UTC |
+| B1, 2021-22 fold (E1 and E2) | backtest-20260930-9b649c5 | 2021-05-20 10:00 UTC |
 
 ## Known weaknesses
 
@@ -43,7 +43,8 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
 - **It does not beat B0 on these seasons.** B0 minus B1 is +0.0004 [-0.0005, +0.0013] on E1 and +0.0002 [-0.0008, +0.0012] on E2, and no per-season interval excludes 0.
 
 - **SBR's closing vig drops from 3.8% to 2.3% in 2018-19** (audit, #51). The closes likely come from another book from then on, while the openers stay at about 4%. So E2 against E1 mixes timing with a change of book.
-- **Suspect openers.** `reference/sbr_suspect_openers.csv` (#56) lists 40 openers of 2010-11 to 2021-22 that are likely wrong, among them a swapped side (2018020006), a typo (-1010 in 2021020648) and a 9% price (2018020655). E2 keeps them, and B1's E2 fits read them, until the owner decides.
+- **Suspect openers.** `reference/sbr_suspect_openers.csv` (#56) lists 40 openers of 2010-11 to 2021-22 that are likely wrong, among them a swapped side (2018020006), a typo (-1010 in 2021020648) and a 9% price (2018020655). Most of its flags read the close, so dropping those games would choose E2's sample with information the opener prediction lacks (hard rule 1). E2 keeps every opener until the owner decides.
+  - **Implausible openers.** Eight openers, all from 2018-19 on, have a de-vigged home probability outside 0.15 to 0.85. That rule reads the opener alone, so a live E2 could refuse them. The backtest reports E2 without them under `sensitivity` in summary.json: 5 scored test games leave, and E2's cost against E1 is +0.0034 [+0.0006, +0.0064] for B0, against +0.0046 [+0.0011, +0.0083] with them. The bounds were set with these seasons' closes in view, so they must be fixed before a held-out season is read.
 - **The 2021-22 market is under-confident,** most of all in January 2022, when favourites won 70% of games but were priced at 62%. B1, fitted on the seasons before, corrects only part of it. So a later model's gain concentrated in 2021-22 may still be recalibration.
 - **E2 rests on ADR 0006's opener time,** 10:00 US Eastern. From 2018-19 on, all but a handful of openers differ from their close.
 

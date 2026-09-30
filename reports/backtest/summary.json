@@ -1,6 +1,6 @@
 {
-  "version": "backtest-20260929-31f72de",
-  "run_utc": "2026-09-29T13:48:28.373971+00:00",
+  "version": "backtest-20260930-9b649c5",
+  "run_utc": "2026-09-30T09:19:49.020663+00:00",
   "seasons": [
     20182019,
     20212022
@@ -668,6 +668,197 @@
             "high": 0.014446385719101716,
             "games": 1309,
             "weeks": 29
+          }
+        }
+      }
+    }
+  },
+  "sensitivity": {
+    "without_implausible_openers": {
+      "description": "E2 without the openers whose de-vigged home probability is outside 0.15 to 0.85, a rule that reads the opener alone. Its bounds were set with the training and development seasons' closes in view",
+      "removed_openers": {
+        "20182019": 3,
+        "20192020": 2,
+        "20202021": 1,
+        "20212022": 2
+      },
+      "E2": {
+        "market": "SBR opening moneyline, assumed available from 10:00 US Eastern on the game date and read one second later (ADR 0006). If an opener was posted earlier and had moved by then, E2's result is an upper bound; coverage counts the games whose opener differs from the close",
+        "coverage": {
+          "20182019": {
+            "games": 1271,
+            "priced": 1268,
+            "unsettled": 0,
+            "refused": 0,
+            "scored": 1268,
+            "b1_trained_on": 9369,
+            "opener_differs_from_close": 1267
+          },
+          "20212022": {
+            "games": 1312,
+            "priced": 1310,
+            "unsettled": 0,
+            "refused": 3,
+            "scored": 1307,
+            "b1_trained_on": 12583,
+            "opener_differs_from_close": 1304
+          }
+        },
+        "models": {
+          "B0": {
+            "log_loss": {
+              "multiplicative": {
+                "pooled": {
+                  "mean": 0.6604649040247375,
+                  "low": 0.6504721435563275,
+                  "high": 0.6699829530952439,
+                  "games": 2575,
+                  "weeks": 56
+                },
+                "per_season": {
+                  "20182019": {
+                    "mean": 0.6744056251268536,
+                    "low": 0.6592859509638226,
+                    "high": 0.6886670830613754,
+                    "games": 1268,
+                    "weeks": 27
+                  },
+                  "20212022": {
+                    "mean": 0.6469401646540538,
+                    "low": 0.634155734291903,
+                    "high": 0.66023641508979,
+                    "games": 1307,
+                    "weeks": 29
+                  }
+                }
+              }
+            },
+            "paired_against_B1": {
+              "multiplicative": {
+                "pooled": {
+                  "mean": 0.000423710358078945,
+                  "low": -0.0006652466339126964,
+                  "high": 0.0015054472024761036,
+                  "games": 2575,
+                  "weeks": 56
+                },
+                "per_season": {
+                  "20182019": {
+                    "mean": -0.00017479605217281003,
+                    "low": -0.0016441459278820894,
+                    "high": 0.0012396165067439062,
+                    "games": 1268,
+                    "weeks": 27
+                  },
+                  "20212022": {
+                    "mean": 0.001004357740021734,
+                    "low": -0.0006919501654199125,
+                    "high": 0.0025006052617439736,
+                    "games": 1307,
+                    "weeks": 29
+                  }
+                }
+              }
+            }
+          },
+          "B1": {
+            "log_loss": {
+              "multiplicative": {
+                "pooled": {
+                  "mean": 0.6600411936666585,
+                  "low": 0.6493484282497686,
+                  "high": 0.6703403396562255,
+                  "games": 2575,
+                  "weeks": 56
+                },
+                "per_season": {
+                  "20182019": {
+                    "mean": 0.6745804211790265,
+                    "low": 0.6581304549315555,
+                    "high": 0.6900837399893752,
+                    "games": 1268,
+                    "weeks": 27
+                  },
+                  "20212022": {
+                    "mean": 0.6459358069140321,
+                    "low": 0.6319576879385737,
+                    "high": 0.6604954627452924,
+                    "games": 1307,
+                    "weeks": 29
+                  }
+                }
+              }
+            },
+            "fits": {
+              "20182019": {
+                "intercept": -0.03671787322432013,
+                "slope": 1.1189858252605849,
+                "games": 9369,
+                "train_cutoff": "2018-04-09T10:00:00+00:00"
+              },
+              "20212022": {
+                "intercept": -0.03210664376740416,
+                "slope": 1.0898837654647964,
+                "games": 12583,
+                "train_cutoff": "2021-05-20T10:00:00+00:00"
+              }
+            }
+          }
+        }
+      },
+      "e2_against_e1": {
+        "B0": {
+          "multiplicative": {
+            "pooled": {
+              "mean": 0.0033519682319076236,
+              "low": 0.0005509822904226551,
+              "high": 0.006389638573486439,
+              "games": 2575,
+              "weeks": 56
+            },
+            "per_season": {
+              "20182019": {
+                "mean": 0.0017251043040797664,
+                "low": -0.0005477555561154115,
+                "high": 0.004097194219965657,
+                "games": 1268,
+                "weeks": 27
+              },
+              "20212022": {
+                "mean": 0.004930287635492721,
+                "low": -4.724216122610106e-06,
+                "high": 0.010208648332573693,
+                "games": 1307,
+                "weeks": 29
+              }
+            }
+          }
+        },
+        "B1": {
+          "multiplicative": {
+            "pooled": {
+              "mean": 0.0033323763784299945,
+              "low": 0.0003343375300621093,
+              "high": 0.006648780626186014,
+              "games": 2575,
+              "weeks": 56
+            },
+            "per_season": {
+              "20182019": {
+                "mean": 0.0017286366629441225,
+                "low": -0.0007617707081181076,
+                "high": 0.0043017833584969144,
+                "games": 1268,
+                "weeks": 27
+              },
+              "20212022": {
+                "mean": 0.004888261580599914,
+                "low": -0.00036475168268138627,
+                "high": 0.010637728357816552,
+                "games": 1307,
+                "weeks": 29
+              }
+            }
           }
         }
       }

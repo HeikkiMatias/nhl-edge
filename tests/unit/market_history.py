@@ -94,3 +94,26 @@ def seasons(
     """Several synthetic seasons, each with its own seed."""
     parts = [season(s, games, s, intercept, slope) for s in wanted]
     return pl.concat([odds for odds, _ in parts]), pl.concat([finals for _, finals in parts])
+
+
+def implausible_opener(odds: pl.DataFrame, game_id: int) -> pl.DataFrame:
+    """odds with the game's opening moneyline replaced by an implausible one, Edmonton's -1010 and
+    Minnesota's 705 of 2022-02-20: a home probability of about 0.88."""
+    prices = {"home": -1010, "away": 705}
+    rows = (
+        (pl.col("game_id") == game_id) & (pl.col("market") == "h2h") & (pl.col("quote") == "open")
+    )
+    home = pl.col("side") == "home"
+    return odds.with_columns(
+        price_american=pl.when(rows)
+        .then(pl.when(home).then(prices["home"]).otherwise(prices["away"]))
+        .otherwise(pl.col("price_american"))
+        .cast(pl.Int32),
+        price_decimal=pl.when(rows)
+        .then(
+            pl.when(home)
+            .then(american_to_decimal(prices["home"]))
+            .otherwise(american_to_decimal(prices["away"]))
+        )
+        .otherwise(pl.col("price_decimal")),
+    )
