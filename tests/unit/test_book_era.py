@@ -45,15 +45,6 @@ def test_the_eras_split_at_2018_19() -> None:
     assert fit["low"] <= fit["value"] <= fit["high"]
 
 
-def test_held_out_seasons_are_never_read() -> None:
-    odds, games = planted()
-    held_odds, held_games = market_history.seasons([20222023], games=60, intercept=2.0)
-    with_held = book_era.diagnostic(
-        pl.concat([odds, held_odds]), pl.concat([games, held_games]), draws=DRAWS
-    )
-    assert with_held == book_era.diagnostic(odds, games, draws=DRAWS)
-
-
 def test_one_era_reports_no_difference_between_eras() -> None:
     odds, games = market_history.seasons(SEASONS[:2], games=120)
     report = book_era.diagnostic(odds, games, draws=DRAWS)

@@ -16,6 +16,9 @@ seasons.
 E2 refuses implausible openers as the backtest does (ADR 0007), each season taken as its own fold:
 an opener outside the range of every close before the season's first prediction is refused. The
 first season has no earlier close, so it keeps every opener.
+
+The diagnostic covers the open seasons the backtest reads: every one up to its latest test season,
+so the default run, on the development seasons, covers 2010-11 to 2021-22.
 """
 
 from datetime import datetime
@@ -55,7 +58,7 @@ DESCRIPTION = (
     "and an era comparison also holds whatever else changed between the seasons. E2 refuses "
     "implausible openers as in ADR 0007, each season taken as its own fold; the first season has "
     "no earlier close, so it keeps every opener. Differences are the new closing book minus the "
-    "same book."
+    "same book. It covers the open seasons the run reads, up to its latest test season."
 )
 
 

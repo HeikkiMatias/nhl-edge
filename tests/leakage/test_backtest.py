@@ -337,3 +337,12 @@ def test_the_book_era_diagnostic_refuses_openers_with_earlier_closes_only() -> N
     for closes in (swapped, extreme):
         _, again = book_era.markets(closes, games)
         assert again.filter(season=20182019).equals(season)
+
+
+def test_the_book_era_diagnostic_never_reads_a_held_out_season() -> None:
+    odds, games = market_history.seasons([20172018, 20182019], games=60)
+    held_odds, held_games = market_history.seasons([20222023], games=60, intercept=2.0)
+    with_held = book_era.diagnostic(
+        pl.concat([odds, held_odds]), pl.concat([games, held_games]), draws=50
+    )
+    assert with_held == book_era.diagnostic(odds, games, draws=50)
