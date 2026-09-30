@@ -29,7 +29,8 @@ MARKETS = {
     "E1": "SBR closing moneyline, read at the start: the information test, not a tradable price",
     "E2": "SBR opening moneyline, assumed available from 10:00 US Eastern on the game date and "
     "read one second later (ADR 0006). If an opener was posted earlier and had moved by then, "
-    "E2's result is an upper bound; coverage counts the games whose opener differs from the close",
+    "E2's result is an upper bound; coverage counts the games whose opener differs from the close. "
+    "E2 refuses an opener whose de-vigged home probability is outside 0.15 to 0.85 (ADR 0007)",
 }
 RUNS_FIELDS = [
     "run_utc",

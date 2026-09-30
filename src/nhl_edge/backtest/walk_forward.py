@@ -22,6 +22,7 @@ import polars as pl
 from nhl_edge.backtest.market import Experiment, market_prices
 from nhl_edge.backtest.metrics import log_loss
 from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
+from nhl_edge.ingest.sbr_suspect import EXTREME_OPEN
 from nhl_edge.market import recalibration
 from nhl_edge.market.devig import OVERROUND_TOLERANCE, Method, fair_probabilities, overround
 
@@ -63,6 +64,23 @@ def refused(prices: pl.DataFrame) -> pl.Series:
         return pl.Series(dtype=pl.Boolean)
     total = overround(prices.select("home_price", "away_price").to_numpy())
     return pl.Series(total < 1 - OVERROUND_TOLERANCE)
+
+
+def implausible(prices: pl.DataFrame) -> pl.Series:
+    """The openers E2 refuses (ADR 0007): a de-vigged home probability under B1_METHOD outside
+    EXTREME_OPEN, such as Edmonton -1010 against Minnesota 705 (#56). The rule reads each market's
+    own prices alone, so a live E2 can apply it when it reads the opener. A market de-vigging
+    refuses is not implausible, since it is already refused."""
+    if prices.is_empty():
+        return pl.Series(dtype=pl.Boolean)
+    low, high = EXTREME_OPEN
+    flagged = np.zeros(prices.height, dtype=bool)
+    fair = ~refused(prices).to_numpy()
+    if fair.any():
+        pair = prices.select("home_price", "away_price").to_numpy()[fair]
+        p_home = fair_probabilities(pair, B1_METHOD)[:, 0]
+        flagged[fair] = (p_home < low) | (p_home > high)
+    return pl.Series(flagged)
 
 
 def b0(prices: pl.DataFrame, method: Method) -> pl.DataFrame:
@@ -137,15 +155,19 @@ def run(
     games: pl.DataFrame,
     seasons: Iterable[int],
     methods: Iterable[Method] = tuple(Method),
+    refuse_implausible: bool = True,
 ) -> tuple[pl.DataFrame, Coverage, Fits]:
     """Every prediction for the test seasons, scored, the coverage per experiment and season, and
     B1's fit per experiment and season. sbr_odds and games hold the test seasons and the earlier
     seasons B1 is fitted on.
 
+    E2 refuses implausible openers, in its scoring and in B1's E2 fits (ADR 0007), unless
+    refuse_implausible is False, which reports E2 on every opener beside it.
+
     Coverage counts the season's games, those with a price, those priced but without a result,
     those whose market de-vigging refuses, those scored, and B1's training games. E2's also counts
-    the games whose opener differs from the close, which sizes how much E2's opener can have moved
-    before its assumed time (ADR 0006)."""
+    the implausible openers it refuses, and the games whose opener differs from the close, which
+    sizes how much E2's opener can have moved before its assumed time (ADR 0006)."""
     seasons = sorted(set(seasons))
     held_out = [season for season in seasons if season_role(season) not in OPEN_ROLES]
     if held_out:
@@ -164,6 +186,9 @@ def run(
     for experiment in Experiment:
         quoted = market_prices(open_odds, experiment)
         every = quoted.join(results, on="game_id")
+        refusing = experiment is Experiment.E2 and refuse_implausible
+        rejected = every.filter(implausible(every)) if refusing else every.clear()
+        every = every.join(rejected, on="game_id", how="anti")
         market = b0(every, B1_METHOD)
         quoted = quoted.filter(pl.col("season").is_in(seasons))
         unsettled = quoted.join(results, on="game_id", how="anti")
@@ -191,7 +216,11 @@ def run(
                 "unsettled": unsettled.filter(in_season).height,
                 "refused": dropped.filter(in_season).height,
             }
-            counts["scored"] = counts["priced"] - counts["unsettled"] - counts["refused"]
+            if experiment is Experiment.E2:
+                counts["implausible"] = rejected.filter(in_season).height
+            counts["scored"] = counts["priced"] - sum(
+                counts[key] for key in ("unsettled", "refused", "implausible") if key in counts
+            )
             counts["b1_trained_on"] = fit.games
             if experiment is Experiment.E2:
                 counts["opener_differs_from_close"] = moved.filter(in_season).height
