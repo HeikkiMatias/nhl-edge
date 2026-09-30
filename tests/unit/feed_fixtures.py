@@ -18,11 +18,8 @@ import polars as pl
 
 from nhl_edge.ingest.feeds import FeedGame
 from nhl_edge.ingest.games import result_public_utc
-from nhl_edge.ingest.lineups import parse_actual_lineups
 from nhl_edge.ingest.nhl_api import parse_utc
-from nhl_edge.ingest.shift_coverage import shift_coverage
-from nhl_edge.ingest.shifts import parse_shifts
-from nhl_edge.ingest.shots import parse_shots
+from nhl_edge.ingest.nhl_ingest import parse_feeds
 from nhl_edge.lake.schemas import MIN_RESULT_LAG
 from nhl_edge.lake.tables import known_at
 
@@ -80,17 +77,9 @@ def raw_key(kind: str, game: FeedGame) -> str:
 def parsed_feeds(game_id: int) -> dict[str, pl.DataFrame]:
     """A full fixture game parsed into the per-game tables, as nhl ingest does."""
     game = feed_game(game_id)
-    keys = {kind: raw_key(kind, game) for kind in ("play-by-play", "boxscore", "shiftcharts")}
-    shots = parse_shots(feed("play-by-play", game_id), game, keys["play-by-play"])
-    shifts, drops = parse_shifts(feed("shiftcharts", game_id), game, keys["shiftcharts"])
-    lineups = parse_actual_lineups(feed("boxscore", game_id), game, keys["boxscore"])
-    coverage = shift_coverage(game, shots, shifts, lineups, drops, keys["shiftcharts"])
-    return {
-        "shots": shots,
-        "shifts": shifts,
-        "actual_lineups": lineups,
-        "shift_coverage": coverage,
-    }
+    kinds = ("play-by-play", "boxscore", "shiftcharts")
+    feeds = {kind: (feed(kind, game_id), raw_key(kind, game)) for kind in kinds}
+    return parse_feeds(games_row(game_id), feeds)
 
 
 def assert_public_the_morning_after(frame: pl.DataFrame, game_id: int) -> None:

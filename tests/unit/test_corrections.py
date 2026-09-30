@@ -250,8 +250,12 @@ def test_a_diff_finds_a_moved_scorer_a_removed_shot_and_a_changed_time_on_ice(
     assert found[("shots", GOAL_SCORER)] == 1
     assert ("shots", "shooter_id") not in found
     assert found[("shots", REMOVED)] == 1
-    assert found[("shots", CHANGED)] == 1
     assert ("shots", ADDED) not in found
+    # The corrected time on ice makes the chart incomplete, so every shot's skater counts fall
+    # back from the chart to situationCode (ADR 0009): the diff shows that too.
+    assert found[("shift_coverage", "complete")] == 1
+    flipped = found[("shots", "strength_source")]
+    assert flipped > 1 and found[("shots", CHANGED)] == flipped
     assert found[("actual_lineups", "toi_s")] == 1
     assert ("shifts", CHANGED) not in found
 
@@ -280,8 +284,10 @@ def test_the_report_lists_what_more_than_the_scorer_changed(tmp_path: Path) -> N
     assert audit.problems(result) == [
         "1 games due for a recheck have none, e.g. 2026020003",
         # A player's time on ice no longer adds up to his shifts, so the chart is incomplete.
-        "2026020002: more than the scorer changed: actual_lineups toi_s (1 rows), "
-        "shift_coverage players_toi_off (1 rows), shift_coverage complete (1 rows)",
+        # ... which moves every shot's skater counts back to situationCode (ADR 0009).
+        "2026020002: more than the scorer changed: shots strength_source (77 rows), "
+        "actual_lineups toi_s (1 rows), shift_coverage players_toi_off (1 rows), "
+        "shift_coverage complete (1 rows)",
         # Only a goal's scorer is exempt: a saved shot credited to another shooter is listed.
         "2026020004: more than the scorer changed: shots shooter_id (1 rows)",
     ]

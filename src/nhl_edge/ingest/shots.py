@@ -18,7 +18,14 @@ from typing import Any
 import polars as pl
 
 from nhl_edge.ingest.feeds import FeedGame, check_game_id, clock_s
-from nhl_edge.lake.schemas import OT_PERIOD, PERIOD_S, SHOT_EVENTS, Shots, dtypes
+from nhl_edge.lake.schemas import (
+    OT_PERIOD,
+    PERIOD_S,
+    SHOT_EVENTS,
+    STRENGTH_SOURCES,
+    Shots,
+    dtypes,
+)
 
 SHOOTOUT = "SO"
 OFFENSIVE_ZONE = "O"
@@ -111,6 +118,7 @@ def shot_row(
         "is_empty_net": not strength[2] if strength else goalie_id is None,
         "is_penalty_shot": strength is not None and strength[:2] == (1, 0),
         "situation_code": play.get("situationCode") or None,
+        "strength_source": STRENGTH_SOURCES[0] if strength else None,
         "observed_utc": game.observed_utc,
         "raw_key": raw_key,
     }

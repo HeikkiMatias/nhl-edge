@@ -438,6 +438,9 @@ def period_end_s(period: pl.Expr) -> pl.Expr:
 SHOT_EVENTS = ("shot-on-goal", "missed-shot", "goal")
 ZONES = ("O", "N", "D")
 ROLES = ("F", "D", "G")
+# Where a shot's skater counts come from (ADR 0009): the shift chart when the game's chart is
+# complete and puts 3 to 6 skaters of each team on the ice, otherwise the situationCode.
+STRENGTH_SOURCES = ("situation_code", "chart")
 
 
 class Shots(pa.DataFrameModel):
@@ -447,9 +450,12 @@ class Shots(pa.DataFrameModel):
     seconds is elapsed game time, (period - 1) * 1200 plus the period clock. team is the shooting
     team. x and y are rink feet, turned so the shooting team attacks the net at x = +89: the API
     gives raw rink coordinates, and the attack direction per team and period is inferred from the
-    offensive-zone shots. Strength is the shooting team's view of situationCode: skaters_for and
-    skaters_against (6 means that team's goalie is pulled), and is_empty_net when the defending
-    goalie is off the ice. They are null for the few shots whose situationCode is missing.
+    offensive-zone shots. Strength is the shooting team's view of the skaters on the ice:
+    skaters_for and skaters_against (6 means that team's goalie is pulled), and strength such as
+    5v4. strength_source says where the counts come from (ADR 0009): the shift chart when the
+    game's chart is complete, otherwise situationCode, which drifts in some 2019-21 games (#28).
+    is_empty_net, when the defending goalie is off the ice, always comes from situationCode. The
+    counts are null for the few shots whose situationCode is missing.
 
     observed_utc is when the game's play-by-play counts as public: 10:00 UTC the morning after
     game_date, the rule ADR 0003 sets for results. A backfilled feed includes post-game
@@ -480,6 +486,7 @@ class Shots(pa.DataFrameModel):
     is_empty_net: pl.Boolean
     is_penalty_shot: pl.Boolean
     situation_code: pl.String = pa.Field(nullable=True)
+    strength_source: pl.String = pa.Field(isin=STRENGTH_SOURCES, nullable=True)
     observed_utc: UtcDatetime
     raw_key: pl.String
 
@@ -487,6 +494,12 @@ class Shots(pa.DataFrameModel):
         strict = True
         ordered = True
         unique: str | list[str] | None = ["game_id", "event_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def strength_has_a_source(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("strength").is_null() == pl.col("strength_source").is_null()
+        )
 
     @pa.dataframe_check
     def goal_flag_matches_event(cls, data: pa.PolarsData) -> pl.LazyFrame:

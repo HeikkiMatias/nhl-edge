@@ -1,11 +1,14 @@
+import json
 from typing import Any
 
 import polars as pl
 import pytest
-from feed_fixtures import MTL_ARI, OPENING_WEEK_GAMES, feed, feed_game, raw_key
+from feed_fixtures import MTL_ARI, OPENING_WEEK_GAMES, feed, feed_game, games_row, raw_key
 
 from nhl_edge.ingest.lineups import parse_actual_lineups
+from nhl_edge.ingest.nhl_ingest import parse_feeds
 from nhl_edge.ingest.shift_coverage import (
+    chart_strength,
     markdown_report,
     on_ice_counts,
     season_report,
@@ -131,3 +134,69 @@ def test_season_report_sums_games_per_season() -> None:
     table = markdown_report(report)
     assert table.splitlines()[2].startswith("| 20102011 | 3 | 3 (100.0%) | 0 | 0 | 0 | 0 |")
     assert table.splitlines()[3].startswith("| 20222023 | 1 | 0 (0.0%) | 0 | 1 |")
+
+
+def test_a_complete_chart_supplies_the_skater_counts() -> None:
+    # MTL at ARI: a complete chart that agrees with every situationCode, and one penalty shot.
+    game = feed_game(MTL_ARI)
+    shots, shifts, lineups, _ = parsed(MTL_ARI)
+    counted = chart_strength(game, shots, shifts, lineups)
+    sources = counted.group_by("is_penalty_shot", "strength_source").len().sort("is_penalty_shot")
+    assert sources.rows() == [(False, "chart", shots.height - 1), (True, "situation_code", 1)]
+    same = ["skaters_for", "skaters_against", "strength", "is_empty_net", "situation_code"]
+    assert counted.select(same).equals(shots.select(same))
+
+
+def test_the_chart_overrides_a_drifted_situation_code() -> None:
+    # #28: situationCode one skater short for a team, the way it drifts after a penalty.
+    game = feed_game(MTL_ARI)
+    shots, shifts, lineups, _ = parsed(MTL_ARI)
+    even = (pl.col("strength") == "5v5") & ~pl.col("is_penalty_shot")
+    event = shots.filter(even)["event_id"][0]
+    target = pl.col("event_id") == event
+    drifted = shots.with_columns(
+        situation_code=pl.when(target).then(pl.lit("1451")).otherwise(pl.col("situation_code")),
+        skaters_for=pl.when(target).then(pl.lit(4, pl.Int8)).otherwise(pl.col("skaters_for")),
+        strength=pl.when(target).then(pl.lit("4v5")).otherwise(pl.col("strength")),
+    )
+    fixed = chart_strength(game, drifted, shifts, lineups).filter(target).row(0, named=True)
+    assert (fixed["strength"], fixed["strength_source"]) == ("5v5", "chart")
+    assert fixed["situation_code"] == "1451"
+
+
+def test_an_implausible_chart_count_keeps_the_situation_code() -> None:
+    # With one team's skaters cut to two by the chart, the shot keeps situationCode's counts.
+    game = feed_game(MTL_ARI)
+    shots, shifts, lineups, _ = parsed(MTL_ARI)
+    shot = shots.filter(~pl.col("is_penalty_shot")).row(0, named=True)
+    goalies = lineups.filter(pl.col("role") == "G")["player_id"]
+    on_ice = (
+        (pl.col("period") == shot["period"])
+        & (pl.col("start_s") < shot["seconds"])
+        & (pl.col("seconds_") <= pl.col("end_s"))
+        & (pl.col("team") == game.home)
+        & ~pl.col("player_id").is_in(goalies.implode())
+    )
+    home_skaters = shifts.with_columns(seconds_=pl.lit(shot["seconds"])).filter(on_ice)
+    cut = shifts.join(
+        home_skaters.head(3).select("player_id", "shift_number"),
+        on=["player_id", "shift_number"],
+        how="anti",
+    )
+    counted = chart_strength(game, shots, cut, lineups)
+    row = counted.filter(pl.col("event_id") == shot["event_id"]).row(0, named=True)
+    assert (row["strength"], row["strength_source"]) == (shot["strength"], "situation_code")
+
+
+def test_an_incomplete_chart_leaves_every_count_with_the_situation_code() -> None:
+    # A time on ice the chart cannot add up to makes the chart incomplete (ADR 0009).
+    box = json.loads(feed("boxscore", MTL_ARI))
+    box["playerByGameStats"]["homeTeam"]["forwards"][0]["toi"] = "01:00"
+    feeds = {
+        "play-by-play": (feed("play-by-play", MTL_ARI), "k"),
+        "boxscore": (json.dumps(box).encode(), "k"),
+        "shiftcharts": (feed("shiftcharts", MTL_ARI), "k"),
+    }
+    tables = parse_feeds(games_row(MTL_ARI), feeds)
+    assert tables["shift_coverage"]["complete"].item() is False
+    assert set(tables["shots"]["strength_source"]) == {"situation_code"}
