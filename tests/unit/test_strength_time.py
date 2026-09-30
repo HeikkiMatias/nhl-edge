@@ -114,3 +114,21 @@ def test_the_audit_counts_games_that_add_up_and_names_those_that_do_not() -> Non
     held = audit.season_report(frame, games, [])
     assert held.select("adds_up", "even", "chart_share").row(0) == (3, None, None)
     assert "| held out |" in audit.markdown_report(held)
+
+
+def test_a_shift_that_starts_at_a_play_counts_for_the_stretch_after_it() -> None:
+    # Codex on #82: at the faceoff that starts a power play, the penalized player's shift ends at
+    # the play and the stretch after it is short-handed. MTL at ARI's chart agrees with every
+    # situationCode, so read after each play it gives the same seconds, state by state. Read at
+    # the moment of the play instead, it would miss 56 seconds of ARI's penalty kill.
+    game = feed_game(MTL_ARI)
+    shifts, _ = parse_shifts(feed("shiftcharts", MTL_ARI), game, "k")
+    lineups = parse_actual_lineups(feed("boxscore", MTL_ARI), game, "k")
+    pbp = feed("play-by-play", MTL_ARI)
+    keys = ["team", "strength", "own_net_empty", "opp_net_empty"]
+
+    def seconds(frame: pl.DataFrame) -> pl.DataFrame:
+        return frame.group_by(keys).agg(pl.col("seconds").sum()).sort(keys)
+
+    by_chart = parse_strength_time(pbp, game, "k", shifts, lineups)
+    assert seconds(by_chart).equals(seconds(parse_strength_time(pbp, game, "k")))

@@ -101,8 +101,12 @@ def parse_strength_time(
     )
     if shifts is not None and lineups is not None and counted.height:
         low, high = CHART_SKATERS
+        # The players on the ice for the stretch after each play: a shift that starts at the
+        # play counts and one that ends there does not (start_s <= t < end_s). on_ice_counts
+        # takes the moment of a shot, start_s < t <= end_s, so it reads each play one second on.
+        after = timeline.with_columns(pl.col("seconds") + 1)
         chart = (
-            on_ice_counts(game, timeline, shifts, lineups)
+            on_ice_counts(game, after, shifts, lineups)
             .filter(
                 pl.col("home_skaters_on").is_between(low, high),
                 pl.col("away_skaters_on").is_between(low, high),
