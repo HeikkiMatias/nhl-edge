@@ -1,6 +1,6 @@
 {
-  "version": "backtest-20260930-9911773",
-  "run_utc": "2026-09-30T09:05:45.154560+00:00",
+  "version": "backtest-20260930-49f0d65",
+  "run_utc": "2026-09-30T09:12:20.392079+00:00",
   "seasons": [
     20182019,
     20212022
@@ -676,6 +676,7 @@
   "sensitivity": {
     "without_suspect_openers": {
       "description": "E2 without every listed opener, the option the #56 thread recommends",
+      "note": "Hindsight: the list reads each game's close and its thresholds were set on the training and development seasons. This sizes E2's data problem and is not a tradable E2 result.",
       "removed_openers": {
         "20102011": 1,
         "20122013": 1,
@@ -871,6 +872,7 @@
     },
     "without_proven_errors": {
       "description": "E2 without the openers the source cannot have meant (extreme_open, swapped or below_100), keeping those flagged only for a big move",
+      "note": "Hindsight: the list reads each game's close and its thresholds were set on the training and development seasons. This sizes E2's data problem and is not a tradable E2 result.",
       "removed_openers": {
         "20102011": 1,
         "20122013": 1,
