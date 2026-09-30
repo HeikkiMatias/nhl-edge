@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import numpy as np
 import polars as pl
 import pytest
-from shot_fixtures import games_of, synthetic_shots
+from shot_fixtures import games_from, games_of, synthetic_shots
 
 from nhl_edge.audit import xg as report
 from nhl_edge.features import xg
@@ -186,3 +186,47 @@ def test_no_held_out_seasons_goals_can_be_read_off_the_fits() -> None:
     )
     assert "| 20122013 | 20102011 to 20112012 | held out |" in text
     assert f"{models[1].goals:,}" not in text
+
+
+# Inputs the lake must have
+
+
+def complete() -> tuple[pl.DataFrame, pl.DataFrame, dict[int, int]]:
+    games = games_from(SHOTS)
+    return SHOTS, games, dict(games.group_by("season").len().iter_rows())
+
+
+def test_a_complete_lake_has_no_input_problems() -> None:
+    shots, games, expected = complete()
+    # A period's first play has nothing before it: one such shot is no problem.
+    first = shots.with_columns(
+        prev_event_type=pl.when(pl.int_range(pl.len()) == 0)
+        .then(None)
+        .otherwise(pl.col("prev_event_type"))
+    )
+    assert xg.input_problems(first, games, [20122013], expected) == []
+
+
+def test_a_season_short_of_its_games_is_a_problem() -> None:
+    shots, games, expected = complete()
+    short = games.filter(pl.col("season") != 20102011)
+    problems = xg.input_problems(shots, short, [20112012], expected)
+    assert problems == [f"20102011: 0 of {expected[20102011]:,} games"]
+
+
+def test_games_without_shots_or_without_the_play_before_them_are_problems() -> None:
+    shots, games, expected = complete()
+    first, second = games.filter(pl.col("season") == 20112012)["game_id"].head(2).to_list()
+    stale = pl.col("game_id") == second
+    broken = shots.filter(pl.col("game_id") != first).with_columns(
+        **{column: pl.when(stale).then(None).otherwise(pl.col(column)) for column in PREV_COLUMNS}
+    )
+    assert xg.input_problems(broken, games, [20122013], expected) == [
+        f"20112012: 1 games whose shots lack the play before them, e.g. {second}",
+        f"20112012: 1 games without shots, e.g. {first}",
+    ]
+    # A later season than the last one scored is not read.
+    assert xg.input_problems(broken, games, [20102011], expected) == []
+
+
+PREV_COLUMNS = ["prev_event_type", "prev_seconds", "prev_by_shooting_team", "prev_zone"]

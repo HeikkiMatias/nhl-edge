@@ -21,7 +21,7 @@ season's first game (hard rule 1), and a season it has not seen takes the latest
 level. So every scored shot's xG comes from a model that never saw it.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -170,6 +170,40 @@ def fit(shots: pl.DataFrame, season: int, start: datetime, artifact_version: str
     cutoff = train["observed_utc"].max()
     assert isinstance(cutoff, datetime)
     return XgModel(season, seasons, model, train.height, goals, cutoff, artifact_version)
+
+
+def input_problems(
+    shots: pl.DataFrame,
+    games: pl.DataFrame,
+    seasons: Iterable[int],
+    expected: Mapping[int, int],
+) -> list[str]:
+    """Why the lake cannot fit and score the seasons, if it cannot. Every season from the lake's
+    first to the last one scored is read: a fit on a season short of its games, or with games
+    missing their shots, would be biased with nothing to show for it (Codex on #73).
+    - A season that expected lists must have all its games.
+    - Every game must have shots.
+    - Every game's shots must carry the play before them: a game whose shots all lack it was
+      written before #73 and needs a replay. A period's first play can have none, so one such shot
+      is no problem.
+    """
+    last = max(seasons)
+    needed = games.filter(pl.col("season") <= last)
+    problems = []
+    for season in sorted(s for s in expected if s <= last):
+        count = needed.filter(pl.col("season") == season).height
+        if count != expected[season]:
+            problems.append(f"{season}: {count:,} of {expected[season]:,} games")
+    per_game = shots.group_by("game_id").agg(replayed=pl.col("prev_event_type").is_not_null().any())
+    joined = needed.select("game_id", "season").join(per_game, on="game_id", how="left")
+    for label, rows in (
+        ("games without shots", joined.filter(pl.col("replayed").is_null())),
+        ("games whose shots lack the play before them", joined.filter(~pl.col("replayed"))),
+    ):
+        for (season,), frame in rows.sort("game_id").group_by("season", maintain_order=True):
+            examples = ", ".join(str(g) for g in frame["game_id"].head(3).to_list())
+            problems.append(f"{season}: {frame.height:,} {label}, e.g. {examples}")
+    return sorted(problems)
 
 
 def score(

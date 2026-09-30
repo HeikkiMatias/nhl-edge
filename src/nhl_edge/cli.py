@@ -291,19 +291,29 @@ def xg(
     from nhl_edge.backtest import reports
     from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, OPEN_SEASONS, TRAINING_SEASONS
     from nhl_edge.features import xg as xg_model
+    from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
 
+    load_env()
     lake = Lake.from_env(mirror=r2)
     shots, games = lake.read("shots"), lake.read("games")
-    if "prev_zone" not in shots.columns:
-        typer.echo("shots has no prev_ columns: run nhl ingest --replay", err=True)
-        raise typer.Exit(code=1)
     known = sorted(games["season"].unique().to_list())
     try:
         wanted = (
             parse_seasons(seasons) if seasons else [s for s in known if s >= xg_model.FIRST_SEASON]
         )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    # A fit on a season short of its games or shots would be biased with nothing to show for it.
+    problems = xg_model.input_problems(shots, games, wanted, EXPECTED_GAMES) if wanted else []
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl ingest --replay for those seasons", err=True)
+        raise typer.Exit(code=1)
+    try:
         now = datetime.now(UTC)
         version = reports.version(xg_model.COMPONENT, now)
         scored, models = xg_model.score(shots, games, wanted, version)

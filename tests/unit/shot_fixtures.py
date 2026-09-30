@@ -31,6 +31,18 @@ def games_of(seasons: list[int]) -> pl.DataFrame:
     )
 
 
+def games_from(shots: pl.DataFrame) -> pl.DataFrame:
+    """One game row per synthetic game, starting at 23:00 UTC on its date."""
+    return (
+        shots.group_by("game_id", "season", "game_date")
+        .agg()
+        .with_columns(
+            start_utc=pl.col("game_date").dt.combine(time(23)).dt.replace_time_zone("UTC")
+        )
+        .sort("game_id")
+    )
+
+
 def synthetic_shots(
     seasons: list[int],
     per_season: int = 4000,

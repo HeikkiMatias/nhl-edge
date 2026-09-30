@@ -105,6 +105,8 @@ Known misses on the training seasons, with the rebound term per season:
 ## Consequences
 
 - `ingest/shots.py` fills the four `prev_` columns, and `nhl ingest --replay` rebuilds every season. They come from the game's own play-by-play, which ADR 0004 already dates to the morning after.
+- **Until that replay finishes,** `Lake.read` reads a nullable column as null in a partition written before it existed, so the nightly run's new partitions and the old ones read together. A missing required column still raises.
+- **`nhl xg` refuses an incomplete lake.** It stops, listing each problem, when a season up to the last one scored is short of its games (`EXPECTED_GAMES`), a game has no shots, or a game's shots all lack the play before them (not yet replayed).
 - `features/xg.py` holds the model, `audit/xg.py` the report. `tests/leakage/test_xg.py` shows that the scored season and later ones never move a shot's xG, nor does an earlier shot that became public only after the fold started.
 - The live season is scored by the model fitted before its first game, and a rerun refits it on the same shots. Scoring new games each night is left to the first reader, team strength (#74).
 - Scorekeepers record shot locations differently from rink to rink. This model does not correct for it. Phase 6's custom xG may, if the report or team strength shows it matters.
