@@ -43,13 +43,24 @@ DESCRIPTION = (
 )
 
 
-def freeze(store: RawStore, raw_key: str, name: str) -> dict[str, str]:
-    """Copy one stored response and its sidecar to tests/golden/odds/<name>. Returns each file's
-    SHA-256 by its path under tests/golden/."""
+def stored(store: RawStore, raw_key: str, name: str) -> dict[str, bytes] | None:
+    """One stored response and its sidecar, by their file names in tests/golden/odds/, or None
+    unless both are in the raw cache: a body without its sidecar is an interrupted write."""
+    sources = {
+        f"{name}{suffix}": store.base_dir / f"{raw_key}{suffix}"
+        for suffix in (SUFFIX, ".meta.json")
+    }
+    if not all(path.exists() for path in sources.values()):
+        return None
+    return {target: path.read_bytes() for target, path in sources.items()}
+
+
+def freeze(files: dict[str, bytes]) -> dict[str, str]:
+    """Write the files to tests/golden/odds/. Returns each file's SHA-256 by its path under
+    tests/golden/."""
     hashes = {}
-    for suffix in (SUFFIX, ".meta.json"):
-        data = (store.base_dir / f"{raw_key}{suffix}").read_bytes()
-        target = ODDS_DIR / f"{name}{suffix}"
+    for name, data in files.items():
+        target = ODDS_DIR / name
         with target.open("xb") as f:  # a golden file is never overwritten
             f.write(data)
         hashes[target.relative_to(GOLDEN_DIR).as_posix()] = hashlib.sha256(data).hexdigest()
@@ -61,15 +72,30 @@ def main() -> int:
         print(f"{MANIFEST} exists: the golden odds are frozen already.", file=sys.stderr)
         return 1
     store = RawStore()
-    if not (store.base_dir / f"{SNAPSHOT}{SUFFIX}").exists():
-        print(f"{SNAPSHOT} is not in the raw cache: run nhl lake restore-raw", file=sys.stderr)
-        return 1
-    ODDS_DIR.mkdir(parents=True, exist_ok=True)
-    api = NhlApi(store)
-    schedule = api.schedule_week(SCHEDULE_WEEK, settled_on({GAME_DATE}))
     snapshot_name = f"snapshot_{SNAPSHOT.rsplit('/', 1)[1]}"
     schedule_name = f"schedule_{SCHEDULE_WEEK.isoformat()}"
-    files = freeze(store, SNAPSHOT, snapshot_name) | freeze(store, schedule.raw_key, schedule_name)
+    snapshot = stored(store, SNAPSHOT, snapshot_name)
+    if snapshot is None:
+        print(
+            f"{SNAPSHOT} is not complete in the raw cache: run nhl lake restore-raw",
+            file=sys.stderr,
+        )
+        return 1
+    api = NhlApi(store)
+    week = api.schedule_week(SCHEDULE_WEEK, settled_on({GAME_DATE}))
+    schedule = stored(store, week.raw_key, schedule_name)
+    if schedule is None:
+        print(f"{week.raw_key} is not complete in the raw cache", file=sys.stderr)
+        return 1
+    # Every source is read, and no target exists, before the first file is written, so a failed
+    # run leaves nothing behind in the protected directory.
+    staged = snapshot | schedule
+    existing = sorted(name for name in staged if (ODDS_DIR / name).exists())
+    if existing:
+        print(f"{', '.join(existing)} exist in {ODDS_DIR}: remove them by hand", file=sys.stderr)
+        return 1
+    ODDS_DIR.mkdir(parents=True, exist_ok=True)
+    files = freeze(staged)
     manifest = {
         "frozen_utc": utc_now().isoformat(),
         "snapshot": {"raw_key": SNAPSHOT, "file": f"odds/{snapshot_name}{SUFFIX}"},
