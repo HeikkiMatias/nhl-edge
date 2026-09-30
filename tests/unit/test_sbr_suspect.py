@@ -28,7 +28,16 @@ def test_each_criterion_lists_its_games() -> None:
         2018020006: {"swapped"},
         2018020007: {"big_move"},
         2018020008: {"extreme_open"},
+        2018020009: {"big_move"},
+        2018020010: {"big_move"},
     }
+
+
+def test_a_close_is_blamed_when_its_opener_and_puck_line_agree_against_it() -> None:
+    # 2018020009's opener and closing puck line make the home team the favourite; its close makes
+    # it a 32% underdog. In 2018020010 the opener backs neither side, so nothing outvotes the close.
+    listed = SbrSuspectOpeners.validate(suspect_openers(ODDS))
+    assert listed.filter(pl.col("bad_close"))["game_id"].to_list() == [2018020009]
 
 
 def test_each_game_keeps_its_evidence() -> None:
@@ -55,6 +64,17 @@ def test_the_committed_list_loads_and_has_the_reviewed_games() -> None:
     assert "extreme_open" in found[2021020648]  # EDM -1010 / MIN +705, closing -105 / -105
     assert "extreme_open" in found[2018020655]  # CHI +975 / CGY -1787
     assert listed.height == 40
+    # The three 2015-16 closes the #9 audit found at +1.5 on their own puck line (#64).
+    bad_closes = listed.filter(pl.col("bad_close"))["game_id"].to_list()
+    assert bad_closes == [2015020761, 2015020769, 2015020783]
+
+
+def test_the_schema_wants_the_evidence_behind_a_bad_close() -> None:
+    listed = suspect_openers(ODDS).with_columns(
+        bad_close=pl.col("game_id") == 2018020003  # a typo with no closing puck line
+    )
+    with pytest.raises(Exception, match="bad_close_has_its_evidence"):
+        SbrSuspectOpeners.validate(listed)
 
 
 def test_the_committed_list_is_as_written() -> None:

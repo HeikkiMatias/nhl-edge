@@ -16,6 +16,11 @@ phase 1 reads (audit.sbr.price_seasons, so 2022-23 is not inspected):
   ordinary line move, so it is not evidence of a swap.
 - below_100: the two opening prices sum below 100%, which one book's market never does.
 
+bad_close is not a criterion. It marks a listed game whose close, not its opener, is the likely
+error (#64): the close makes a team at least a CLEAR_FAVOURITE while the closing puck line gives
+that team +1.5 (the #9 audit's puck-line check), and the opener favours the puck line's -1.5 side.
+Two prices agree against the third. In such a game big_move describes the close's error.
+
 Probabilities come from audit.sbr.moneylines, which de-vigs through market/devig.py with its
 default, multiplicative (ADR 0008), as the #9 audit does.
 
@@ -67,7 +72,7 @@ def suspect_openers(odds: pl.DataFrame) -> pl.DataFrame:
     close_line = odds.filter(
         pl.col("market") == "spreads", pl.col("quote") == "close", pl.col("side") == "home"
     ).select("game_id", close_home_line="line")
-    p_open, p_close = pl.col("p_open"), pl.col("p_close")
+    p_open, p_close, line = pl.col("p_open"), pl.col("p_close"), pl.col("close_home_line")
     low, high = EXTREME_OPEN
     clear = CLEAR_FAVOURITE - 0.5
     listed = (
@@ -88,6 +93,13 @@ def suspect_openers(odds: pl.DataFrame) -> pl.DataFrame:
                 & (pl.col("unswapped_gap") <= SWAP_TOLERANCE)
             ).fill_null(False),
             below_100=p_open.is_null(),
+            bad_close=(
+                (
+                    ((p_close >= CLEAR_FAVOURITE) & (line > 0))
+                    | ((p_close <= 1 - CLEAR_FAVOURITE) & (line < 0))
+                )
+                & (((p_open > 0.5) & (line < 0)) | ((p_open < 0.5) & (line > 0)))
+            ).fill_null(False),
             observed_utc=pl.col("start_utc"),
         )
         .filter(pl.any_horizontal(*SBR_SUSPECT_FLAGS))
@@ -123,7 +135,7 @@ def main() -> None:
         frame = write_suspect_openers(Lake().read("sbr_odds"))
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
-    counts = frame.select(pl.col(SBR_SUSPECT_FLAGS).sum())
+    counts = frame.select(pl.col(*SBR_SUSPECT_FLAGS, "bad_close").sum())
     print(f"{frame.height} suspect openers written to {SUSPECT_FILE}")
     print(counts)
 
