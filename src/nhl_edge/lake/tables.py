@@ -38,6 +38,7 @@ from nhl_edge.lake.schemas import (
     ShiftCoverage,
     Shifts,
     Shots,
+    ShotXg,
     StrengthTime,
     dtypes,
 )
@@ -72,6 +73,7 @@ TABLES: dict[str, Table] = {
         ("game_id", "team", "strength", "own_net_empty", "opp_net_empty", "strength_source"),
         BY_DATE,
     ),
+    "shot_xg": Table(ShotXg, ("game_id", "event_id"), BY_DATE),
     "odds_snapshots": Table(LakeOddsSnapshots, ODDS_KEY, ("snapshot_date",)),
     "sbr_odds": Table(SbrOdds, SBR_KEY, ("season",)),
     "pregame_goalies": Table(PregameGoalies, PREGAME_GOALIES_KEY, BY_DATE),

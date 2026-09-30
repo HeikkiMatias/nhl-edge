@@ -32,6 +32,7 @@ app.add_typer(audit_app, name="audit")
 DEFAULT_BACKTEST_SEASONS = ",".join(str(season) for season in DEVELOPMENT_SEASONS)
 DEFAULT_BACKTEST_OUT = Path("reports/backtest")
 DEFAULT_AUDIT_OUT = Path("reports/audit")
+DEFAULT_XG_OUT = Path("reports/xg")
 
 
 def _not_implemented(command: str, phase: str) -> NoReturn:
@@ -264,6 +265,61 @@ def backtest(
             f"  {name}: B0 E2 minus E1 {cost['mean']:+.4f} [{cost['low']:+.4f}, "
             f"{cost['high']:+.4f}]; E1 B0 minus B1 {gain['mean']:+.4f} [{gain['low']:+.4f}, "
             f"{gain['high']:+.4f}] over {gain['games']:,} games"
+        )
+
+
+@app.command()
+def xg(
+    seasons: Annotated[
+        str | None,
+        typer.Option(
+            help="Seasons to score, as 20232024, a comma list or a range. Default: 2011-12 on."
+        ),
+    ] = None,
+    out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_XG_OUT,
+    r2: Annotated[bool, typer.Option("--r2", help="Mirror the shot_xg table to R2.")] = False,
+) -> None:
+    """Fit the xG model per season on earlier seasons' shots (#73, ADR 0010), write every scored
+    shot's xG to the lake's shot_xg, and the calibration report to <out>/<version>.md, with
+    figures for the open seasons only."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.audit import xg as xg_report
+    from nhl_edge.backtest import reports
+    from nhl_edge.backtest.seasons import OPEN_SEASONS
+    from nhl_edge.features import xg as xg_model
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.lake.tables import Lake
+
+    lake = Lake.from_env(mirror=r2)
+    shots, games = lake.read("shots"), lake.read("games")
+    if "prev_zone" not in shots.columns:
+        typer.echo("shots has no prev_ columns: run nhl ingest --replay", err=True)
+        raise typer.Exit(code=1)
+    known = sorted(games["season"].unique().to_list())
+    try:
+        wanted = (
+            parse_seasons(seasons) if seasons else [s for s in known if s >= xg_model.FIRST_SEASON]
+        )
+        now = datetime.now(UTC)
+        version = reports.version(xg_model.COMPONENT, now)
+        scored, models = xg_model.score(shots, games, wanted, version)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    days = games.filter(pl.col("season").is_in(wanted))["game_date"].unique().to_list()
+    lake.replace_dates("shot_xg", scored, days)
+    report = xg_report.markdown_report(
+        xg_report.scored_shots(scored, shots), models, OPEN_SEASONS, version
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{version}.md"
+    path.write_text(report)
+    typer.echo(f"{path}: {scored.height:,} shots scored in {len(models)} seasons")
+    for model in models:
+        typer.echo(
+            f"  {model.season}: fitted on {model.shots:,} shots to {model.train_cutoff:%Y-%m-%d}"
         )
 
 

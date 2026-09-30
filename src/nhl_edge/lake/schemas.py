@@ -457,6 +457,13 @@ class Shots(pa.DataFrameModel):
     is_empty_net, when the defending goalie is off the ice, always comes from situationCode. The
     counts are null for the few shots whose situationCode is missing.
 
+    The prev_ columns describe the play logged just before the shot in the same period, for the
+    xG model's rebound and rush flags (#73, ADR 0010): its type, the seconds from it to the shot,
+    whether it is logged under the shooting team (a blocked shot is logged under the team that
+    took it), and its zone from the shooting team's side. They are null for the period's first
+    play; the team is null for plays without one, such as stoppages, and the zone for plays
+    without coordinates or zoneCode.
+
     observed_utc is when the game's play-by-play counts as public: 10:00 UTC the morning after
     game_date, the rule ADR 0003 sets for results. A backfilled feed includes post-game
     corrections live did not have: shooter_id on a goal is the corrected scorer, and a shot record
@@ -487,6 +494,10 @@ class Shots(pa.DataFrameModel):
     is_penalty_shot: pl.Boolean
     situation_code: pl.String = pa.Field(nullable=True)
     strength_source: pl.String = pa.Field(isin=STRENGTH_SOURCES, nullable=True)
+    prev_event_type: pl.String = pa.Field(nullable=True)
+    prev_seconds: pl.Int32 = pa.Field(ge=0, nullable=True)
+    prev_by_shooting_team: pl.Boolean = pa.Field(nullable=True)
+    prev_zone: pl.String = pa.Field(isin=ZONES, nullable=True)
     observed_utc: UtcDatetime
     raw_key: pl.String
 
@@ -551,6 +562,33 @@ class StrengthTime(pa.DataFrameModel):
     @pa.dataframe_check
     def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(regular_season_id_of_its_season())
+
+
+class ShotXg(pa.DataFrameModel):
+    """A shot's expected goals (#73, ADR 0010): the probability that the unblocked shot became a
+    goal, from the xG model of its season, which was fitted only on shots public before the
+    season's first game. train_cutoff is the last training shot's observed_utc, and
+    artifact_version names the fit. Penalty shots, shots at an empty net and shots without
+    coordinates get no xG. observed_utc is the shot's own: the model predates every shot it
+    scores."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    event_id: pl.Int32
+    xg: pl.Float64 = pa.Field(gt=0, lt=1)
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^xg-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "event_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def model_predates_the_shot(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("train_cutoff") < pl.col("observed_utc"))
 
 
 class Shifts(pa.DataFrameModel):

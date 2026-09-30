@@ -140,6 +140,7 @@ Conventions:
 - In some 2019-20 and 2020-21 games, `situationCode` stays a skater off after a penalty for the rest of the game (#28). So when a game's shift chart is complete, each shot takes its skater counts from the chart instead (ADR 0009), when the chart puts 3 to 6 skaters of each team on the ice. Penalty shots keep `situationCode`. `is_empty_net` and the raw `situation_code` always stay with `situationCode`, and `strength_source` says which source each shot's counts came from.
 - Penalty shots are 1 skater against 0 with the defending goalie in. `shots` keeps and flags them (`is_penalty_shot`).
 - Coordinates are rink feet, turned so the shooting team attacks the net at x = +89 (y turns with x). Before 2019-20 the feed does not say which end a team attacks. The direction is inferred per team and period from the median x of its offensive-zone shots, and it agreed with `homeTeamDefendingSide` in all 954 team-periods checked (2019-20 onward). A few old plays have a zone code that contradicts their coordinates.
+- Each shot carries the play logged just before it in the same period, for xG's rebound and rush flags (#73, ADR 0010): `prev_event_type`, `prev_seconds`, `prev_by_shooting_team` and `prev_zone`, from the shooting team's side. The zone comes from the play's x and the shooting team's attack direction, past the blue line at x = ±25, or from `zoneCode` without coordinates. A blocked shot is logged under the team that took it, but its `zoneCode` is mostly from the blocker's side. On 160 games from 2010-11 to 2023-24, coordinates and `zoneCode` agreed for every other kind of play.
 - A player is on the ice for an event at second t when `start_s < t <= end_s`.
 - Boxscores flag one starting goalie per team in every game from 2010-11 on. Teams dress 17 to 21 players.
 
@@ -161,6 +162,10 @@ The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (202
 
 A game's chart is `complete` when it has no bad rows and every dressed player's shifts add up to his boxscore time on ice within 60 seconds (a missing boxscore time counts as not adding up). At every unblocked shot except penalty shots, the players on the ice by the chart are also compared with `situationCode`, and `skater_mismatches` and `goalie_mismatches` count where they differ. RAPM drops the stints that contradict the strength state. `nhl audit shifts` prints the per-season summary, which is reviewed before RAPM depends on the charts.
 
+
+## Fitted tables
+
+`shot_xg` (#73, ADR 0010) is not parsed from a feed but fitted: each scored shot's expected goals, from the xG model of its season. `nhl xg` fits one model per season from 2011-12 on, on every earlier season's shots public before the season's first game. It writes the table, partitioned like `shots`, and a calibration report to `reports/xg/<version>.md`. Each row carries its model's `train_cutoff` and `artifact_version`, and the shot's own `observed_utc`. Penalty shots, shots at an empty net and shots without coordinates get no row.
 ## Odds snapshots
 
 `nhl odds snapshot` runs from `.github/workflows/odds-snapshots.yml`, dispatched at each slot with the slot's name (see When jobs run). Slots are set in US Eastern time, so nothing changes by hand when DST starts or ends. The fallback cron has one line per slot for each UTC offset, and the CLI maps the line that fired to a slot for the current offset. A run first checks the NHL schedule and makes no Odds API call when the slot has no regular-season or playoff game.

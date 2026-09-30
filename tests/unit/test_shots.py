@@ -13,7 +13,7 @@ from feed_fixtures import (
     trimmed,
 )
 
-from nhl_edge.ingest.shots import attack_directions, parse_shots, situation
+from nhl_edge.ingest.shots import attack_directions, parse_shots, previous_plays, situation
 from nhl_edge.lake.schemas import SHOT_EVENTS
 
 
@@ -160,3 +160,58 @@ def test_attack_direction_falls_back_to_the_opponent() -> None:
 def test_a_feed_of_another_game_is_rejected() -> None:
     with pytest.raises(ValueError, match="is for game 2010020004"):
         parse_shots(feed("play-by-play", 2010020004), feed_game(2010020003), "k")
+
+
+# The play before each shot (#73)
+
+PREV = ["prev_event_type", "prev_seconds", "prev_by_shooting_team", "prev_zone"]
+
+
+def shot_at(frame: pl.DataFrame, period: int, clock: str, team: str) -> tuple[Any, ...]:
+    minutes, seconds = clock.split(":")
+    at = (period - 1) * 1200 + int(minutes) * 60 + int(seconds)
+    return frame.filter(pl.col("seconds") == at, pl.col("team") == team).select(PREV).row(0)
+
+
+def test_the_play_before_a_shot_from_the_shooting_teams_side() -> None:
+    # MTL's shot is blocked at 12:54 of the first period and the same shooter misses at 12:56. A
+    # blocked shot is logged under the team that took it, though its zoneCode (D) is the blocker's.
+    assert shot_at(MTL, 1, "12:56", "MTL") == ("blocked-shot", 2, True, "O")
+    # ARI's shot is blocked at 13:22 near the net MTL defends, and MTL shoots at the other end at
+    # 13:27: a rush from MTL's defensive zone.
+    assert shot_at(MTL, 1, "13:27", "MTL") == ("blocked-shot", 5, False, "D")
+
+
+def test_without_coordinates_the_zone_comes_from_zone_code() -> None:
+    data = json.loads(feed("play-by-play", MTL_ARI))
+    for play in data["plays"]:
+        if play["typeDescKey"] == "blocked-shot":
+            del play["details"]["xCoord"]
+    game = feed_game(MTL_ARI)
+    shots = parse_shots(json.dumps(data).encode(), game, raw_key("play-by-play", game))
+    assert shot_at(shots, 1, "12:56", "MTL") == ("blocked-shot", 2, True, "O")
+    assert shot_at(shots, 1, "13:27", "MTL") == ("blocked-shot", 5, False, "D")
+
+
+def test_the_play_before_is_by_game_time_within_the_period() -> None:
+    def play(event_id: int, period: int, clock: str, sort_order: int) -> dict[str, Any]:
+        return {
+            "eventId": event_id,
+            "sortOrder": sort_order,
+            "periodDescriptor": {"number": period, "periodType": "REG"},
+            "timeInPeriod": clock,
+            "typeDescKey": "hit",
+        }
+
+    # Event 3 is logged before event 2 but comes after it on the clock; event 4 opens period 2.
+    plays = [play(1, 1, "00:10", 1), play(3, 1, "00:30", 2), play(2, 1, "00:20", 3)]
+    plays.append(play(4, 2, "00:05", 4))
+    previous = {
+        event_id: (before["eventId"], s) for event_id, (before, s) in previous_plays(plays).items()
+    }
+    assert previous == {2: (1, 10), 3: (2, 10)}
+
+
+def test_every_shot_after_the_opening_faceoff_has_the_play_before_it() -> None:
+    assert MTL["prev_event_type"].null_count() == 0
+    assert (MTL["prev_seconds"] >= 0).all()

@@ -15,7 +15,18 @@ def plain(text: str) -> str:
     return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", text).split())
 
 
-COMMANDS = ["ingest", "rate", "predict", "backtest", "bets", "odds", "lake", "audit", "status"]
+COMMANDS = [
+    "ingest",
+    "rate",
+    "predict",
+    "backtest",
+    "xg",
+    "bets",
+    "odds",
+    "lake",
+    "audit",
+    "status",
+]
 STUBS = [
     ["rate"],
     ["predict"],
@@ -477,3 +488,55 @@ def test_status_sends_sbr_drift_to_the_sbr_import(
         "sbr_odds is behind R2: nhl odds sbr --replay --r2 --seasons 20182019 restores" in against
     )
     assert "nhl ingest" not in against
+
+
+def test_xg_scores_each_season_and_writes_the_report(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+    from shot_fixtures import games_of, synthetic_shots
+
+    from nhl_edge.lake.tables import Lake
+
+    seasons = [20102011, 20112012, 20122013]
+    games = games_of(seasons).with_columns(game_date=pl.col("start_utc").dt.date())
+    frames = {"shots": synthetic_shots(seasons, per_season=2000), "games": games}
+    monkeypatch.setattr(Lake, "read", lambda self, table: frames[table])
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["xg", "--seasons", "20112012-20122013"])
+    assert result.exit_code == 0, result.output
+    assert "shots scored in 2 seasons" in result.output
+    (report,) = (tmp_path / "reports" / "xg").glob("xg-*.md")
+    assert "| 20112012 |" in report.read_text()
+    assert list((tmp_path / "data" / "lake" / "shot_xg").rglob("*.parquet"))
+
+
+def test_xg_needs_the_previous_play_on_shots(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from shot_fixtures import games_of, synthetic_shots
+
+    from nhl_edge.lake.tables import Lake
+
+    shots = synthetic_shots([20102011]).drop("prev_zone")
+    frames = {"shots": shots, "games": games_of([20102011])}
+    monkeypatch.setattr(Lake, "read", lambda self, table: frames[table])
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["xg"])
+    assert result.exit_code == 1
+    assert "run nhl ingest --replay" in plain(result.output)
+
+
+def test_xg_refuses_a_season_with_nothing_before_it(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from shot_fixtures import games_of, synthetic_shots
+
+    from nhl_edge.lake.tables import Lake
+
+    frames = {"shots": synthetic_shots([20102011]), "games": games_of([20102011])}
+    monkeypatch.setattr(Lake, "read", lambda self, table: frames[table])
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["xg", "--seasons", "20102011"])
+    assert result.exit_code == 2
+    assert "no earlier season" in plain(result.output)
