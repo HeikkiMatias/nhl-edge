@@ -233,6 +233,10 @@ def parse_odds(body: bytes, snapshot_utc: datetime, slot: str, raw_key: str) -> 
     Many EU books quote the 3-way regulation line (home, draw, away over 60 minutes) under the h2h
     key. Those quotes are stored as h2h_3_way, so h2h only ever holds the two-way moneyline that
     includes OT and the shootout (hard rule 2).
+
+    A book's market with a price of 1.0 or less on any side is skipped too: such a price pays
+    nothing back, and books post it as a stand-in for a market they have not priced (#83). The raw
+    copy keeps it.
     """
     rows: list[dict[str, Any]] = []
     for event in json.loads(body):
@@ -241,7 +245,7 @@ def parse_odds(body: bytes, snapshot_utc: datetime, slot: str, raw_key: str) -> 
         for book in event.get("bookmakers", []):
             for market in book.get("markets", []):
                 key = market["key"]
-                if key not in REQUEST_MARKETS:
+                if key not in REQUEST_MARKETS or is_placeholder(market):
                     continue
                 if key == "h2h" and any(o["name"] == "Draw" for o in market["outcomes"]):
                     key = "h2h_3_way"
@@ -266,6 +270,21 @@ def parse_odds(body: bytes, snapshot_utc: datetime, slot: str, raw_key: str) -> 
                         }
                     )
     return OddsSnapshots.validate(pl.DataFrame(rows, schema=ODDS_FRAME_SCHEMA))
+
+
+def is_placeholder(market: dict[str, Any]) -> bool:
+    return any(float(outcome["price"]) <= 1 for outcome in market["outcomes"])
+
+
+def placeholder_markets(body: bytes) -> int:
+    """The number of requested book markets that parse_odds skips as placeholders."""
+    return sum(
+        is_placeholder(market)
+        for event in json.loads(body)
+        for book in event.get("bookmakers", [])
+        for market in book.get("markets", [])
+        if market["key"] in REQUEST_MARKETS
+    )
 
 
 def outcome_line(market: str, outcome: dict[str, Any]) -> float | None:
@@ -351,6 +370,8 @@ def run_snapshot(
     live = supabase_window(snapshots)
     events = snapshots["event_id"].n_unique()
     summary = f"odds snapshot {slot.name}: {len(snapshots)} quotes, {events} events, raw {raw_key}"
+    if skipped := placeholder_markets(response.body):
+        summary += f", {skipped} book markets priced at 1.0 or less skipped"
     if sink is None:
         echo(f"{summary}; dry run, {len(live)} rows in the live window not written")
         return

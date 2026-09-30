@@ -103,6 +103,27 @@ def test_exchange_lay_markets_are_skipped() -> None:
     assert set(parse(body(event([H2H, lay])))["market"]) == {"h2h"}
 
 
+def stand_in(home: float, away: float) -> dict[str, Any]:
+    prices = [{"name": "Boston Bruins", "price": home}, {"name": "Buffalo Sabres", "price": away}]
+    return {**H2H, "outcomes": prices}
+
+
+def test_a_market_priced_at_one_on_any_side_is_skipped() -> None:
+    # gtbets on 2026-09-30 (#83): h2h at 1.0 on both sides, which pays nothing and failed the
+    # whole snapshot's validation.
+    totals = {
+        "key": "totals",
+        "outcomes": [
+            {"name": "Over", "price": 1.9, "point": 6.5},
+            {"name": "Under", "price": 1.9, "point": 6.5},
+        ],
+    }
+    snapshot = body(event([stand_in(1.0, 1.0), totals]), event([stand_in(1.0, 11.0)]))
+    assert parse(snapshot)["market"].to_list() == ["totals", "totals"]
+    assert odds.placeholder_markets(snapshot) == 2
+    assert odds.placeholder_markets(body(event([H2H, totals]))) == 0
+
+
 def test_draw_outside_the_h2h_market_is_rejected() -> None:
     spreads = {
         "key": "spreads",
@@ -292,6 +313,27 @@ def test_snapshot_stores_raw_then_writes_the_live_window(tmp_path: Path) -> None
     (frame,) = written
     assert frame.height == 22
     assert (frame["raw_key"] == raw_key).all()
+    assert lines[-1].startswith("odds snapshot morning: 22 quotes, 2 events, raw ")
+
+
+def test_snapshot_names_the_markets_it_skips(tmp_path: Path) -> None:
+    store = RawStore(tmp_path)
+    placeholder = body(event([stand_in(1.0, 1.0), H2H]))
+    lines: list[str] = []
+    run_snapshot(
+        slot=slot_by_name("free-tier", "morning"),
+        regions="eu",
+        skip_if_no_games=False,
+        nhl=nhl_client(store),
+        odds=odds_client(lambda request: httpx.Response(200, content=placeholder)),
+        store=store,
+        sink=None,
+        now=SNAPSHOT,
+        echo=lines.append,
+    )
+    assert "2 quotes, 1 events" in lines[-1]
+    assert "1 book markets priced at 1.0 or less skipped" in lines[-1]
+    assert store.get("odds/2026-09-28/20260928T120053Z_morning_eu") == placeholder
 
 
 def test_odds_api_errors_never_show_the_key() -> None:
