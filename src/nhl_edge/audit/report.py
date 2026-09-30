@@ -2,8 +2,7 @@
 under reports/audit/, named for the last day it covers.
 
 Each section lists its problems, so that every one can become an issue once the report is
-reviewed. One section waits for data that is not in the lake yet: the pre-game data that would
-show when starting goalies are confirmed (#42 and #43).
+reviewed.
 """
 
 from dataclasses import dataclass, field
@@ -13,6 +12,7 @@ from pathlib import Path
 import polars as pl
 
 from nhl_edge.audit import games as game_audit
+from nhl_edge.audit import goalies as goalie_audit
 from nhl_edge.audit import sbr as sbr_audit
 from nhl_edge.audit import snapshots as snapshot_audit
 from nhl_edge.backtest.seasons import SEASON_ROLES, SeasonRole
@@ -49,12 +49,7 @@ def build(lake: Lake, store: RawStore, as_of: date) -> list[Section]:
         _shift_section(lake.read("shift_coverage").filter(pl.col("game_date") <= as_of)),
         _reference_section(games),
         _snapshot_section(lake, store, listed, as_of),
-        Section(
-            "Starting goalies",
-            "Not yet: the pre-game goalie poll (#43) logs the NHL's pre-game data from 2026-27 "
-            "on, and #42 measures it. This section will say whether, and how long before the "
-            "start, that data names each team's starting goalie.",
-        ),
+        _goalie_section(lake, games, as_of),
     ]
     return sections
 
@@ -149,6 +144,19 @@ def _snapshot_section(lake: Lake, store: RawStore, listed: pl.DataFrame, as_of: 
     )
     problems = snapshot_audit.problems(runs, due, events, as_of)
     return Section("Live odds snapshots", body, problems)
+
+
+def _goalie_section(lake: Lake, games: pl.DataFrame, as_of: date) -> Section:
+    starters = goalie_audit.starters(games, lake.read("actual_lineups"), lake.read("players"))
+    polls = [lake.read(table) for table in ("pregame_goalies", "dailyfaceoff_goalies")]
+    before = [poll.filter(pl.col("game_date") <= as_of) for poll in polls]
+    frame = goalie_audit.team_games(starters, *before)
+    body = (
+        "Each pre-game goalie poll (#42, #48) against the starter in `actual_lineups`: when "
+        "each source first named a goalie, and whether it was the starter.\n\n"
+        + goalie_audit.markdown_report(frame)
+    )
+    return Section("Starting goalies", body, goalie_audit.problems(frame))
 
 
 def markdown(sections: list[Section], as_of: date, generated: datetime) -> str:
