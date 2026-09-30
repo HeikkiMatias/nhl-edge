@@ -1,6 +1,6 @@
 # 0008. Multiplicative is the default de-vig method
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-09-30)
 - Date: 2026-09-30
 
 ## Context
