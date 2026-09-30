@@ -23,11 +23,12 @@ Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to
   - E1 (the close) B0 log loss 0.6571 [0.6469, 0.6668]. E2 (the opener) 0.6605 [0.6505, 0.6700]. E2 minus E1, paired: +0.0034 [+0.0006, +0.0064].
   - E2 refuses the 8 openers whose de-vigged home probability is outside 0.15 to 0.85 (ADR 0007). E2 on every opener is reported under `sensitivity` in summary.json (+0.0046 [+0.0011, +0.0083] against E1).
 - **Jobs:** GitHub Actions runs the nightly ingest (09:00 UTC), five odds slots a day, and the goalie polls hourly at :50 from 12:50 to 02:50 UTC. docs/data-sources.md, "When jobs run", has the times.
-- **Run times (#50):** GitHub's `schedule` starts this repo's runs 3 to 6 hours late, after most puck drops. The Cloudflare Worker in `infra/timer` dispatches every job on time (`infra/timer/README.md`), but its first GitHub token got 401. The owner stored a new token on 2026-09-30 at 09:23 UTC. The first job due after that is the morning odds slot at 11:05 UTC (07:05 ET).
-  - If the Actions tab shows that run as `workflow_dispatch`, started within a minute of 11:05, set the repository variable `TIMER_ACTIVE` to `true`. The late scheduled runs then skip.
-  - If there is no such run, `npx wrangler@4 tail` in `infra/timer` shows each dispatch's response.
-  - Until the timer runs, a goalie poll can be started by hand 30 to 60 minutes before puck drop: `gh workflow run pregame-goalies.yml`. Never start an odds slot by hand, since it spends Odds API credits.
-  - #50 closes once `TIMER_ACTIVE` is `true` and a day of runs has landed on time.
+- **Run times (#50):** GitHub's `schedule` starts this repo's runs 3 to 6 hours late, after most puck drops. The Cloudflare Worker in `infra/timer` dispatches every job on time (`infra/timer/README.md`). Its first GitHub token got 401. The owner stored a new one on 2026-09-30 at 09:23 UTC, and set the repository variable `TIMER_ACTIVE` to `true` at 09:32 UTC, before the Worker had dispatched anything with it.
+  - While `TIMER_ACTIVE` is `true`, GitHub's own scheduled runs skip, so if the Worker fails, nothing runs at all.
+  - The first job due is the morning odds slot at 11:05 UTC (07:05 ET). After it, run `gh run list --workflow odds-snapshots.yml --event workflow_dispatch --limit 3`.
+  - If no run from 11:05 shows, run `gh variable set TIMER_ACTIVE --body false` so the late GitHub schedule takes over again. `npx wrangler@4 tail` in `infra/timer` then shows each dispatch's response.
+  - A goalie poll can be started by hand 30 to 60 minutes before puck drop: `gh workflow run pregame-goalies.yml`. Never start an odds slot by hand, since it spends Odds API credits.
+  - #50 closes once a day of runs has landed on time.
 - **Closed in P1:** #4, #5, #6, #7, #8, #20, #24, #25, #26, #27, #29, #43, #48, #52, #56.
 
 ## In flight
