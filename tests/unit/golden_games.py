@@ -15,12 +15,8 @@ from typing import Any
 
 import polars as pl
 
-from nhl_edge.ingest.feeds import FeedGame
 from nhl_edge.ingest.games import listed_games, parse_games
-from nhl_edge.ingest.lineups import parse_actual_lineups
-from nhl_edge.ingest.shift_coverage import shift_coverage
-from nhl_edge.ingest.shifts import parse_shifts
-from nhl_edge.ingest.shots import parse_shots
+from nhl_edge.ingest.nhl_ingest import parse_feeds
 
 GOLDEN_DIR = Path(__file__).parents[1] / "golden"
 MANIFEST: dict[str, Any] = json.loads((GOLDEN_DIR / "manifest.json").read_text())
@@ -54,17 +50,12 @@ def parse_case(case: dict[str, Any], bodies: Bodies = frozen_body) -> dict[str, 
     games = parse_games(listed_games(schedule, {game_date}), RAW_KEY).filter(
         pl.col("game_id") == game_id
     )
-    game = FeedGame.from_boxscore(games.row(0, named=True), box)
-    shots = parse_shots(pbp, game, RAW_KEY)
-    shifts, drops = parse_shifts(chart, game, RAW_KEY)
-    lineups = parse_actual_lineups(box, game, RAW_KEY)
-    return {
-        "games": games,
-        "shots": shots,
-        "shifts": shifts,
-        "actual_lineups": lineups,
-        "shift_coverage": shift_coverage(game, shots, shifts, lineups, drops, RAW_KEY),
+    feeds = {
+        "play-by-play": (pbp, RAW_KEY),
+        "boxscore": (box, RAW_KEY),
+        "shiftcharts": (chart, RAW_KEY),
     }
+    return {"games": games, **parse_feeds(games.row(0, named=True), feeds)}
 
 
 def key_paths(value: Any, prefix: str = "") -> set[str]:

@@ -38,6 +38,7 @@ COLUMNS = [
     "is_empty_net",
     "is_penalty_shot",
     "situation_code",
+    "strength_source",
     "observed_utc",
     "raw_key",
 ]

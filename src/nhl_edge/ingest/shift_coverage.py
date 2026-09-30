@@ -4,13 +4,22 @@ Two checks per game. Each dressed player's shifts should add up to his boxscore 
 each unblocked shot, the players on the ice by the shift chart should match the situationCode: the
 skaters and goalies of each team. RAPM depends on both, so the season report (`nhl audit shifts`)
 is reviewed before it does.
+
+A complete chart also supplies each shot's skater counts (chart_strength, ADR 0009), since
+situationCode can stay a skater off for the rest of a game after a penalty (#28).
 """
 
 import polars as pl
 
 from nhl_edge.ingest.feeds import FeedGame
 from nhl_edge.ingest.shifts import ShiftDrops
-from nhl_edge.lake.schemas import TOI_TOLERANCE_S, ShiftCoverage, dtypes
+from nhl_edge.lake.schemas import (
+    STRENGTH_SOURCES,
+    TOI_TOLERANCE_S,
+    ShiftCoverage,
+    Shots,
+    dtypes,
+)
 
 
 def on_ice_counts(
@@ -53,6 +62,47 @@ def on_ice_counts(
     return checked.join(on_ice, on="event_id", how="left").with_columns(
         pl.col(c).fill_null(0) for c in counts
     )
+
+
+# The skaters of one team the chart may put on the ice at a shot, its goalie in or pulled; outside
+# this range a count is taken as the chart's error, and the shot keeps its situationCode counts.
+CHART_SKATERS = (3, 6)
+
+
+def chart_strength(
+    game: FeedGame, shots: pl.DataFrame, shifts: pl.DataFrame, lineups: pl.DataFrame
+) -> pl.DataFrame:
+    """shots with skater counts from the shift chart (ADR 0009) at each shot on_ice_counts checks
+    (it has a situationCode and is not a penalty shot) where the chart puts CHART_SKATERS of each
+    team on the ice. The caller passes only a complete chart. is_empty_net and situation_code keep
+    what situationCode says."""
+    low, high = CHART_SKATERS
+    counts = (
+        on_ice_counts(game, shots, shifts, lineups)
+        .filter(
+            pl.col("home_skaters_on").is_between(low, high),
+            pl.col("away_skaters_on").is_between(low, high),
+        )
+        .select("event_id", "home_skaters_on", "away_skaters_on")
+    )
+    home, chart = pl.col("is_home"), pl.col("home_skaters_on").is_not_null()
+    own = pl.when(home).then(pl.col("home_skaters_on")).otherwise(pl.col("away_skaters_on"))
+    other = pl.when(home).then(pl.col("away_skaters_on")).otherwise(pl.col("home_skaters_on"))
+    counted = shots.join(counts, on="event_id", how="left").with_columns(
+        skaters_for=pl.when(chart).then(own).otherwise(pl.col("skaters_for")).cast(pl.Int8),
+        skaters_against=pl.when(chart)
+        .then(other)
+        .otherwise(pl.col("skaters_against"))
+        .cast(pl.Int8),
+        strength_source=pl.when(chart)
+        .then(pl.lit(STRENGTH_SOURCES[1]))
+        .otherwise(pl.col("strength_source")),
+    )
+    rebuilt = pl.format("{}v{}", pl.col("skaters_for"), pl.col("skaters_against"))
+    counted = counted.with_columns(
+        strength=pl.when(chart).then(rebuilt).otherwise(pl.col("strength"))
+    )
+    return Shots.validate(counted.select(list(dtypes(Shots))))
 
 
 def shift_coverage(

@@ -51,7 +51,7 @@ Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to
 2. **#9 and #42, the committed report.** After two weeks of polls (from 2026-09-29, so around 2026-10-13), run `nhl audit report`, commit it to `reports/audit/`, and review it as in the comment on #9: every problem gets an issue in a milestone, and a dropped season or source gets an ADR. #42 closes with the report's answer on the NHL's starter flag, #9 with the reviewed report.
 3. **Phase 2, started 2026-09-30.** The owner approved the phase plan, and it is pasted into every phase 2 PR. #11 lists its ten tasks in order:
    - #30 recheck (in flight);
-   - #28 strength source, an ADR where I bring the owner my recommendation;
+   - #28 strength source: ADR 0009, accepted on 2026-09-30. Shots take their skater counts from a complete shift chart, and `situationCode` otherwise;
    - #72 strength time;
    - #73 xG, with an ADR;
    - #74 team strength, with the tuning-protocol ADR;
