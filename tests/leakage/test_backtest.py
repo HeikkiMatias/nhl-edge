@@ -284,15 +284,31 @@ def test_the_implausible_rule_reads_the_opener_alone() -> None:
         odds = market_history.implausible_opener(odds, game_id)
     odds = market_history.implausible_opener(odds, games.filter(season=20202021)["game_id"][0])
     predictions, coverage, fits = run(odds, games, [20212022])
-    # Closes that would flag every game on the #56 list (swapped sides) change nothing E2 reads.
+    _, _, every_fits = run(odds, games, [20212022], refuse_implausible=False)
+    # The earlier season's implausible opener leaves B1's fit as well as the test season's scoring.
+    assert fits["E2"][20212022].games == every_fits["E2"][20212022].games - 1
+    counts = coverage["E2"][20212022]
+    assert counts["implausible"] == 3
+    assert counts["scored"] == 57
+    # Closes that would flag every game on the #56 list (swapped sides), and implausible closes on
+    # every other game, change nothing E2 reads.
     swapped = odds.with_columns(
         side=pl.when(pl.col("quote") == "close")
         .then(pl.col("side").replace({"home": "away", "away": "home"}))
         .otherwise(pl.col("side"))
     )
-    again, again_coverage, again_fits = run(swapped, games, [20212022])
-    assert again.filter(experiment="E2").equals(predictions.filter(experiment="E2"))
-    assert again_fits["E2"] == fits["E2"]
-    counts = coverage["E2"][20212022]
-    assert again_coverage["E2"][20212022]["implausible"] == counts["implausible"] == 3
-    assert counts["scored"] == 57
+    extreme = odds
+    for game_id in games["game_id"].to_list()[::2]:
+        extreme = market_history.implausible_opener(extreme, game_id, quote="close")
+    for closes in (swapped, extreme):
+        again, again_coverage, again_fits = run(closes, games, [20212022])
+        assert again.filter(experiment="E2").equals(predictions.filter(experiment="E2"))
+        assert again_fits["E2"] == fits["E2"]
+        assert again_coverage["E2"][20212022]["implausible"] == 3
+    # Flipped results change B1's fit, but not which games E2 refuses.
+    flipped = games.with_columns(home_score=pl.col("away_score"), away_score=pl.col("home_score"))
+    again, again_coverage, again_fits = run(odds, flipped, [20212022])
+    refused = set(games["game_id"]) - set(predictions.filter(experiment="E2")["game_id"])
+    assert refused == set(games["game_id"]) - set(again.filter(experiment="E2")["game_id"])
+    assert again_fits["E2"][20212022].games == fits["E2"][20212022].games
+    assert again_coverage["E2"][20212022]["implausible"] == 3

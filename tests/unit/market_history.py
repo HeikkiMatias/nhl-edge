@@ -96,13 +96,11 @@ def seasons(
     return pl.concat([odds for odds, _ in parts]), pl.concat([finals for _, finals in parts])
 
 
-def implausible_opener(odds: pl.DataFrame, game_id: int) -> pl.DataFrame:
-    """odds with the game's opening moneyline replaced by an implausible one, Edmonton's -1010 and
-    Minnesota's 705 of 2022-02-20: a home probability of about 0.88."""
+def implausible_opener(odds: pl.DataFrame, game_id: int, quote: str = "open") -> pl.DataFrame:
+    """odds with the game's opening moneyline (or another quote's) replaced by an implausible one,
+    Edmonton's -1010 and Minnesota's 705 of 2022-02-20: a home probability of about 0.88."""
     prices = {"home": -1010, "away": 705}
-    rows = (
-        (pl.col("game_id") == game_id) & (pl.col("market") == "h2h") & (pl.col("quote") == "open")
-    )
+    rows = (pl.col("game_id") == game_id) & (pl.col("market") == "h2h") & (pl.col("quote") == quote)
     home = pl.col("side") == "home"
     return odds.with_columns(
         price_american=pl.when(rows)
