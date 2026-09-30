@@ -40,6 +40,15 @@ The rule, per shot:
 
 `shift_coverage` keeps comparing the chart with `situationCode`, so its counts do not change.
 
+Measured on the raw cache with the rule in place, shots whose strength changes from `situationCode`'s:
+
+| Season | Shots | From the chart | Strength changed | Games above 5% changed |
+| --- | ---: | ---: | ---: | ---: |
+| 2018-19 | 110,231 | 109,247 | 113 (0.10%) | 0 |
+| 2019-20 | 93,140 | 90,441 | 3,533 (3.79%) | 113 |
+| 2020-21 | 71,311 | 69,162 | 667 (0.94%) | 25 |
+| 2021-22 | 113,290 | 110,968 | 214 (0.19%) | 0 |
+
 ## Backtest evidence
 
 None yet. xG (#73) and team strength (#74) are the first components to read `strength`. The first B2 backtest (#78) reports B2 with strength from `situationCode` beside it as a sensitivity.
