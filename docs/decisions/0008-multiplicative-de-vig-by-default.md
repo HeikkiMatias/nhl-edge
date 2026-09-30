@@ -21,7 +21,7 @@ The three methods tie on the development seasons. The prices do carry a favourit
 
 ## Backtest evidence
 
-Run `backtest-20260930-a18ef13` in `reports/backtest/runs.csv`, on 2018-19 and 2021-22, with 95% weekly block bootstrap intervals. B0's paired log-loss difference against multiplicative, pooled:
+Run `backtest-20260930-fb17031` in `reports/backtest/runs.csv`, on 2018-19 and 2021-22, the first with the default in `devig.py` and with every figure the same as `backtest-20260930-a18ef13` before it, with 95% weekly block bootstrap intervals. B0's paired log-loss difference against multiplicative, pooled:
 
 | B0 method | E1 (close) | E2 (opener) |
 | --- | --- | --- |

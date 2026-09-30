@@ -4,7 +4,7 @@ Current production model, how it scored, and its known weaknesses. It is updated
 
 ## Current model
 
-None. Phase 1 has the two market baselines. B0 is the de-vigged SBR moneyline, with nothing fitted. B1 is the recalibrated market, a logistic regression on B0's log-odds fitted per test season on the earlier seasons. Backtest `backtest-20260930-a18ef13` on the development seasons 2018-19 and 2021-22. E2 refuses implausible SBR openers (ADR 0007).
+None. Phase 1 has the two market baselines. B0 is the de-vigged SBR moneyline, with nothing fitted, under the default multiplicative method (ADR 0008). B1 is the recalibrated market, a logistic regression on B0's log-odds fitted per test season on the earlier seasons. Backtest `backtest-20260930-fb17031` on the development seasons 2018-19 and 2021-22. E2 refuses implausible SBR openers (ADR 0007).
 
 ## Metrics
 
@@ -24,14 +24,14 @@ Every metric is reported with a 95% weekly block bootstrap interval, pooled over
 
 | Component | Version | train_cutoff |
 | --- | --- | --- |
-| Backtest (B0, B1; E2 refuses implausible openers, with every opener as a sensitivity) | backtest-20260930-a18ef13 | per fold, below |
-| B0 | the de-vigged market (multiplicative) | none: B0 fits nothing |
-| B1, 2018-19 fold (E1 and E2) | backtest-20260930-a18ef13 | 2018-04-09 10:00 UTC |
-| B1, 2021-22 fold (E1 and E2) | backtest-20260930-a18ef13 | 2021-05-20 10:00 UTC |
+| Backtest (B0, B1; E2 refuses implausible openers, with every opener as a sensitivity) | backtest-20260930-fb17031 | per fold, below |
+| B0 | the de-vigged market (multiplicative, ADR 0008) | none: B0 fits nothing |
+| B1, 2018-19 fold (E1 and E2) | backtest-20260930-fb17031 | 2018-04-09 10:00 UTC |
+| B1, 2021-22 fold (E1 and E2) | backtest-20260930-fb17031 | 2021-05-20 10:00 UTC |
 
 ## Known weaknesses
 
-B0 is multiplicative-de-vigged. Power and Shin can't be told apart from it on these seasons: every paired interval includes 0. Its per-season log loss is:
+B0 is multiplicative-de-vigged, the default since ADR 0008. Power and Shin can't be told apart from it on these seasons: every paired interval includes 0, and the backtest keeps pairing them against it. Its per-season log loss is:
 - E1: 0.6726 [0.6565, 0.6878] in 2018-19 and 0.6421 [0.6288, 0.6550] in 2021-22.
 - E2: 0.6747 [0.6594, 0.6890] and 0.6463 [0.6337, 0.6596].
 
