@@ -158,7 +158,7 @@ def test_run_scores_b0_and_b1_for_both_experiments() -> None:
         "b1_trained_on": 40,
     }
     assert coverage["E1"][20212022] == counts
-    assert coverage["E2"][20212022] == {**counts, "opener_differs_from_close": 3}
+    assert coverage["E2"][20212022] == {**counts, "implausible": 0, "opener_differs_from_close": 3}
 
 
 def test_a_season_asked_for_twice_is_predicted_once() -> None:
@@ -350,17 +350,14 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert result.exit_code == 0, result.output
     assert "E1 B0 multiplicative: log loss" in result.output
     assert "E2 B1 multiplicative: log loss" in result.output
-    assert "E2 without_implausible_openers B1 multiplicative: log loss" in result.output
+    assert "E2 with_every_opener B1 multiplicative: log loss" in result.output
     summary = json.loads((tmp_path / "out" / "summary.json").read_text())
     assert summary["seasons"] == [20212022]
-    # E2 keeps every game until the owner decides; the sensitivity leaves out the implausible
-    # 2010-11 opener, from B1's fit only.
+    # E2 refuses the implausible 2010-11 opener in B1's fit; E2 on every opener keeps it.
     e2 = summary["experiments"]["E2"]["coverage"]["20212022"]
-    sensitivity = summary["sensitivity"]["without_implausible_openers"]
-    assert sensitivity["removed_openers"] == {"20102011": 1}
-    without = sensitivity["E2"]["coverage"]["20212022"]
-    assert (e2["priced"], without["priced"]) == (3, 3)
-    assert without["b1_trained_on"] == e2["b1_trained_on"] - 1
+    every = summary["sensitivity"]["with_every_opener"]["E2"]["coverage"]["20212022"]
+    assert (e2["priced"], every["priced"]) == (3, 3)
+    assert e2["b1_trained_on"] == every["b1_trained_on"] - 1
 
 
 def test_a_market_below_100_percent_is_counted_and_left_out() -> None:
