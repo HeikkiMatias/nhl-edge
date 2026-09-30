@@ -48,6 +48,7 @@ from nhl_edge.ingest.players import (
 from nhl_edge.ingest.shift_coverage import chart_strength, shift_coverage
 from nhl_edge.ingest.shifts import parse_shifts
 from nhl_edge.ingest.shots import parse_shots
+from nhl_edge.ingest.strength_time import parse_strength_time
 from nhl_edge.lake.schemas import Games, dtypes
 from nhl_edge.lake.supabase import Supabase
 from nhl_edge.lake.tables import FEED_TABLES, TABLES, Lake
@@ -138,9 +139,13 @@ def parse_feeds(
     coverage = shift_coverage(feed_game, shots, shifts, lineups, drops, chart[1])
     # A complete chart supplies the skater counts, which situationCode can drift from (ADR 0009).
     # The coverage above still compares the chart with situationCode.
-    if coverage["complete"].item():
+    complete = coverage["complete"].item()
+    if complete:
         shots = chart_strength(feed_game, shots, shifts, lineups)
-    return dict(zip(FEED_TABLES, (shots, shifts, lineups, coverage), strict=True))
+    on_chart = (shifts, lineups) if complete else (None, None)
+    strength = parse_strength_time(pbp[0], feed_game, pbp[1], *on_chart)
+    tables = (shots, shifts, lineups, coverage, strength)
+    return dict(zip(FEED_TABLES, tables, strict=True))
 
 
 @dataclass

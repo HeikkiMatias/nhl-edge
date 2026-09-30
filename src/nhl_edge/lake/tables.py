@@ -38,6 +38,7 @@ from nhl_edge.lake.schemas import (
     ShiftCoverage,
     Shifts,
     Shots,
+    StrengthTime,
     dtypes,
 )
 
@@ -66,6 +67,11 @@ TABLES: dict[str, Table] = {
     "shifts": Table(Shifts, ("game_id", "player_id", "period", "shift_number"), BY_DATE),
     "actual_lineups": Table(ActualLineups, ("game_id", "player_id"), BY_DATE),
     "shift_coverage": Table(ShiftCoverage, ("game_id",), BY_DATE),
+    "strength_time": Table(
+        StrengthTime,
+        ("game_id", "team", "strength", "own_net_empty", "opp_net_empty", "strength_source"),
+        BY_DATE,
+    ),
     "odds_snapshots": Table(LakeOddsSnapshots, ODDS_KEY, ("snapshot_date",)),
     "sbr_odds": Table(SbrOdds, SBR_KEY, ("season",)),
     "pregame_goalies": Table(PregameGoalies, PREGAME_GOALIES_KEY, BY_DATE),
@@ -74,7 +80,7 @@ TABLES: dict[str, Table] = {
 # Partition columns replace_dates can replace a date at a time.
 DATE_PARTITIONS = ("game_date", "snapshot_date")
 # The tables parsed from each game's play-by-play, boxscore and shift chart.
-FEED_TABLES = ("shots", "shifts", "actual_lineups", "shift_coverage")
+FEED_TABLES = ("shots", "shifts", "actual_lineups", "shift_coverage", "strength_time")
 
 
 def known_at(frame: pl.DataFrame, prediction_utc: datetime) -> pl.DataFrame:

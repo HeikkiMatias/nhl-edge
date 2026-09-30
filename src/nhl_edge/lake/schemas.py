@@ -513,6 +513,46 @@ class Shots(pa.DataFrameModel):
         )
 
 
+class StrengthTime(pa.DataFrameModel):
+    """The seconds one team spent at one strength state in a game (#72): strength in the team's
+    own view (5v4 is its power play), and whether its own or the opponent's net was empty. The
+    two teams of a game mirror each other. Skater counts follow ADR 0009, as in shots:
+    strength_source says whether they came from the complete shift chart or situationCode.
+    game_seconds is the game's length, overtime included and shootout left out, which each
+    team's seconds should add up to. Rows count as public at 10:00 UTC the morning after the game
+    (ADR 0004)."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    is_home: pl.Boolean
+    strength: pl.String = pa.Field(str_matches=r"^[0-6]v[0-6]$")
+    own_net_empty: pl.Boolean
+    opp_net_empty: pl.Boolean
+    strength_source: pl.String = pa.Field(isin=STRENGTH_SOURCES)
+    seconds: pl.Int32 = pa.Field(gt=0)
+    game_seconds: pl.Int32 = pa.Field(ge=0)
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = [  # noqa: RUF012 (pandera config)
+            "game_id",
+            "team",
+            "strength",
+            "own_net_empty",
+            "opp_net_empty",
+            "strength_source",
+        ]
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+
 class Shifts(pa.DataFrameModel):
     """One player shift from the shift chart (type 517 rows), periods 1 to 4.
 

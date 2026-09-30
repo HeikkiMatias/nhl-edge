@@ -16,6 +16,7 @@ from nhl_edge.audit import games as game_audit
 from nhl_edge.audit import goalies as goalie_audit
 from nhl_edge.audit import sbr as sbr_audit
 from nhl_edge.audit import snapshots as snapshot_audit
+from nhl_edge.audit import strength_time as strength_audit
 from nhl_edge.backtest.seasons import SEASON_ROLES, SeasonRole
 from nhl_edge.ingest import shift_coverage
 from nhl_edge.ingest.sbr import SBR_SEASONS
@@ -48,6 +49,7 @@ def build(lake: Lake, store: RawStore, as_of: date) -> list[Section]:
         ),
         _sbr_section(lake, store, listed, games, as_of),
         _shift_section(lake.read("shift_coverage").filter(pl.col("game_date") <= as_of)),
+        _strength_section(lake.read("strength_time"), games),
         _reference_section(games),
         _snapshot_section(lake, store, listed, as_of),
         _goalie_section(lake, games, as_of),
@@ -112,6 +114,20 @@ def _shift_section(coverage: pl.DataFrame) -> Section:
         "Shift charts per season, from `shift_coverage` (as `nhl audit shifts`), without the "
         "one-time test season.\n\n" + shift_coverage.markdown_report(report),
     )
+
+
+def _strength_section(frame: pl.DataFrame, games: pl.DataFrame) -> Section:
+    # As the shift section: the one-time test season stays out, and so do seasons under way.
+    design = [s for s, role in SEASON_ROLES.items() if role is not SeasonRole.ONE_TIME_TEST]
+    games = games.filter(pl.col("season").is_in(design))
+    frame = frame.filter(pl.col("game_id").is_in(games["game_id"].implode()))
+    report = strength_audit.season_report(frame, games)
+    body = (
+        "Seconds at each strength state per team-game, from `strength_time` (#72, ADR 0009), "
+        "without the one-time test season: whether each game's seconds add up to its length, "
+        "and the mean minutes per team-game.\n\n" + strength_audit.markdown_report(report)
+    )
+    return Section("Strength time", body, strength_audit.problems(frame, games))
 
 
 def _reference_section(games: pl.DataFrame) -> Section:

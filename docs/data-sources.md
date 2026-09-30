@@ -124,6 +124,7 @@ The 16 seasons come to 19,152 games. With the feeds this is about 64,000 request
 | `shifts` | shift chart | one player shift | team, period and start and end in elapsed game seconds |
 | `actual_lineups` | boxscore | one dressed player | role (F, D, G), sweater number, starting goalie and time on ice |
 | `shift_coverage` | all three | one game | how far the shift chart can be trusted (below) |
+| `strength_time` | play-by-play and shift chart | one team, game and strength state | seconds at each strength state (such as `5v4`), with each net manned or empty (below) |
 
 Every row counts as public at 10:00 UTC the morning after its game date, like the game's result (ADR 0003). A game's own shots, shifts and lineup never feed a prediction for it, and backtest lineups come only from earlier games' boxscores (hard rule 9). The backfilled feeds were fetched years after the games and include post-game corrections, which live does not see. The tables leave out scoring credits, but corrections can still change kept values: a goal's scorer, a shot record, time on ice. ADR 0004 accepts this small look-ahead, and #30 measures it.
 
@@ -140,6 +141,12 @@ Conventions:
 - Coordinates are rink feet, turned so the shooting team attacks the net at x = +89 (y turns with x). Before 2019-20 the feed does not say which end a team attacks. The direction is inferred per team and period from the median x of its offensive-zone shots, and it agreed with `homeTeamDefendingSide` in all 954 team-periods checked (2019-20 onward). A few old plays have a zone code that contradicts their coordinates.
 - A player is on the ice for an event at second t when `start_s < t <= end_s`.
 - Boxscores flag one starting goalie per team in every game from 2010-11 on. Teams dress 17 to 21 players.
+
+`strength_time` (#72) gives the seconds each team spent at each strength state, for per-60 rates and expected power-play opportunities:
+- **Timeline.** Every play carries a `situationCode`, and plays come every few seconds. Each stretch of play between consecutive plays takes the skater counts at the first of them, and a period's first play's counts stand from the period's start. Plays are ordered by game time, since old feeds log a few out of order.
+- **Counts.** They follow ADR 0009, as shots' do: from the complete shift chart, with 3 to 6 skaters a team, otherwise from `situationCode`. Whether a net is empty comes from `situationCode`, so a few seconds a game can show six skaters with the goalie in, around delayed penalties and line changes.
+- **What is left out.** Penalty shots and the shootout. A penalty that expires between two plays counts until the next play.
+- **Checks.** Each team's seconds add up to `game_seconds`, the game's length with overtime and without the shootout, and the two teams mirror each other. The audit report's "Strength time" section lists every game that does not add up or has no rows.
 
 Shift chart rows the parser leaves out, counted in `shift_coverage`:
 
