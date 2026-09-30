@@ -8,7 +8,6 @@ from nhl_edge.backtest.metrics import (
     SEED,
     bootstrap,
     difference,
-    resampled_fits,
     resampled_means,
 )
 
@@ -37,18 +36,6 @@ def test_the_bootstrap_gives_the_figures_it_gave_before_its_resampling_was_share
     assert (estimate.games, estimate.weeks) == (200, 18)
 
 
-def test_a_fitted_mean_resamples_the_same_weeks_as_the_mean_itself() -> None:
-    games = frame()
-    means = resampled_means(games, "value", np.random.default_rng(SEED), draws=50)
-    fits = resampled_fits(
-        games,
-        lambda rows: {"mean": float(rows["value"].mean())},  # type: ignore[arg-type]
-        np.random.default_rng(SEED),
-        draws=50,
-    )
-    assert fits["mean"] == pytest.approx(means, rel=1e-12)
-
-
 def test_a_difference_between_groups_resamples_each_on_its_own() -> None:
     a = frame().with_columns(value=pl.lit(1.0))
     b = frame(seed=8).with_columns(value=pl.lit(0.25))
@@ -65,5 +52,3 @@ def test_resampling_needs_games() -> None:
     empty = frame().clear()
     with pytest.raises(ValueError, match="no games"):
         resampled_means(empty, "value", np.random.default_rng(SEED))
-    with pytest.raises(ValueError, match="no games"):
-        resampled_fits(empty, lambda rows: {}, np.random.default_rng(SEED))

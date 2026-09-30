@@ -6,10 +6,10 @@ Weeks are drawn within each season, so a pooled interval keeps each season's wei
 is the 2.5th to 97.5th percentile of the resampled means.
 
 The same resampling gives an interval for a difference between two independent groups of games,
-such as two eras of seasons, and for a statistic fitted on the games, such as B1's slope.
+such as two eras of seasons.
 """
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -44,7 +44,7 @@ class Estimate:
 
 @dataclass(frozen=True)
 class Interval:
-    """A value with its weekly block bootstrap interval, for a difference or a fitted statistic."""
+    """A value with its weekly block bootstrap interval, such as a difference between groups."""
 
     value: float
     low: float
@@ -98,27 +98,6 @@ def resampled_means(
         totals += season["total"].to_numpy()[picks].sum(axis=1)
         counts += season["games"].to_numpy()[picks].sum(axis=1)
     return totals / counts
-
-
-def resampled_fits(
-    frame: pl.DataFrame,
-    statistic: Callable[[pl.DataFrame], dict[str, float]],
-    rng: np.random.Generator,
-    draws: int = DRAWS,
-) -> dict[str, np.ndarray]:
-    """Each named value of statistic, fitted on the frame's games in each of draws resamples of
-    its weeks."""
-    if frame.is_empty():
-        raise ValueError("no games to fit on")
-    seasons = [
-        (season["row"].to_list(), picks) for season, picks in _picks(_weeks(frame), draws, rng)
-    ]
-    fitted: dict[str, np.ndarray] = {}
-    for draw in range(draws):
-        rows = np.concatenate([rows[week] for rows, picks in seasons for week in picks[draw]])
-        for name, value in statistic(frame[rows]).items():
-            fitted.setdefault(name, np.empty(draws))[draw] = value
-    return fitted
 
 
 def bootstrap(frame: pl.DataFrame, value: str, draws: int = DRAWS, seed: int = SEED) -> Estimate:

@@ -316,27 +316,26 @@ def test_the_implausible_rule_reads_no_close_from_the_fold() -> None:
     assert again_coverage["E2"][20212022]["implausible"] == 3
 
 
-def test_the_book_era_diagnostic_refuses_openers_with_earlier_closes_only() -> None:
-    # #65's diagnostic takes each season as its own fold: the season's own closes, swapped or
-    # implausible on every other game, change none of its openers.
-    odds, games = market_history.seasons([20172018, 20182019], games=60)
-    for game_id in games.filter(season=20182019)["game_id"].head(3).to_list():
-        odds = market_history.implausible_opener(odds, game_id)
-    _, openers = book_era.markets(odds, games)
-    season = openers.filter(season=20182019)
-    assert season.height == 57
-    tested = (pl.col("quote") == "close") & (pl.col("season") == 20182019)
-    swapped = odds.with_columns(
-        side=pl.when(tested)
-        .then(pl.col("side").replace({"home": "away", "away": "home"}))
-        .otherwise(pl.col("side"))
+def test_the_book_era_diagnostic_fits_each_b1_before_its_season() -> None:
+    # #65's diagnostic runs the walk-forward on every season with an earlier one, so each B1 it
+    # reports was fitted on results public before its season's first start.
+    odds, games = market_history.seasons([20162017, 20172018, 20182019], games=60)
+    report = book_era.diagnostic(odds, games, draws=50)
+    for experiment, fits in report["b1_fits"].items():
+        for season, fit in fits.items():
+            first = games.filter(season=int(season))["start_utc"].min()
+            assert isinstance(first, datetime)
+            assert datetime.fromisoformat(fit["train_cutoff"]) < first, (experiment, season)
+    # Flipping a season's results changes no fit of that season or an earlier one.
+    flipped = games.with_columns(
+        home_score=pl.when(pl.col("season") == 20182019)
+        .then(pl.col("away_score"))
+        .otherwise(pl.col("home_score")),
+        away_score=pl.when(pl.col("season") == 20182019)
+        .then(pl.col("home_score"))
+        .otherwise(pl.col("away_score")),
     )
-    extreme = odds
-    for game_id in games.filter(season=20182019)["game_id"].to_list()[::2]:
-        extreme = market_history.implausible_opener(extreme, game_id, quote="close")
-    for closes in (swapped, extreme):
-        _, again = book_era.markets(closes, games)
-        assert again.filter(season=20182019).equals(season)
+    assert book_era.diagnostic(odds, flipped, draws=50)["b1_fits"] == report["b1_fits"]
 
 
 def test_the_book_era_diagnostic_never_reads_a_held_out_season() -> None:

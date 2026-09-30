@@ -210,12 +210,12 @@ def backtest(
                     f"[{pooled['low']:.4f}, {pooled['high']:.4f}] over {pooled['games']:,} games"
                 )
     eras = report["diagnostics"]["book_era"]
-    for name, cost in eras["b0_e2_against_e1"]["eras"].items():
-        slope = eras["b1_on_closes"]["eras"][name]["slope"]
+    for name, cost in eras["b0_e2_minus_e1"]["eras"].items():
+        gain = eras["b0_minus_b1"]["E1"]["eras"][name]
         typer.echo(
             f"  {name}: B0 E2 minus E1 {cost['mean']:+.4f} [{cost['low']:+.4f}, "
-            f"{cost['high']:+.4f}] over {cost['games']:,} games; B1 slope on closes "
-            f"{slope['value']:.3f} [{slope['low']:.3f}, {slope['high']:.3f}]"
+            f"{cost['high']:+.4f}]; E1 B0 minus B1 {gain['mean']:+.4f} [{gain['low']:+.4f}, "
+            f"{gain['high']:+.4f}] over {gain['games']:,} games"
         )
 
 
