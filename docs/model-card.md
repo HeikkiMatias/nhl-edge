@@ -24,7 +24,7 @@ Every metric is reported with a 95% weekly block bootstrap interval, pooled over
 
 | Component | Version | train_cutoff |
 | --- | --- | --- |
-| Backtest (B0, B1, E2 on every opener) | backtest-20260930-2392524 | per fold, below |
+| Backtest (B0, B1; E2 refuses implausible openers, with every opener as a sensitivity) | backtest-20260930-2392524 | per fold, below |
 | B0 | the de-vigged market (multiplicative) | none: B0 fits nothing |
 | B1, 2018-19 fold (E1 and E2) | backtest-20260930-2392524 | 2018-04-09 10:00 UTC |
 | B1, 2021-22 fold (E1 and E2) | backtest-20260930-2392524 | 2021-05-20 10:00 UTC |

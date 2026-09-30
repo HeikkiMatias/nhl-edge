@@ -224,17 +224,19 @@ def run(
             else every.clear()
             for season, start in folds.items()
         }
-        tested_out = pl.concat([rejected[s].filter(pl.col("season") == s) for s in seasons])
-        every = every.join(tested_out, on="game_id", how="anti")
+        # Each fold's fit starts from every opener and drops only that fold's refusals, so a fold
+        # never depends on which other seasons were requested.
         market = b0(every, B1_METHOD)
         unsettled = quoted.join(results, on="game_id", how="anti")
-        prices = every.filter(pl.col("season").is_in(seasons))
-        dropped = prices.filter(refused(prices))
+        priced = every.filter(pl.col("season").is_in(seasons))
         moved = (
-            prices.join(closes, on="game_id")
+            priced.join(closes, on="game_id")
             .filter(pl.concat_list("home_price", "away_price") != pl.col("close"))
             .select("season")
         )
+        tested_out = pl.concat([rejected[s].filter(pl.col("season") == s) for s in seasons])
+        prices = priced.join(tested_out, on="game_id", how="anti")
+        dropped = prices.filter(refused(prices))
         coverage[experiment] = {}
         fits[experiment] = {}
         for season in seasons:

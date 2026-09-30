@@ -50,6 +50,8 @@ def test_e2_refuses_an_implausible_opener_in_scoring_and_b1_fits() -> None:
     every, all_coverage, all_fits = run(odds, games, [20182019], refuse_implausible=False)
     counts, all_counts = coverage["E2"][20182019], all_coverage["E2"][20182019]
     assert (counts["implausible"], all_counts["implausible"]) == (1, 0)
+    # The moved-opener count reads every opener, refused or not.
+    assert counts["opener_differs_from_close"] == all_counts["opener_differs_from_close"]
     assert counts["priced"] == all_counts["priced"]
     assert counts["scored"] == all_counts["scored"] - 1
     assert fits["E2"][20182019].games == all_fits["E2"][20182019].games - 1
@@ -85,3 +87,16 @@ def test_an_earlier_close_as_extreme_keeps_the_opener() -> None:
     _, widened_coverage, _ = run(widened, games, [20182019])
     assert coverage["E2"][20182019]["implausible"] == 1
     assert widened_coverage["E2"][20182019]["implausible"] == 0
+
+
+def test_a_fold_never_depends_on_the_other_requested_seasons() -> None:
+    # The 2020-21 fold refuses this opener, but its own close widens the 2021-22 fold's bounds, so
+    # that fold's fit keeps it whether or not 2020-21 is requested too.
+    odds, games = market_history.seasons([20192020, 20202021, 20212022], games=60)
+    game_id = games.filter(season=20202021)["game_id"][0]
+    odds = market_history.implausible_opener(odds, game_id)
+    odds = market_history.implausible_opener(odds, game_id, quote="close")
+    _, both_coverage, both = run(odds, games, [20202021, 20212022])
+    _, _, alone = run(odds, games, [20212022])
+    assert both_coverage["E2"][20202021]["implausible"] == 1
+    assert both["E2"][20212022] == alone["E2"][20212022]
