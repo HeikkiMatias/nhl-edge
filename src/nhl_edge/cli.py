@@ -125,7 +125,7 @@ def ingest(
 def recheck(
     recent: Annotated[
         int,
-        typer.Option(min=1, help="The last N game dates a week or more old (UTC dates)."),
+        typer.Option(min=1, help="Games whose tables' copy was fetched 7 to 7+N days ago."),
     ] = 3,
     r2: Annotated[
         bool, typer.Option("--r2", help="Read games and raw copies from R2, and mirror rechecks.")
@@ -134,6 +134,11 @@ def recheck(
     """Fetch each final game's play-by-play, boxscore and shift chart again a week after the copy
     the tables read, stored under <kind>-recheck where no table reads them, to measure post-game
     corrections (#30, ADR 0004). `nhl audit report` compares the two copies."""
+    from datetime import timedelta
+
+    import polars as pl
+
+    from nhl_edge.ingest.corrections import first_fetches
     from nhl_edge.ingest.corrections import recheck as recheck_feeds
     from nhl_edge.ingest.nhl_api import NhlApi, utc_now
     from nhl_edge.lake.raw import RawStore
@@ -143,11 +148,18 @@ def recheck(
     load_env()
     store = RawStore.from_env(mirror=r2, flag="--r2")
     lake = Lake.from_env(mirror=r2)
+    now = utc_now()
     if r2:
         lake.pull("games")
-    now = utc_now()
-    summary = recheck_feeds(NhlApi(store), lake.read("games"), now, recent)
-    window = f"{summary.dates[0]}..{summary.dates[-1]}"
+    games = lake.read("games")
+    # The seasons of the last year's games, whose lineups date each game's first copy.
+    seasons = games.filter(pl.col("game_date") >= now.date() - timedelta(days=365))["season"]
+    if r2:
+        lake.pull("actual_lineups", seasons=seasons.unique().to_list())
+    lineups = lake.read("actual_lineups").filter(pl.col("season").is_in(seasons.unique()))
+    summary = recheck_feeds(NhlApi(store), games, first_fetches(lineups), now, recent)
+    start, end = summary.window
+    window = f"copies fetched {start:%Y-%m-%d %H:%M}..{end:%Y-%m-%d %H:%M} UTC"
     typer.echo(
         f"recheck {window}: {summary.games} games, {summary.fetched} feeds fetched, "
         f"{summary.reused} already rechecked; {len(summary.not_due)} not a week old yet, "

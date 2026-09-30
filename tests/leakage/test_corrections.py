@@ -4,7 +4,7 @@ after the one the per-game tables read, with any post-game corrections in it. It
 same tables, row for row, as before it."""
 
 import json
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -12,7 +12,7 @@ import polars as pl
 from feed_fixtures import OPENING_WEEK_GAMES
 from test_nhl_ingest import NOW, OPENING, FakeNhl, fail, make_api
 
-from nhl_edge.ingest.corrections import recheck
+from nhl_edge.ingest.corrections import first_fetches, recheck
 from nhl_edge.ingest.nhl_api import FEED_KINDS
 from nhl_edge.ingest.nhl_ingest import Ingest
 from nhl_edge.lake.raw import RawStore
@@ -46,11 +46,11 @@ def test_a_recheck_never_reaches_the_per_game_tables(tmp_path: Path) -> None:
     store = RawStore(tmp_path / "raw")
     lake = Lake(tmp_path / "lake")
     before = build(store, lake, offline=False)
-    # The recheck goes through the code the nightly run uses. The fixture games are from 2010 and
-    # their copies were fetched in 2026, so the window of due dates reaches back to them.
-    now = NOW + timedelta(days=8)
-    days = (now.date() - timedelta(days=7) - date(2010, 10, 7)).days + 1
-    summary = recheck(make_api(store, corrections), lake.read("games"), now, days)
+    # The recheck goes through the code the nightly run uses, a week after the first copies.
+    now = NOW + timedelta(days=7, hours=1)
+    fetched = first_fetches(lake.read("actual_lineups"))
+    games = lake.read("games")
+    summary = recheck(make_api(store, corrections), games, fetched, now, 3, first_season=20102011)
     assert (summary.games, summary.fetched) == (len(OPENING_WEEK_GAMES), 3 * len(FEED_KINDS))
     # A replay, and an ingest that may reuse the cache, both read the first copies.
     replayed = build(store, Lake(tmp_path / "replay"), offline=True)

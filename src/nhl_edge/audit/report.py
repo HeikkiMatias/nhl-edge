@@ -51,7 +51,7 @@ def build(lake: Lake, store: RawStore, as_of: date) -> list[Section]:
         _reference_section(games),
         _snapshot_section(lake, store, listed, as_of),
         _goalie_section(lake, games, as_of),
-        _corrections_section(store, games, as_of),
+        _corrections_section(store, games, lake.read("actual_lineups"), as_of),
     ]
     return sections
 
@@ -161,8 +161,10 @@ def _goalie_section(lake: Lake, games: pl.DataFrame, as_of: date) -> Section:
     return Section("Starting goalies", body, goalie_audit.problems(frame))
 
 
-def _corrections_section(store: RawStore, games: pl.DataFrame, as_of: date) -> Section:
-    result = correction_audit.corrections(store, games, as_of)
+def _corrections_section(
+    store: RawStore, games: pl.DataFrame, lineups: pl.DataFrame, as_of: date
+) -> Section:
+    result = correction_audit.corrections(store, games, lineups, as_of)
     body = (
         "Each live-season game's play-by-play, boxscore and shift chart fetched again a week "
         "after the copy the tables read (`nhl recheck`, #30), parsed the same way and compared "

@@ -8,20 +8,31 @@ problem to review; if such differences reach more than a few games a season, ADR
 """
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 import polars as pl
 
 from nhl_edge.backtest.seasons import FIRST_LIVE_SEASON
-from nhl_edge.ingest.corrections import ADDED, CHANGED, RECHECK_AFTER, REMOVED, GameDiff, diff_game
+from nhl_edge.ingest.corrections import (
+    ADDED,
+    CHANGED,
+    GOAL_SCORER,
+    RECHECK_AFTER,
+    REMOVED,
+    GameDiff,
+    diff_game,
+    first_fetches,
+)
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import FEED_TABLES
 
 # The one difference ADR 0004 accepts as small: a goal credited to another shooter.
-SCORER = ("shots", "shooter_id")
-# The nightly run after a game date fetches the tables' copy; a recheck is due RECHECK_AFTER later,
-# on the nightly run of that day.
-DUE_AFTER = RECHECK_AFTER + timedelta(days=1)
+SCORER = ("shots", GOAL_SCORER)
+# A recheck is due RECHECK_AFTER after the tables' copy was fetched. The nightly run that falls due
+# can start just before that moment, so a game counts as missing only a night later.
+GRACE = timedelta(days=1)
+# The report on as_of counts the nightly run of the morning after it.
+REPORT_TIME = time(12)
 EXAMPLES = 5
 
 
@@ -36,11 +47,20 @@ class Corrections:
         return [game_id for game_id in self.due if game_id not in checked]
 
 
-def corrections(store: RawStore, games: pl.DataFrame, as_of: date) -> Corrections:
-    """Every live-season game whose recheck was due by as_of, and the diffs of those rechecked."""
-    due = games.filter(
-        pl.col("season") >= FIRST_LIVE_SEASON, pl.col("game_date") <= as_of - DUE_AFTER
-    ).sort("game_date", "game_id")
+def corrections(
+    store: RawStore, games: pl.DataFrame, lineups: pl.DataFrame, as_of: date
+) -> Corrections:
+    """Every live-season game whose recheck was due by the morning after as_of, judged by when
+    its tables' copy was fetched (the stamp of actual_lineups' raw_key), and the diffs of those
+    rechecked."""
+    cutoff = datetime.combine(as_of + timedelta(days=1), REPORT_TIME, UTC)
+    live = pl.col("season") >= FIRST_LIVE_SEASON
+    due = (
+        games.filter(live)
+        .join(first_fetches(lineups.filter(live)), on="game_id")
+        .filter(pl.col("fetched_utc") + RECHECK_AFTER + GRACE <= cutoff)
+        .sort("game_date", "game_id")
+    )
     diffs = [diff for game in due.iter_rows(named=True) if (diff := diff_game(store, game))]
     return Corrections(due["game_id"].to_list(), diffs)
 

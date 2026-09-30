@@ -10,11 +10,12 @@ diff_game compares the parsed tables row by row.
 """
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import polars as pl
 
+from nhl_edge.backtest.seasons import FIRST_LIVE_SEASON
 from nhl_edge.ingest.nhl_api import (
     FEED_KINDS,
     RECHECK_SUFFIX,
@@ -40,13 +41,34 @@ KEYS: dict[str, list[str]] = {
 # and the game's own keys, which both copies share.
 NOT_COMPARED = frozenset({"raw_key", "observed_utc", "game_id", "season", "game_date"})
 ADDED, REMOVED, CHANGED = "row added", "row removed", "any value"
+# A goal credited to another shooter, apart from a changed shooter of a missed or saved shot.
+GOAL_SCORER = "goal scorer"
 CHANGE_SCHEMA = {"table": pl.String, "field": pl.String, "rows": pl.Int64}
+STAMP = "%Y%m%dT%H%M%SZ"
 
 
-def due_dates(now: datetime, days: int) -> list[date]:
-    """The last `days` game dates whose tables' copies can be RECHECK_AFTER old by now."""
-    last = now.date() - RECHECK_AFTER
-    return [last - timedelta(days=i) for i in range(days - 1, -1, -1)]
+def due_window(now: datetime, days: int) -> tuple[datetime, datetime]:
+    """The fetch times of the tables' copies whose recheck falls in the last `days` days by now:
+    RECHECK_AFTER before now, and `days` days before that."""
+    last = now - RECHECK_AFTER
+    return last - timedelta(days=days), last
+
+
+def first_fetches(lineups: pl.DataFrame) -> pl.DataFrame:
+    """Each game's game_id and the fetch time of the boxscore its tables read, from the stamp that
+    ends actual_lineups' raw_key. The ingest fetches a game's three feeds together, so this dates
+    the copy a recheck is measured against, whatever night the game was ingested."""
+    return (
+        lineups.group_by("game_id")
+        .agg(pl.col("raw_key").first())
+        .select(
+            "game_id",
+            fetched_utc=pl.col("raw_key")
+            .str.split("/")
+            .list.last()
+            .str.strptime(pl.Datetime("us", "UTC"), STAMP),
+        )
+    )
 
 
 def _entity(game: dict[str, Any]) -> str:
@@ -55,7 +77,7 @@ def _entity(game: dict[str, Any]) -> str:
 
 @dataclass
 class RecheckSummary:
-    dates: list[date]
+    window: tuple[datetime, datetime]
     games: int = 0
     fetched: int = 0
     reused: int = 0
@@ -64,11 +86,28 @@ class RecheckSummary:
     not_found: list[str] = field(default_factory=list)
 
 
-def recheck(api: NhlApi, games: pl.DataFrame, now: datetime, days: int) -> RecheckSummary:
-    """Fetch the three feeds again for each final game of the last `days` due dates, once the
-    play-by-play the tables read is RECHECK_AFTER old. A rerun reuses a recheck it already has."""
-    summary = RecheckSummary(due_dates(now, days))
-    due = games.filter(pl.col("game_date").is_in(summary.dates)).sort("game_date", "game_id")
+def recheck(
+    api: NhlApi,
+    games: pl.DataFrame,
+    fetched: pl.DataFrame,
+    now: datetime,
+    days: int,
+    first_season: int = FIRST_LIVE_SEASON,
+) -> RecheckSummary:
+    """Fetch the three feeds again for each final game from first_season on whose tables' copy
+    was fetched in the due window (first_fetches gives `fetched`), once the play-by-play the
+    tables read is RECHECK_AFTER old. Candidates are chosen by fetch time, not game date, so a
+    game ingested nights late is still rechecked a week after. Only live seasons by default: the
+    2010-26 backfill fetched every earlier game in September 2026, and those copies are the late
+    ones already. A rerun reuses a recheck it already has."""
+    summary = RecheckSummary(due_window(now, days))
+    start, end = summary.window
+    due = (
+        games.filter(pl.col("season") >= first_season)
+        .join(fetched, on="game_id")
+        .filter(pl.col("fetched_utc") > start, pl.col("fetched_utc") <= end)
+        .sort("game_date", "game_id")
+    )
     for game in due.iter_rows(named=True):
         first = api.store.latest(f"{SOURCE}/play-by-play/{_entity(game)}")
         if first is None:
@@ -109,7 +148,13 @@ def compare(table: str, first: pl.DataFrame, later: pl.DataFrame) -> pl.DataFram
     differs = [pl.col(name).ne_missing(pl.col(f"{name}_later")) for name in fields]
     counts[CHANGED] = both.filter(pl.any_horizontal(differs)).height if differs else 0
     for name, differ in zip(fields, differs, strict=True):
-        counts[name] = both.filter(differ).height
+        if table == "shots" and name == "shooter_id":
+            # A goal in both copies credited to another shooter is a scoring change.
+            goal = pl.col("is_goal") & pl.col("is_goal_later")
+            counts[GOAL_SCORER] = both.filter(differ & goal).height
+            counts[name] = both.filter(differ & ~goal).height
+        else:
+            counts[name] = both.filter(differ).height
     rows = [(table, name, rows) for name, rows in counts.items() if rows]
     return pl.DataFrame(rows, schema=CHANGE_SCHEMA, orient="row")
 
