@@ -1,0 +1,20 @@
+{
+  "frozen_utc": "2026-09-30T11:01:54+00:00",
+  "snapshot": {
+    "raw_key": "odds/2026-09-30/20260930T013617Z_pre7_eu",
+    "file": "odds/snapshot_20260930T013617Z_pre7_eu.json.gz"
+  },
+  "overtime_game": {
+    "game_id": 2026020004,
+    "season": 20262027,
+    "game_date": "2026-09-29",
+    "schedule": "odds/schedule_2026-09-27.json.gz",
+    "description": "VAN at EDM, 6-5 in overtime. The pre7 snapshot at 01:36 UTC, 24 minutes before the NHL's 02:00 start (the Odds API lists 02:10), quotes it on the two-way moneyline (h2h, 8 books) and the 3-way regulation line (h2h_3_way, 13 books), with 20 games on h2h and 28 on h2h_3_way in all."
+  },
+  "files": {
+    "odds/snapshot_20260930T013617Z_pre7_eu.json.gz": "4048625a736575efb3d6eaea4d200cbccb0fe0f306511c2c414971c87f333baf",
+    "odds/snapshot_20260930T013617Z_pre7_eu.meta.json": "3a0dea20472c1bba604d78acb840147d9dadaa7d20c6fa1938a80df4d2abb14b",
+    "odds/schedule_2026-09-27.json.gz": "85668f080ab6a3f39bbe6cc1f9c225c16c4eab6d9b1a20899151cc0a9c57123c",
+    "odds/schedule_2026-09-27.meta.json": "b84872b796274f3ca80a2be454a4e460d246d604319e44c9241a1e01a64b9a54"
+  }
+}
