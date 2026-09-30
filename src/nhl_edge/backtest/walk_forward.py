@@ -13,6 +13,7 @@ Outcomes settle the moneyline on the full game, overtime and shootout included (
 are read to score a prediction and, for games before the fold, to fit B1.
 """
 
+import math
 from collections.abc import Iterable
 from datetime import datetime
 
@@ -22,12 +23,14 @@ import polars as pl
 from nhl_edge.backtest.market import Experiment, market_prices
 from nhl_edge.backtest.metrics import log_loss
 from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
-from nhl_edge.ingest.sbr_suspect import EXTREME_OPEN
 from nhl_edge.market import recalibration
 from nhl_edge.market.devig import OVERROUND_TOLERANCE, Method, fair_probabilities, overround
 
 # B1 recalibrates this method's probabilities, until an ADR chooses the default de-vig method.
 B1_METHOD = Method.MULTIPLICATIVE
+# E2 refuses an opener more extreme than every close before its fold, with that range widened
+# outward to a multiple of this step (ADR 0007).
+BOUNDS_STEP = 0.05
 
 Coverage = dict[str, dict[int, dict[str, int]]]
 Fits = dict[str, dict[int, recalibration.Recalibration]]
@@ -66,14 +69,29 @@ def refused(prices: pl.DataFrame) -> pl.Series:
     return pl.Series(total < 1 - OVERROUND_TOLERANCE)
 
 
-def implausible(prices: pl.DataFrame) -> pl.Series:
+def bounds(closes: pl.DataFrame, start: datetime) -> tuple[float, float]:
+    """The home probabilities E2 accepts in a fold starting at start (ADR 0007): the range of the
+    de-vigged home probability at every close public before start, widened outward to a multiple
+    of BOUNDS_STEP. closes holds B0 of E1's prices under B1_METHOD. Only closes before the fold are
+    read, so the bounds are point in time, and a live E2 can apply them with the closes it has."""
+    seen = closes.filter(pl.col("prediction_utc") < start)["p_home"]
+    low, high = seen.min(), seen.max()
+    if not (isinstance(low, float) and isinstance(high, float)):
+        raise ValueError(f"no closes before {start} to bound E2's openers")
+    steps = (round(low / BOUNDS_STEP, 9), round(high / BOUNDS_STEP, 9))
+    return (
+        round(math.floor(steps[0]) * BOUNDS_STEP, 9),
+        round(math.ceil(steps[1]) * BOUNDS_STEP, 9),
+    )
+
+
+def implausible(prices: pl.DataFrame, low: float, high: float) -> pl.Series:
     """The openers E2 refuses (ADR 0007): a de-vigged home probability under B1_METHOD outside
-    EXTREME_OPEN, such as Edmonton -1010 against Minnesota 705 (#56). The rule reads each market's
-    own prices alone, so a live E2 can apply it when it reads the opener. A market de-vigging
+    low to high, the bounds of the opener's fold, such as Edmonton -1010 against Minnesota 705
+    (#56). The rule reads each market's own prices and the bounds alone. A market de-vigging
     refuses is not implausible, since it is already refused."""
     if prices.is_empty():
         return pl.Series(dtype=pl.Boolean)
-    low, high = EXTREME_OPEN
     flagged = np.zeros(prices.height, dtype=bool)
     fair = ~refused(prices).to_numpy()
     if fair.any():
@@ -161,8 +179,9 @@ def run(
     B1's fit per experiment and season. sbr_odds and games hold the test seasons and the earlier
     seasons B1 is fitted on.
 
-    E2 refuses implausible openers, in its scoring and in B1's E2 fits (ADR 0007), unless
-    refuse_implausible is False, which reports E2 on every opener beside it.
+    E2 refuses implausible openers, those outside the range of every close before the fold, in its
+    scoring and in B1's E2 fits (ADR 0007), unless refuse_implausible is False, which reports E2
+    on every opener beside it.
 
     Coverage counts the season's games, those with a price, those priced but without a result,
     those whose market de-vigging refuses, those scored, and B1's training games. E2's also counts
@@ -183,14 +202,31 @@ def run(
     closes = market_prices(tested, Experiment.E1).select(
         "game_id", close=pl.concat_list("home_price", "away_price")
     )
+    history = b0(market_prices(open_odds, Experiment.E1), B1_METHOD)
     for experiment in Experiment:
         quoted = market_prices(open_odds, experiment)
         every = quoted.join(results, on="game_id")
-        refusing = experiment is Experiment.E2 and refuse_implausible
-        rejected = every.filter(implausible(every)) if refusing else every.clear()
-        every = every.join(rejected, on="game_id", how="anti")
-        market = b0(every, B1_METHOD)
         quoted = quoted.filter(pl.col("season").is_in(seasons))
+        folds = {}
+        for season in seasons:
+            # E2 predicts at the opener, before the start, so its fold starts at its first
+            # prediction when that comes earlier.
+            first = quoted.filter(pl.col("season") == season)["prediction_utc"].min()
+            folds[season] = (
+                min(starts[season], first) if isinstance(first, datetime) else starts[season]
+            )
+        # E2 refuses the openers outside each fold's bounds, in the fold's test season and in its
+        # B1 fit (ADR 0007).
+        refusing = experiment is Experiment.E2 and refuse_implausible
+        rejected = {
+            season: every.filter(implausible(every, *bounds(history, start)))
+            if refusing
+            else every.clear()
+            for season, start in folds.items()
+        }
+        tested_out = pl.concat([rejected[s].filter(pl.col("season") == s) for s in seasons])
+        every = every.join(tested_out, on="game_id", how="anti")
+        market = b0(every, B1_METHOD)
         unsettled = quoted.join(results, on="game_id", how="anti")
         prices = every.filter(pl.col("season").is_in(seasons))
         dropped = prices.filter(refused(prices))
@@ -203,11 +239,8 @@ def run(
         fits[experiment] = {}
         for season in seasons:
             in_season = pl.col("season") == season
-            # E2 predicts at the opener, before the start, so its fold starts at its first
-            # prediction when that comes earlier.
-            first = quoted.filter(in_season)["prediction_utc"].min()
-            start = min(starts[season], first) if isinstance(first, datetime) else starts[season]
-            predicted, fit = b1(market, start, season)
+            fold = market.join(rejected[season], on="game_id", how="anti")
+            predicted, fit = b1(fold, folds[season], season)
             frames.append(_scored(predicted, experiment, "B1", B1_METHOD))
             fits[experiment][season] = fit
             counts = {
@@ -217,7 +250,7 @@ def run(
                 "refused": dropped.filter(in_season).height,
             }
             if experiment is Experiment.E2:
-                counts["implausible"] = rejected.filter(in_season).height
+                counts["implausible"] = rejected[season].filter(in_season).height
             counts["scored"] = counts["priced"] - sum(
                 counts[key] for key in ("unsettled", "refused", "implausible") if key in counts
             )

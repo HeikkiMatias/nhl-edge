@@ -25,12 +25,15 @@ REFERENCE_METHOD = Method.MULTIPLICATIVE
 # The market baseline every other model is compared with (hard rule 3).
 BASELINE = "B1"
 # What each experiment's market price is, and the assumption it rests on (ADR 0006).
+OPENER = (
+    "SBR opening moneyline, assumed available from 10:00 US Eastern on the game date and read one "
+    "second later (ADR 0006). If an opener was posted earlier and had moved by then, E2's result "
+    "is an upper bound; coverage counts the games whose opener differs from the close."
+)
 MARKETS = {
     "E1": "SBR closing moneyline, read at the start: the information test, not a tradable price",
-    "E2": "SBR opening moneyline, assumed available from 10:00 US Eastern on the game date and "
-    "read one second later (ADR 0006). If an opener was posted earlier and had moved by then, "
-    "E2's result is an upper bound; coverage counts the games whose opener differs from the close. "
-    "E2 refuses an opener whose de-vigged home probability is outside 0.15 to 0.85 (ADR 0007)",
+    "E2": f"{OPENER} E2 refuses an opener whose de-vigged home probability is outside the range of "
+    "every close before its fold, widened outward to a multiple of 0.05 (ADR 0007)",
 }
 RUNS_FIELDS = [
     "run_utc",

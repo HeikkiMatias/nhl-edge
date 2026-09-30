@@ -1,7 +1,7 @@
 """E2 on every opener, reported beside the E2 that refuses implausible openers (ADR 0007).
 
-E2 refuses an opener whose de-vigged home probability is outside EXTREME_OPEN (#56), a rule that
-reads the opener alone. This module reruns the backtest with the rule off, so the report shows
+E2 refuses an opener whose de-vigged home probability is outside the range of every close before
+its fold (ADR 0007). This module reruns the backtest with the rule off, so the report shows
 what the rule changes: the refused openers return to E2's scoring and to B1's E2 fits. E1 reads
 the close and is the same in both runs.
 """
@@ -25,10 +25,12 @@ def every_opener(sbr_odds: pl.DataFrame, games: pl.DataFrame, seasons: list[int]
     predictions, coverage, fits = run(
         sbr_odds, games, seasons, [B1_METHOD], refuse_implausible=False
     )
+    e2 = reports.experiment(Experiment.E2, predictions, coverage, fits)
+    e2["market"] = f"{reports.OPENER} This run keeps every opener, the implausible ones included"
     return {
         VARIANT: {
             "description": DESCRIPTION,
-            "E2": reports.experiment(Experiment.E2, predictions, coverage, fits),
+            "E2": e2,
             "e2_against_e1": reports.against_e1(predictions),
         }
     }

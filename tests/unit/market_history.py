@@ -36,7 +36,10 @@ def season(
             away = TEAMS[(i + 4) % 8]
         p = float(rng.uniform(0.3, 0.72))
         prices = {}
-        for quote, fair in (("open", p + float(rng.normal(0, 0.02))), ("close", p)):
+        # Openers stay well inside the range of every season's closes, so the implausible-opener
+        # rule (ADR 0007) refuses only the openers a test plants.
+        opener = min(max(p + float(rng.normal(0, 0.02)), 0.36), 0.64)
+        for quote, fair in (("open", opener), ("close", p)):
             prices[quote] = {"home": american(fair * VIG), "away": american((1 - fair) * VIG)}
         close = {side: 1 / american_to_decimal(a) for side, a in prices["close"].items()}
         p_close = close["home"] / (close["home"] + close["away"])

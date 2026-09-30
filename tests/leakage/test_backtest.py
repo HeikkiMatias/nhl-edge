@@ -278,7 +278,7 @@ def test_b1_never_reads_a_held_out_season() -> None:
     assert with_held.equals(without)
 
 
-def test_the_implausible_rule_reads_the_opener_alone() -> None:
+def test_the_implausible_rule_reads_no_close_from_the_fold() -> None:
     odds, games = market_history.seasons([20202021, 20212022], games=60)
     for game_id in games.filter(season=20212022)["game_id"].head(3).to_list():
         odds = market_history.implausible_opener(odds, game_id)
@@ -290,15 +290,17 @@ def test_the_implausible_rule_reads_the_opener_alone() -> None:
     counts = coverage["E2"][20212022]
     assert counts["implausible"] == 3
     assert counts["scored"] == 57
-    # Closes that would flag every game on the #56 list (swapped sides), and implausible closes on
-    # every other game, change nothing E2 reads.
+    # The bounds read only closes before the fold. The test season's closes, swapped (which
+    # would flag every game on the #56 list) or implausible on every other game, change nothing
+    # E2 reads.
+    tested = (pl.col("quote") == "close") & (pl.col("season") == 20212022)
     swapped = odds.with_columns(
-        side=pl.when(pl.col("quote") == "close")
+        side=pl.when(tested)
         .then(pl.col("side").replace({"home": "away", "away": "home"}))
         .otherwise(pl.col("side"))
     )
     extreme = odds
-    for game_id in games["game_id"].to_list()[::2]:
+    for game_id in games.filter(season=20212022)["game_id"].to_list()[::2]:
         extreme = market_history.implausible_opener(extreme, game_id, quote="close")
     for closes in (swapped, extreme):
         again, again_coverage, again_fits = run(closes, games, [20212022])

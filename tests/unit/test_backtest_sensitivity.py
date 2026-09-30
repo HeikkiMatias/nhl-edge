@@ -1,23 +1,45 @@
+from datetime import UTC, datetime
+
 import market_history
 import polars as pl
+import pytest
 
 from nhl_edge.backtest import sensitivity
 from nhl_edge.backtest.market import Experiment, market_prices
-from nhl_edge.backtest.walk_forward import implausible, run
+from nhl_edge.backtest.walk_forward import bounds, implausible, run
 
 SEASONS = [20172018, 20182019]
 TRAINING = 2017020001
 TESTED = 2018020002
 
 
+def test_the_bounds_are_the_range_of_every_earlier_close_widened_to_a_step() -> None:
+    start = datetime(2021, 10, 12, 14, tzinfo=UTC)
+    closes = pl.DataFrame(
+        {
+            "prediction_utc": [datetime(2021, 4, day, 23, tzinfo=UTC) for day in (1, 2, 3)]
+            + [start, datetime(2021, 10, 13, 23, tzinfo=UTC)],
+            "p_home": [0.236, 0.5, 0.837, 0.05, 0.99],
+        }
+    )
+    # Closes at or after the fold's start are never read.
+    assert bounds(closes, start) == (0.2, 0.85)
+    # A close on a step stays on it.
+    on_step = closes.with_columns(p_home=pl.Series([0.3, 0.5, 0.7, 0.05, 0.99]))
+    assert bounds(on_step, start) == (0.3, 0.7)
+    with pytest.raises(ValueError, match="no closes"):
+        bounds(closes, datetime(2021, 4, 1, tzinfo=UTC))
+
+
 def test_an_opener_outside_the_bounds_is_implausible() -> None:
     odds, _ = market_history.seasons(SEASONS, games=20)
-    assert not implausible(market_prices(odds, Experiment.E2)).any()
+    assert not implausible(market_prices(odds, Experiment.E2), 0.2, 0.85).any()
     prices = market_prices(market_history.implausible_opener(odds, TESTED), Experiment.E2)
-    assert prices.filter(implausible(prices))["game_id"].to_list() == [TESTED]
+    assert prices.filter(implausible(prices, 0.2, 0.85))["game_id"].to_list() == [TESTED]
+    assert not implausible(prices, 0.1, 0.9).any()
     # A market de-vigging refuses is refused, not implausible.
     below = prices.with_columns(home_price=pl.lit(2.5), away_price=pl.lit(2.5))
-    assert not implausible(below).any()
+    assert not implausible(below, 0.2, 0.85).any()
 
 
 def test_e2_refuses_an_implausible_opener_in_scoring_and_b1_fits() -> None:
@@ -51,3 +73,15 @@ def test_the_sensitivity_reports_e2_on_every_opener() -> None:
     assert list(report["E2"]["models"]["B0"]["log_loss"]) == ["multiplicative"]
     against_e1 = report["e2_against_e1"]["B0"]["multiplicative"]["pooled"]
     assert against_e1["games"] == counts["scored"]
+
+
+def test_an_earlier_close_as_extreme_keeps_the_opener() -> None:
+    # A close before the fold as extreme as the opener widens the fold's bounds, so the opener
+    # counts as a market seen before (ADR 0007).
+    odds, games = market_history.seasons(SEASONS, games=200)
+    odds = market_history.implausible_opener(odds, TESTED)
+    widened = market_history.implausible_opener(odds, TRAINING, quote="close")
+    _, coverage, _ = run(odds, games, [20182019])
+    _, widened_coverage, _ = run(widened, games, [20182019])
+    assert coverage["E2"][20182019]["implausible"] == 1
+    assert widened_coverage["E2"][20182019]["implausible"] == 0
