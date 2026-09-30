@@ -2,12 +2,15 @@
 
 Per season: the shots scored, goals against expected goals per 100 shots with a weekly block
 bootstrap interval (hard rule 7), and how well xG ranks goals above saves and misses (AUC). A
-held-out season shows only how many shots were scored.
+held-out season shows only how many shots were scored. The development seasons count as held out
+here: phase 2 keeps them unseen until gate 1.
 
 Pooled over the training seasons scored: the same by distance band, strength state, shot type, and
 for rebounds and rushes. These are the tables a change to the model would rest on, so they leave
 out the development seasons, which phase 2 keeps for gate 1 (TRAINING_SEASONS). The model fits come
-last, one per season, with their training shots and train_cutoff.
+last, one per season, with their train_cutoff, and their training shots and goals only when every
+training season is shown: otherwise one fit's totals less the previous one's would give a held-out
+season's goals.
 """
 
 from collections.abc import Collection, Sequence
@@ -56,12 +59,12 @@ def _figures(rows: pl.DataFrame) -> dict[str, Any]:
     }
 
 
-def season_report(scored: pl.DataFrame, open_seasons: Collection[int]) -> list[dict[str, Any]]:
-    """One row per season: shots scored, and for an open season its calibration and AUC."""
+def season_report(scored: pl.DataFrame, shown: Collection[int]) -> list[dict[str, Any]]:
+    """One row per season: shots scored, and for a shown season its calibration and AUC."""
     rows = []
     for (season,), frame in scored.sort("season").group_by("season", maintain_order=True):
         row: dict[str, Any] = {"season": season, "shots": frame.height}
-        if season in open_seasons:
+        if season in shown:
             auc = roc_auc_score(frame["is_goal"].to_numpy(), frame["xg"].to_numpy())
             row |= _figures(frame) | {"auc": float(auc)}
         rows.append(row)
@@ -77,17 +80,21 @@ def group_report(scored: pl.DataFrame, column: str) -> list[dict[str, Any]]:
     ]
 
 
-def fits(models: Sequence[XgModel]) -> list[dict[str, Any]]:
-    return [
-        {
-            "season": model.season,
-            "trained_on": f"{model.seasons[0]} to {model.seasons[-1]}",
-            "shots": model.shots,
-            "goals": model.goals,
-            "train_cutoff": model.train_cutoff.isoformat(),
-        }
-        for model in models
-    ]
+def fits(models: Sequence[XgModel], shown: Collection[int]) -> list[dict[str, Any]]:
+    """Each fit, with its training shots and goals only when every training season is shown."""
+    rows = []
+    for model in models:
+        whole = set(model.seasons) <= set(shown)
+        rows.append(
+            {
+                "season": model.season,
+                "trained_on": f"{model.seasons[0]} to {model.seasons[-1]}",
+                "shots": model.shots if whole else None,
+                "goals": model.goals if whole else None,
+                "train_cutoff": model.train_cutoff.isoformat(),
+            }
+        )
+    return rows
 
 
 def _calibration_cells(row: dict[str, Any]) -> str:
@@ -101,33 +108,35 @@ def _calibration_cells(row: dict[str, Any]) -> str:
 def markdown_report(
     scored: pl.DataFrame,
     models: Sequence[XgModel],
-    open_seasons: Collection[int],
+    shown: Collection[int],
     design_seasons: Collection[int],
     version: str,
 ) -> str:
-    """The report: per season over open_seasons, and the group tables over design_seasons."""
+    """The report: figures per season for the shown seasons, the group tables over
+    design_seasons, and the fits."""
     design_rows = scored.filter(pl.col("season").is_in(list(design_seasons)))
-    shown = sorted(design_rows["season"].unique().to_list())
+    pooled = sorted(design_rows["season"].unique().to_list())
     lines = [
         f"# xG calibration: {version}",
         "",
         "Goals against expected goals per 100 shots, with 95% weekly block bootstrap intervals.",
-        "A difference whose interval holds 0 is calibrated. Held-out seasons show only how many",
-        "shots were scored. The group tables pool the training seasons only.",
+        "A difference whose interval holds 0 is calibrated. Held-out seasons, the development",
+        "seasons among them until gate 1, show only how many shots were scored. The group tables",
+        "pool the training seasons only.",
         "",
         "## Per season",
         "",
         f"| Season | Shots | {CALIBRATION_HEADER} | AUC |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for row in season_report(scored, open_seasons):
+    for row in season_report(scored, shown):
         if "auc" in row:
             cells = f"{_calibration_cells(row)} | {row['auc']:.3f}"
         else:
             cells = "held out | | | | | "
         lines.append(f"| {row['season']} | {row['shots']:,} | {cells} |")
     if not design_rows.is_empty():
-        seasons = f"{shown[0]} to {shown[-1]}" if len(shown) > 1 else str(shown[0])
+        seasons = f"{pooled[0]} to {pooled[-1]}" if len(pooled) > 1 else str(pooled[0])
         for title, column in GROUPS.items():
             lines += [
                 "",
@@ -145,9 +154,11 @@ def markdown_report(
         "| Season scored | Trained on | Shots | Goals | train_cutoff |",
         "| --- | --- | ---: | ---: | --- |",
     ]
-    for row in fits(models):
+    for row in fits(models, shown):
+        totals = (
+            f"{row['shots']:,} | {row['goals']:,}" if row["shots"] is not None else "held out | "
+        )
         lines.append(
-            f"| {row['season']} | {row['trained_on']} | {row['shots']:,} | {row['goals']:,} "
-            f"| {row['train_cutoff']} |"
+            f"| {row['season']} | {row['trained_on']} | {totals} | {row['train_cutoff']} |"
         )
     return "\n".join(lines) + "\n"

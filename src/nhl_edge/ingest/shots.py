@@ -15,9 +15,9 @@ rebound and rush flags (#73, ADR 0010). Plays are ordered by game time, then pla
 feeds log a few out of order. The play's zone, from the shooting team's side, comes from its x and
 the shooting team's attack direction: past the far blue line (x = 25 once turned) is O. Without
 them it comes from zoneCode, which is from the side of the team the play is logged under, except
-for a blocked shot: that is logged under the team that took it, and its zoneCode is mostly from
-the blocking team's side. On a sample of 160 games, coordinates and zoneCode agreed for every
-other kind of play.
+for a blocked shot: that is logged under the team that took it, and its zoneCode is nearly always
+from the blocking team's side. On a sample of 160 games, coordinates and zoneCode agreed for every
+other kind of play, but for about 1% of hits (ADR 0010).
 """
 
 import json
@@ -118,7 +118,7 @@ def previous_fields(
         zone = "O" if along > BLUE_LINE_X else "D" if along < -BLUE_LINE_X else "N"
     elif owner is not None and details.get("zoneCode") in ZONES:
         zone = details["zoneCode"]
-        # From the logged team's side: a blocked shot's zoneCode is mostly the blocker's.
+        # From the logged team's side: a blocked shot's zoneCode is nearly always the blocker's.
         if play["typeDescKey"] == BLOCKED_SHOT:
             zone = OTHER_SIDE[zone]
         if owner != team_id:

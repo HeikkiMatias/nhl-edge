@@ -59,18 +59,21 @@ The windows of 3 and 4 seconds are the common public definitions. None of the co
 
 The zone comes from the play's x and the shooting team's attack direction, past a blue line at x = ±25. Without coordinates it comes from `zoneCode`.
 
-Blocked shots are the exception in the NHL's logging. On a sample of 160 games from 2010-11 to 2023-24:
-- a blocked shot is logged under the team that took it;
-- its `zoneCode` is mostly from the blocker's side;
-- coordinates and `zoneCode` agreed for every other kind of play.
+Blocked shots are the exception in the NHL's logging. On a sample of 160 games from the training seasons 2010-11, 2013-14, 2015-16 and 2017-18:
+- every blocked shot is logged under the team that took it;
+- its `zoneCode` is from the blocker's side in 4,401 of the 4,435 with coordinates;
+- for every other kind of play, coordinates and `zoneCode` agreed, but for about 1% of hits.
+
+The check reads two fields of the feed, no results or prices. A first run also read those fields in samples of 2019-20 and 2023-24 games, with the same finding. It is recorded here because 2023-24 is held out.
 
 **The output.** A new lake table, `shot_xg`: one row per scored shot, with `xg`, `train_cutoff`, `artifact_version` and the shot's own `observed_utc`. The model predates every shot it scores, and the schema checks it.
 
 **The report.** `nhl xg` fits and scores, writes `shot_xg`, and writes a calibration report to `reports/xg/<version>.md`:
-- per open season, goals against xG per 100 shots with a weekly block bootstrap interval (hard rule 7), and AUC;
-- over the training seasons only, the same by distance band, strength state, shot type, rebound and rush.
+- per season, goals against xG per 100 shots with a weekly block bootstrap interval (hard rule 7), and AUC, for the training seasons, flagged ones included;
+- over the training seasons only, the same by distance band, strength state, shot type, rebound and rush;
+- the fits, each with its `train_cutoff`.
 
-A held-out season shows only how many shots were scored. The group tables are what a change to the model would rest on. Phase 2 keeps the development seasons for gate 1, so the tables leave them out (`TRAINING_SEASONS`).
+Phase 2 keeps the development seasons unseen until gate 1, so the report treats them as held out. A held-out season shows only how many shots were scored. A fit shows its training shots and goals only when every season it trained on is shown, since one fit's totals less the previous one's would give a season's goals. The group tables are what a change to the model would rest on (`TRAINING_SEASONS`).
 
 **The first report changed the rebound term.** The specification above first had a single rebound term. Its report showed rebounds over-predicted, because they convert less every season: 23.0 goals per 100 rebound shots in 2010-11, 19.8 in 2017-18, while other shots stayed at 5.2 to 5.4. A model fitted on every earlier season lags that trend.
 
@@ -85,7 +88,11 @@ Four variants were then scored on the training seasons 2012-13 to 2017-18 only, 
 
 Log loss moved by 0.00002 at most. The owner chose the rebound term per season on 2026-09-30. It follows the trend with a season's lag, the way the season term follows scoring.
 
-That first report also pooled its group tables over the development seasons 2018-19 and 2021-22. They pointed the same way (rebounds -1.96 per 100), but the choice rests on the training seasons alone, and the report now leaves the development seasons out of its groups.
+That first report also showed the development seasons 2018-19 and 2021-22:
+- **Per season:** 2018-19 at +0.18 [+0.02, +0.34] and 2021-22 at -0.19 [-0.33, -0.05] goals per 100 shots.
+- **In its pooled group tables:** rebounds at -1.96 per 100.
+
+They pointed the same way, but the choice rests on the training seasons alone. The leakage check on #73 also found that its fits table gave every season's training goals, held-out seasons' included, by difference. The report now hides both, and these figures are recorded here as seen during development.
 
 ## Backtest evidence
 

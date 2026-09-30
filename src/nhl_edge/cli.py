@@ -281,14 +281,15 @@ def xg(
 ) -> None:
     """Fit the xG model per season on earlier seasons' shots (#73, ADR 0010), write every scored
     shot's xG to the lake's shot_xg, and the calibration report to <out>/<version>.md: figures
-    per open season, and group tables over the training seasons only."""
+    per open season but the development seasons, which wait for gate 1, and group tables over the
+    training seasons only."""
     from datetime import UTC
 
     import polars as pl
 
     from nhl_edge.audit import xg as xg_report
     from nhl_edge.backtest import reports
-    from nhl_edge.backtest.seasons import OPEN_SEASONS, TRAINING_SEASONS
+    from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, OPEN_SEASONS, TRAINING_SEASONS
     from nhl_edge.features import xg as xg_model
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.lake.tables import Lake
@@ -310,8 +311,10 @@ def xg(
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
     days = games.filter(pl.col("season").is_in(wanted))["game_date"].unique().to_list()
     lake.replace_dates("shot_xg", scored, days)
+    # The development seasons stay unseen until gate 1 (phase 2 plan).
+    shown = [season for season in OPEN_SEASONS if season not in DEVELOPMENT_SEASONS]
     report = xg_report.markdown_report(
-        xg_report.scored_shots(scored, shots), models, OPEN_SEASONS, TRAINING_SEASONS, version
+        xg_report.scored_shots(scored, shots), models, shown, TRAINING_SEASONS, version
     )
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{version}.md"

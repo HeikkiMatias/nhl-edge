@@ -154,10 +154,10 @@ def test_the_first_season_has_nothing_to_train_on() -> None:
 # Calibration report
 
 
-def test_the_report_shows_figures_for_open_seasons_only() -> None:
+def test_the_report_shows_figures_for_shown_seasons_only() -> None:
     scored, models = xg.score(SHOTS, GAMES, [20112012, 20122013], VERSION)
     shots = report.scored_shots(scored, SHOTS)
-    rows = report.season_report(shots, open_seasons=[20112012])
+    rows = report.season_report(shots, shown=[20112012])
     assert rows[0]["season"] == 20112012 and "auc" in rows[0]
     assert rows[1] == {
         "season": 20122013,
@@ -166,7 +166,23 @@ def test_the_report_shows_figures_for_open_seasons_only() -> None:
     assert rows[0]["low"] < rows[0]["difference"] < rows[0]["high"]
     text = report.markdown_report(shots, models, [20112012, 20122013], [20112012], VERSION)
     assert "## Rebound, training seasons 20112012" in text
+    # A season shown per season but left out of the pooled groups keeps its figures.
+    assert "held out" not in text.split("## Distance")[0]
     held = report.markdown_report(shots, models, [20112012], [20112012], VERSION)
     assert "| 20122013 | " in held and "held out" in held
     assert "| 0-10 ft |" in text or "| 10-20 ft |" in text
     assert np.isclose(sum(r["shots"] for r in report.group_report(shots, "rush")), shots.height)
+
+
+def test_no_held_out_seasons_goals_can_be_read_off_the_fits() -> None:
+    # With 2011-12 held out, the 2012-13 fit's totals less the 2011-12 fit's would give 2011-12's
+    # goals (leakage check on #73), so the report hides them.
+    scored, models = xg.score(SHOTS, GAMES, [20112012, 20122013], VERSION)
+    rows = report.fits(models, shown=[20102011])
+    assert (rows[0]["shots"], rows[0]["goals"]) == (models[0].shots, models[0].goals)
+    assert (rows[1]["shots"], rows[1]["goals"]) == (None, None)
+    text = report.markdown_report(
+        report.scored_shots(scored, SHOTS), models, [20102011], [20102011], VERSION
+    )
+    assert "| 20122013 | 20102011 to 20112012 | held out |" in text
+    assert f"{models[1].goals:,}" not in text
