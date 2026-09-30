@@ -140,20 +140,22 @@ def backtest(
     ] = DEFAULT_BACKTEST_SEASONS,
     out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_BACKTEST_OUT,
 ) -> None:
-    """Run the walk-forward backtest. Phase 1 has the market baseline B0 on the SBR archive, for
-    E1 (the close) and E2 (the opener), under each de-vig method."""
+    """Run the walk-forward backtest. Phase 1 has the market baselines on the SBR archive, for E1
+    (the close) and E2 (the opener): B0 under each de-vig method, and B1 fitted per season on the
+    earlier seasons' prices."""
     from datetime import UTC
 
     import polars as pl
 
     from nhl_edge.backtest import reports, walk_forward
-    from nhl_edge.backtest.seasons import OPEN_ROLES, season_role
+    from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.ingest.sbr import SEASON_PAGES
     from nhl_edge.lake.tables import Lake
 
     try:
-        wanted = parse_seasons(seasons)
+        wanted = sorted(set(parse_seasons(seasons)))
         held_out = [season for season in wanted if season_role(season) not in OPEN_ROLES]
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
@@ -163,26 +165,35 @@ def backtest(
             "until their phase (docs/plan.md section 5, #10)",
             param_hint="--seasons",
         )
+    # B1 is fitted on every open SBR season before the test season, so those need prices too.
+    history = [s for s in SEASON_PAGES if s in OPEN_SEASONS]
+    first = [season for season in wanted if season <= min(history)]
+    if first:
+        raise typer.BadParameter(
+            f"{first} have no earlier SBR season to fit B1 on", param_hint="--seasons"
+        )
     lake = Lake()
-    sbr_odds = lake.read("sbr_odds").filter(pl.col("season").is_in(wanted))
-    missing = sorted(set(wanted) - set(sbr_odds["season"].unique().to_list()))
+    needed = set(wanted) | {s for s in history if s < max(wanted)}
+    sbr_odds = lake.read("sbr_odds").filter(pl.col("season").is_in(needed))
+    missing = sorted(needed - set(sbr_odds["season"].unique().to_list()))
     if missing:
         typer.echo(f"no SBR prices for {missing} in the lake: run nhl odds sbr", err=True)
         raise typer.Exit(code=1)
     games = lake.read("games")
-    # A season short of results would be scored on a subset of its games.
+    # A season short of results would be scored, or B1 fitted, on a subset of its games.
     short = {
         season: height
-        for season in wanted
+        for season in sorted(needed)
         if (height := games.filter(pl.col("season") == season).height) != EXPECTED_GAMES[season]
     }
     if short:
         counts = ", ".join(f"{n:,} of {EXPECTED_GAMES[s]:,} in {s}" for s, n in short.items())
         typer.echo(f"games has {counts}: run nhl ingest for those seasons", err=True)
         raise typer.Exit(code=1)
-    predictions, coverage = walk_forward.run(sbr_odds, games, wanted)
+    predictions, coverage, fits = walk_forward.run(sbr_odds, games, wanted)
     now = datetime.now(UTC)
-    report = reports.summary(predictions, coverage, wanted, reports.version("backtest", now), now)
+    run_version = reports.version("backtest", now)
+    report = reports.summary(predictions, coverage, fits, wanted, run_version, now)
     path = reports.write(report, out)
     typer.echo(f"{path}: {report['version']}")
     for experiment, body in report["experiments"].items():
