@@ -1,6 +1,6 @@
 {
-  "version": "backtest-20260930-e908d53",
-  "run_utc": "2026-09-30T09:32:05.224958+00:00",
+  "version": "backtest-20260930-2392524",
+  "run_utc": "2026-09-30T09:51:25.669635+00:00",
   "seasons": [
     20182019,
     20212022
@@ -291,7 +291,7 @@
       }
     },
     "E2": {
-      "market": "SBR opening moneyline, assumed available from 10:00 US Eastern on the game date and read one second later (ADR 0006). If an opener was posted earlier and had moved by then, E2's result is an upper bound; coverage counts the games whose opener differs from the close. E2 refuses an opener whose de-vigged home probability is outside 0.15 to 0.85 (ADR 0007)",
+      "market": "SBR opening moneyline, assumed available from 10:00 US Eastern on the game date and read one second later (ADR 0006). If an opener was posted earlier and had moved by then, E2's result is an upper bound; coverage counts the games whose opener differs from the close. E2 refuses an opener whose de-vigged home probability is outside the range of every close before its fold, widened outward to a multiple of 0.05 (ADR 0007)",
       "coverage": {
         "20182019": {
           "games": 1271,
@@ -679,7 +679,7 @@
     "with_every_opener": {
       "description": "E2 on every opener, including the implausible ones the main E2 refuses (ADR 0007)",
       "E2": {
-        "market": "SBR opening moneyline, assumed available from 10:00 US Eastern on the game date and read one second later (ADR 0006). If an opener was posted earlier and had moved by then, E2's result is an upper bound; coverage counts the games whose opener differs from the close. E2 refuses an opener whose de-vigged home probability is outside 0.15 to 0.85 (ADR 0007)",
+        "market": "SBR opening moneyline, assumed available from 10:00 US Eastern on the game date and read one second later (ADR 0006). If an opener was posted earlier and had moved by then, E2's result is an upper bound; coverage counts the games whose opener differs from the close. This run keeps every opener, the implausible ones included",
         "coverage": {
           "20182019": {
             "games": 1271,
