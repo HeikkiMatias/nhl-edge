@@ -35,7 +35,14 @@ Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to
 
 ## In flight
 
-- **PR #60, E2 refuses implausible openers (#10, part 5).** It also carries this handover. CI is green. A Claude leakage audit passed, and its three test gaps (P3) are fixed. Codex's automatic review of `7ad29c9` was still running at handover. If Codex posts findings, triage them with `/review-triage`; if it answers with a 👍 or "Didn't find any major issues", merge it. #10 stays open after it.
+- **PR #60, E2 refuses implausible openers (#10, part 5).** It also carries this handover. CI is green and a Claude leakage audit passed. Codex's first review (of `7ad29c9`) left two findings open, for the owner:
+  - **P0: the bounds were chosen with closes from after each fold's start in view.** 0.15 and 0.85 come from #56, which looked at the closes of every season up to 2021-22. The closes before each fold span 0.236 to 0.837 (2018-19 fold) and 0.228 to 0.837 (2021-22 fold). The 8 refused openers are at 0.089, 0.112 and 0.862 to 0.919. Options:
+    1. Derive the bounds per fold from the closes before its start, such as the range every earlier close fell in.
+    2. Report E2 on every opener as the headline again and the refusal only as a sensitivity, as #59 did.
+    3. Answer Won't fix, and record the pre-fold ranges above in ADR 0007.
+    Options 1 and 2 need a rerun of the backtest and changes to ADR 0007 and the model card.
+  - **P2: the sensitivity's `market` text** in summary.json repeats the main E2's refusal sentence. `sensitivity.every_opener` should give it a text saying it keeps every opener.
+  - After the fixes, request Codex's second round with a PR comment `@codex review`, then merge. #10 stays open after it.
 
 ## Decisions waiting for the owner
 
