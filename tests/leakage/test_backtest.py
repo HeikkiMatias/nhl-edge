@@ -249,6 +249,26 @@ def test_the_fold_starts_at_a_priced_game_whose_result_is_missing() -> None:
     assert fits["E1"][20212022].games == 59
 
 
+def test_e2s_fold_starts_at_its_first_opener_before_the_first_start() -> None:
+    odds, games = market_history.seasons([20202021, 20212022], games=60)
+    tested = odds.filter(season=20212022, market="h2h", quote="open")
+    first_opener = tested["assumed_available_utc"].min()
+    first_start = tested["start_utc"].min()
+    assert isinstance(first_opener, datetime)
+    assert isinstance(first_start, datetime)
+    # One earlier result is public after E2's first prediction but before the first start.
+    last = pl.col("game_id") == games.filter(season=20202021)["game_id"].max()
+    between = games.with_columns(
+        observed_utc=pl.when(last)
+        .then(pl.lit(first_opener + (first_start - first_opener) / 2))
+        .otherwise(pl.col("observed_utc"))
+    )
+    predictions, _, fits = run(odds, between, [20212022])
+    assert (fits["E1"][20212022].games, fits["E2"][20212022].games) == (60, 59)
+    fitted = predictions.filter(model="B1")
+    assert (fitted["train_cutoff"] < fitted["prediction_utc"]).all()
+
+
 def test_b1_never_reads_a_held_out_season() -> None:
     odds, games = market_history.seasons([20202021, 20212022], games=60)
     held_odds, held_games = market_history.seasons([20222023], games=60, intercept=2.0)

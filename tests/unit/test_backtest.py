@@ -256,6 +256,16 @@ def test_runs_csv_keeps_earlier_rows_when_its_columns_change(tmp_path: Path) -> 
     header = (tmp_path / "runs.csv").read_text().splitlines()[0]
     assert header.split(",") == reports.RUNS_FIELDS
     assert len(list(csv.DictReader((tmp_path / "runs.csv").open()))) == 8
+    # A column that is gone is dropped from the earlier rows, which are kept.
+    dropped = "run_utc,version,retired\nt,backtest-0,x\n"
+    (tmp_path / "runs.csv").write_text(dropped)
+    reports.write(
+        reports.summary(predictions, coverage, fits, [20212022], "backtest-4", NOW), tmp_path
+    )
+    rows = list(csv.DictReader((tmp_path / "runs.csv").open()))
+    assert list(rows[0]) == reports.RUNS_FIELDS
+    assert (rows[0]["version"], rows[0]["model"]) == ("backtest-0", "")
+    assert len(rows) == 1 + 8
 
 
 def test_an_experiment_with_no_scored_game_keeps_its_coverage() -> None:

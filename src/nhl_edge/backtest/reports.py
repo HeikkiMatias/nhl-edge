@@ -206,45 +206,50 @@ def summary(
 
 
 def write(report: dict[str, Any], out: Path) -> Path:
-    """Write summary.json and append the pooled log losses to runs.csv, whose earlier rows are
-    carried over when its columns change."""
+    """Write summary.json and append the pooled log losses to runs.csv. When runs.csv's columns
+    change, its earlier rows are carried over onto the new columns, and the file is replaced only
+    once the new one is written."""
     out.mkdir(parents=True, exist_ok=True)
     path = out / "summary.json"
     path.write_text(json.dumps(report, indent=2) + "\n")
+    rows = []
+    for experiment, body in report["experiments"].items():
+        for model, results in body["models"].items():
+            cutoffs = " ".join(f["train_cutoff"] for f in results.get("fits", {}).values())
+            for method, estimates in results["log_loss"].items():
+                pooled = Estimate(**estimates["pooled"])
+                rows.append(
+                    {
+                        "run_utc": report["run_utc"],
+                        "version": report["version"],
+                        "seasons": " ".join(map(str, report["seasons"])),
+                        "experiment": experiment,
+                        "model": model,
+                        "method": method,
+                        "games": pooled.games,
+                        "log_loss": f"{pooled.mean:.5f}",
+                        "low": f"{pooled.low:.5f}",
+                        "high": f"{pooled.high:.5f}",
+                        "train_cutoff": cutoffs,
+                    }
+                )
     runs = out / "runs.csv"
-    earlier: list[dict[str, str]] = []
+    stale = False
     if runs.exists():
         with runs.open(newline="") as handle:
             reader = csv.DictReader(handle)
             stale = reader.fieldnames != RUNS_FIELDS
             if stale:
-                earlier = list(reader)
-        if stale:
-            runs.unlink()
-    new = not runs.exists()
-    with runs.open("a", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=RUNS_FIELDS, restval="")
-        if new:
-            writer.writeheader()
-        writer.writerows(earlier)
-        for experiment, body in report["experiments"].items():
-            for model, results in body["models"].items():
-                cutoffs = " ".join(f["train_cutoff"] for f in results.get("fits", {}).values())
-                for method, estimates in results["log_loss"].items():
-                    pooled = Estimate(**estimates["pooled"])
-                    writer.writerow(
-                        {
-                            "run_utc": report["run_utc"],
-                            "version": report["version"],
-                            "seasons": " ".join(map(str, report["seasons"])),
-                            "experiment": experiment,
-                            "model": model,
-                            "method": method,
-                            "games": pooled.games,
-                            "log_loss": f"{pooled.mean:.5f}",
-                            "low": f"{pooled.low:.5f}",
-                            "high": f"{pooled.high:.5f}",
-                            "train_cutoff": cutoffs,
-                        }
-                    )
+                # A column that is gone is dropped and a new one left empty.
+                rows = [{f: row.get(f) or "" for f in RUNS_FIELDS} for row in reader] + rows
+    if runs.exists() and not stale:
+        with runs.open("a", newline="") as handle:
+            csv.DictWriter(handle, fieldnames=RUNS_FIELDS).writerows(rows)
+        return path
+    rewritten = runs.with_suffix(".csv.tmp")
+    with rewritten.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=RUNS_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    rewritten.replace(runs)
     return path

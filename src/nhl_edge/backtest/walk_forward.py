@@ -78,9 +78,10 @@ def b0(prices: pl.DataFrame, method: Method) -> pl.DataFrame:
 
 def fold_start(calendar: pl.DataFrame, season: int) -> datetime:
     """The test season's first start: every game a fold's fit reads has its result public before
-    it. calendar holds the start of every game known, from the results and from the prices, so a
-    priced game without a result still starts its fold. The CLI checks that games holds every game
-    of each season it reads."""
+    it, and before the fold's first prediction when that is earlier (E2's opener). calendar holds
+    the start of every game known, from the results and from the prices, so a priced game without
+    a result still starts its fold. The CLI checks that games holds every game of each season it
+    reads."""
     first = calendar.filter(pl.col("season") == season)["start_utc"].min()
     if not isinstance(first, datetime):
         raise ValueError(f"no games of {season} to start its fold")
@@ -176,10 +177,14 @@ def run(
         coverage[experiment] = {}
         fits[experiment] = {}
         for season in seasons:
-            predicted, fit = b1(market, starts[season], season)
+            in_season = pl.col("season") == season
+            # E2 predicts at the opener, before the start, so its fold starts at its first
+            # prediction when that comes earlier.
+            first = quoted.filter(in_season)["prediction_utc"].min()
+            start = min(starts[season], first) if isinstance(first, datetime) else starts[season]
+            predicted, fit = b1(market, start, season)
             frames.append(_scored(predicted, experiment, "B1", B1_METHOD))
             fits[experiment][season] = fit
-            in_season = pl.col("season") == season
             counts = {
                 "games": games.filter(in_season).height,
                 "priced": quoted.filter(in_season).height,
