@@ -143,12 +143,12 @@ def backtest(
     """Run the walk-forward backtest. Phase 1 has the market baselines on the SBR archive, for E1
     (the close) and E2 (the opener): B0 under each de-vig method, and B1 fitted per season on the
     earlier seasons' prices. E2 refuses implausible openers (ADR 0007), and E2 on every opener is
-    reported beside it."""
+    reported beside it, as is the diagnostic of SBR's change of closing book (#65)."""
     from datetime import UTC
 
     import polars as pl
 
-    from nhl_edge.backtest import reports, sensitivity, walk_forward
+    from nhl_edge.backtest import book_era, reports, sensitivity, walk_forward
     from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
@@ -196,6 +196,7 @@ def backtest(
     run_version = reports.version("backtest", now)
     report = reports.summary(predictions, coverage, fits, wanted, run_version, now)
     report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
+    report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}
     path = reports.write(report, out)
     typer.echo(f"{path}: {report['version']}")
     parts = [(name, body) for name, body in report["experiments"].items()]
@@ -208,6 +209,14 @@ def backtest(
                     f"  {experiment} {model} {method}: log loss {pooled['mean']:.4f} "
                     f"[{pooled['low']:.4f}, {pooled['high']:.4f}] over {pooled['games']:,} games"
                 )
+    eras = report["diagnostics"]["book_era"]
+    for name, cost in eras["b0_e2_against_e1"]["eras"].items():
+        slope = eras["b1_on_closes"]["eras"][name]["slope"]
+        typer.echo(
+            f"  {name}: B0 E2 minus E1 {cost['mean']:+.4f} [{cost['low']:+.4f}, "
+            f"{cost['high']:+.4f}] over {cost['games']:,} games; B1 slope on closes "
+            f"{slope['value']:.3f} [{slope['low']:.3f}, {slope['high']:.3f}]"
+        )
 
 
 @app.command()

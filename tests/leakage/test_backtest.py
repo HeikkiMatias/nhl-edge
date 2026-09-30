@@ -13,7 +13,7 @@ import polars as pl
 import pytest
 from test_sbr import NEW, NEW_SCHEDULE, results_empty
 
-from nhl_edge.backtest import walk_forward
+from nhl_edge.backtest import book_era, walk_forward
 from nhl_edge.backtest.market import PREDICTION_LAG, Experiment, market_prices
 from nhl_edge.backtest.walk_forward import run
 from nhl_edge.ingest.sbr import match_season, parse_season
@@ -314,3 +314,26 @@ def test_the_implausible_rule_reads_no_close_from_the_fold() -> None:
     assert refused == set(games["game_id"]) - set(again.filter(experiment="E2")["game_id"])
     assert again_fits["E2"][20212022].games == fits["E2"][20212022].games
     assert again_coverage["E2"][20212022]["implausible"] == 3
+
+
+def test_the_book_era_diagnostic_refuses_openers_with_earlier_closes_only() -> None:
+    # #65's diagnostic takes each season as its own fold: the season's own closes, swapped or
+    # implausible on every other game, change none of its openers.
+    odds, games = market_history.seasons([20172018, 20182019], games=60)
+    for game_id in games.filter(season=20182019)["game_id"].head(3).to_list():
+        odds = market_history.implausible_opener(odds, game_id)
+    _, openers = book_era.markets(odds, games)
+    season = openers.filter(season=20182019)
+    assert season.height == 57
+    tested = (pl.col("quote") == "close") & (pl.col("season") == 20182019)
+    swapped = odds.with_columns(
+        side=pl.when(tested)
+        .then(pl.col("side").replace({"home": "away", "away": "home"}))
+        .otherwise(pl.col("side"))
+    )
+    extreme = odds
+    for game_id in games.filter(season=20182019)["game_id"].to_list()[::2]:
+        extreme = market_history.implausible_opener(extreme, game_id, quote="close")
+    for closes in (swapped, extreme):
+        _, again = book_era.markets(closes, games)
+        assert again.filter(season=20182019).equals(season)
