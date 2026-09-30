@@ -11,6 +11,7 @@ from pathlib import Path
 
 import polars as pl
 
+from nhl_edge.audit import corrections as correction_audit
 from nhl_edge.audit import games as game_audit
 from nhl_edge.audit import goalies as goalie_audit
 from nhl_edge.audit import sbr as sbr_audit
@@ -50,6 +51,7 @@ def build(lake: Lake, store: RawStore, as_of: date) -> list[Section]:
         _reference_section(games),
         _snapshot_section(lake, store, listed, as_of),
         _goalie_section(lake, games, as_of),
+        _corrections_section(store, games, lake.read("actual_lineups"), as_of),
     ]
     return sections
 
@@ -157,6 +159,19 @@ def _goalie_section(lake: Lake, games: pl.DataFrame, as_of: date) -> Section:
         + goalie_audit.markdown_report(frame)
     )
     return Section("Starting goalies", body, goalie_audit.problems(frame))
+
+
+def _corrections_section(
+    store: RawStore, games: pl.DataFrame, lineups: pl.DataFrame, as_of: date
+) -> Section:
+    result = correction_audit.corrections(store, games, lineups, as_of)
+    body = (
+        "Each live-season game's play-by-play, boxscore and shift chart fetched again a week "
+        "after the copy the tables read (`nhl recheck`, #30), parsed the same way and compared "
+        "row by row. A difference is a correction the backtest's late copies carry and live's "
+        "first copies lack (ADR 0004).\n\n" + correction_audit.markdown_report(result)
+    )
+    return Section("Post-game corrections", body, correction_audit.problems(result))
 
 
 def markdown(sections: list[Section], as_of: date, generated: datetime) -> str:

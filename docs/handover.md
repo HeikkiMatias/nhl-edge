@@ -39,7 +39,7 @@ Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to
 
 ## In flight
 
-- Nothing: every PR through #63 is merged.
+- **#30's feed recheck** (phase 2, task 1): the PR adding `nhl recheck` and the audit report's corrections section. Once merged, the nightly run fetches each game's feeds again a week after the tables' copy. The first 2026-27 games are due on 2026-10-07.
 
 ## Decisions waiting for the owner
 
@@ -49,7 +49,18 @@ Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to
 
 1. **#10, the phase 1 gate.** Every deliverable is merged: `devig.py` with its default (ADR 0008), B0 and B1 on E1 and E2, the backtest, the model card and the golden tests. What is left is the done-when's "live snapshots landing five times a day". Once the timer has run a full day of slots, check the live odds section of `nhl audit report`, then close #10.
 2. **#9 and #42, the committed report.** After two weeks of polls (from 2026-09-29, so around 2026-10-13), run `nhl audit report`, commit it to `reports/audit/`, and review it as in the comment on #9: every problem gets an issue in a milestone, and a dropped season or source gets an ADR. #42 closes with the report's answer on the NHL's starter flag, #9 with the reviewed report.
-3. **Then P2:** #11, with #28 (strength source where `situationCode` drifts) and #30 (post-game corrections) before the first B2 backtest.
+3. **Phase 2, started 2026-09-30.** The owner approved the phase plan, and it is pasted into every phase 2 PR. #11 lists its ten tasks in order:
+   - #30 recheck (in flight);
+   - #28 strength source, an ADR where I bring the owner my recommendation;
+   - #72 strength time;
+   - #73 xG, with an ADR;
+   - #74 team strength, with the tuning-protocol ADR;
+   - #75 goalie effect;
+   - #76 goalie-start model;
+   - #77 schedule and home terms;
+   - #78 B2 in the walk-forward;
+   - #79 gate 1.
+   #30 closes after two weeks of rechecked games (about 2026-10-22), once the corrections section is reviewed on #30.
 
 ## Keep an eye on
 

@@ -11,7 +11,7 @@ restarts where it left off and --replay rebuilds the tables with no network at a
 """
 
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -33,6 +33,7 @@ from nhl_edge.ingest.games import (
 )
 from nhl_edge.ingest.lineups import parse_actual_lineups
 from nhl_edge.ingest.nhl_api import (
+    FEED_KINDS,
     NhlApi,
     NotCachedError,
     NotFoundError,
@@ -124,6 +125,20 @@ def warn(echo: Echo, message: str) -> None:
     echo(f"{prefix}{message}")
 
 
+def parse_feeds(
+    game: dict[str, Any], feeds: Mapping[str, tuple[bytes, str]]
+) -> dict[str, pl.DataFrame]:
+    """A game's three feeds, each (body, raw_key) by kind in FEED_KINDS, parsed into the per-game
+    tables of FEED_TABLES."""
+    pbp, box, chart = (feeds[kind] for kind in FEED_KINDS)
+    feed_game = FeedGame.from_boxscore(game, box[0])
+    shots = parse_shots(pbp[0], feed_game, pbp[1])
+    shifts, drops = parse_shifts(chart[0], feed_game, chart[1])
+    lineups = parse_actual_lineups(box[0], feed_game, box[1])
+    coverage = shift_coverage(feed_game, shots, shifts, lineups, drops, chart[1])
+    return dict(zip(FEED_TABLES, (shots, shifts, lineups, coverage), strict=True))
+
+
 @dataclass
 class Ingest:
     api: NhlApi
@@ -204,12 +219,9 @@ class Ingest:
         pbp = self.api.play_by_play(season, game_id)
         box = self.api.boxscore(season, game_id)
         chart = self.api.shift_chart(season, game_id, game["game_date"])
-        feed_game = FeedGame.from_boxscore(game, box.body)
-        shots = parse_shots(pbp.body, feed_game, pbp.raw_key)
-        shifts, drops = parse_shifts(chart.body, feed_game, chart.raw_key)
-        lineups = parse_actual_lineups(box.body, feed_game, box.raw_key)
-        coverage = shift_coverage(feed_game, shots, shifts, lineups, drops, chart.raw_key)
-        for table, frame in zip(FEED_TABLES, (shots, shifts, lineups, coverage), strict=True):
+        responses = zip(FEED_KINDS, (pbp, box, chart), strict=True)
+        feeds = {kind: (response.body, response.raw_key) for kind, response in responses}
+        for table, frame in parse_feeds(game, feeds).items():
             frames[table].append(frame)
         return boxscore_player_ids(box.body)
 

@@ -60,7 +60,7 @@ GitHub Actions runs every job, but GitHub's own `schedule` started this repo's r
 
 - `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input.
 - `pregame-goalies.yml` at :50 of every hour from 12:50 to 02:50 UTC.
-- `ingest-nightly.yml` at 09:00 UTC.
+- `ingest-nightly.yml` at 09:00 UTC. After the ingest, it runs `nhl recheck --recent 3 --r2` (#30, below).
 
 The workflows keep their GitHub cron lines as a fallback. While the repository variable `TIMER_ACTIVE` is `true`, a scheduled run skips its job, so only the timer's dispatches run; set it to `false` to fall back to the late GitHub schedule, for example when the timer's token has expired. `infra/timer/README.md` covers setup. A failed dispatch shows as a failed cron event in the Cloudflare dashboard. Any workflow can also be started by hand from the Actions tab.
 
@@ -126,6 +126,11 @@ The 16 seasons come to 19,152 games. With the feeds this is about 64,000 request
 | `shift_coverage` | all three | one game | how far the shift chart can be trusted (below) |
 
 Every row counts as public at 10:00 UTC the morning after its game date, like the game's result (ADR 0003). A game's own shots, shifts and lineup never feed a prediction for it, and backtest lineups come only from earlier games' boxscores (hard rule 9). The backfilled feeds were fetched years after the games and include post-game corrections, which live does not see. The tables leave out scoring credits, but corrections can still change kept values: a goal's scorer, a shot record, time on ice. ADR 0004 accepts this small look-ahead, and #30 measures it.
+
+Measuring corrections (#30):
+- `nhl recheck` fetches a live-season game's three feeds again once the play-by-play the tables read is a week old. It picks games by when the tables' copy was fetched, the stamp that ends `actual_lineups`' `raw_key`, not by game date, so a game ingested nights late is still rechecked a week after its copy. The nightly run covers copies fetched 7 to 10 days before it, so two missed nights are caught up.
+- The copies go under `nhl/<kind>-recheck/<season>/<game_id>/` in the raw cache. The tables read the newest copy under `nhl/<kind>/`, so they never parse a recheck, and a replay builds the same tables before and after one (`tests/leakage/test_corrections.py`).
+- `nhl audit report`'s "Post-game corrections" section parses both copies the way the ingest does and compares them row by row, per table and field. A moved goal scorer is the correction ADR 0004 accepts as small, so any other difference is listed as a problem. The section also lists 2026-27 games due for a recheck that have none.
 
 Conventions:
 - Times are elapsed game seconds: (period − 1) × 1200 plus the period clock. Overtime is period 4 and lasts 300 seconds. The shootout is not play and has no rows.
