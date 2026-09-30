@@ -7,7 +7,7 @@ import numpy as np
 import polars as pl
 
 from nhl_edge.ingest.sbr import american_to_decimal
-from nhl_edge.lake.schemas import SBR_SUSPECT_FLAGS, Games, SbrOdds, dtypes
+from nhl_edge.lake.schemas import Games, SbrOdds, dtypes
 
 TEAMS = ["BOS", "TOR", "MTL", "NYR", "CHI", "DET", "EDM", "CGY"]
 VIG = 1.045
@@ -96,17 +96,24 @@ def seasons(
     return pl.concat([odds for odds, _ in parts]), pl.concat([finals for _, finals in parts])
 
 
-def suspects(flags: dict[int, str]) -> pl.DataFrame:
-    """A suspect-opener list (#56) with the columns the backtest reads: each game with one flag."""
-    rows = [
-        {
-            "game_id": game_id,
-            "season": (game_id // 1_000_000) * 10_001 + 1,
-            **{name: name == flag for name in SBR_SUSPECT_FLAGS},
-        }
-        for game_id, flag in flags.items()
-    ]
-    schema = {"game_id": pl.Int64, "season": pl.Int32} | dict.fromkeys(
-        SBR_SUSPECT_FLAGS, pl.Boolean
+def implausible_opener(odds: pl.DataFrame, game_id: int) -> pl.DataFrame:
+    """odds with the game's opening moneyline replaced by an implausible one, Edmonton's -1010 and
+    Minnesota's 705 of 2022-02-20: a home probability of about 0.88."""
+    prices = {"home": -1010, "away": 705}
+    rows = (
+        (pl.col("game_id") == game_id) & (pl.col("market") == "h2h") & (pl.col("quote") == "open")
     )
-    return pl.DataFrame(rows, schema=schema)
+    home = pl.col("side") == "home"
+    return odds.with_columns(
+        price_american=pl.when(rows)
+        .then(pl.when(home).then(prices["home"]).otherwise(prices["away"]))
+        .otherwise(pl.col("price_american"))
+        .cast(pl.Int32),
+        price_decimal=pl.when(rows)
+        .then(
+            pl.when(home)
+            .then(american_to_decimal(prices["home"]))
+            .otherwise(american_to_decimal(prices["away"]))
+        )
+        .otherwise(pl.col("price_decimal")),
+    )

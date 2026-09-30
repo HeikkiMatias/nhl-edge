@@ -2,9 +2,8 @@
 game's own close at its start. E2 reads only the opener, through assumed_available_at, just after
 its assumed time and before the start. B0 reads the outcome only to score a prediction. B1 is
 fitted only on earlier open seasons' games whose results were public before its fold's first
-start, and reads its own season's outcomes only to score. The suspect-opener list reads each
-game's close, so it is hindsight: it only feeds E2's sensitivity report, where a test-season game
-it names leaves the scoring and never a fit."""
+start, and reads its own season's outcomes only to score. E2's sensitivity drops only openers that
+are implausible from the opener alone, never by the close."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -14,7 +13,7 @@ import polars as pl
 import pytest
 from test_sbr import NEW, NEW_SCHEDULE, results_empty
 
-from nhl_edge.backtest import suspect, walk_forward
+from nhl_edge.backtest import implausible, walk_forward
 from nhl_edge.backtest.market import PREDICTION_LAG, Experiment, market_prices
 from nhl_edge.backtest.walk_forward import run
 from nhl_edge.ingest.sbr import match_season, parse_season
@@ -279,21 +278,24 @@ def test_b1_never_reads_a_held_out_season() -> None:
     assert with_held.equals(without)
 
 
-def test_the_suspect_list_removes_a_test_season_opener_from_scoring_and_no_fit() -> None:
+def test_the_implausible_rule_reads_the_opener_alone() -> None:
     odds, games = market_history.seasons([20202021, 20212022], games=60)
-    tested = games.filter(season=20212022)["game_id"].head(5).to_list()
-    _, _, fits = run(odds, games, [20212022])
-    report = suspect.sensitivities(
-        odds, games, [20212022], market_history.suspects(dict.fromkeys(tested, "swapped"))
+    tested = games.filter(season=20212022)["game_id"].head(3).to_list()
+    for game_id in tested:
+        odds = market_history.implausible_opener(odds, game_id)
+    report = implausible.sensitivity(odds, games, [20212022])[implausible.VARIANT]
+    # Closes that would flag every game on the #56 list (swapped sides) change nothing.
+    swapped = odds.with_columns(
+        side=pl.when(pl.col("quote") == "close")
+        .then(pl.col("side").replace({"home": "away", "away": "home"}))
+        .otherwise(pl.col("side"))
     )
-    for variant in suspect.VARIANTS:
-        e2 = report[variant]["E2"]
-        assert e2["coverage"]["20212022"]["scored"] == 55
-        # B1 is fitted on the seasons before, so the list's hindsight never reaches its fit.
-        fit = fits["E2"][20212022]
-        assert e2["models"]["B1"]["fits"]["20212022"] == {
-            "intercept": fit.intercept,
-            "slope": fit.slope,
-            "games": fit.games,
-            "train_cutoff": fit.train_cutoff.isoformat(),
-        }
+    assert implausible.implausible(swapped).equals(implausible.implausible(odds))
+    again = implausible.sensitivity(swapped, games, [20212022])[implausible.VARIANT]
+    # Coverage also counts openers that differ from their close; the scores never read it.
+    assert again["E2"]["models"] == report["E2"]["models"]
+    assert again["removed_openers"] == report["removed_openers"] == {"20212022": 3}
+    assert report["E2"]["coverage"]["20212022"]["scored"] == 57
+    # B1 is fitted on the seasons before, so a test-season opener never reaches its fit.
+    _, _, fits = run(odds, games, [20212022])
+    assert report["E2"]["models"]["B1"]["fits"]["20212022"]["games"] == fits["E2"][20212022].games
