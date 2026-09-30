@@ -352,12 +352,13 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert result.exit_code == 0, result.output
     assert "E1 B0 multiplicative: log loss" in result.output
     assert "E2 B1 multiplicative: log loss" in result.output
-    assert "E2 without_suspect_openers B1 multiplicative: log loss" in result.output
+    assert "E2 without_suspect_openers (hindsight) B1 multiplicative: log loss" in result.output
     summary = json.loads((tmp_path / "out" / "summary.json").read_text())
     assert summary["seasons"] == [20212022]
     # E2 keeps every game until the owner decides; the sensitivity reports the game left out.
     assert summary["experiments"]["E2"]["coverage"]["20212022"]["priced"] == 3
     sensitivity = summary["sensitivity"]
+    assert sensitivity["without_suspect_openers"]["note"].startswith("Hindsight")
     assert sensitivity["without_suspect_openers"]["E2"]["coverage"]["20212022"]["priced"] == 2
     assert sensitivity["without_proven_errors"]["E2"]["coverage"]["20212022"]["priced"] == 3
 

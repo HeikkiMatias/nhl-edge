@@ -200,7 +200,9 @@ def backtest(
     path = reports.write(report, out)
     typer.echo(f"{path}: {report['version']}")
     parts = [(name, body) for name, body in report["experiments"].items()]
-    parts += [(f"E2 {name}", body["E2"]) for name, body in report["sensitivity"].items()]
+    parts += [
+        (f"E2 {name} (hindsight)", body["E2"]) for name, body in report["sensitivity"].items()
+    ]
     for experiment, body in parts:
         for model, results in body["models"].items():
             for method, estimates in results["log_loss"].items():

@@ -5,10 +5,12 @@ game, and this module only reports what dropping them would change. Each variant
 backtest with the listed games' opening moneylines removed, so they leave E2's scoring and B1's E2
 fits. E1 reads the close and is unchanged.
 
-The list reads each game's close, which is public only at its start. So removing a test-season
-game is hindsight: the variant says how much of E2's result rests on those prices, and is never a
-filter a live prediction could apply. Removing an earlier season's game from B1's fit is
-point-in-time, since its close was public before the fold started.
+The list reads each game's close, which is public only at its start, and its thresholds were set
+on every training and development season (ingest/sbr_suspect.py). So a variant is hindsight
+throughout. Removing a test-season game uses that game's own close, and removing an earlier
+season's game from B1's fit uses criteria chosen with the test season in view. A variant says how
+much of E2's result rests on those prices, and is never a filter a live prediction could apply or
+a bar a later model must clear.
 """
 
 from collections.abc import Iterable
@@ -19,6 +21,11 @@ import polars as pl
 from nhl_edge.backtest import reports
 from nhl_edge.backtest.market import Experiment
 from nhl_edge.backtest.walk_forward import B1_METHOD, run
+
+NOTE = (
+    "Hindsight: the list reads each game's close and its thresholds were set on the training and "
+    "development seasons. This sizes E2's data problem and is not a tradable E2 result."
+)
 
 
 class Variant(NamedTuple):
@@ -73,6 +80,7 @@ def sensitivities(
         counts = removed.group_by("season").len().sort("season")
         out[name] = {
             "description": variant.description,
+            "note": NOTE,
             "removed_openers": {str(s): n for s, n in counts.iter_rows()},
             "E2": reports.experiment(Experiment.E2, predictions, coverage, fits),
             "e2_against_e1": reports.against_e1(predictions),
