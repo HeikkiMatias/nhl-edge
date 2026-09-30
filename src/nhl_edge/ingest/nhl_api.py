@@ -38,6 +38,10 @@ CHART_SETTLED = timedelta(days=3)
 # A team's valid shifts in each of periods 1 to 3 must add up to at least four players' full period:
 # less means the chart is cut short, even when every period has some rows.
 MIN_TEAM_PERIOD_S = 4 * PERIOD_S
+# The per-game feeds, by raw kind. A recheck (#30) stores a later copy under <kind>-recheck, which
+# the per-game tables never read.
+FEED_KINDS = ("play-by-play", "boxscore", "shiftcharts")
+RECHECK_SUFFIX = "-recheck"
 
 
 @dataclass(frozen=True)
@@ -147,6 +151,15 @@ def chart_complete_or_settled(game_id: int, game_date: date) -> Reuse:
     return reuse
 
 
+def feed_url(kind: str, game_id: int) -> str:
+    """The URL of one of a game's per-game feeds (FEED_KINDS)."""
+    if kind == "shiftcharts":
+        return f"{STATS_URL}/en/shiftcharts?cayenneExp=gameId={game_id}"
+    if kind in ("play-by-play", "boxscore"):
+        return f"/v1/gamecenter/{game_id}/{kind}"
+    raise ValueError(f"{kind} is not a per-game feed")
+
+
 def fetched_after(moment: datetime) -> Reuse:
     def reuse(body: bytes, meta: dict[str, Any]) -> bool:
         return parse_utc(meta["fetched_utc"]) >= moment
@@ -244,17 +257,25 @@ class NhlApi:
         return self.fetch("schedule", day.isoformat(), f"/v1/schedule/{day.isoformat()}", reuse)
 
     def play_by_play(self, season: int, game_id: int) -> Response:
-        path = f"/v1/gamecenter/{game_id}/play-by-play"
-        return self.fetch("play-by-play", f"{season}/{game_id}", path, always)
+        url = feed_url("play-by-play", game_id)
+        return self.fetch("play-by-play", f"{season}/{game_id}", url, always)
 
     def boxscore(self, season: int, game_id: int) -> Response:
-        path = f"/v1/gamecenter/{game_id}/boxscore"
-        return self.fetch("boxscore", f"{season}/{game_id}", path, always)
+        return self.fetch("boxscore", f"{season}/{game_id}", feed_url("boxscore", game_id), always)
 
     def shift_chart(self, season: int, game_id: int, game_date: date) -> Response:
-        url = f"{STATS_URL}/en/shiftcharts?cayenneExp=gameId={game_id}"
         reuse = chart_complete_or_settled(game_id, game_date)
+        url = feed_url("shiftcharts", game_id)
         return self.fetch("shiftcharts", f"{season}/{game_id}", url, reuse)
+
+    def recheck(self, kind: str, season: int, game_id: int, after: datetime) -> Response:
+        """A later copy of one of a game's feeds, fetched at or after `after` (#30). It is stored
+        under <kind>-recheck, so the per-game tables, which read the copies under <kind>, never
+        parse it: they keep the copy the nightly ingest read, as live does (ADR 0004)."""
+        url = feed_url(kind, game_id)
+        return self.fetch(
+            f"{kind}{RECHECK_SUFFIX}", f"{season}/{game_id}", url, fetched_after(after)
+        )
 
     def roster(self, team: str, season: int, reuse: Reuse) -> Response:
         return self.fetch("roster", f"{season}/{team}", f"/v1/roster/{team}/{season}", reuse)

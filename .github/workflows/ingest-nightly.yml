@@ -47,6 +47,12 @@ jobs:
         run: |
           if [ -n "$START" ]; then window=(--start "$START" --end "${END:-$START}"); else window=(--recent 3); fi
           uv run nhl ingest "${window[@]}" --r2 --supabase
+      - name: Recheck last week's feeds
+        # Each final game's play-by-play, boxscore and shift chart fetched again a week after the
+        # copy the tables read, and stored apart where no table reads them, to measure post-game
+        # corrections (#30, ADR 0004). Three dates, so two missed nights are caught up.
+        if: always()
+        run: uv run nhl recheck --recent 3 --r2
       - name: Odds history into the lake
         # The last 14 days of stored odds snapshots, each event matched to its NHL game (issue
         # #20). Events are priced up to about ten days ahead and a schedule response lists seven
