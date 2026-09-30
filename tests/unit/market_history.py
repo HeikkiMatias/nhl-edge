@@ -7,7 +7,7 @@ import numpy as np
 import polars as pl
 
 from nhl_edge.ingest.sbr import american_to_decimal
-from nhl_edge.lake.schemas import Games, SbrOdds, dtypes
+from nhl_edge.lake.schemas import SBR_SUSPECT_FLAGS, Games, SbrOdds, dtypes
 
 TEAMS = ["BOS", "TOR", "MTL", "NYR", "CHI", "DET", "EDM", "CGY"]
 VIG = 1.045
@@ -94,3 +94,19 @@ def seasons(
     """Several synthetic seasons, each with its own seed."""
     parts = [season(s, games, s, intercept, slope) for s in wanted]
     return pl.concat([odds for odds, _ in parts]), pl.concat([finals for _, finals in parts])
+
+
+def suspects(flags: dict[int, str]) -> pl.DataFrame:
+    """A suspect-opener list (#56) with the columns the backtest reads: each game with one flag."""
+    rows = [
+        {
+            "game_id": game_id,
+            "season": (game_id // 1_000_000) * 10_001 + 1,
+            **{name: name == flag for name in SBR_SUSPECT_FLAGS},
+        }
+        for game_id, flag in flags.items()
+    ]
+    schema = {"game_id": pl.Int64, "season": pl.Int32} | dict.fromkeys(
+        SBR_SUSPECT_FLAGS, pl.Boolean
+    )
+    return pl.DataFrame(rows, schema=schema)

@@ -125,58 +125,52 @@ def _fit(fit: Recalibration) -> dict[str, Any]:
     }
 
 
-def summary(
-    predictions: pl.DataFrame,
-    coverage: Coverage,
-    fits: Fits,
-    seasons: list[int],
-    run_version: str,
-    now: datetime,
+def experiment(
+    experiment: str, predictions: pl.DataFrame, coverage: Coverage, fits: Fits
 ) -> dict[str, Any]:
-    experiments: dict[str, Any] = {}
-    compared = against_baseline(predictions)
-    # From coverage, so an experiment with no scored game still reports why.
-    for experiment in sorted(coverage):
-        rows = predictions.filter(pl.col("experiment") == experiment).sort("model")
-        models: dict[str, Any] = {}
-        for (model,), by_model in rows.group_by("model", maintain_order=True):
-            methods = {
-                str(method): _estimates(by_method, "log_loss")
-                for (method,), by_method in by_model.sort("method").group_by(
+    """One experiment's market, coverage per season, and per model its log losses, its paired
+    differences against the multiplicative method and against B1, or B1's fits."""
+    rows = predictions.filter(pl.col("experiment") == experiment).sort("model")
+    compared = against_baseline(rows)
+    models: dict[str, Any] = {}
+    for (model,), by_model in rows.group_by("model", maintain_order=True):
+        methods = {
+            str(method): _estimates(by_method, "log_loss")
+            for (method,), by_method in by_model.sort("method").group_by(
+                "method", maintain_order=True
+            )
+        }
+        results: dict[str, Any] = {"log_loss": methods}
+        against = {
+            method.value: _estimates(paired(by_model, method), "difference")
+            for method in Method
+            if method is not REFERENCE_METHOD
+            and by_model.filter(pl.col("method") == method.value).height
+        }
+        if against:
+            results[f"paired_against_{REFERENCE_METHOD.value}"] = against
+        if model == BASELINE:
+            results["fits"] = {str(season): _fit(fit) for season, fit in fits[experiment].items()}
+        else:
+            versus = compared.filter(pl.col("model") == model)
+            results[f"paired_against_{BASELINE}"] = {
+                str(method): _estimates(by_method, "difference")
+                for (method,), by_method in versus.sort("method").group_by(
                     "method", maintain_order=True
                 )
             }
-            results: dict[str, Any] = {"log_loss": methods}
-            against = {
-                method.value: _estimates(paired(by_model, method), "difference")
-                for method in Method
-                if method is not REFERENCE_METHOD
-                and by_model.filter(pl.col("method") == method.value).height
-            }
-            if against:
-                results[f"paired_against_{REFERENCE_METHOD.value}"] = against
-            if model == BASELINE:
-                results["fits"] = {
-                    str(season): _fit(fit) for season, fit in fits[str(experiment)].items()
-                }
-            else:
-                versus = compared.filter(
-                    pl.col("experiment") == experiment, pl.col("model") == model
-                )
-                results[f"paired_against_{BASELINE}"] = {
-                    str(method): _estimates(by_method, "difference")
-                    for (method,), by_method in versus.sort("method").group_by(
-                        "method", maintain_order=True
-                    )
-                }
-            models[str(model)] = results
-        experiments[str(experiment)] = {
-            "market": MARKETS[str(experiment)],
-            "coverage": {str(s): counts for s, counts in coverage[str(experiment)].items()},
-            "models": models,
-        }
+        models[str(model)] = results
+    return {
+        "market": MARKETS[experiment],
+        "coverage": {str(s): counts for s, counts in coverage[experiment].items()},
+        "models": models,
+    }
+
+
+def against_e1(predictions: pl.DataFrame) -> dict[str, Any]:
+    """E2 against E1 per model and method, pooled and per season."""
     later = e2_against_e1(predictions)
-    against_e1 = {
+    return {
         str(model): {
             str(method): _estimates(by_method, "difference")
             for (method,), by_method in by_model.group_by("method", maintain_order=True)
@@ -185,6 +179,16 @@ def summary(
             "model", maintain_order=True
         )
     }
+
+
+def summary(
+    predictions: pl.DataFrame,
+    coverage: Coverage,
+    fits: Fits,
+    seasons: list[int],
+    run_version: str,
+    now: datetime,
+) -> dict[str, Any]:
     return {
         "version": run_version,
         "run_utc": now.isoformat(),
@@ -200,8 +204,12 @@ def summary(
             "seed": SEED,
             "level": LEVEL,
         },
-        "experiments": experiments,
-        "e2_against_e1": against_e1,
+        # From coverage, so an experiment with no scored game still reports why.
+        "experiments": {
+            str(name): experiment(str(name), predictions, coverage, fits)
+            for name in sorted(coverage)
+        },
+        "e2_against_e1": against_e1(predictions),
     }
 
 

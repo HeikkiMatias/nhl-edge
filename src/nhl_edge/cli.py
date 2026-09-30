@@ -142,16 +142,18 @@ def backtest(
 ) -> None:
     """Run the walk-forward backtest. Phase 1 has the market baselines on the SBR archive, for E1
     (the close) and E2 (the opener): B0 under each de-vig method, and B1 fitted per season on the
-    earlier seasons' prices."""
+    earlier seasons' prices. E2 keeps every game; its sensitivity to the suspect SBR openers
+    (#56) is reported beside it."""
     from datetime import UTC
 
     import polars as pl
 
-    from nhl_edge.backtest import reports, walk_forward
+    from nhl_edge.backtest import reports, suspect, walk_forward
     from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.ingest.sbr import SEASON_PAGES
+    from nhl_edge.ingest.sbr_suspect import load_suspect_openers
     from nhl_edge.lake.tables import Lake
 
     try:
@@ -194,9 +196,12 @@ def backtest(
     now = datetime.now(UTC)
     run_version = reports.version("backtest", now)
     report = reports.summary(predictions, coverage, fits, wanted, run_version, now)
+    report["sensitivity"] = suspect.sensitivities(sbr_odds, games, wanted, load_suspect_openers())
     path = reports.write(report, out)
     typer.echo(f"{path}: {report['version']}")
-    for experiment, body in report["experiments"].items():
+    parts = [(name, body) for name, body in report["experiments"].items()]
+    parts += [(f"E2 {name}", body["E2"]) for name, body in report["sensitivity"].items()]
+    for experiment, body in parts:
         for model, results in body["models"].items():
             for method, estimates in results["log_loss"].items():
                 pooled = estimates["pooled"]

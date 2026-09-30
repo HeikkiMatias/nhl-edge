@@ -345,13 +345,21 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     for season in earlier:
         monkeypatch.setitem(EXPECTED_GAMES, season, 20)
     monkeypatch.setitem(EXPECTED_GAMES, 20212022, 4)
+    # One 2021-22 opener flagged for a big move only.
+    listed = market_history.suspects({2021020001: "big_move"})
+    monkeypatch.setattr("nhl_edge.ingest.sbr_suspect.load_suspect_openers", lambda: listed)
     result = runner.invoke(app, ["backtest", "--seasons", "20212022", "--out", "out"])
     assert result.exit_code == 0, result.output
     assert "E1 B0 multiplicative: log loss" in result.output
     assert "E2 B1 multiplicative: log loss" in result.output
+    assert "E2 without_suspect_openers B1 multiplicative: log loss" in result.output
     summary = json.loads((tmp_path / "out" / "summary.json").read_text())
     assert summary["seasons"] == [20212022]
+    # E2 keeps every game until the owner decides; the sensitivity reports the game left out.
     assert summary["experiments"]["E2"]["coverage"]["20212022"]["priced"] == 3
+    sensitivity = summary["sensitivity"]
+    assert sensitivity["without_suspect_openers"]["E2"]["coverage"]["20212022"]["priced"] == 2
+    assert sensitivity["without_proven_errors"]["E2"]["coverage"]["20212022"]["priced"] == 3
 
 
 def test_a_market_below_100_percent_is_counted_and_left_out() -> None:
