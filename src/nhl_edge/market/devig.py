@@ -9,9 +9,10 @@ book's margin. Each method takes the margin off differently (the nhl-domain skil
   Shin (1993) models a book facing a share z of insiders. With two outcomes, as on the moneyline,
   it takes the same margin off each side: p_i = pi_i - (P - 1) / 2.
 
-Which method is the default is decided by an ADR after the phase 1 audit (#10), so every caller
-names one. A row of prices is one book's prices for every outcome of one market, quoted together;
-a row that mixes books or times is not a market and can sum below 1.
+The default is multiplicative (ADR 0008): the three tie on the development seasons, and B1
+fits the favourite-longshot bias the others would partly assume. A caller names another method
+only to compare them. A row of prices is one book's prices for every outcome of one market,
+quoted together; a row that mixes books or times is not a market and can sum below 1.
 """
 
 from enum import StrEnum
@@ -25,6 +26,9 @@ class Method(StrEnum):
     POWER = "power"
     SHIN = "shin"
 
+
+# ADR 0008. B0, B1's input, the audit and the live pipeline de-vig with it.
+DEFAULT_METHOD = Method.MULTIPLICATIVE
 
 # Float error allowed on a zero-margin market: 2.00 and 2.00 must not read as below 1.
 OVERROUND_TOLERANCE = 1e-9
@@ -40,7 +44,7 @@ def overround(prices: ArrayLike) -> NDArray[np.float64]:
     return total.reshape(()) if single else total
 
 
-def fair_probabilities(prices: ArrayLike, method: Method) -> NDArray[np.float64]:
+def fair_probabilities(prices: ArrayLike, method: Method = DEFAULT_METHOD) -> NDArray[np.float64]:
     """Fair probabilities, in the order of the prices, summing to 1 per market. Prices are
     decimal, one market per row with a column per outcome, or a single market as a 1-D array.
 

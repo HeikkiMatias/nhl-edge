@@ -51,8 +51,8 @@ American odds: o = 1 + A/100 for A > 0, and o = 1 + 100/|A| for A < 0.
 
 - With two outcomes, as on the moneyline, Shin takes the same margin off each side:
   p_i = pi_i - (P - 1) / 2. Power and Shin both give the favorite more than multiplicative does.
-- De-vig only through `src/nhl_edge/market/devig.py`. Which method is default is decided in phase 1, by
-  audit and ADR. Tests check that probabilities sum to 1 and that symmetric prices give 0.5.
+- De-vig only through `src/nhl_edge/market/devig.py`. Multiplicative is the default (ADR 0008): the three
+  tie on the development seasons, and B1 fits the favourite-longshot bias. Tests check that probabilities sum to 1 and that symmetric prices give 0.5.
 - B0 is the raw de-vigged market. B1 is a logistic regression on the market log-odds, fitted
   chronologically. A model that beats B0 but not B1 is only correcting market calibration.
 
