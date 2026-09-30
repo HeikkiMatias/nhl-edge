@@ -198,8 +198,10 @@ class SbrSuspectOpeners(pa.DataFrameModel):
     American price at the open and at the close, the multiplicative de-vigged home probability at
     each, the move between them, the gap between the close and the opener with its sides swapped,
     and the home team's closing puck line (null before 2014-15). Each flag is one criterion of
-    ingest/sbr_suspect.py, and a row meets at least one. The close columns are null when SBR has
-    no close; p_open is null exactly when the opener sums below 100%.
+    ingest/sbr_suspect.py, and a row meets at least one. bad_close is not a criterion: it marks a
+    game whose close, not its opener, is the likely error, since the opener and the closing puck
+    line agree against the close (#64). The close columns are null when SBR has no close; p_open
+    is null exactly when the opener sums below 100%.
 
     The flags read the close, public only at the start (ADR 0006), so observed_utc is start_utc:
     the list is hindsight, for E2's report, never a model input. raw_key is the SBR page.
@@ -224,6 +226,7 @@ class SbrSuspectOpeners(pa.DataFrameModel):
     extreme_open: pl.Boolean
     swapped: pl.Boolean
     below_100: pl.Boolean
+    bad_close: pl.Boolean
     observed_utc: UtcDatetime
     raw_key: pl.String
 
@@ -252,6 +255,11 @@ class SbrSuspectOpeners(pa.DataFrameModel):
     @pa.dataframe_check
     def below_100_has_no_opening_probability(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(pl.col("below_100") == pl.col("p_open").is_null())
+
+    @pa.dataframe_check
+    def bad_close_has_its_evidence(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        evidence = pl.col("p_open", "p_close", "close_home_line").is_not_null()
+        return data.lazyframe.select(~pl.col("bad_close") | pl.all_horizontal(evidence))
 
     @pa.dataframe_check
     def observed_at_start(cls, data: pa.PolarsData) -> pl.LazyFrame:

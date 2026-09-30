@@ -14,7 +14,7 @@ Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to
 - **SBR archive (#7, #52, #56, ADR 0006):**
   - HTML only, and it stops on 2022-11-27, so 2022-23 has 342 of its 1,312 games (26%). 2010-11 to 2021-22 join 100%.
   - A price counts as seen from the game's start. E2 reads the opener at 10:00 US Eastern on the game date (ADR 0006), a separate column.
-  - `reference/sbr_suspect_openers.csv` lists 40 openers that are likely wrong, with the evidence for each.
+  - `reference/sbr_suspect_openers.csv` lists 40 openers that are likely wrong, with the evidence for each. Its `bad_close` column marks 3 of them, all in 2015-16, where the close is the error instead (#64). B1 still fits on them, by the owner's choice.
   - `nhl odds sbr --replay` rebuilds the table from the stored pages.
 - **Audit (#9):** `nhl audit report` writes `reports/audit/<as-of>.md`: games per season, the SBR section, shift coverage, reference files, snapshot health and starting goalies (#63).
   - The report with data to 2026-09-29 had 28 problems. The review on #9 (comment of 2026-09-30) ties each to an issue, and no season or source is dropped.
@@ -42,15 +42,13 @@ Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to
 
 ## Decisions waiting for the owner
 
-1. **SBR's closing book changes in 2018-19 (#65).** The default keeps the closes as they are, with the note in the model card. #65 lists two other options: a B1 slope diagnostic, or a book-era term in B1.
-2. **Three bad 2015-16 closes (#64).** Marking them as bad closes rather than suspect openers is plain data work. Whether B1's fit skips them is a modeling choice, with an ADR if the backtest changes. At 3 of about 9,400 games the delta is likely far inside its interval.
-3. **2022-23 in phase 4 (#66).** The plan runs phase 4's full backtest on 2022-23, but SBR covers only 26% of it. Decide when phase 4 starts.
+1. **2022-23 in phase 4 (#66).** The plan runs phase 4's full backtest on 2022-23, but SBR covers only 26% of it. Decide when phase 4 starts.
 
 ## Next
 
 1. **#10, the phase 1 gate.** Every deliverable is merged: `devig.py` with its default (ADR 0008), B0 and B1 on E1 and E2, the backtest, the model card and the golden tests. What is left is the done-when's "live snapshots landing five times a day". Once the timer has run a full day of slots, check the live odds section of `nhl audit report`, then close #10.
 2. **#9 and #42, the committed report.** After two weeks of polls (from 2026-09-29, so around 2026-10-13), run `nhl audit report`, commit it to `reports/audit/`, and review it as in the comment on #9: every problem gets an issue in a milestone, and a dropped season or source gets an ADR. #42 closes with the report's answer on the NHL's starter flag, #9 with the reviewed report.
-3. **#64's data part**, then #64's and #65's modeling parts once the owner decides.
+3. **#65, a diagnostic for SBR's change of closing book.** The owner chose on 2026-09-30 to keep the closes as they are and to add a report-only diagnostic: B0's E2 minus E1 in each book era (one book set both prices from 2010-11 to 2017-18), and B1's slope fitted in each era. No scored figure changes, so no ADR. An era term in B1 comes up only if the slopes differ beyond their intervals.
 4. **Then P2:** #11, with #28 (strength source where `situationCode` drifts) and #30 (post-game corrections) before the first B2 backtest.
 
 ## Keep an eye on

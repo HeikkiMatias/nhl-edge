@@ -68,5 +68,9 @@ ODDS = odds(
     game(2018020006, (120, -140), (-145, 125)),  # sides swapped, 13 points
     game(2018020007, (-125, 105), (-245, 205)),  # a big move with the same favourite
     game(2018020008, (-1010, 705)),  # a typo and no close
+    # The close's favourite is +1.5 on its own puck line, which backs the opener: a bad close.
+    game(2018020009, (-155, 135), (200, -240), home_line=-1.5),
+    # The close contradicts its puck line, but the opener names no favourite to back either.
+    game(2018020010, (-110, -110), (250, -320), home_line=-1.5),
     game(2022020001, (-1010, 705), (-105, -105)),  # 2022-23 is not inspected in phase 1
 )
