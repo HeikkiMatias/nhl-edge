@@ -1,6 +1,6 @@
 # 0009. Skater counts from the shift chart when the chart is complete
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-30
 
 ## Context
