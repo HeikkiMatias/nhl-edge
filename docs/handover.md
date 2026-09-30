@@ -2,6 +2,10 @@
 
 Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to pick it up from a terminal. CLAUDE.md holds the rules. This file holds the state. Update or delete it when it goes stale.
 
+## For the owner
+
+- **The GitHub timer needs your action (#50).** GitHub's late scheduled runs still run their jobs instead of skipping. At 15:27 UTC on 2026-09-30 the scheduled `ingest-nightly` ran in full, so every job runs twice and the duplicate odds slots spend credits. Check `gh variable list`: `TIMER_ACTIVE` must be a repository **variable** (not a secret or an environment variable) set to exactly `true`. Fix it with `gh variable set TIMER_ACTIVE --body true`. The steps are also in the latest comment on #50.
+
 ## State
 
 - **Lake (R2):** every regular-season game from 2010-11 to 2025-26 (19,152), and 2026-27's as the nightly ingest adds them.

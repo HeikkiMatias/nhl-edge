@@ -37,6 +37,7 @@ KEYS: dict[str, list[str]] = {
     "shifts": ["player_id", "period", "shift_number"],
     "actual_lineups": ["player_id"],
     "shift_coverage": ["game_id"],
+    "strength_time": ["team", "strength", "own_net_empty", "opp_net_empty", "strength_source"],
 }
 # Columns that record which copy a row came from and when it counts as public, not what it says,
 # and the game's own keys, which both copies share.

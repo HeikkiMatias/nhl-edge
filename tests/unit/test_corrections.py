@@ -287,7 +287,8 @@ def test_the_report_lists_what_more_than_the_scorer_changed(tmp_path: Path) -> N
         # ... which moves every shot's skater counts back to situationCode (ADR 0009).
         "2026020002: more than the scorer changed: shots strength_source (77 rows), "
         "actual_lineups toi_s (1 rows), shift_coverage players_toi_off (1 rows), "
-        "shift_coverage complete (1 rows)",
+        "shift_coverage complete (1 rows), strength_time row added (10 rows), "
+        "strength_time row removed (12 rows)",
         # Only a goal's scorer is exempt: a saved shot credited to another shooter is listed.
         "2026020004: more than the scorer changed: shots shooter_id (1 rows)",
     ]
