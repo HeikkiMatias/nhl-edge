@@ -20,8 +20,8 @@ Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to
 - **Backtest (#10):** `nhl backtest` runs the walk-forward on the development seasons 2018-19 and 2021-22 and writes `reports/backtest/summary.json`, `runs.csv` and the model card's figures.
   - B0 is the de-vigged market under multiplicative, power and Shin (`market/devig.py`). The three tie: every paired interval includes 0.
   - B1 is a logistic recalibration of B0's log-odds, fitted per fold on the earlier seasons. It does not beat B0: B0 minus B1 is +0.0004 [-0.0005, +0.0013] on E1.
-  - E1 (the close) B0 log loss 0.6571 [0.6469, 0.6668]. E2 (the opener) 0.6605 [0.6505, 0.6700]. E2 minus E1, paired: +0.0034 [+0.0006, +0.0064].
-  - E2 refuses the 8 openers more extreme than every close before their fold, widened outward to a multiple of 0.05: 0.20 to 0.85 in both folds (ADR 0007). E2 on every opener is reported under `sensitivity` in summary.json (+0.0046 [+0.0011, +0.0083] against E1).
+  - E1 (the close) B0 log loss 0.6571 [0.6469, 0.6668]. E2 (the opener) 0.6603 [0.6505, 0.6698]. E2 minus E1, paired: +0.0033 [+0.0005, +0.0064].
+  - E2 refuses openers more extreme than every close before their fold (ADR 0007): 10 openers, 7 of them scored test games. E2 on every opener is reported under `sensitivity` in summary.json (+0.0046 [+0.0011, +0.0083] against E1).
 - **Jobs:** GitHub Actions runs the nightly ingest (09:00 UTC), five odds slots a day, and the goalie polls hourly at :50 from 12:50 to 02:50 UTC. docs/data-sources.md, "When jobs run", has the times.
 - **Run times (#50):** GitHub's `schedule` starts this repo's runs 3 to 6 hours late, after most puck drops. The Cloudflare Worker `nhl-edge-timer` (`infra/timer`, #53) is deployed on the owner's Cloudflare account and dispatches every job on time; `infra/timer/README.md` covers setup. Every dispatch from 2026-09-29 13:50 UTC to 09-30 07:15 UTC failed with 401, so the owner stored a new token at about 09:23 UTC on 09-30 (it passed a curl check at 09:31 and expires in about a year). He set the repository variable `TIMER_ACTIVE` to `true` at 09:32 UTC, before the Worker had dispatched anything with it.
   - While `TIMER_ACTIVE` is `true`, GitHub's own scheduled runs skip, so if the Worker fails, nothing runs at all.
@@ -35,7 +35,7 @@ Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to
 
 ## In flight
 
-- **PR #60, E2 refuses implausible openers (#10, part 5).** It also carries this handover. Codex's first review found a P0: the fixed bounds of 0.15 and 0.85 were chosen with closes from after each fold's start in view. The fix derives the bounds per fold from the closes before it (ADR 0007), and it refuses the same 8 openers, so the figures are unchanged. If #60 is still open when you read this, it waits on Codex's second round. Merge it once that passes. #10 stays open after it.
+- **PR #60, E2 refuses implausible openers (#10, part 5).** It also carries this handover. Codex's first two reviews found P0s in the bounds: first fixed ones chosen with later closes in view, then a 0.05 step chosen on the development seasons. The bounds are now the exact range of every close before the fold (ADR 0007, accepted). If #60 is still open when you read this, it waits on Codex's third round. Merge it once that passes. #10 stays open after it.
 
 ## Decisions waiting for the owner
 
@@ -58,7 +58,6 @@ Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to
 - **#21 (P5):** the closing proxy should key on the Odds API event and its commence time, not `game_id`.
 - **Reference upkeep in 2026-27:** at a coaching change, end the old stint in `coaches.csv` and add the new one. Add a new venue name to `venues.csv`, and the building to `arenas.csv` if it is new. `nhl audit reference` flags both once the nightly ingest adds the game.
 - **`EXPECTED_GAMES` has no 2026-27 entry.** The 2026-27 schedule has 1,344 regular-season games. Without the entry, a season ingest's game count and the reference checks that need a finished season skip 2026-27.
-- **The implausible-opener step of 0.05 (ADR 0007) is fixed.** It was chosen with the development seasons in view, so never tune it on a held-out season.
 
 ## Continuing from a terminal
 
