@@ -53,6 +53,7 @@ SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
 - Shift chart coverage varies for older seasons. Phase 1 checks coverage per season before RAPM depends on it.
 - The Odds API free tier has 500 credits a month. A call costs 1 credit per market per region and returns every game. The slot plan uses about 300 credits a month. Store `last_update` with every quote.
 - Many EU books (13 of 20 on 2026-09-28, among them Marathonbet, Unibet, Betclic and 1xBet) quote the 3-way regulation line under the Odds API `h2h` key, with a `Draw` outcome. The parser stores those quotes as `h2h_3_way`, so `h2h` only holds the two-way moneyline including OT and the shootout. Pinnacle, Betsson and NordicBet quote the two-way line.
+- A book sometimes posts a market at a decimal price of 1.0, which pays nothing back: GTbets quoted two games' `h2h` at 1.0 on both sides on 2026-09-30. The parser skips a book's market priced at 1.0 or less on any side, the snapshot's log line counts them, and the raw copy keeps them (#83).
 
 ## When jobs run
 
