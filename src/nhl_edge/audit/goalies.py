@@ -11,7 +11,7 @@ report takes each source's first poll that names a goalie, how many minutes befo
 was fetched, and whether that goalie started; and the same for the last poll before the start,
 since a pick can change. Poll times count, not Daily Faceoff's own report times: a prediction can
 use a report only once it has fetched it. Daily Faceoff names goalies, matched to the starter's
-name in players without accents, case or punctuation.
+name in players without accents, case, punctuation or spaces.
 """
 
 import re
@@ -36,11 +36,12 @@ TEAM_GAME_SCHEMA = {
 
 
 def name_key(name: str | None) -> str | None:
-    """A goalie's name without accents, case or punctuation, for matching across sources."""
+    """A goalie's name without accents, case, punctuation or spaces, for matching across sources:
+    Ukko-Pekka Luukkonen and Ukko Pekka Luukkonen are one goalie."""
     if name is None:
         return None
     ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z ]", "", ascii_name.lower()).strip()
+    return re.sub(r"[^a-z]", "", ascii_name.lower())
 
 
 def _key(column: str) -> pl.Expr:
@@ -105,10 +106,12 @@ def team_games(
     )
     reported = pl.col("status").is_not_null()
     confirmed = pl.col("status") == CONFIRMED
+    # A Daily Faceoff listing is a game by its start and team. One page can list a team twice on
+    # a date, such as a stale listing of a re-timed game, so each listing keeps its own polls.
     dfo_side = (
         dailyfaceoff.with_columns(minutes=_minutes_before(), key=_key("goalie_name"))
         .sort(by_time)
-        .group_by("game_date", "team")
+        .group_by("game_date", "team", dfo_start_utc=pl.col("start_utc"))
         .agg(
             dfo_polls=pl.len(),
             dfo_last_min=pl.col("minutes").last(),
@@ -125,7 +128,13 @@ def team_games(
         starters.filter(pl.col("game_date") >= first)
         .with_columns(starter_key=_key("starter_name"))
         .join(nhl_side, on=["game_id", "team"], how="left")
+        # Each team-game takes the team's listing that date whose start is nearest its own.
         .join(dfo_side, on=["game_date", "team"], how="left")
+        .with_columns(dfo_gap=(pl.col("dfo_start_utc") - pl.col("start_utc")).abs())
+        .sort("dfo_gap", nulls_last=True)
+        .unique(["game_id", "team"], keep="first", maintain_order=True)
+        .drop("dfo_start_utc", "dfo_gap")
+        .sort("start_utc", "game_id", "team")
         .with_columns(
             nhl_named_right=pl.col("nhl_named_id") == pl.col("starter_id"),
             nhl_last_right=pl.col("nhl_last_id") == pl.col("starter_id"),

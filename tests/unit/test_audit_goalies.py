@@ -106,10 +106,30 @@ def test_starters_come_from_the_lineups_with_their_names_and_opponents() -> None
     ]
 
 
-def test_names_match_without_accents_case_or_punctuation() -> None:
+def test_names_match_without_accents_case_punctuation_or_spaces() -> None:
     assert goalies.name_key("Jakub Dobeš") == goalies.name_key("jakub dobes")
     assert goalies.name_key("J.-F. Bérubé") == goalies.name_key("JF Berube")
+    assert goalies.name_key("Ukko-Pekka Luukkonen") == goalies.name_key("Ukko Pekka Luukkonen")
     assert goalies.name_key(None) is None
+
+
+def test_each_daily_faceoff_listing_keeps_its_own_polls() -> None:
+    # A stale listing of MTL three hours earlier on the same date names the wrong goalie at its
+    # later polls. The game at START takes its own listing, and its picks are right.
+    stale = START - timedelta(hours=3)
+    dfo = dfo_polls(
+        [
+            ("MTL", stale, 200, "Jakub Dobeš", "Likely"),
+            ("MTL", stale, 10, "Sam Montembeault", "Likely"),
+            ("MTL", START, 60, "Jakub Dobeš", "Confirmed"),
+            ("MTL", START, 20, "Jakub Dobeš", "Confirmed"),
+        ]
+    )
+    frame = goalies.team_games(STARTERS, nhl_polls([]), dfo)
+    assert frame.height == STARTERS.height
+    mtl = team(frame, "MTL")
+    assert (mtl["dfo_polls"], mtl["dfo_last_min"], mtl["dfo_last_right"]) == (2, 20, True)
+    assert (mtl["dfo_reported_min"], mtl["dfo_confirmed_min"]) == (60, 60)
 
 
 def test_each_source_s_first_pick_and_last_poll_are_judged_against_the_starter() -> None:
