@@ -1,0 +1,16 @@
+{
+  "credits": {
+    "last": 2,
+    "remaining": 483,
+    "used": 17
+  },
+  "endpoint": "/v4/sports/icehockey_nhl/odds",
+  "fetched_utc": "2026-09-30T01:36:17+00:00",
+  "params": {
+    "dateFormat": "iso",
+    "markets": "h2h,totals",
+    "oddsFormat": "decimal",
+    "regions": "eu"
+  },
+  "slot": "pre7"
+}
