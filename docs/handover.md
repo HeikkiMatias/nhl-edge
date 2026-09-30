@@ -35,7 +35,7 @@ Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to
 
 ## In flight
 
-- **PR #60, E2 refuses implausible openers (#10, part 5).** It also carries this handover. CI is green. Codex's automatic review of `7ad29c9` was still running at handover. If Codex posts findings, triage them with `/review-triage`; if it answers with a 👍 or "Didn't find any major issues", merge it. #10 stays open after it.
+- **PR #60, E2 refuses implausible openers (#10, part 5).** It also carries this handover. CI is green. A Claude leakage audit passed, and its three test gaps (P3) are fixed. Codex's automatic review of `7ad29c9` was still running at handover. If Codex posts findings, triage them with `/review-triage`; if it answers with a 👍 or "Didn't find any major issues", merge it. #10 stays open after it.
 
 ## Decisions waiting for the owner
 
