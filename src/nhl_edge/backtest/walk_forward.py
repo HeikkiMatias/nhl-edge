@@ -13,7 +13,6 @@ Outcomes settle the moneyline on the full game, overtime and shootout included (
 are read to score a prediction and, for games before the fold, to fit B1.
 """
 
-import math
 from collections.abc import Iterable
 from datetime import datetime
 
@@ -28,9 +27,6 @@ from nhl_edge.market.devig import OVERROUND_TOLERANCE, Method, fair_probabilitie
 
 # B1 recalibrates this method's probabilities, until an ADR chooses the default de-vig method.
 B1_METHOD = Method.MULTIPLICATIVE
-# E2 refuses an opener more extreme than every close before its fold, with that range widened
-# outward to a multiple of this step (ADR 0007).
-BOUNDS_STEP = 0.05
 
 Coverage = dict[str, dict[int, dict[str, int]]]
 Fits = dict[str, dict[int, recalibration.Recalibration]]
@@ -70,19 +66,15 @@ def refused(prices: pl.DataFrame) -> pl.Series:
 
 
 def bounds(closes: pl.DataFrame, start: datetime) -> tuple[float, float]:
-    """The home probabilities E2 accepts in a fold starting at start (ADR 0007): the range of the
-    de-vigged home probability at every close public before start, widened outward to a multiple
-    of BOUNDS_STEP. closes holds B0 of E1's prices under B1_METHOD. Only closes before the fold are
-    read, so the bounds are point in time, and a live E2 can apply them with the closes it has."""
+    """The home probabilities E2 accepts in a fold starting at start (ADR 0007): the lowest and
+    highest de-vigged home probability at every close public before start. closes holds B0 of
+    E1's prices under B1_METHOD. Only closes before the fold are read and nothing is tuned, so the
+    bounds are point in time, and a live E2 can apply them with the closes it has."""
     seen = closes.filter(pl.col("prediction_utc") < start)["p_home"]
     low, high = seen.min(), seen.max()
     if not (isinstance(low, float) and isinstance(high, float)):
         raise ValueError(f"no closes before {start} to bound E2's openers")
-    steps = (round(low / BOUNDS_STEP, 9), round(high / BOUNDS_STEP, 9))
-    return (
-        round(math.floor(steps[0]) * BOUNDS_STEP, 9),
-        round(math.ceil(steps[1]) * BOUNDS_STEP, 9),
-    )
+    return low, high
 
 
 def implausible(prices: pl.DataFrame, low: float, high: float) -> pl.Series:

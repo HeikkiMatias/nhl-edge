@@ -13,7 +13,7 @@ TRAINING = 2017020001
 TESTED = 2018020002
 
 
-def test_the_bounds_are_the_range_of_every_earlier_close_widened_to_a_step() -> None:
+def test_the_bounds_are_the_range_of_every_earlier_close() -> None:
     start = datetime(2021, 10, 12, 14, tzinfo=UTC)
     closes = pl.DataFrame(
         {
@@ -23,10 +23,7 @@ def test_the_bounds_are_the_range_of_every_earlier_close_widened_to_a_step() -> 
         }
     )
     # Closes at or after the fold's start are never read.
-    assert bounds(closes, start) == (0.2, 0.85)
-    # A close on a step stays on it.
-    on_step = closes.with_columns(p_home=pl.Series([0.3, 0.5, 0.7, 0.05, 0.99]))
-    assert bounds(on_step, start) == (0.3, 0.7)
+    assert bounds(closes, start) == (0.236, 0.837)
     with pytest.raises(ValueError, match="no closes"):
         bounds(closes, datetime(2021, 4, 1, tzinfo=UTC))
 

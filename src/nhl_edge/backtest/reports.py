@@ -33,7 +33,7 @@ OPENER = (
 MARKETS = {
     "E1": "SBR closing moneyline, read at the start: the information test, not a tradable price",
     "E2": f"{OPENER} E2 refuses an opener whose de-vigged home probability is outside the range of "
-    "every close before its fold, widened outward to a multiple of 0.05 (ADR 0007)",
+    "every close before its fold (ADR 0007)",
 }
 RUNS_FIELDS = [
     "run_utc",
