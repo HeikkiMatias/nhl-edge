@@ -2,6 +2,8 @@
 strength state add up to its length, and the typical minutes a team spends at 5v5, on the power
 play and short-handed. A game whose seconds do not add up, or that has none, is a problem."""
 
+from collections.abc import Collection
+
 import polars as pl
 
 from nhl_edge.lake.schemas import STRENGTH_SOURCES
@@ -11,10 +13,13 @@ POWER_PLAY = ("5v4", "5v3", "4v3", "6v4", "6v3")
 SHORT_HANDED = ("4v5", "3v5", "3v4", "4v6", "3v6")
 
 
-def season_report(frame: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
-    """Per season: games, those whose seconds add up for both teams, and per team-game the mean
-    5v5 minutes with both nets manned, power-play and short-handed minutes, and the share of all
-    seconds whose counts came from the chart."""
+def season_report(
+    frame: pl.DataFrame, games: pl.DataFrame, open_seasons: Collection[int]
+) -> pl.DataFrame:
+    """Per season: games, those whose seconds add up for both teams, and, for open_seasons only,
+    per team-game the mean 5v5 minutes with both nets manned, power-play and short-handed
+    minutes, and the share of all seconds whose counts came from the chart. A held-out season
+    keeps its checks but not its minutes, which a feature could be shaped by."""
     totals = frame.group_by("season", "game_id", "team").agg(
         pl.col("seconds").sum(), pl.col("game_seconds").first()
     )
@@ -45,13 +50,18 @@ def season_report(frame: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
             how="left",
         )
     )
+    shown = pl.col("season").is_in(list(open_seasons))
     return (
         counts.join(per_season, on="season", how="left")
         .with_columns(
             (pl.col(c) / pl.col("team_games")).round(1)
             for c in ("even", "power_play", "short_handed")
         )
-        .fill_null(0)
+        .with_columns(pl.col("with_time", "adds_up").fill_null(0))
+        .with_columns(
+            pl.when(shown).then(pl.col(c).fill_null(0)).otherwise(None).alias(c)
+            for c in ("even", "power_play", "short_handed", "chart_share")
+        )
         .sort("season")
     )
 
@@ -63,10 +73,17 @@ def markdown_report(report: pl.DataFrame) -> str:
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in report.iter_rows(named=True):
+        if row["even"] is None:
+            minutes = "| held out | | | "
+        else:
+            minutes = (
+                f"| {row['even']:.1f} | {row['power_play']:.1f} | {row['short_handed']:.1f} "
+                f"| {row['chart_share']:.1%} "
+            )
         lines.append(
             f"| {row['season']} | {row['games']:,} | {row['with_time']:,} | {row['adds_up']:,} "
-            f"| {row['even']:.1f} | {row['power_play']:.1f} | {row['short_handed']:.1f} "
-            f"| {row['chart_share']:.1%} |"
+            + minutes
+            + "|"
         )
     return "\n".join(lines)
 

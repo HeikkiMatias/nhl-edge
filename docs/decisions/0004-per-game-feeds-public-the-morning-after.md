@@ -38,7 +38,7 @@ None yet. The correction rate itself is unmeasured. #30 measures it by refetchin
 
 ## Consequences
 
-- Every row of the four tables has `observed_utc = result_public_utc(game_date)`. A game's own shots, shifts and lineup never feed a prediction for it (hard rules 1 and 9). `tests/leakage/test_shots.py`, `test_shifts.py`, `test_actual_lineups.py` and `test_shift_coverage.py` check this.
+- Every row of the four tables has `observed_utc = result_public_utc(game_date)`. So does `strength_time` (#72, added later), which `tests/leakage/test_strength_time.py` checks. A game's own shots, shifts and lineup never feed a prediction for it (hard rules 1 and 9). `tests/leakage/test_shots.py`, `test_shifts.py`, `test_actual_lineups.py` and `test_shift_coverage.py` check this.
 - A feature that wants assists, points or other scoring credits needs a new decision first. Adding the column also breaks a locked leakage test.
 - Live ratings use first versions for the latest games, and the backtest uses corrected ones. This makes the backtest slightly optimistic, by an amount #30 measures.
 

@@ -95,7 +95,7 @@ def test_the_audit_counts_games_that_add_up_and_names_those_that_do_not() -> Non
     frames = [parsed_feeds(game_id)["strength_time"] for game_id in (*OPENING_WEEK_GAMES,)]
     frame = pl.concat(frames)
     games = pl.DataFrame({"game_id": [*OPENING_WEEK_GAMES, 2010020999], "season": [20102011] * 4})
-    report = audit.season_report(frame, games).row(0, named=True)
+    report = audit.season_report(frame, games, [20102011]).row(0, named=True)
     assert (report["games"], report["with_time"], report["adds_up"]) == (4, 3, 3)
     assert report["even"] > 40 and report["chart_share"] > 0.9
     assert audit.problems(frame, games) == [
@@ -108,4 +108,9 @@ def test_the_audit_counts_games_that_add_up_and_names_those_that_do_not() -> Non
     )
     first = audit.problems(short, games)[0]
     assert first.startswith("20102011: 1 games whose seconds do not add up, e.g. 2010020003")
-    assert "| 20102011 | 4 | 3 | 3 |" in audit.markdown_report(audit.season_report(frame, games))
+    shown = audit.season_report(frame, games, [20102011])
+    assert "| 20102011 | 4 | 3 | 3 |" in audit.markdown_report(shown)
+    # A held-out season keeps its checks, but not its minutes.
+    held = audit.season_report(frame, games, [])
+    assert held.select("adds_up", "even", "chart_share").row(0) == (3, None, None)
+    assert "| held out |" in audit.markdown_report(held)
