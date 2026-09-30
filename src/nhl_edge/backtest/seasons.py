@@ -41,6 +41,12 @@ OPEN_SEASONS: tuple[int, ...] = tuple(
     season for season, role in SEASON_ROLES.items() if role in OPEN_ROLES
 )
 
+# The seasons a phase 2 design choice may rest on: training seasons without the bubble and empty
+# arenas, so the development seasons stay unseen until gate 1 (phase 2 plan, #11).
+TRAINING_SEASONS: tuple[int, ...] = tuple(
+    season for season, role in SEASON_ROLES.items() if role is SeasonRole.TRAINING
+)
+
 DEVELOPMENT_SEASONS: tuple[int, ...] = tuple(
     season for season, role in SEASON_ROLES.items() if role is SeasonRole.DEVELOPMENT
 )

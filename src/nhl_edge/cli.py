@@ -280,15 +280,15 @@ def xg(
     r2: Annotated[bool, typer.Option("--r2", help="Mirror the shot_xg table to R2.")] = False,
 ) -> None:
     """Fit the xG model per season on earlier seasons' shots (#73, ADR 0010), write every scored
-    shot's xG to the lake's shot_xg, and the calibration report to <out>/<version>.md, with
-    figures for the open seasons only."""
+    shot's xG to the lake's shot_xg, and the calibration report to <out>/<version>.md: figures
+    per open season, and group tables over the training seasons only."""
     from datetime import UTC
 
     import polars as pl
 
     from nhl_edge.audit import xg as xg_report
     from nhl_edge.backtest import reports
-    from nhl_edge.backtest.seasons import OPEN_SEASONS
+    from nhl_edge.backtest.seasons import OPEN_SEASONS, TRAINING_SEASONS
     from nhl_edge.features import xg as xg_model
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.lake.tables import Lake
@@ -311,7 +311,7 @@ def xg(
     days = games.filter(pl.col("season").is_in(wanted))["game_date"].unique().to_list()
     lake.replace_dates("shot_xg", scored, days)
     report = xg_report.markdown_report(
-        xg_report.scored_shots(scored, shots), models, OPEN_SEASONS, version
+        xg_report.scored_shots(scored, shots), models, OPEN_SEASONS, TRAINING_SEASONS, version
     )
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{version}.md"

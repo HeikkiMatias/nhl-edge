@@ -4,7 +4,8 @@ from where and how it was taken. Team strength (#74) and the goalie effect (#75)
 The model is a logistic regression on:
 - distance and angle to the net, each as a cubic spline with fixed knots;
 - shot type, with the rare ones grouped as "other";
-- rebound: the play before the shot is the shooting team's own attempt, 3 seconds or less before;
+- rebound: the play before the shot is the shooting team's own attempt, 3 seconds or less before,
+  with a term per season, since rebounds convert less every season;
 - rush: the play before the shot is in the neutral or the shooting team's defensive zone, 4
   seconds or less before;
 - the strength state from the shooting team's side;
@@ -12,7 +13,8 @@ The model is a logistic regression on:
 
 Penalty shots, shots at an empty net and shots without coordinates are left out, when fitting and
 when scoring. Every constant here is fixed by ADR 0010 from common public definitions, not tuned
-on results.
+on results. The rebound term per season was chosen among four variants on the training seasons
+only, after the first calibration report (ADR 0010).
 
 One model scores each season. It is fitted on every earlier season's shots public before the
 season's first game (hard rule 1), and a season it has not seen takes the latest training season's
@@ -120,7 +122,7 @@ def _one_hot(values: pl.Series, levels: tuple[object, ...]) -> NDArray[np.float6
 
 def design(frame: pl.DataFrame, seasons: tuple[int, ...]) -> NDArray[np.float64]:
     """The model's input columns for a model_frame, with seasons the fitted model knows. A later
-    season takes the last known season's level."""
+    season takes the last known season's level, and its rebound effect."""
     season = frame["season"].clip(upper_bound=seasons[-1])
     blocks = [
         _spline(DISTANCE_KNOTS).transform(frame["distance"].to_numpy().reshape(-1, 1)),
@@ -130,7 +132,9 @@ def design(frame: pl.DataFrame, seasons: tuple[int, ...]) -> NDArray[np.float64]
         frame.select("rebound", "rush").to_numpy().astype(float),
     ]
     if len(seasons) > 1:
-        blocks.append(_one_hot(season, seasons))
+        by_season = _one_hot(season, seasons)
+        # The rebound effect moves by season, as the level does (ADR 0010).
+        blocks += [by_season, by_season * frame["rebound"].to_numpy()[:, None]]
     return np.hstack(blocks)
 
 

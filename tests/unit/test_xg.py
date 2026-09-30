@@ -120,6 +120,20 @@ def test_a_season_the_model_has_not_seen_takes_the_last_seasons_level() -> None:
     assert later == pytest.approx(last)
 
 
+def test_the_rebound_effect_follows_the_latest_season() -> None:
+    # Rebounds convert less every season (ADR 0010): a new season takes the last season's rebound
+    # effect, not the average over the seasons the model was fitted on.
+    seasons = [20102011, 20112012, 20122013, 20132014]
+    shots = synthetic_shots(seasons, per_season=40_000, rebound_by_season=[2.0, 1.5, 0.5, 0.0])
+    model = xg.fit(shots, 20132014, datetime(2013, 10, 5, 23, tzinfo=UTC), VERSION)
+    base = one_shot(season=20132014, x=69, y=0)
+    rebound = base.with_columns(prev_event_type=pl.lit("shot-on-goal"), prev_seconds=pl.lit(1))
+    plain = base.with_columns(prev_event_type=pl.lit("faceoff"), prev_seconds=pl.lit(20))
+    p_rebound, p_plain = (model.predict(xg.model_frame(f)).item() for f in (rebound, plain))
+    log_odds = np.log(p_rebound / (1 - p_rebound)) - np.log(p_plain / (1 - p_plain))
+    assert log_odds == pytest.approx(0.5, abs=0.25)
+
+
 def test_score_gives_every_modelled_shot_of_each_season_an_xg() -> None:
     scored, models = xg.score(SHOTS, GAMES, [20112012, 20122013], VERSION)
     ShotXg.validate(scored)
@@ -150,8 +164,9 @@ def test_the_report_shows_figures_for_open_seasons_only() -> None:
         "shots": shots.filter(pl.col("season") == 20122013).height,
     }
     assert rows[0]["low"] < rows[0]["difference"] < rows[0]["high"]
-    text = report.markdown_report(shots, models, [20112012], VERSION)
-    assert "| 20122013 | " in text and "held out" in text
-    assert "## Rebound, open seasons 20112012" in text
+    text = report.markdown_report(shots, models, [20112012, 20122013], [20112012], VERSION)
+    assert "## Rebound, training seasons 20112012" in text
+    held = report.markdown_report(shots, models, [20112012], [20112012], VERSION)
+    assert "| 20122013 | " in held and "held out" in held
     assert "| 0-10 ft |" in text or "| 10-20 ft |" in text
     assert np.isclose(sum(r["shots"] for r in report.group_report(shots, "rush")), shots.height)

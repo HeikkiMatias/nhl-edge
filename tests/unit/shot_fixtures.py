@@ -31,7 +31,14 @@ def games_of(seasons: list[int]) -> pl.DataFrame:
     )
 
 
-def synthetic_shots(seasons: list[int], per_season: int = 4000, seed: int = 7) -> pl.DataFrame:
+def synthetic_shots(
+    seasons: list[int],
+    per_season: int = 4000,
+    seed: int = 7,
+    rebound_by_season: list[float] | None = None,
+) -> pl.DataFrame:
+    """Shots of each season. rebound_by_season gives each season's rebound log-odds in place of
+    REBOUND, so rebounds can convert less every season."""
     rng = np.random.default_rng(seed)
     frames = []
     for index, season in enumerate(seasons):
@@ -43,7 +50,10 @@ def synthetic_shots(seasons: list[int], per_season: int = 4000, seed: int = 7) -
         distance = np.hypot(89 - x, y)
         rebound = rng.random(n) < 0.08
         rush = rng.random(n) < 0.1
-        logit = BASE + PER_FOOT * distance + REBOUND * rebound + RUSH * rush + PER_SEASON * index
+        rebound_effect = rebound_by_season[index] if rebound_by_season else REBOUND
+        logit = (
+            BASE + PER_FOOT * distance + rebound_effect * rebound + RUSH * rush + PER_SEASON * index
+        )
         is_goal = rng.random(n) < 1 / (1 + np.exp(-logit))
         penalty = rng.random(n) < 0.01
         empty = ~penalty & (rng.random(n) < 0.02)

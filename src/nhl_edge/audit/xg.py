@@ -1,11 +1,13 @@
 """The xG model's calibration report (#73, ADR 0010).
 
 Per season: the shots scored, goals against expected goals per 100 shots with a weekly block
-bootstrap interval (hard rule 7), and how well xG ranks goals above saves and misses (AUC). Pooled
-over the open seasons scored: the same by distance band, strength state, shot type, and for
-rebounds and rushes. A held-out season shows only how many shots were scored, since its figures
-could shape a design choice. The model fits come last, one per season, with their training shots
-and train_cutoff.
+bootstrap interval (hard rule 7), and how well xG ranks goals above saves and misses (AUC). A
+held-out season shows only how many shots were scored.
+
+Pooled over the training seasons scored: the same by distance band, strength state, shot type, and
+for rebounds and rushes. These are the tables a change to the model would rest on, so they leave
+out the development seasons, which phase 2 keeps for gate 1 (TRAINING_SEASONS). The model fits come
+last, one per season, with their training shots and train_cutoff.
 """
 
 from collections.abc import Collection, Sequence
@@ -97,16 +99,21 @@ def _calibration_cells(row: dict[str, Any]) -> str:
 
 
 def markdown_report(
-    scored: pl.DataFrame, models: Sequence[XgModel], open_seasons: Collection[int], version: str
+    scored: pl.DataFrame,
+    models: Sequence[XgModel],
+    open_seasons: Collection[int],
+    design_seasons: Collection[int],
+    version: str,
 ) -> str:
-    open_rows = scored.filter(pl.col("season").is_in(list(open_seasons)))
-    shown = sorted(open_rows["season"].unique().to_list())
+    """The report: per season over open_seasons, and the group tables over design_seasons."""
+    design_rows = scored.filter(pl.col("season").is_in(list(design_seasons)))
+    shown = sorted(design_rows["season"].unique().to_list())
     lines = [
         f"# xG calibration: {version}",
         "",
         "Goals against expected goals per 100 shots, with 95% weekly block bootstrap intervals.",
         "A difference whose interval holds 0 is calibrated. Held-out seasons show only how many",
-        "shots were scored.",
+        "shots were scored. The group tables pool the training seasons only.",
         "",
         "## Per season",
         "",
@@ -119,17 +126,17 @@ def markdown_report(
         else:
             cells = "held out | | | | | "
         lines.append(f"| {row['season']} | {row['shots']:,} | {cells} |")
-    if not open_rows.is_empty():
+    if not design_rows.is_empty():
         seasons = f"{shown[0]} to {shown[-1]}" if len(shown) > 1 else str(shown[0])
         for title, column in GROUPS.items():
             lines += [
                 "",
-                f"## {title}, open seasons {seasons}",
+                f"## {title}, training seasons {seasons}",
                 "",
                 f"| Group | Shots | {CALIBRATION_HEADER} |",
                 "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
-            for row in group_report(open_rows, column):
+            for row in group_report(design_rows, column):
                 lines.append(f"| {row['group']} | {row['shots']:,} | {_calibration_cells(row)} |")
     lines += [
         "",
