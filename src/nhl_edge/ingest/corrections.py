@@ -17,6 +17,7 @@ import polars as pl
 
 from nhl_edge.backtest.seasons import FIRST_LIVE_SEASON
 from nhl_edge.ingest.nhl_api import (
+    CHART_SETTLED,
     FEED_KINDS,
     RECHECK_SUFFIX,
     SOURCE,
@@ -48,10 +49,11 @@ STAMP = "%Y%m%dT%H%M%SZ"
 
 
 def due_window(now: datetime, days: int) -> tuple[datetime, datetime]:
-    """The fetch times of the tables' copies whose recheck falls in the last `days` days by now:
-    RECHECK_AFTER before now, and `days` days before that."""
+    """The boxscore fetch times of the games whose recheck can fall due in the last `days` days by
+    now: from RECHECK_AFTER before now back `days` days, and CHART_SETTLED more, since an
+    incomplete shift chart is fetched again on later nights and its newer copy sets the date."""
     last = now - RECHECK_AFTER
-    return last - timedelta(days=days), last
+    return last - timedelta(days=days) - CHART_SETTLED, last
 
 
 def first_fetches(lineups: pl.DataFrame) -> pl.DataFrame:
@@ -75,6 +77,19 @@ def _entity(game: dict[str, Any]) -> str:
     return f"{game['season']}/{game['game_id']}"
 
 
+def recheck_after(store: RawStore, game: dict[str, Any]) -> datetime | None:
+    """When the game's recheck falls due: RECHECK_AFTER after the newest of the copies its tables
+    read, which is the shift chart when the nightly lookback fetched an incomplete one again. None
+    when a copy is missing."""
+    fetched = []
+    for kind in FEED_KINDS:
+        key = store.latest(f"{SOURCE}/{kind}/{_entity(game)}")
+        if key is None:
+            return None
+        fetched.append(parse_utc(store.meta(key)["fetched_utc"]))
+    return max(fetched) + RECHECK_AFTER
+
+
 @dataclass
 class RecheckSummary:
     window: tuple[datetime, datetime]
@@ -94,12 +109,12 @@ def recheck(
     days: int,
     first_season: int = FIRST_LIVE_SEASON,
 ) -> RecheckSummary:
-    """Fetch the three feeds again for each final game from first_season on whose tables' copy
-    was fetched in the due window (first_fetches gives `fetched`), once the play-by-play the
-    tables read is RECHECK_AFTER old. Candidates are chosen by fetch time, not game date, so a
-    game ingested nights late is still rechecked a week after. Only live seasons by default: the
-    2010-26 backfill fetched every earlier game in September 2026, and those copies are the late
-    ones already. A rerun reuses a recheck it already has."""
+    """Fetch the three feeds again for each final game from first_season on whose boxscore was
+    fetched in the due window (first_fetches gives `fetched`), once the newest copy its tables
+    read is RECHECK_AFTER old (recheck_after). Candidates are chosen by fetch time, not game
+    date, so a game ingested nights late is still rechecked a week after. Only live seasons by
+    default: the 2010-26 backfill fetched every earlier game in September 2026, and those copies
+    are the late ones already. A rerun reuses a recheck it already has."""
     summary = RecheckSummary(due_window(now, days))
     start, end = summary.window
     due = (
@@ -109,11 +124,10 @@ def recheck(
         .sort("game_date", "game_id")
     )
     for game in due.iter_rows(named=True):
-        first = api.store.latest(f"{SOURCE}/play-by-play/{_entity(game)}")
-        if first is None:
+        after = recheck_after(api.store, game)
+        if after is None:
             summary.never_ingested.append(game["game_id"])
             continue
-        after = parse_utc(api.store.meta(first)["fetched_utc"]) + RECHECK_AFTER
         if after > now:
             summary.not_due.append(game["game_id"])
             continue

@@ -22,6 +22,7 @@ from nhl_edge.ingest.corrections import (
     GameDiff,
     diff_game,
     first_fetches,
+    recheck_after,
 )
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import FEED_TABLES
@@ -50,19 +51,24 @@ class Corrections:
 def corrections(
     store: RawStore, games: pl.DataFrame, lineups: pl.DataFrame, as_of: date
 ) -> Corrections:
-    """Every live-season game whose recheck was due by the morning after as_of, judged by when
-    its tables' copy was fetched (the stamp of actual_lineups' raw_key), and the diffs of those
-    rechecked."""
+    """Every live-season game whose recheck was due by the morning after as_of, and the diffs of
+    those rechecked. A game falls due as the recheck does (recheck_after), or, when the raw cache
+    lacks its copies, RECHECK_AFTER after its boxscore's fetch (the stamp of actual_lineups'
+    raw_key)."""
     cutoff = datetime.combine(as_of + timedelta(days=1), REPORT_TIME, UTC)
     live = pl.col("season") >= FIRST_LIVE_SEASON
-    due = (
+    candidates = (
         games.filter(live)
         .join(first_fetches(lineups.filter(live)), on="game_id")
-        .filter(pl.col("fetched_utc") + RECHECK_AFTER + GRACE <= cutoff)
         .sort("game_date", "game_id")
     )
-    diffs = [diff for game in due.iter_rows(named=True) if (diff := diff_game(store, game))]
-    return Corrections(due["game_id"].to_list(), diffs)
+    due = []
+    for game in candidates.iter_rows(named=True):
+        after = recheck_after(store, game) or game["fetched_utc"] + RECHECK_AFTER
+        if after + GRACE <= cutoff:
+            due.append(game)
+    diffs = [diff for game in due if (diff := diff_game(store, game))]
+    return Corrections([game["game_id"] for game in due], diffs)
 
 
 def _changes(result: Corrections) -> pl.DataFrame:

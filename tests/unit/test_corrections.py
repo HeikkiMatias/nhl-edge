@@ -80,10 +80,11 @@ def api(store: RawStore, server: Server, now: datetime) -> NhlApi:
     return NhlApi(store, client, min_interval_s=0, now=lambda: now)
 
 
-def test_the_due_window_holds_copies_fetched_a_week_before_now_and_n_days_earlier() -> None:
+def test_the_due_window_reaches_back_n_days_and_the_charts_settling_time() -> None:
     now = datetime(2010, 10, 16, 9, 30, tzinfo=UTC)
+    # A week before now, back three days, and three more for a shift chart fetched again later.
     assert due_window(now, 3) == (
-        datetime(2010, 10, 6, 9, 30, tzinfo=UTC),
+        datetime(2010, 10, 3, 9, 30, tzinfo=UTC),
         datetime(2010, 10, 9, 9, 30, tzinfo=UTC),
     )
     stamps = fetched()["fetched_utc"].to_list()
@@ -150,6 +151,27 @@ def test_only_live_seasons_are_rechecked_by_default(tmp_path: Path) -> None:
     server = Server()
     assert recheck(api(store, server, now), games(), fetched(), now, 3).games == 0
     assert not server.calls
+
+
+def test_a_chart_fetched_again_later_sets_the_recheck_date(tmp_path: Path) -> None:
+    # Codex on #80: the nightly lookback fetches an incomplete chart again, and the tables read
+    # that newer copy, so the recheck waits until it too is a week old.
+    store = RawStore(tmp_path)
+    store_first_copies(store)
+    chart = FIRST + timedelta(days=2)
+    for game in games().iter_rows(named=True):
+        key = f"shiftcharts/{game['season']}/{game['game_id']}/{chart:%Y%m%dT%H%M%SZ}"
+        body = feed("shiftcharts", game["game_id"])
+        store.put("nhl", key, body, {"fetched_utc": chart.isoformat()})
+    server = Server()
+    week = FIRST + timedelta(days=7, hours=1)
+    summary = recheck(api(store, server, week), games(), fetched(), week, 3, first_season=20102011)
+    assert len(summary.not_due) == 3 and not server.calls
+    later = chart + timedelta(days=7, hours=1)
+    summary = recheck(
+        api(store, server, later), games(), fetched(), later, 3, first_season=20102011
+    )
+    assert (summary.games, summary.fetched) == (3, 9)
 
 
 def test_a_game_ingested_nights_late_is_rechecked_a_week_after_its_copy(tmp_path: Path) -> None:
