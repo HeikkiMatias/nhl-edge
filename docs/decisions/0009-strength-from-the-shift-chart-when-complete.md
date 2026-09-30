@@ -7,16 +7,18 @@
 
 `shots` takes each shot's skater counts, and so `strength`, `skaters_for` and `skaters_against`, from the play-by-play's `situationCode` (ADR 0004). In some games of 2019-20 and 2020-21, `situationCode` loses track of a penalty and stays one skater off for the rest of the game, while the shift chart shows plausible states throughout (#28). The xG model (#73) and team strength (#74) split shots by strength state, and the time-at-strength table (#72) needs the same source. So the source has to be chosen before phase 2 builds on it.
 
-`shift_coverage` compares the two sources at every unblocked shot except penalty shots. In games whose chart is complete (every dressed player's shifts add up to his time on ice), the share of shots where the skater counts differ is:
+`shift_coverage` compares the two sources at every unblocked shot except penalty shots. In games whose chart is complete (every dressed player's shifts add up to his time on ice), the share of shots where the skater counts differ, over the seasons `nhl audit shifts` reports (2010-11 to 2024-25, 2022-23 included as development evidence under plan §5):
 
 | Seasons | Shots where the chart and `situationCode` differ | Games above 5% |
 | --- | ---: | ---: |
 | 2010-11 to 2018-19 | 0.09% to 0.22% per season | 5 in all |
 | 2019-20 | 3.82% (about 3,550 shots) | 113 |
 | 2020-21 | 0.97% (about 690 shots) | 27 |
-| 2021-22 to 2025-26 | 0.18% to 0.24% per season | 1 in all |
+| 2021-22 to 2024-25 | 0.18% to 0.24% per season | 0 |
 
 Outside the drift, most differences fall at a line change, where either source can be a second off. The goalie digits agree with the chart, so `is_empty_net` is not in question.
+
+A first draft of this table also showed 2025-26, the one-time hockey test season, which design evidence must leave out: a comparison of the two sources, no results, seen on 2026-09-30 while choosing between the options. The figures above leave it out. It changed no number the options rest on, and gate 2 (plan §6) should be judged knowing it was seen.
 
 ## Options
 
@@ -59,8 +61,9 @@ None yet. xG (#73) and team strength (#74) are the first components to read `str
 - #72's time-at-strength table uses the same source, the chart for complete games and `situationCode` otherwise.
 - RAPM (phase 3) builds its stints from the chart already, and drops those that contradict the strength state (plan §9).
 - `tests/leakage/test_shots.py` keeps holding every row to the morning after its game. The source is the game's own feeds, which ADR 0004 already dates.
+- Through the completeness check, a shot's strength now also depends on the shift chart and the boxscore's time on ice. Both can change after the morning after: the nightly lookback fetches an incomplete chart again for three days, and the backfill read later copies. So a corrected time on ice can move a whole game's shots between the two sources. ADR 0004 accepts such corrections as small, and #30's recheck report counts changed `strength`, `skaters_for` and `skaters_against` values, the fields ADR 0004's revisit trigger names.
 
 ## Revisit when
 
-- **A drifted game with an incomplete chart turns up in a development or test season.**
+- **A drifted game with an incomplete chart turns up in a season that may inform design:** one `nhl audit shifts` reports by default, not 2025-26 or a live season.
 - **Or the chart itself proves wrong over long stretches.** For example, a complete chart whose on-ice counts contradict `situationCode` for a whole period in a season without drift.
