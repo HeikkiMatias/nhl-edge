@@ -6,9 +6,8 @@ the SBR rows that matched no NHL game are seen too. An unmatched row that the ca
 listings name as a playoff game is not a problem: match_season tells a playoff game apart only
 after the regular season's last date, and in 2020-21 the playoffs began before it.
 
-The price checks read sbr_odds and de-vig only through market/devig.py, with the multiplicative
-method: the default method is chosen after this audit (#10), and a favourite or an open-to-close
-move barely depends on it. They leave out 2022-23, the market validation season, which phase 1
+The price checks read sbr_odds and de-vig only through market/devig.py, with its default method,
+multiplicative (ADR 0008). They leave out 2022-23, the market validation season, which phase 1
 does not inspect (the owner's decision on #10, 2026-09-29). Its join is still reported, since
 that counts rows and reads no price.
 """
@@ -26,7 +25,7 @@ from nhl_edge.ingest.games import EXPECTED_GAMES
 from nhl_edge.ingest.nhl_api import PLAYOFFS
 from nhl_edge.ingest.sbr import SOURCE, SeasonReport, match_season, parse_season
 from nhl_edge.lake.raw import RawStore
-from nhl_edge.market.devig import OVERROUND_TOLERANCE, Method, fair_probabilities, overround
+from nhl_edge.market.devig import OVERROUND_TOLERANCE, fair_probabilities, overround
 
 # The seasons whose prices the audit may read. A market validation season counts as development
 # once inspected (backtest/seasons.py), and later seasons have no SBR prices.
@@ -188,7 +187,7 @@ def moneylines(odds: pl.DataFrame) -> pl.DataFrame:
     fair = total >= 1 - OVERROUND_TOLERANCE
     p_home = np.full(len(total), np.nan)
     if fair.any():
-        p_home[fair] = fair_probabilities(prices[fair], Method.MULTIPLICATIVE)[:, 0]
+        p_home[fair] = fair_probabilities(prices[fair])[:, 0]
     return (
         wide.with_columns(overround=pl.Series(total), p_home=pl.Series(p_home).fill_nan(None))
         .select(list(MONEYLINE_SCHEMA))

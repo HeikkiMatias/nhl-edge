@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from nhl_edge.market.devig import Method, fair_probabilities, overround
+from nhl_edge.market.devig import DEFAULT_METHOD, Method, fair_probabilities, overround
 
 # One book's two-way moneylines: a pick'em, favorites of growing strength, and a 3-way line.
 TWO_WAY = np.array([[1.91, 1.91], [1.5, 2.6], [2.1, 1.8], [1.2, 4.5], [1.05, 11.0]])
@@ -33,6 +33,15 @@ def test_multiplicative_scales_by_the_overround() -> None:
     # 1 / 1.5 + 1 / 2.6 = 1.051282: each side is divided by it.
     np.testing.assert_allclose(
         fair_probabilities([1.5, 2.6], Method.MULTIPLICATIVE), [0.634146, 0.365854], atol=1e-6
+    )
+
+
+@pytest.mark.parametrize("prices", [TWO_WAY, THREE_WAY])
+def test_the_default_method_is_multiplicative(prices: np.ndarray) -> None:
+    # ADR 0008.
+    assert DEFAULT_METHOD is Method.MULTIPLICATIVE
+    np.testing.assert_array_equal(
+        fair_probabilities(prices), fair_probabilities(prices, Method.MULTIPLICATIVE)
     )
 
 

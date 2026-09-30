@@ -84,7 +84,7 @@ def _sbr_section(
     held_out = [season for season in seasons if season not in priced]
     body = (
         "The SBR archive for the seasons over by the audit date. Prices are de-vigged with the "
-        "multiplicative method (`market/devig.py`)"
+        "default multiplicative method (`market/devig.py`, ADR 0008)"
         + (
             f"; the price checks leave out {', '.join(map(str, held_out))}, which phase 1 does "
             "not inspect (#10)"

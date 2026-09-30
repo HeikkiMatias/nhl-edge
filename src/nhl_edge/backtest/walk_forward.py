@@ -23,10 +23,16 @@ from nhl_edge.backtest.market import Experiment, market_prices
 from nhl_edge.backtest.metrics import log_loss
 from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
 from nhl_edge.market import recalibration
-from nhl_edge.market.devig import OVERROUND_TOLERANCE, Method, fair_probabilities, overround
+from nhl_edge.market.devig import (
+    DEFAULT_METHOD,
+    OVERROUND_TOLERANCE,
+    Method,
+    fair_probabilities,
+    overround,
+)
 
-# B1 recalibrates this method's probabilities, until an ADR chooses the default de-vig method.
-B1_METHOD = Method.MULTIPLICATIVE
+# B1 recalibrates the default de-vig method's probabilities (ADR 0008).
+B1_METHOD = DEFAULT_METHOD
 
 Coverage = dict[str, dict[int, dict[str, int]]]
 Fits = dict[str, dict[int, recalibration.Recalibration]]

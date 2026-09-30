@@ -16,8 +16,8 @@ phase 1 reads (audit.sbr.price_seasons, so 2022-23 is not inspected):
   ordinary line move, so it is not evidence of a swap.
 - below_100: the two opening prices sum below 100%, which one book's market never does.
 
-Probabilities come from audit.sbr.moneylines, which de-vigs through market/devig.py with the
-multiplicative method, as the #9 audit does.
+Probabilities come from audit.sbr.moneylines, which de-vigs through market/devig.py with its
+default, multiplicative (ADR 0008), as the #9 audit does.
 
 The list reads the close, which is public only at the start (ADR 0006). So it is hindsight, and
 each row's observed_utc is the game's start. It is a data-quality annotation for E2's report,

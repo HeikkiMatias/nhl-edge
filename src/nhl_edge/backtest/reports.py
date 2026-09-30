@@ -3,7 +3,7 @@ appended to reports/backtest/runs.csv, the run history the model card points to.
 
 Every estimate carries its weekly block bootstrap interval (hard rule 7). Every other model is
 compared per game with B1, the recalibrated market (hard rule 3). The de-vig methods are paired
-against the multiplicative method, as evidence for the ADR that chooses the default (#10), and E2
+against the default, multiplicative (ADR 0008), the evidence that would reopen that choice, and E2
 is paired against E1 on the games both scored. Each B1 fit is reported with its train_cutoff.
 """
 
@@ -18,10 +18,10 @@ import polars as pl
 
 from nhl_edge.backtest.metrics import DRAWS, LEVEL, SEED, Estimate, bootstrap
 from nhl_edge.backtest.walk_forward import Coverage, Fits
-from nhl_edge.market.devig import Method
+from nhl_edge.market.devig import DEFAULT_METHOD, Method
 from nhl_edge.market.recalibration import Recalibration
 
-REFERENCE_METHOD = Method.MULTIPLICATIVE
+REFERENCE_METHOD = DEFAULT_METHOD
 # The market baseline every other model is compared with (hard rule 3).
 BASELINE = "B1"
 # What each experiment's market price is, and the assumption it rests on (ADR 0006).
