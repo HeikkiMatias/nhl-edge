@@ -4,8 +4,12 @@ Games in the same week share conditions (schedule density, injuries, a market's 
 bootstrap resamples whole weeks, Monday to Sunday on the US Eastern game date, with replacement.
 Weeks are drawn within each season, so a pooled interval keeps each season's weight. The interval
 is the 2.5th to 97.5th percentile of the resampled means.
+
+The same resampling gives an interval for a difference between two independent groups of games,
+such as two eras of seasons.
 """
 
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -38,36 +42,86 @@ class Estimate:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class Interval:
+    """A value with its weekly block bootstrap interval, such as a difference between groups."""
+
+    value: float
+    low: float
+    high: float
+
+    def to_dict(self) -> dict[str, float]:
+        return asdict(self)
+
+
 def week_of(game_date: pl.Expr) -> pl.Expr:
     """The Monday that starts the game date's week."""
     return game_date.dt.truncate("1w")
 
 
+def _weeks(frame: pl.DataFrame, *aggregates: pl.Expr) -> pl.DataFrame:
+    """One row per season and week of the frame's games, in order: the games' row numbers (row),
+    their count (games) and any further aggregates."""
+    return (
+        frame.with_row_index("row")
+        .group_by("season", week_of(pl.col("game_date")).alias("week"))
+        .agg(pl.col("row"), pl.len().alias("games"), *aggregates)
+        .sort("season", "week")
+    )
+
+
+def _picks(
+    weekly: pl.DataFrame, draws: int, rng: np.random.Generator
+) -> Iterator[tuple[pl.DataFrame, np.ndarray]]:
+    """Each season's weeks, with a draws by weeks array of that season's weeks drawn with
+    replacement."""
+    for (_,), season in weekly.group_by("season", maintain_order=True):
+        yield season, rng.integers(0, season.height, size=(draws, season.height))
+
+
+def interval(value: float, draws: np.ndarray) -> Interval:
+    """value with the 2.5th to 97.5th percentile of its resampled draws."""
+    tail = (1 - LEVEL) / 2 * 100
+    low, high = np.percentile(draws, [tail, 100 - tail])
+    return Interval(value=value, low=float(low), high=float(high))
+
+
+def resampled_means(
+    frame: pl.DataFrame, value: str, rng: np.random.Generator, draws: int = DRAWS
+) -> np.ndarray:
+    """The mean of value over the frame's games in each of draws resamples of its weeks."""
+    if frame.is_empty():
+        raise ValueError(f"no games to estimate {value} on")
+    totals = np.zeros(draws)
+    counts = np.zeros(draws)
+    for season, picks in _picks(_weeks(frame, pl.col(value).sum().alias("total")), draws, rng):
+        totals += season["total"].to_numpy()[picks].sum(axis=1)
+        counts += season["games"].to_numpy()[picks].sum(axis=1)
+    return totals / counts
+
+
 def bootstrap(frame: pl.DataFrame, value: str, draws: int = DRAWS, seed: int = SEED) -> Estimate:
     """The mean of value over the frame's games, with a weekly block bootstrap interval. The frame
     needs season and game_date; weeks are resampled within each season."""
-    if frame.is_empty():
-        raise ValueError(f"no games to estimate {value} on")
-    weekly = (
-        frame.group_by("season", week_of(pl.col("game_date")).alias("week"))
-        .agg(pl.col(value).sum().alias("total"), pl.len().alias("games"))
-        .sort("season", "week")
-    )
-    rng = np.random.default_rng(seed)
-    totals = np.zeros(draws)
-    counts = np.zeros(draws)
-    for (_,), season in weekly.group_by("season", maintain_order=True):
-        total = season["total"].to_numpy()
-        games = season["games"].to_numpy()
-        picks = rng.integers(0, season.height, size=(draws, season.height))
-        totals += total[picks].sum(axis=1)
-        counts += games[picks].sum(axis=1)
-    tail = (1 - LEVEL) / 2 * 100
-    low, high = np.percentile(totals / counts, [tail, 100 - tail])
+    means = resampled_means(frame, value, np.random.default_rng(seed), draws)
+    spread = interval(float(frame[value].mean()), means)  # type: ignore[arg-type]
     return Estimate(
-        mean=float(frame[value].mean()),  # type: ignore[arg-type]
-        low=float(low),
-        high=float(high),
+        mean=spread.value,
+        low=spread.low,
+        high=spread.high,
         games=frame.height,
-        weeks=weekly.height,
+        weeks=_weeks(frame).height,
     )
+
+
+def difference(
+    a: pl.DataFrame, b: pl.DataFrame, value: str, draws: int = DRAWS, seed: int = SEED
+) -> Interval:
+    """The mean of value over a's games minus its mean over b's, with a weekly block bootstrap
+    interval. a and b are independent groups of games, such as two eras of seasons: each is
+    resampled on its own."""
+    rng = np.random.default_rng(seed)
+    draws_a = resampled_means(a, value, rng, draws)
+    draws_b = resampled_means(b, value, rng, draws)
+    mean = float(a[value].mean()) - float(b[value].mean())  # type: ignore[arg-type]
+    return interval(mean, draws_a - draws_b)

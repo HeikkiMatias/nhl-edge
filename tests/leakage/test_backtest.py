@@ -13,7 +13,7 @@ import polars as pl
 import pytest
 from test_sbr import NEW, NEW_SCHEDULE, results_empty
 
-from nhl_edge.backtest import walk_forward
+from nhl_edge.backtest import book_era, walk_forward
 from nhl_edge.backtest.market import PREDICTION_LAG, Experiment, market_prices
 from nhl_edge.backtest.walk_forward import run
 from nhl_edge.ingest.sbr import match_season, parse_season
@@ -314,3 +314,34 @@ def test_the_implausible_rule_reads_no_close_from_the_fold() -> None:
     assert refused == set(games["game_id"]) - set(again.filter(experiment="E2")["game_id"])
     assert again_fits["E2"][20212022].games == fits["E2"][20212022].games
     assert again_coverage["E2"][20212022]["implausible"] == 3
+
+
+def test_the_book_era_diagnostic_fits_each_b1_before_its_season() -> None:
+    # #65's diagnostic runs the walk-forward on every season with an earlier one, so each B1 it
+    # reports was fitted on results public before its season's first start.
+    odds, games = market_history.seasons([20162017, 20172018, 20182019], games=60)
+    report = book_era.diagnostic(odds, games, draws=50)
+    for experiment, fits in report["b1_fits"].items():
+        for season, fit in fits.items():
+            first = games.filter(season=int(season))["start_utc"].min()
+            assert isinstance(first, datetime)
+            assert datetime.fromisoformat(fit["train_cutoff"]) < first, (experiment, season)
+    # Flipping a season's results changes no fit of that season or an earlier one.
+    flipped = games.with_columns(
+        home_score=pl.when(pl.col("season") == 20182019)
+        .then(pl.col("away_score"))
+        .otherwise(pl.col("home_score")),
+        away_score=pl.when(pl.col("season") == 20182019)
+        .then(pl.col("home_score"))
+        .otherwise(pl.col("away_score")),
+    )
+    assert book_era.diagnostic(odds, flipped, draws=50)["b1_fits"] == report["b1_fits"]
+
+
+def test_the_book_era_diagnostic_never_reads_a_held_out_season() -> None:
+    odds, games = market_history.seasons([20172018, 20182019], games=60)
+    held_odds, held_games = market_history.seasons([20222023], games=60, intercept=2.0)
+    with_held = book_era.diagnostic(
+        pl.concat([odds, held_odds]), pl.concat([games, held_games]), draws=50
+    )
+    assert with_held == book_era.diagnostic(odds, games, draws=50)
