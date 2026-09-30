@@ -1,6 +1,6 @@
 # 0007. E2 refuses implausible SBR openers
 
-- Status: Proposed (the owner chose to refuse only the implausible openers on 2026-09-30; the record awaits his confirmation)
+- Status: Accepted (by the owner, 2026-09-30)
 - Date: 2026-09-30
 
 ## Context

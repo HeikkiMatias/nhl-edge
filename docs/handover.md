@@ -39,10 +39,9 @@ Where the build stands after the cloud sessions of 2026-09-29 and 30, and how to
 
 ## Decisions waiting for the owner
 
-1. **Confirm ADR 0007** (E2 refuses implausible openers). It records the "Only the 8" choice of 2026-09-30, with the bounds per fold that Codex's P0 led to, and is merged as Proposed. Mark it Accepted, or reply with changes.
-2. **The default de-vig method (#10).** The recommendation is multiplicative: the backtest can't tell the three methods apart, and B1's slope already corrects a favourite-longshot bias, so power or Shin would correct it twice. B1's slope is 1.07 to 1.12, the opposite of the bias they correct. A draft sits in the project's files as `plans/adr-0007-de-vig-default-draft.md`; it becomes ADR 0008, since 0007 is taken. Its figures come from run `backtest-20260929-31f72de` and need the current run's.
-3. **SBR's 2018-19 closing-book switch.** The default keeps the close as it is. E2 against E1 from 2018-19 on then mixes timing with a change of book, as the model card says.
-4. **2022-23 in phase 4.** The plan runs phase 4's full backtest on 2022-23, but SBR covers only 26% of it. Decide the phase 4 test season when phase 4 starts.
+1. **The default de-vig method (#10).** The recommendation is multiplicative: the backtest can't tell the three methods apart, and B1's slope already corrects a favourite-longshot bias, so power or Shin would correct it twice. B1's slope is 1.07 to 1.12, the opposite of the bias they correct. A draft sits in the project's files as `plans/adr-0007-de-vig-default-draft.md`; it becomes ADR 0008, since 0007 is taken. Its figures come from run `backtest-20260929-31f72de` and need the current run's.
+2. **SBR's 2018-19 closing-book switch.** The default keeps the close as it is. E2 against E1 from 2018-19 on then mixes timing with a change of book, as the model card says.
+3. **2022-23 in phase 4.** The plan runs phase 4's full backtest on 2022-23, but SBR covers only 26% of it. Decide the phase 4 test season when phase 4 starts.
 
 ## Next
 
