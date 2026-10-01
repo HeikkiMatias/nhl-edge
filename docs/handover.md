@@ -12,7 +12,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 
 | Issue | Ready when | Then |
 | --- | --- | --- |
-| #10, the phase 1 gate | A full day of odds slots on the timer. The five slots (11:05, 16:45, 22:45, 23:45 and 01:45 UTC in EDT) all ran on time from 22:45 UTC on 2026-09-30; the midday slot of 2026-10-01 completes the day. | If #10 is still open: list the `odds-snapshots.yml` runs since 2026-09-30 18:50 UTC and confirm each slot dispatched and succeeded. Pull `odds_snapshots` (`nhl odds replay --r2`), check the live odds section of `nhl audit report`, and close #10 with a comment that quotes it. |
+| #10, the phase 1 gate | All five odds slots of one US Eastern slot day landing on the timer. The first complete day is **2026-10-01**: morning 11:05, midday 16:45, pre7 22:45 and pre8 23:45 UTC, then pre10 at 01:45 UTC on 10-02. The timer went live during 2026-09-30's evening slots, so that day is incomplete. | If #10 is still open after 02:00 UTC on 2026-10-02: list the `odds-snapshots.yml` runs and confirm each of the five dispatched and succeeded. Pull `odds_snapshots` (`nhl odds replay --r2`), then run `nhl audit report --as-of 2026-10-01`; it defaults to yesterday and leaves out later slot days. Check its live odds section, and close #10 with a comment that quotes it. |
 | #9 and #42, the committed audit report | Two weeks of goalie polls, from 2026-09-29: about **2026-10-13**. | Run `nhl audit report` and commit it to `reports/audit/`. Review it as the comment on #9 says: every problem gets an issue in a milestone, and a dropped season or source gets an ADR. #42 closes with the report's answer on the NHL's starter flag (on the first night it was set for no team, while Daily Faceoff listed most starters as Confirmed). #9 closes with the reviewed report. |
 | #30, post-game corrections | Two weeks of rechecked 2026-27 games: games of 2026-09-29 to about 10-12, each rechecked 7 days later, so about **2026-10-22**. The nightly ingest runs `nhl recheck --recent 3 --r2`. | Run `nhl audit report` and review its corrections section on #30. If corrections change more than scorer credit on more than a few games a season, reopen ADR 0004 with the owner. Close #30. GitHub closed it once by mistake (a pasted plan contained a closing keyword); it was reopened on 2026-10-01. |
 | #79, gate 1 (draft PR #93, branch `phase-2/gate-1`) | #30 is reviewed. | Write ADR 0014 with the owner, from the outline in the comment on #79. If #30's corrections change shots-based features, rerun `/leakage-check` and `/run-backtest`. Update the model card's gate 1 entry. Merge main into the branch: take main's `docs/handover.md` over the branch's version. Mark #93 ready (Codex reviews it then), triage, merge. Then close #11, phase 2's summary issue, by hand. |
@@ -82,9 +82,12 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
   - `nhl odds sbr --replay` rebuilds the table from the stored pages.
 - **Backtest:** `nhl backtest` runs the walk-forward on the development seasons and writes `reports/backtest/summary.json`, `runs.csv` and `gaps.csv`.
   - **B0** is the de-vigged market (multiplicative, ADR 0008).
-  - **B1** is its per-fold recalibration and does not beat B0.
+  - **B1** is its per-fold recalibration. It does not beat B0: B0 minus B1 is +0.0004 [-0.0005, +0.0013] on E1 and +0.0005 [-0.0006, +0.0015] on E2.
   - **B2** is the team and goalie model (ADR 0013), refused for any fold before the tuning cutoff.
-  - E2 refuses implausible openers (ADR 0007), with every opener as a sensitivity. `diagnostics.book_era` (#65) finds no harm from SBR's closing-book change.
+  - E2 refuses implausible openers (ADR 0007), with every opener as a sensitivity.
+  - `diagnostics.book_era` (#65) shows no sign that SBR's change of closing book in 2018-19 hurts B1. B0 minus B1 on E1 is -0.0007 [-0.0014, -0.0000] before it and +0.0002 [-0.0004, +0.0008] after, a difference of +0.0009 [-0.0000, +0.0019].
+    - E2's cost against E1, +0.0018 before and +0.0024 after (difference +0.0005 [-0.0016, +0.0027]), can't separate the book from timing.
+    - The interval still allows a book effect as large as the whole timing cost.
   - The model card has every figure.
 - **Jobs:**
   - GitHub Actions runs the nightly ingest (09:00 UTC, then `nhl recheck`), five odds slots a day, and the goalie polls hourly at :50 from 12:50 to 02:50 UTC. docs/data-sources.md, "When jobs run", has the times.
@@ -99,7 +102,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 - **Goalie polls (#42, #43, #48):** the NHL pre-game poll and Daily Faceoff run at every odds slot and hourly at :50. RotoWire is left out: its terms forbid scraping.
 - **Closed in P1:** #4, #5, #6, #7, #8, #20, #24, #25, #26, #27, #29, #43, #48, #50, #52, #56, #64, #65, #83.
 - **Closed in P2:** #28, #72, #73, #74, #75, #76, #77, #78, #91.
-- **Open, waiting:** #9, #10, #42 (P1); #30, #79, #11 (P2); #94 (this handover).
+- **Open, waiting:** #9, #10, #42 (P1); #30, #79, #11 (P2).
 - **Later milestones:** #66 (P4, the owner decides on 2022-23 when phase 4 starts), #67 and #21 (P5), #68 (P3).
 
 ## Keep an eye on
@@ -134,5 +137,5 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 
    None of them calls a paid endpoint.
 3. `uv run nhl backtest` reruns the backtest in about half a minute, and `uv run nhl gap-review` screens its gaps. Commit code first: the run's version ends in `-dirty` when `src/`, `pyproject.toml` or `uv.lock` has uncommitted changes.
-4. **Tuning:** each component's `--tune`, and `nhl tune-b2`, reruns its grid on the training seasons and logs it to `reports/tuning/`. Its frozen settings change only through a new ADR.
+4. **Tuning:** `nhl team-strength --tune`, `nhl goalie-effect --tune`, `nhl schedule-terms --tune` and `nhl tune-b2` rerun their grids on the training seasons and log them to `reports/tuning/`. xG and the goalie-start model have nothing tuned (ADR 0010, ADR 0012). Frozen settings change only through a new ADR.
 5. CLAUDE.md's workflow (branch per issue, Codex review budget, merge when ready) applies as before.
