@@ -141,6 +141,9 @@ def team_games(
         shots_observed=pl.col("observed_utc").max(),
     )
     games = strength_time.select("game_id", "season", "game_date", "team").unique()
+    # Games with xG at all; within one, a team without an xG row (every attempt without
+    # coordinates, say) had none, rather than the game dropping out of both histories.
+    games = games.join(shot_xg.select("game_id").unique(), on="game_id", how="semi")
     pairs = games.join(games.rename({"team": "opponent"}), on=["game_id", "season", "game_date"])
     pairs = pairs.filter(pl.col("team") != pl.col("opponent"))
     own = by_team.rename({"xg_5v5": "xgf_5v5", "xg_pp": "xgf_pp"})
@@ -148,9 +151,10 @@ def team_games(
         "game_id", opponent="team", xga_5v5="xg_5v5", xga_pk="xg_pp", opp_observed="shots_observed"
     )
     frame = (
-        pairs.join(own, on=["game_id", "team"], how="inner")
-        .join(opp, on=["game_id", "opponent"], how="inner")
+        pairs.join(own, on=["game_id", "team"], how="left")
+        .join(opp, on=["game_id", "opponent"], how="left")
         .join(time_on, on=["game_id", "team"], how="inner")
+        .with_columns(pl.col("xgf_5v5", "xga_5v5", "xgf_pp", "xga_pk").fill_null(0.0))
     )
     return frame.select(
         "game_id",

@@ -376,6 +376,12 @@ def team_strength(
         wanted = parse_seasons(seasons) if seasons else [s for s in known if s >= ts.FIRST_SEASON]
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    early = [season for season in wanted if season < ts.FIRST_SEASON]
+    if early and not tune:
+        raise typer.BadParameter(
+            f"{early} have no xG, so no team strength: it starts with {ts.FIRST_SEASON}",
+            param_hint="--seasons",
+        )
     last = max(ts.TUNING_SEASONS) if tune else max(wanted)
     shot_xg, strength_time = lake.read("shot_xg"), lake.read("strength_time")
     problems = ts.input_problems(games, shot_xg, strength_time, last, EXPECTED_GAMES)

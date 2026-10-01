@@ -215,3 +215,22 @@ def test_the_grid_and_its_steadiness_order() -> None:
     steadiest = max(ts.GRID, key=ts.steadiness)
     assert steadiest == ts.Settings(80, 40)
     assert ts.steadiness(ts.Settings(80, 0)) > ts.steadiness(ts.Settings(40, 40))
+
+
+def test_a_team_without_xg_rows_in_a_game_keeps_the_game_with_none() -> None:
+    # Codex on #86: if one team's attempts in a game all lack xG (no coordinates, say), the game
+    # stays in both teams' histories, with no xG for that team.
+    game = LEAGUE["games"].row(0, named=True)
+    shots_of_home = LEAGUE["shots"].filter(
+        pl.col("game_id") == game["game_id"], pl.col("team") == game["home"]
+    )
+    missing = LEAGUE["shot_xg"].join(
+        shots_of_home.select("game_id", "event_id"), on=["game_id", "event_id"], how="anti"
+    )
+    history = ts.team_games(LEAGUE["shots"], missing, LEAGUE["strength_time"])
+    rows = history.filter(pl.col("game_id") == game["game_id"])
+    assert rows.height == 2
+    home = rows.filter(pl.col("team") == game["home"]).row(0, named=True)
+    away = rows.filter(pl.col("team") == game["away"]).row(0, named=True)
+    assert (home["xgf_5v5"], home["xgf_pp"], away["xga_5v5"], away["xga_pk"]) == (0, 0, 0, 0)
+    assert home["min_5v5"] == 48.0 and away["xgf_5v5"] > 0

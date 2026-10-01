@@ -612,3 +612,14 @@ def test_team_strength_refuses_games_without_xg(
     result = runner.invoke(app, ["team-strength"])
     assert result.exit_code == 1
     assert "1 games without xG" in plain(result.output)
+
+
+def test_team_strength_refuses_a_season_without_xg(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    team_lake(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["team-strength", "--seasons", "20102011"])
+    assert result.exit_code == 2
+    assert "have no xG, so no team strength" in plain(result.output)
+    assert not (tmp_path / "data").exists()
