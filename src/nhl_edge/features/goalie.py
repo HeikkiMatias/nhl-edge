@@ -145,7 +145,12 @@ def expected_shots(
     """Each target (game_id, season, team, opponent, as_of_utc) with the unblocked shots the team's
     goalie is expected to face: the average of the opponent's shots per game and the team's shots
     allowed per game, each shrunk toward the league's shots per team-game in the season and the
-    one before, with team strength's frozen settings."""
+    one before, with team strength's frozen settings.
+
+    The goalie tuning runs with these settings in place, though they were chosen on the same
+    training seasons: each component is tuned once, and a later one reuses the earlier ones'
+    frozen settings (ADR 0011). The owner kept this on #88 (Codex P0, won't fix). Scored with
+    league-average shots instead, which no outcome tuned, the rule chose the same setting."""
     lines = ts.team_lines() if lines is None else lines
     settings = ts.TUNED
     columns = ("shots_for", "shots_against", "games")

@@ -82,6 +82,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 
 - **Missed pre-game polls can't be redone.** If the timer stops, a late poll loses that game's data for #9 and #42.
 - **In-sample training seasons:** xG of 2012-13 to 2017-18 is in-sample for the rebound term per season (ADR 0010), and team strength and goalie effects there for their tuned settings (ADR 0011). Both may train later models, but no result may present them as out-of-sample. Every fold from 2018-19 on is clean.
+- **Later tunings reuse earlier frozen settings:** the goalie effect was tuned on 2012-13 to 2017-18 with team strength's frozen settings in its expected shots, though those were chosen on the same seasons. Codex raised it as a P0 on #88, and the owner kept it as ADR 0011 intends: one choice per component, later ones building on earlier ones. B2's L2 strength (#78) will be tuned the same way, on ΔS and ΔG.
 - **xG's known misses (ADR 0010):** 3v3 overtime is under-predicted by about 1.6 goals per 100 shots, and shots from 0 to 10 feet are over-predicted by about 0.6.
 - **Merged branches left on GitHub:** `phase-1/odds-placeholder-prices`, `phase-2/xg` and earlier ones. The session's git proxy refuses branch deletes. Delete them from GitHub's branch page if you like.
 - **#21 (P5):** the closing proxy should key on the Odds API event and its commence time, not `game_id`.
