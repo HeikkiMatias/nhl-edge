@@ -52,15 +52,14 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 - **Odds snapshots:** a book's market priced at 1.0 (GTbets on 2026-09-30) used to fail the whole snapshot. Now the market is skipped and the raw copy keeps it (#83, #84).
 - **Goalie polls (#42, #43, #48):** the NHL pre-game poll and the Daily Faceoff poll run at every odds slot and hourly at :50. RotoWire is left out, because its terms forbid scraping. On the first night, 2026-09-29, the NHL's starter flag was set for no team in any poll, while Daily Faceoff already listed most starters as Confirmed (6 of 8 teams at 22:40 UTC, 4 of 4 at 01:37 UTC). Late runs left CAR at FLA and NYR at BOS with no poll in their last 80 minutes.
 - **Closed in P1:** #4, #5, #6, #7, #8, #20, #24, #25, #26, #27, #29, #43, #48, #50, #52, #56, #64, #65, #83.
-- **Closed in P2:** #28, #72, #73, #74, #75, #76, #77.
+- **Closed in P2:** #28, #72, #73, #74, #75, #76, #77, #78, #91.
 
 ## In flight
 
-- **#78, B2 in the walk-forward** (phase 2, task 9), the PR on `phase-2/b2`:
-  - It adds `game/b2.py`, `backtest/b2_report.py`, `nhl tune-b2`, and B2 in `nhl backtest` (calibration, gaps above 8 points in `reports/backtest/gaps.csv`, the goalie-start Brier score).
-  - ADR 0013, B2's specification, was approved by the owner. h_s is a fixed term, and training uses the starters who played. Prediction averages over the goalie-start pairs.
-  - The L2 penalty was tuned to 100 (`reports/tuning/b2-20261001-fe11def.md`), a clean leader, not on the grid's edge.
-  - `backtest-20261001-388bb85`: B2 minus B1 is +0.0112 [+0.0044, +0.0185] on E1 and +0.0078 [+0.0013, +0.0146] on E2. B2 is under-confident (calibration slope 1.35 [1.09, 1.62]) and differs from B1 by more than 8 points in 822 of 2,583 games. The model card has the details. Gate 1 (#79) comes next.
+- **#79, gate 1** (phase 2, task 10), the draft PR on `phase-2/gate-1`:
+  - `nhl gap-review` screens B2's gaps above 8 points, and the hand review is done (`reports/backtest/gap-review.md`): no bug, as the model card summarizes.
+  - The owner approved the review method. B2's recalibration waits for phase 4, where findings are logged on #13 as they turn up. ADR 0011 now records every tuning (#91, #92).
+  - **Waits for #30's corrections review** (about 2026-10-22). Then comes the gate 1 ADR (0014), written with the owner, using the outline on #79.
 - **#30's recheck** runs nightly; the first 2026-27 games are due on 2026-10-07.
 
 ## Decisions waiting for the owner
@@ -78,7 +77,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
    - #76 goalie-start model (ADR 0012): done. It came before #75, whose tuning uses its probabilities;
    - #75 goalie effect, tuned per ADR 0011: done. Codex's P0 on reusing team strength's frozen settings in its tuning is a won't-fix by the owner (ADR 0011's one choice per component);
    - #77 schedule and home terms, h_s tuned per ADR 0011: done;
-   - #78 B2 in the walk-forward (ADR 0013), its L2 strength tuned per ADR 0011: in review;
+   - #78 B2 in the walk-forward (ADR 0013), its L2 strength tuned per ADR 0011: done;
    - #79 gate 1.
 
 ## Keep an eye on
