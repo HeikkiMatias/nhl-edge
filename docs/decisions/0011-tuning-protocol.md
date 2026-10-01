@@ -51,6 +51,10 @@ Option 1 for both, chosen by the owner on 2026-10-01.
 **Team strength's application (#74):**
 - **Grid:** memory as a half-life of 10, 20, 40 or 80 games, and a pull toward the league average worth 0, 10, 20 or 40 games. That is 16 candidates.
 - **Steadiness order:** the longer half-life first, then the larger pull.
+- **The run** (`team-strength-20261001-9dc689a`, quoted on #74's PR) scored 2012-13 to 2017-18.
+  - **Chosen:** a half-life of 80 games and a pull worth 40 games, log loss 0.6781 [0.6743, 0.6818]. It was also the leader.
+  - **Ties:** settings with any pull tied with it. Settings with no pull did not, at +0.0014 to +0.0025.
+  - **The grid's edge:** the leader sits on the grid's steadiest corner, so a longer memory might do a little better. The owner chose to keep the grid as fixed and freeze this result, since the gaps are within noise and widening the grid would take a second look at the same seasons.
 
 ## Backtest evidence
 
@@ -64,5 +68,5 @@ None yet. Team strength's tuning run is on #74's PR, and gate 1 (#79) scores B2 
 
 ## Revisit when
 
-- **A component's leader and its ties span the whole grid,** so the data cannot tell the settings apart. Then the steadiness order alone decides, and the grid or the objective needs a second look.
+- **A component's leader and its ties span the whole grid,** so the data cannot tell the settings apart. Then the steadiness order alone decides, and the grid or the objective needs a second look. Team strength's leader sits on its grid's edge: its grid can grow, under a new ADR, if gate 1 or the player layer shows memory matters.
 - **Or gate 1 shows a frozen setting failing badly on the development seasons.** Retuning there would spend them, so it needs the owner and a new ADR.

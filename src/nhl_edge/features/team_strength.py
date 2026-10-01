@@ -274,7 +274,8 @@ def steadiness(settings: Settings) -> tuple[float, float]:
     return settings.half_life, settings.prior_games
 
 
-# Frozen by the tuning run on #74's PR (ADR 0011): the leader, on the grid's steadiest corner.
+# Frozen by run team-strength-20261001-9dc689a on #74's PR (ADR 0011): the leader, on the
+# grid's steadiest corner. The owner kept the grid as fixed.
 TUNED = Settings(half_life=80, prior_games=40)
 
 
