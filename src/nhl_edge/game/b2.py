@@ -362,8 +362,9 @@ def tuning_scores(tables: Tables, settings: Settings, seasons: Sequence[int]) ->
     return pl.concat(out).sort("game_id")
 
 
-# Not tuned yet: set from the tuning run on #78 (ADR 0011).
-TUNED = Settings(l2=10)
+# Frozen by run b2-20261001-fe11def on #78 (ADR 0011): the leader, and the steadiest of its
+# ties. An L2 of 1,000 did not tie.
+TUNED = Settings(l2=100)
 # The last result that run reads: 2017-18's final night, as for the features.
 TUNED_CUTOFF = ts.TUNED_CUTOFF
 
