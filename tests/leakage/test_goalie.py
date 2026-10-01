@@ -71,6 +71,23 @@ def test_earlier_shots_do_move_them() -> None:
     assert not same(effects(changed(pl.col("game_date") < NIGHT)), BEFORE)
 
 
+def more_shots(rows: pl.Expr) -> dict[str, pl.DataFrame]:
+    """The league with the chosen games' shots taken twice over: expected shots read only counts."""
+    chosen = pl.col("game_id").is_in(GAMES.filter(rows)["game_id"].implode())
+    offset = pl.col("event_id") + 1000
+
+    def doubled(frame: pl.DataFrame) -> pl.DataFrame:
+        return pl.concat([frame, frame.filter(chosen).with_columns(event_id=offset)])
+
+    return {**LEAGUE, "shots": doubled(LEAGUE["shots"]), "shot_xg": doubled(LEAGUE["shot_xg"])}
+
+
+def test_tonights_and_later_shot_counts_never_move_tonights_expected_shots() -> None:
+    assert same(effects(more_shots(pl.col("game_date") >= NIGHT)), BEFORE)
+    earlier = effects(more_shots(pl.col("game_date") < NIGHT))
+    assert not same(earlier.select("expected_shots"), BEFORE.select("expected_shots"))
+
+
 def test_who_started_tonight_never_moves_them() -> None:
     # Tonight's shots credited to the other goalie: tonight's own starter is never read.
     tonight = pl.col("game_id").is_in(TONIGHT["game_id"].implode())
