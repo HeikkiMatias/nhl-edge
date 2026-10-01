@@ -281,8 +281,10 @@ def tuning_feature(rated: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-# Not tuned yet: set from the tuning run on #77 (ADR 0011).
-TUNED = Settings(prior_games=400)
+# Frozen by run schedule-terms-20261001-89564c5 on #77 (ADR 0011). All six pulls tied, and the
+# leader was also the steadiest, on the grid's edge. The owner chose to freeze it and keep the
+# grid.
+TUNED = Settings(prior_games=1600)
 # The last result that run reads: 2017-18's final night, as for team strength.
 TUNED_CUTOFF = ts.TUNED_CUTOFF
 
@@ -321,7 +323,8 @@ def input_problems(
             count = table.filter(pl.col("season") == season).height
             if count != expected[season]:
                 problems.append(f"{season}: {count:,} of {expected[season]:,} in {label}")
-    needed = schedule.filter(pl.col("season") <= last)
+    # The seasons rated: the earlier ones feed only the home edge's prior.
+    needed = schedule.filter(pl.col("season").is_between(FIRST_SEASON, last))
     no_arena = game_arenas(needed, ref).filter(pl.col("latitude").is_null())
     if no_arena.height:
         examples = ", ".join(str(g) for g in no_arena["game_id"].head(3).to_list())
@@ -334,6 +337,6 @@ def input_problems(
         pl.col("last_season").is_null() | (pl.col("last_season") >= pl.col("season")),
     )
     missing = team_seasons.join(homes, on=["team", "season"], how="anti")
-    for team, season in missing.sort("season", "team").rows():
+    for season, team in missing.sort("season", "team").select("season", "team").rows():
         problems.append(f"{season}: {team} has no primary home arena")
     return sorted(problems)
