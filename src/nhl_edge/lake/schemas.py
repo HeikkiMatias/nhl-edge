@@ -976,7 +976,8 @@ class ShiftCoverage(pa.DataFrameModel):
 
     Strength: at every unblocked shot except penalty shots (shots_checked), the skaters and
     goalies on the ice from the shifts are compared with situationCode. skater_mismatches and
-    goalie_mismatches count the shots where they differ. RAPM drops stints that contradict it.
+    goalie_mismatches count the shots where they differ. Stints keep the chart's counts and leave
+    out only impossible ones (ADR 0015).
 
     observed_utc is 10:00 UTC the morning after game_date, as for Shots; raw_key is the shift
     chart's.
@@ -1020,6 +1021,111 @@ class ShiftCoverage(pa.DataFrameModel):
         checked = pl.col("shots_checked")
         return data.lazyframe.select(
             (pl.col("skater_mismatches") <= checked) & (pl.col("goalie_mismatches") <= checked)
+        )
+
+
+# Why a stint is left out of RAPM (ADR 0015): a team with fewer than 3 or more than 6 skaters on
+# the ice by the shift chart, or with two goalies.
+STINT_DROPS = ("skaters", "goalies")
+# The skaters of one team a stint may have, its goalie in or pulled (as CHART_SKATERS).
+STINT_SKATERS = (3, 6)
+
+
+class Stints(pa.DataFrameModel):
+    """One stint (#97, ADR 0015): a stretch of a period in which the players on the ice do not
+    change, by the game's shift chart. Only games whose chart is complete (ShiftCoverage) have
+    stints. RAPM's rows (docs/plan.md sections 4 and 5).
+
+    start_s and end_s are elapsed game seconds, and the stint holds every moment t with
+    start_s < t <= end_s, as a shift does. stint_id numbers a game's stints in time order.
+    home_skaters and away_skaters are the skaters' player ids, sorted; a player not in the
+    boxscore's goalies group counts as a skater. home_goalie and away_goalie are each team's one
+    goalie on the ice, null when its net is empty or it has two. strength is the home team's
+    skaters, then the away team's, as 5v4: a pulled goalie's team has 6.
+
+    score_state is the home team's goals minus the away team's at the stint's start, every goal of
+    periods 1 to 4 counted. zone_start is the zone of a faceoff at the stint's start from the home
+    team's side (Faceoffs), null when the stint starts with a change on the fly. home_xg,
+    away_xg, home_goals and away_goals count each team's unblocked shots in the stint, penalty
+    shots left out: xG from shot_xg, which gives none to shots at an empty net or without
+    coordinates, and goals from shots. The xG columns, xg_version and xg_train_cutoff are null for
+    a game without xG, such as every game of 2010-11.
+
+    drop_reason says why RAPM leaves the stint out (STINT_DROPS, ADR 0015), null for a stint it
+    keeps. observed_utc is 10:00 UTC the morning after game_date, with the game's feeds (ADR 0004).
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    stint_id: pl.Int16 = pa.Field(ge=1)
+    period: pl.Int8 = pa.Field(ge=1, le=OT_PERIOD)
+    start_s: pl.Int32 = pa.Field(ge=0)
+    end_s: pl.Int32
+    seconds: pl.Int32 = pa.Field(gt=0)
+    home_skaters: Annotated[pl.List, pl.Int64()]
+    away_skaters: Annotated[pl.List, pl.Int64()]
+    home_goalie: pl.Int64 = pa.Field(nullable=True)
+    away_goalie: pl.Int64 = pa.Field(nullable=True)
+    strength: pl.String = pa.Field(str_matches=r"^\d+v\d+$")
+    score_state: pl.Int8
+    zone_start: pl.String = pa.Field(isin=ZONES, nullable=True)
+    home_xg: pl.Float64 = pa.Field(ge=0, nullable=True)
+    away_xg: pl.Float64 = pa.Field(ge=0, nullable=True)
+    home_goals: pl.Int8 = pa.Field(ge=0)
+    away_goals: pl.Int8 = pa.Field(ge=0)
+    drop_reason: pl.String = pa.Field(isin=STINT_DROPS, nullable=True)
+    xg_version: pl.String = pa.Field(str_matches=r"^xg-\d{8}-", nullable=True)
+    xg_train_cutoff: UtcDatetime = pa.Field(nullable=True)
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "stint_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def inside_its_period(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        period = pl.col("period")
+        return data.lazyframe.select(
+            (pl.col("start_s") >= period_start_s(period))
+            & (pl.col("end_s") <= period_end_s(period))
+            & (pl.col("seconds") == pl.col("end_s") - pl.col("start_s"))
+        )
+
+    @pa.dataframe_check
+    def strength_counts_the_skaters(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        counts = pl.format(
+            "{}v{}", pl.col("home_skaters").list.len(), pl.col("away_skaters").list.len()
+        )
+        return data.lazyframe.select(pl.col("strength") == counts)
+
+    @pa.dataframe_check
+    def dropped_only_when_impossible(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        low, high = STINT_SKATERS
+        possible = pl.col("home_skaters").list.len().is_between(low, high) & pl.col(
+            "away_skaters"
+        ).list.len().is_between(low, high)
+        reason = pl.col("drop_reason")
+        return data.lazyframe.select(
+            pl.when(~possible)
+            .then(reason == "skaters")
+            .otherwise(reason.is_null() | (reason == "goalies"))
+        )
+
+    @pa.dataframe_check
+    def xg_model_predates_the_game(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        cutoff = pl.col("xg_train_cutoff")
+        versioned = pl.col("xg_version").is_not_null()
+        return data.lazyframe.select(
+            (versioned == cutoff.is_not_null())
+            & (versioned == pl.col("home_xg").is_not_null())
+            & (versioned == pl.col("away_xg").is_not_null())
+            & (cutoff.is_null() | (cutoff < pl.col("observed_utc")))
         )
 
 

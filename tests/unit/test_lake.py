@@ -89,6 +89,19 @@ def test_missing_table_reads_empty_with_its_columns(tmp_path: Path) -> None:
     assert empty.schema == players(1).schema
 
 
+def test_read_can_take_only_some_seasons(tmp_path: Path) -> None:
+    lake = Lake(tmp_path)
+    later = GAMES.with_columns(
+        season=pl.lit(20112012, pl.Int32), game_id=pl.col("game_id") + 1_000_000
+    )
+    lake.write("games", pl.concat([GAMES, later]))
+    assert lake.read("games").height == 2 * GAMES.height
+    assert lake.read("games", [20102011]).equals(GAMES.sort("game_id"))
+    assert lake.read("games", [20122013]).is_empty()
+    with pytest.raises(ValueError, match="not partitioned by season"):
+        lake.read("players", [20102011])
+
+
 def test_mirror_uploads_the_same_bytes_under_lake(tmp_path: Path) -> None:
     bucket = MemoryBucket()
     written = Lake(tmp_path, "lake-bucket", bucket).write("games", GAMES)

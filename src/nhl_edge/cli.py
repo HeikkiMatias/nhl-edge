@@ -375,6 +375,70 @@ def xg(
         )
 
 
+@app.command()
+def stints(
+    seasons: Annotated[
+        str | None,
+        typer.Option(
+            help="Seasons to build, as 20232024, a comma list or a range. Default: every season."
+        ),
+    ] = None,
+    r2: Annotated[bool, typer.Option("--r2", help="Mirror the stints table to R2.")] = False,
+) -> None:
+    """Cut every game with a complete shift chart into stints (#97, ADR 0015) in the lake's
+    stints: the stretches with the same players on the ice, each with its strength, the score and
+    the faceoff zone at its start, and each team's xG and goals. A stint with an impossible count
+    keeps a drop_reason. Run it after nhl xg, whose xG it reads."""
+    import polars as pl
+
+    from nhl_edge.features import stints as st
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    games = lake.read("games")
+    known = sorted(games["season"].unique().to_list())
+    try:
+        wanted = parse_seasons(seasons) if seasons else known
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    problems = st.input_problems(games, lake.read("shift_coverage"), lake.read("shot_xg"), wanted)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl ingest --replay and nhl xg for those seasons", err=True)
+        raise typer.Exit(code=1)
+    for season in wanted:
+        tables = {
+            name: lake.read(name, [season])
+            for name in (
+                "shift_coverage",
+                "shifts",
+                "actual_lineups",
+                "shots",
+                "shot_xg",
+                "faceoffs",
+            )
+        }
+        frame = st.build(
+            tables["shift_coverage"],
+            tables["shifts"],
+            tables["actual_lineups"],
+            tables["shots"],
+            tables["shot_xg"],
+            tables["faceoffs"],
+        )
+        dates = games.filter(pl.col("season") == season)["game_date"].unique().to_list()
+        lake.replace_dates("stints", frame, dates)
+        dropped = frame.filter(pl.col("drop_reason").is_not_null()).height
+        typer.echo(
+            f"stints {season}: {frame.height:,} in {frame['game_id'].n_unique():,} games, "
+            f"{dropped:,} left out of RAPM"
+        )
+
+
 @app.command("team-strength")
 def team_strength(
     seasons: Annotated[

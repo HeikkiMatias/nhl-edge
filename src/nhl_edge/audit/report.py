@@ -17,6 +17,7 @@ from nhl_edge.audit import goalies as goalie_audit
 from nhl_edge.audit import plays as play_audit
 from nhl_edge.audit import sbr as sbr_audit
 from nhl_edge.audit import snapshots as snapshot_audit
+from nhl_edge.audit import stints as stint_audit
 from nhl_edge.audit import strength_time as strength_audit
 from nhl_edge.backtest.seasons import OPEN_SEASONS, SEASON_ROLES, SeasonRole
 from nhl_edge.ingest import shift_coverage
@@ -52,6 +53,7 @@ def build(lake: Lake, store: RawStore, as_of: date) -> list[Section]:
         _shift_section(lake.read("shift_coverage").filter(pl.col("game_date") <= as_of)),
         _strength_section(lake.read("strength_time"), games),
         _plays_section(lake, store, games),
+        _stints_section(lake, games),
         _reference_section(games),
         _snapshot_section(lake, store, listed, as_of),
         _goalie_section(lake, games, as_of),
@@ -156,6 +158,31 @@ def _plays_section(lake: Lake, store: RawStore, games: pl.DataFrame) -> Section:
         + play_audit.markdown_report(report)
     )
     return Section("Penalties and faceoffs", body, play_audit.problems(faceoffs, checked, games))
+
+
+def _stints_section(lake: Lake, games: pl.DataFrame) -> Section:
+    # As the strength section: the one-time test season stays out, and the shares of time and xG
+    # show only for open seasons.
+    design = [s for s, role in SEASON_ROLES.items() if role is not SeasonRole.ONE_TIME_TEST]
+    games = games.filter(pl.col("season").is_in(design))
+    wanted = games["game_id"].implode()
+    stints, coverage, strength_time, shot_xg, faceoffs = (
+        lake.read(table).filter(pl.col("game_id").is_in(wanted))
+        for table in ("stints", "shift_coverage", "strength_time", "shot_xg", "faceoffs")
+    )
+    if stints.is_empty():
+        return Section("Stints", "No stints in the lake: run `nhl stints`.", ["no stints"])
+    report = stint_audit.season_report(
+        stints, coverage, strength_time, shot_xg, faceoffs, games, OPEN_SEASONS
+    )
+    body = (
+        "Stints from complete shift charts (`stints`, #97, ADR 0015), without the one-time test "
+        "season: the stints RAPM leaves out and why (a team with fewer than 3 or more than 6 "
+        "skaters, or two goalies), and the share of faceoffs that open a stint and so give it a "
+        "zone. For the seasons open now, the share of all games' playing time and of all xG in "
+        "the stints RAPM keeps.\n\n" + stint_audit.markdown_report(report)
+    )
+    return Section("Stints", body, stint_audit.problems(stints, coverage))
 
 
 def _reference_section(games: pl.DataFrame) -> Section:

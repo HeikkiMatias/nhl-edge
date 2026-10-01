@@ -44,6 +44,7 @@ from nhl_edge.lake.schemas import (
     Shifts,
     Shots,
     ShotXg,
+    Stints,
     StrengthTime,
     TeamStrength,
     dtypes,
@@ -82,6 +83,7 @@ TABLES: dict[str, Table] = {
     "penalties": Table(Penalties, ("game_id", "event_id"), BY_DATE),
     "faceoffs": Table(Faceoffs, ("game_id", "event_id"), BY_DATE),
     "shot_xg": Table(ShotXg, ("game_id", "event_id"), BY_DATE),
+    "stints": Table(Stints, ("game_id", "stint_id"), BY_DATE),
     "team_strength": Table(TeamStrength, ("game_id",), BY_DATE),
     "goalie_starts": Table(GoalieStarts, ("game_id", "team", "goalie_id"), BY_DATE),
     "goalie_effects": Table(GoalieEffects, ("game_id", "team", "goalie_id"), BY_DATE),
@@ -177,13 +179,20 @@ class Lake:
                 self._delete(key)
         return written
 
-    def read(self, table: str) -> pl.DataFrame:
-        """The whole local table in its schema's columns, or an empty frame with them. A partition
+    def read(self, table: str, seasons: Collection[int] | None = None) -> pl.DataFrame:
+        """The whole local table in its schema's columns, or an empty frame with them; with
+        seasons, only those seasons' partitions of a table partitioned by season. A partition
         written before a nullable column joined the schema reads it as null, so a table stays
         readable while a replay rewrites its older partitions (#73). A partition without a
         required column raises: replay it."""
         spec = TABLES[table]
-        paths = sorted((self.base_dir / table).rglob("*.parquet"))
+        root = self.base_dir / table
+        if seasons is None:
+            paths = sorted(root.rglob("*.parquet"))
+        elif spec.partition_by[:1] == ("season",):
+            paths = sorted(p for s in seasons for p in (root / f"season={s}").rglob("*.parquet"))
+        else:
+            raise ValueError(f"{table} is not partitioned by season")
         if not paths:
             return spec.empty()
         frame = pl.read_parquet(paths, schema=dtypes(spec.schema), missing_columns="insert")

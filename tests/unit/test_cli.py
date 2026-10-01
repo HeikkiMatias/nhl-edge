@@ -21,6 +21,7 @@ COMMANDS = [
     "predict",
     "backtest",
     "xg",
+    "stints",
     "team-strength",
     "goalie-start",
     "goalie-effect",
@@ -838,3 +839,44 @@ def test_team_strength_refuses_a_season_without_xg(
     assert result.exit_code == 2
     assert "have no xG, so no team strength" in plain(result.output)
     assert not (tmp_path / "data").exists()
+
+
+def stint_lake(monkeypatch: pytest.MonkeyPatch, frames: dict[str, Any]) -> None:
+    import polars as pl
+
+    from nhl_edge.lake.tables import Lake
+
+    def read(self: Lake, table: str, seasons: Any = None) -> pl.DataFrame:
+        frame = frames[table]
+        return frame if seasons is None else frame.filter(pl.col("season").is_in(list(seasons)))
+
+    monkeypatch.setattr(Lake, "read", read)
+
+
+def test_stints_cuts_every_complete_game(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    import polars as pl
+    from feed_fixtures import MTL_ARI, OPENING_WEEK_GAMES, parsed_feeds
+
+    tables = [parsed_feeds(game_id) for game_id in (*OPENING_WEEK_GAMES, MTL_ARI)]
+    frames = {name: pl.concat([t[name] for t in tables]) for name in tables[0]}
+    frames["games"] = frames["shift_coverage"].select("game_id", "season", "game_date")
+    frames["shot_xg"] = pl.DataFrame(
+        schema={
+            "game_id": pl.Int64,
+            "season": pl.Int32,
+            "event_id": pl.Int32,
+            "xg": pl.Float64,
+            "train_cutoff": pl.Datetime("us", "UTC"),
+            "artifact_version": pl.String,
+        }
+    )
+    stint_lake(monkeypatch, frames)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["stints", "--seasons", "20102011"])
+    assert result.exit_code == 0, result.output
+    assert "stints 20102011:" in result.output and "in 3 games, 0 left out of RAPM" in result.output
+    assert list((tmp_path / "data" / "lake" / "stints").rglob("*.parquet"))
+    # A season from 2011-12 on without any xG is refused: nhl xg runs first.
+    refused = runner.invoke(app, ["stints", "--seasons", "20222023"])
+    assert refused.exit_code == 1
+    assert "20222023: no xG" in refused.output

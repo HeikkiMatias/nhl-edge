@@ -113,10 +113,11 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 - **Closing keywords:** a closing keyword followed by another issue's number, anywhere in a PR description, closes that issue on merge. That includes pasted plans; it is how #30 closed by mistake.
 - **Writing feature tables to R2:** run each command with `--r2` from a clean checkout of main, so the rows' `artifact_version` names the merged commit and doesn't end in `-dirty`. Their order is:
   1. `nhl xg`
-  2. `nhl team-strength`
-  3. `nhl goalie-start`
-  4. `nhl goalie-effect`
-  5. `nhl schedule-terms`
+  2. `nhl stints`
+  3. `nhl team-strength`
+  4. `nhl goalie-start`
+  5. `nhl goalie-effect`
+  6. `nhl schedule-terms`
 - **Cloud sessions have no `gh`:** use the GitHub MCP tools, or the API through the session's proxy (`curl` with `Content-Type: application/json` for POST and PATCH).
 - **Codex:**
   - It answers as a review with findings, a 👍 reaction, or a comment saying it found no major issues. Check all three.
