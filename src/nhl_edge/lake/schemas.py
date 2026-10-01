@@ -639,6 +639,41 @@ class TeamStrength(pa.DataFrameModel):
         return data.lazyframe.select((pl.col("delta_s") - parts).abs() < 1e-9)
 
 
+class GoalieStarts(pa.DataFrameModel):
+    """The probability that a goalie starts a team's game (#76, ADR 0012), one row per candidate:
+    each goalie who dressed for the team in its last ten games public before observed_utc. A
+    team-game's probabilities add up to 1, and a team with no earlier game has no rows.
+
+    observed_utc is the game's as-of time: 10:00 US Eastern on the game date, or an hour before
+    the start if that is earlier, as for team strength. The model was fitted on earlier seasons'
+    starters public before the season's first as-of time; train_cutoff is the last of them, and
+    artifact_version names the run."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    goalie_id: pl.Int64
+    p_start: pl.Float64 = pa.Field(gt=0, le=1)
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^goalie-start-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "team", "goalie_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def model_predates_the_game(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("train_cutoff") < pl.col("observed_utc"))
+
+    @pa.dataframe_check
+    def each_team_game_adds_up_to_one(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        total = pl.col("p_start").sum().over("game_id", "team")
+        return data.lazyframe.select((total - 1).abs() < 1e-9)
+
+
 class Shifts(pa.DataFrameModel):
     """One player shift from the shift chart (type 517 rows), periods 1 to 4.
 

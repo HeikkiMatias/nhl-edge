@@ -175,6 +175,12 @@ A game's chart is `complete` when it has no bad rows and every dressed player's 
 - **Goalie in net:** shots count only with the shooting team's own goalie in net.
 - **`train_cutoff`:** the last result the tuning run read (2018-04-09 10:00 UTC). Ratings of 2011-12 to 2017-18 are in-sample for the settings by design, so their `observed_utc` is the cutoff, and no fold starting before it can read them.
 - **Commands:** `nhl team-strength` writes the table, and `--tune` reruns the grid on the training seasons and logs it to `reports/tuning/`. It refuses while a game it needs has no xG or no strength time.
+
+`goalie_starts` (#76, ADR 0012) holds, for every team-game from 2011-12 on, the probability that each candidate goalie starts it (`p_start`, adding up to 1 per team-game).
+- **Candidates:** the goalies who dressed for the team in its last 10 games public before the as-of time, followed through its line of team codes. A team with no earlier game has no rows.
+- **Model:** a conditional logit on each candidate's share of recent and season starts, his last start, run of starts, back-to-back, rest and whether he dressed last game, all from `actual_lineups` of earlier games (hard rule 9). One model per season, fitted on earlier seasons' starters public before the season's first as-of time; `train_cutoff` is the last of them.
+- **Timing:** as `team_strength`: 10:00 US Eastern on the game date, or an hour before its start if earlier, which is the rows' `observed_utc`.
+- **Commands:** `nhl goalie-start` writes the table and a report to `reports/goalie-start/<version>.md`: per season, the Brier score, top-pick accuracy and the share of starters who were not candidates, beside the share of the last ten starts as a reference. It refuses while a season is short of its games or a team-game has no flagged starter.
 ## Odds snapshots
 
 `nhl odds snapshot` runs from `.github/workflows/odds-snapshots.yml`, dispatched at each slot with the slot's name (see When jobs run). Slots are set in US Eastern time, so nothing changes by hand when DST starts or ends. The fallback cron has one line per slot for each UTC offset, and the CLI maps the line that fired to a slot for the current offset. A run first checks the NHL schedule and makes no Odds API call when the slot has no regular-season or playoff game.
