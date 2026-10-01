@@ -282,8 +282,11 @@ def steadiness(settings: Settings) -> tuple[float, float]:
     return settings.half_life, settings.prior_shots
 
 
-# Not tuned yet: set from the tuning run on #75 (ADR 0011).
-TUNED = Settings(half_life=80, prior_shots=2000)
+# Frozen by run goalie-effect-20261001-dc79a24 on #75 (ADR 0011). Thirteen of the 16 settings
+# tied with the leader (half-life 40, prior 4000), and the rule took the steadiest of them, on the
+# grid's steadiest corner, though its tie held by a margin of 2e-6. The owner chose to follow the
+# rule as set in advance.
+TUNED = Settings(half_life=160, prior_shots=4000)
 # The last result that run read: 2017-18's final night, as for team strength. An effect observed
 # before it used settings chosen with its own season's results (in-sample, ADR 0011).
 TUNED_CUTOFF = ts.TUNED_CUTOFF

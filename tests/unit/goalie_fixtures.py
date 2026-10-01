@@ -115,3 +115,82 @@ def lineup_frame(rows: list[dict[str, object]]) -> pl.DataFrame:
             "raw_key": pl.String,
         },
     )
+
+
+# Each goalie's skill: the share of a shot's xG he saves above an average goalie.
+SKILL = {
+    goalie: skill
+    for first, backup in GOALIES.values()
+    for goalie, skill in ((first, 0.3), (backup, -0.3))
+}
+SHOTS_PER_GAME = 30
+
+
+def with_shots(frames: dict[str, pl.DataFrame], seed: int = 7) -> dict[str, pl.DataFrame]:
+    """The league with each team's unblocked shots from 2011-12 on (the first season with xG),
+    each against the other team's starter, and their xG. A shot scores with probability xG times
+    one minus the goalie's skill."""
+    rng = np.random.default_rng(seed)
+    starters = frames["lineups"].filter(pl.col("starting_goalie"))
+    goalie_of = {(g, t): p for g, t, p in starters.select("game_id", "team", "player_id").rows()}
+    shots, xg = [], []
+    for game in frames["games"].filter(pl.col("season") >= 20112012).iter_rows(named=True):
+        event = 0
+        for team, opponent in ((game["home"], game["away"]), (game["away"], game["home"])):
+            goalie = goalie_of[(game["game_id"], opponent)]
+            for _ in range(SHOTS_PER_GAME):
+                event += 1
+                chance = float(rng.uniform(0.02, 0.2))
+                shots.append(
+                    {
+                        "game_id": game["game_id"],
+                        "event_id": event,
+                        "team": team,
+                        "goalie_id": goalie,
+                        "is_goal": bool(rng.random() < chance * (1 - SKILL[goalie])),
+                    }
+                )
+                xg.append(
+                    {
+                        "game_id": game["game_id"],
+                        "season": game["season"],
+                        "game_date": game["game_date"],
+                        "event_id": event,
+                        "xg": chance,
+                        "observed_utc": game["observed_utc"],
+                    }
+                )
+    shot_frame = pl.DataFrame(shots).with_columns(pl.col("event_id").cast(pl.Int32))
+    goals = dict(
+        shot_frame.group_by("game_id", "team")
+        .agg(pl.col("is_goal").sum())
+        .select(pl.concat_str(pl.col("game_id").cast(pl.String), pl.lit(" "), "team"), "is_goal")
+        .iter_rows()
+    )
+
+    def score(side: str) -> pl.Expr:
+        key = pl.concat_str(pl.col("game_id").cast(pl.String), pl.lit(" "), pl.col(side))
+        return key.replace_strict(goals, default=0, return_dtype=pl.Int16)
+
+    # A tie goes to a shootout, whose winner gets one goal: here the home team on even game ids.
+    games = frames["games"].with_columns(home_score=score("home"), away_score=score("away"))
+    games = games.with_columns(
+        home_score=pl.when(
+            (pl.col("home_score") == pl.col("away_score")) & (pl.col("game_id") % 2 == 0)
+        )
+        .then(pl.col("home_score") + 1)
+        .otherwise(pl.col("home_score")),
+        away_score=pl.when(
+            (pl.col("home_score") == pl.col("away_score")) & (pl.col("game_id") % 2 == 1)
+        )
+        .then(pl.col("away_score") + 1)
+        .otherwise(pl.col("away_score")),
+    )
+    return {
+        **frames,
+        "games": games,
+        "shots": shot_frame,
+        "shot_xg": pl.DataFrame(xg).with_columns(
+            pl.col("season").cast(pl.Int32), pl.col("event_id").cast(pl.Int32)
+        ),
+    }
