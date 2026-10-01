@@ -88,6 +88,12 @@ Four variants were then scored on the training seasons 2012-13 to 2017-18 only, 
 
 Log loss moved by 0.00002 at most. The owner chose the rebound term per season on 2026-09-30. It follows the trend with a season's lag, the way the season term follows scoring.
 
+**What the choice can and cannot claim.** The choice read the outcomes of 2012-13 to 2017-18, so its data ends with 2017-18.
+- **Clean:** every fold from 2018-19 on uses a specification chosen entirely before it. That covers the development seasons, the held-out ones and live.
+- **In-sample:** the xG of 2012-13 to 2017-18 is in-sample for this one choice, as any frozen setting is for the seasons it was tuned on (the phase 2 plan's protocol). It may train later models and tune their settings on the training seasons, but no result may present it as out-of-sample.
+
+Codex raised this as a P0 on #85. The owner accepted it as won't-fix on 2026-10-01, and the report says so above its figures.
+
 That first report also showed the development seasons 2018-19 and 2021-22:
 - **Per season:** 2018-19 at +0.18 [+0.02, +0.34] and 2021-22 at -0.19 [-0.33, -0.05] goals per 100 shots.
 - **In its pooled group tables:** rebounds at -1.96 per 100.

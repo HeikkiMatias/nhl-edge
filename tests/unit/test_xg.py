@@ -166,6 +166,7 @@ def test_the_report_shows_figures_for_shown_seasons_only() -> None:
     assert rows[0]["low"] < rows[0]["difference"] < rows[0]["high"]
     text = report.markdown_report(shots, models, [20112012, 20122013], [20112012], VERSION)
     assert "## Rebound, training seasons 20112012" in text
+    assert "in-sample for that choice" in text
     # A season shown per season but left out of the pooled groups keeps its figures.
     assert "held out" not in text.split("## Distance")[0]
     held = report.markdown_report(shots, models, [20112012], [20112012], VERSION)
