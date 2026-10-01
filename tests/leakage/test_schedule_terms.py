@@ -121,3 +121,22 @@ def test_tuning_reads_the_training_seasons_only() -> None:
     assert st.TUNING_SEASONS
     assert all(season_role(s) is SeasonRole.TRAINING for s in st.TUNING_SEASONS)
     assert max(st.TUNING_SEASONS) == 20172018
+
+
+def test_a_game_retimed_on_the_day_is_rated_once_its_schedule_is_public() -> None:
+    # As the Lake Tahoe game (ADR 0005): tonight's first game's row public only at 20:00 UTC on
+    # the day, after the 10:00 ET as-of time but before its 23:00 UTC start.
+    game = TONIGHT[0]
+    row = LEAGUE["schedule"].filter(pl.col("game_id") == game).row(0, named=True)
+    public = row["start_utc"] - timedelta(hours=3)
+    schedule = LEAGUE["schedule"].with_columns(
+        observed_utc=pl.when(pl.col("game_id") == game)
+        .then(pl.lit(public))
+        .otherwise(pl.col("observed_utc"))
+    )
+    rated = tonight({**LEAGUE, "schedule": schedule})
+    retimed = rated.filter(pl.col("game_id") == game).row(0, named=True)
+    assert retimed["as_of_utc"] == public + timedelta(microseconds=1) < row["start_utc"]
+    # The other games tonight are rated as before.
+    others = pl.col("game_id") != game
+    assert same(rated.filter(others), BEFORE.filter(others))

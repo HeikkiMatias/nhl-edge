@@ -18,15 +18,16 @@ pulled toward the rate of the three seasons before it with a weight worth `prior
 That weight is tuned on the training seasons and frozen (ADR 0011).
 
 A game is rated as of the time team strength uses: 10:00 US Eastern on its date, or an hour before
-its start if that is earlier. A team's last game counts only once its result is public (ADR 0003),
-as `schedule_known_at` reads the schedule (ADR 0005): the schedule holds only games that went on
-to be played, so a game not yet played could reveal a postponement. Tonight's own row is read for
+its start if that is earlier, or just after its schedule row became public if that is later still
+(one game, re-timed on the day). A team's last game counts only once its result is public (ADR
+0003), as `schedule_known_at` reads the schedule (ADR 0005): the schedule holds only games that went
+on to be played, so a game not yet played could reveal a postponement. Tonight's own row is read for
 its venue and flags, public a day before it starts.
 """
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -56,6 +57,14 @@ class Settings:
     @property
     def label(self) -> str:
         return f"prior {self.prior_games:g} games"
+
+
+def rating_time() -> pl.Expr:
+    """When a scheduled game is rated: team strength's as-of time, or just after its schedule row
+    became public if that is later. Only a game re-timed on the day is (the Lake Tahoe game,
+    ADR 0005): its row is read once public, still hours before its start, but after E2 predicts."""
+    as_of = ts.as_of(pl.col("game_date"), pl.col("start_utc"))
+    return pl.max_horizontal(as_of, pl.col("observed_utc") + timedelta(microseconds=1))
 
 
 def _arenas(ref: Reference) -> pl.DataFrame:
@@ -90,7 +99,7 @@ def team_rows(schedule: pl.DataFrame, ref: Reference) -> pl.DataFrame:
         "season",
         "game_date",
         "start_utc",
-        as_of_utc=ts.as_of(pl.col("game_date"), pl.col("start_utc")),
+        as_of_utc=rating_time(),
         result_utc=result_public(pl.col("game_date")),
     ).join(arenas, on="game_id")
     return pl.concat(
@@ -246,7 +255,7 @@ def terms(
         "home",
         "away",
         "neutral_site",
-        as_of_utc=ts.as_of(pl.col("game_date"), pl.col("start_utc")),
+        as_of_utc=rating_time(),
     )
     sides = pl.concat([targets.select("game_id", team=pl.col(side)) for side in ("home", "away")])
     moved = travel(rows, sides, ref)
