@@ -146,7 +146,15 @@ def _shot_totals(stints: pl.DataFrame, shots: pl.DataFrame, shot_xg: pl.DataFram
     models = shot_xg.group_by("game_id").agg(
         xg_version=pl.col("artifact_version").first(),
         xg_train_cutoff=pl.col("train_cutoff").max(),
+        versions=pl.col("artifact_version").n_unique(),
     )
+    mixed = models.filter(pl.col("versions") > 1).sort("game_id")
+    if mixed.height:
+        examples = ", ".join(str(g) for g in mixed["game_id"].head(3).to_list())
+        raise ValueError(
+            f"{mixed.height} games have xG from more than one model, e.g. {examples}: rerun nhl xg"
+        )
+    models = models.drop("versions")
     located = (
         shots.filter(~pl.col("is_penalty_shot"))
         .join(shot_xg.select("game_id", "event_id", "xg"), on=["game_id", "event_id"], how="left")
@@ -251,7 +259,8 @@ def build(
 def player_seconds(stints: pl.DataFrame) -> pl.DataFrame:
     """Each skater's seconds per game in each state of STATES, from the stints RAPM keeps: 5v5 and
     the power play and penalty kill states of team strength, both goalies in; anything else, such
-    as 4v4 or an empty net, is other."""
+    as 4v4 or an empty net, is other. observed_utc is the game's stints', so a reader takes a
+    game's seconds only once they are public (hard rule 1)."""
     kept = stints.filter(pl.col("drop_reason").is_null())
     both_in = pl.col("home_goalie").is_not_null() & pl.col("away_goalie").is_not_null()
     sides = []
@@ -262,6 +271,7 @@ def player_seconds(stints: pl.DataFrame) -> pl.DataFrame:
         sides.append(
             kept.select(
                 *GAME_KEYS,
+                "observed_utc",
                 player_id=pl.col(f"{own}_skaters"),
                 is_home=pl.lit(own == "home"),
                 state=pl.when(both_in & (state == EVEN))
@@ -276,7 +286,7 @@ def player_seconds(stints: pl.DataFrame) -> pl.DataFrame:
         )
     return (
         pl.concat(sides)
-        .group_by(*GAME_KEYS, "player_id", "is_home", "state")
+        .group_by(*GAME_KEYS, "player_id", "is_home", "state", "observed_utc")
         .agg(pl.col("seconds").sum())
         .sort("game_id", "player_id", "state")
     )

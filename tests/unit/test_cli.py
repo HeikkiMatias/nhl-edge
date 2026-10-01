@@ -854,6 +854,8 @@ def stint_lake(monkeypatch: pytest.MonkeyPatch, frames: dict[str, Any]) -> None:
 
 
 def test_stints_cuts_every_complete_game(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import UTC, datetime
+
     import polars as pl
     from feed_fixtures import MTL_ARI, OPENING_WEEK_GAMES, parsed_feeds
 
@@ -880,3 +882,17 @@ def test_stints_cuts_every_complete_game(tmp_path: Any, monkeypatch: pytest.Monk
     refused = runner.invoke(app, ["stints", "--seasons", "20222023"])
     assert refused.exit_code == 1
     assert "20222023: no xG" in refused.output
+    # A held-out season is written without showing its counts.
+    shot = frames["shots"].filter(pl.col("season") == 20222023, ~pl.col("is_penalty_shot")).head(1)
+    frames["shot_xg"] = shot.select(
+        "game_id",
+        "season",
+        "event_id",
+        xg=pl.lit(0.1),
+        train_cutoff=pl.lit(datetime(2022, 9, 1, tzinfo=UTC)),
+        artifact_version=pl.lit("xg-20261001-abc1234"),
+    )
+    held_out = runner.invoke(app, ["stints", "--seasons", "20222023"])
+    assert held_out.exit_code == 0, held_out.output
+    assert "stints 20222023: written" in held_out.output
+    assert "left out" not in held_out.output

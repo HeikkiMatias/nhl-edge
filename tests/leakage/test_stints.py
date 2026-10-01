@@ -80,6 +80,11 @@ def test_a_game_never_sees_its_own_stints(game_id: int) -> None:
     assert_public_the_morning_after(stints_of((game_id,)), game_id)
 
 
+@pytest.mark.parametrize("game_id", GAMES)
+def test_a_game_never_sees_its_own_players_seconds(game_id: int) -> None:
+    assert_public_the_morning_after(stints.player_seconds(stints_of((game_id,))), game_id)
+
+
 def test_a_games_stints_read_nothing_of_any_other_game() -> None:
     alone = stints_of((OPENING_WEEK_GAMES[0],))
     together = stints_of(GAMES).filter(pl.col("game_id") == OPENING_WEEK_GAMES[0])

@@ -179,6 +179,30 @@ def test_xg_adds_up_per_team_and_carries_its_model() -> None:
     assert (row["xg_version"], row["xg_train_cutoff"]) == (XG_VERSION, XG_CUTOFF)
 
 
+def test_a_game_with_xg_from_two_models_is_refused() -> None:
+    from stint_fixtures import coverage_frame as coverage
+    from stint_fixtures import (
+        faceoffs_frame,
+        lineups_frame,
+        shifts_frame,
+        shot_xg_frame,
+        shots_frame,
+    )
+
+    shot_xg = shot_xg_frame({1: 0.1, 2: 0.2}).with_columns(
+        artifact_version=pl.Series(["xg-20261001-abc1234", "xg-20261002-def5678"])
+    )
+    with pytest.raises(ValueError, match="more than one model"):
+        stints.build(
+            coverage(),
+            shifts_frame(full_period()),
+            lineups_frame(),
+            shots_frame([(1, 100, True, False), (2, 200, False, False)]),
+            shot_xg,
+            faceoffs_frame([]),
+        )
+
+
 def test_a_game_without_xg_has_null_xg_but_counts_its_goals() -> None:
     frame = build(full_period(), shots=[(1, 100, True, True)])
     row = frame.row(0, named=True)

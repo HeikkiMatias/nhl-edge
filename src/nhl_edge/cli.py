@@ -391,6 +391,7 @@ def stints(
     keeps a drop_reason. Run it after nhl xg, whose xG it reads."""
     import polars as pl
 
+    from nhl_edge.backtest.seasons import OPEN_SEASONS
     from nhl_edge.features import stints as st
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.lake.tables import Lake
@@ -422,16 +423,24 @@ def stints(
                 "faceoffs",
             )
         }
-        frame = st.build(
-            tables["shift_coverage"],
-            tables["shifts"],
-            tables["actual_lineups"],
-            tables["shots"],
-            tables["shot_xg"],
-            tables["faceoffs"],
-        )
+        try:
+            frame = st.build(
+                tables["shift_coverage"],
+                tables["shifts"],
+                tables["actual_lineups"],
+                tables["shots"],
+                tables["shot_xg"],
+                tables["faceoffs"],
+            )
+        except ValueError as exc:
+            typer.echo(f"{season}: {exc}", err=True)
+            raise typer.Exit(code=1) from None
         dates = games.filter(pl.col("season") == season)["game_date"].unique().to_list()
         lake.replace_dates("stints", frame, dates)
+        # Counts of a held-out or live season stay unseen, as in the audit report.
+        if season not in OPEN_SEASONS:
+            typer.echo(f"stints {season}: written")
+            continue
         dropped = frame.filter(pl.col("drop_reason").is_not_null()).height
         typer.echo(
             f"stints {season}: {frame.height:,} in {frame['game_id'].n_unique():,} games, "
