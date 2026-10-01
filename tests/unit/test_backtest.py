@@ -8,6 +8,7 @@ from pathlib import Path
 import market_history
 import polars as pl
 import pytest
+from b2_fixtures import feature_tables
 from test_sbr import NEW, NEW_SCHEDULE, results_empty
 from typer.testing import CliRunner
 
@@ -15,6 +16,7 @@ from nhl_edge.backtest import reports
 from nhl_edge.backtest.metrics import bootstrap, log_loss
 from nhl_edge.backtest.walk_forward import Coverage, b0, outcomes, run
 from nhl_edge.cli import app
+from nhl_edge.game import b2
 from nhl_edge.ingest.games import EXPECTED_GAMES
 from nhl_edge.ingest.sbr import match_season, parse_season
 from nhl_edge.lake.schemas import Games, SbrOdds, dtypes
@@ -346,8 +348,24 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     for season in earlier:
         monkeypatch.setitem(EXPECTED_GAMES, season, 20)
     monkeypatch.setitem(EXPECTED_GAMES, 20212022, 4)
+    # B2 needs its feature tables (ADR 0013).
+    no_features = runner.invoke(app, ["backtest", "--seasons", "20212022"])
+    assert no_features.exit_code == 1
+    assert "games without team_strength" in no_features.output
+    tables = feature_tables(lake.read("games"))
+    stored = Lake.read
+    monkeypatch.setattr(
+        Lake,
+        "read",
+        lambda self, name: (
+            getattr(tables, name)
+            if name in b2.TABLES or name == "actual_lineups"
+            else stored(self, name)
+        ),
+    )
     result = runner.invoke(app, ["backtest", "--seasons", "20212022", "--out", "out"])
     assert result.exit_code == 0, result.output
+    assert "E1 B2 none: log loss" in result.output
     assert "E1 B0 multiplicative: log loss" in result.output
     assert "E2 B1 multiplicative: log loss" in result.output
     assert "E2 with_every_opener B1 multiplicative: log loss" in result.output
@@ -358,6 +376,11 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     every = summary["sensitivity"]["with_every_opener"]["E2"]["coverage"]["20212022"]
     assert (e2["priced"], every["priced"]) == (3, 3)
     assert e2["b1_trained_on"] == every["b1_trained_on"] - 1
+    # B2 scores the games B1 scores, trained on every earlier game from 2011-12.
+    assert e2["b2_scored"] == e2["scored"]
+    assert e2["b2_trained_on"] == 20 * len([s for s in earlier if s >= b2.FIRST_SEASON])
+    assert "gaps_over_8_points" in summary["experiments"]["E1"]["models"]["B2"]
+    assert "goalie_starts" in summary["lineup_quality"]
 
 
 def test_a_market_below_100_percent_is_counted_and_left_out() -> None:

@@ -310,7 +310,15 @@ def predictions(
     known: str = "observed_utc",
 ) -> tuple[pl.DataFrame, B2Model]:
     """B2's p_home for the season's games in moments (game_id, prediction_utc), from a fit on the
-    games before start, with its train_cutoff, and the fit."""
+    games before start, with its train_cutoff, and the fit.
+
+    In the backtest (known observed_utc), a fold starting before the tuning cutoff is refused: its
+    features were tuned on its own season's results (ADR 0011)."""
+    if known == "observed_utc" and start <= TUNED_CUTOFF:
+        raise ValueError(
+            f"{season}'s fold starts at {start:%Y-%m-%d}, before the tuning cutoff "
+            f"{TUNED_CUTOFF:%Y-%m-%d}: its features are in-sample (ADR 0011)"
+        )
     inputs = game_inputs(tables)
     model = fit(training_games(tables, inputs, season, start, known), settings, season)
     usable, ready = known_before(
