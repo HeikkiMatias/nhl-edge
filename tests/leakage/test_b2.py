@@ -231,6 +231,20 @@ def test_a_fold_before_a_tuning_cutoff_is_refused() -> None:
         b2.predictions(early, moments, 20162017, start, b2.TUNED)
 
 
+def test_the_fits_cutoff_is_the_last_row_it_read() -> None:
+    # An earlier game's boxscore public a day before the fold start, after the tuning cutoff: the
+    # fit reads it, so its train_cutoff is that moment, not the last result.
+    last = LEAGUE.games.filter(pl.col("season") == TEST - 10001)["game_id"].max()
+    moment = START - timedelta(days=1)
+    lineups = LEAGUE.actual_lineups.with_columns(
+        observed_utc=pl.when(pl.col("game_id") == last)
+        .then(pl.lit(moment))
+        .otherwise(pl.col("observed_utc"))
+    )
+    _, model = b2.predictions(replaced(actual_lineups=lineups), MOMENTS, TEST, START, b2.TUNED)
+    assert model.train_cutoff == moment > b2.TUNED_CUTOFF
+
+
 def test_tuning_reads_the_training_seasons_only() -> None:
     assert all(season_role(s) is SeasonRole.TRAINING for s in b2.TUNING_SEASONS)
     assert max(b2.TUNING_SEASONS) == 20172018

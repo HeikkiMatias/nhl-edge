@@ -67,8 +67,10 @@ def test_the_prediction_averages_over_the_pairs() -> None:
 
 
 def test_training_uses_the_goalies_who_started() -> None:
-    delta = b2.starters_delta(LEAGUE).join(
-        LEAGUE.games.select("game_id", "home", "away"), on="game_id"
+    delta = (
+        b2.starters_delta(LEAGUE, START)
+        .join(LEAGUE.games.select("game_id", "home", "away"), on="game_id")
+        .sort("game_id")
     )
     starters = LEAGUE.actual_lineups.filter("starting_goalie").select(
         "game_id", "team", "player_id"
@@ -94,7 +96,9 @@ def test_training_uses_the_goalies_who_started() -> None:
         LEAGUE.actual_lineups,
     )
     assert (
-        b2.starters_delta(missing).filter(pl.col("game_id") == row["game_id"])["delta_g"].item()
+        b2.starters_delta(missing, START)
+        .filter(pl.col("game_id") == row["game_id"])["delta_g"]
+        .item()
         == 0.0
     )
 

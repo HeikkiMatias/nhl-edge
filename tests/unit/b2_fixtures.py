@@ -23,6 +23,8 @@ SAVED = {"A": 0.4, "B": -0.4}
 H_S = 0.15
 S_WEIGHT = 1.5
 G_WEIGHT = 1.0
+# Every row is known by then: the outcomes are drawn from the goalies who started.
+END_OF_TIME = datetime(9999, 1, 1, tzinfo=UTC)
 
 
 def goalie_id(team: str, which: str) -> int:
@@ -158,7 +160,7 @@ def league(
             )
     frame = pl.DataFrame(rows, schema=dtypes(Games))
     tables = feature_tables(frame, seed)
-    delta_g = b2.starters_delta(tables)
+    delta_g = b2.starters_delta(tables, END_OF_TIME)
     drawn = (
         frame.join(tables.team_strength.select("game_id", "delta_s"), on="game_id")
         .join(delta_g.select("game_id", "delta_g"), on="game_id")

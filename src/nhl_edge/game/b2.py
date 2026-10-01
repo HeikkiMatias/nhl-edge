@@ -130,19 +130,15 @@ def candidates(tables: Tables) -> pl.DataFrame:
     )
 
 
-def starters_delta(
-    tables: Tables, start: datetime | None = None, known: str = "observed_utc"
-) -> pl.DataFrame:
+def starters_delta(tables: Tables, start: datetime, known: str = "observed_utc") -> pl.DataFrame:
     """Each game's ΔG with the goalies who started it, for training only, when its boxscore
-    became public (lineup_utc), and when the goalie rows it read became known (effects_utc). With
-    start, a goalie_effects row counts only if known before it by the column known. A starter
-    without a known row counts as average."""
+    became public (lineup_utc), and when the goalie rows it read became known (effects_utc). A
+    goalie_effects row counts only if known before start by the column known; a starter without
+    one counts as average."""
     starters = team_goalie_games(tables.actual_lineups).select(
         "game_id", "team", goalie_id="starter", lineup_utc="observed_utc"
     )
-    effects = tables.goalie_effects
-    if start is not None:
-        effects = effects.filter(pl.col(known) < start)
+    effects = tables.goalie_effects.filter(pl.col(known) < start)
     saved = starters.join(
         effects.select("game_id", "team", "goalie_id", "goals_saved", effect_utc=known),
         on=["game_id", "team", "goalie_id"],
