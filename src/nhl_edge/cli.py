@@ -34,6 +34,7 @@ DEFAULT_BACKTEST_OUT = Path("reports/backtest")
 DEFAULT_AUDIT_OUT = Path("reports/audit")
 DEFAULT_XG_OUT = Path("reports/xg")
 DEFAULT_TUNING_OUT = Path("reports/tuning")
+DEFAULT_GOALIE_START_OUT = Path("reports/goalie-start")
 
 
 def _not_implemented(command: str, phase: str) -> NoReturn:
@@ -422,6 +423,69 @@ def team_strength(
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
     lake.replace_dates("team_strength", frame, rated["game_date"].unique().to_list())
     typer.echo(f"team_strength: {frame.height:,} games rated with {ts.TUNED.label} ({version})")
+
+
+@app.command("goalie-start")
+def goalie_start(
+    seasons: Annotated[
+        str | None,
+        typer.Option(
+            help="Seasons to score, as 20232024, a comma list or a range. Default: 2011-12 on."
+        ),
+    ] = None,
+    out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_GOALIE_START_OUT,
+    r2: Annotated[bool, typer.Option("--r2", help="Mirror the goalie_starts table to R2.")] = False,
+) -> None:
+    """Fit the goalie-start model per season on earlier seasons' boxscores (#76, ADR 0012), write
+    each candidate goalie's start probability to the lake's goalie_starts, and the report to
+    <out>/<version>.md: figures per open season but the development seasons, which wait for
+    gate 1."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.audit import goalie_start as report
+    from nhl_edge.backtest import reports
+    from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, OPEN_SEASONS
+    from nhl_edge.ingest.games import EXPECTED_GAMES
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.lineup import goalie_start as gs
+    from nhl_edge.settings import load_env
+
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    games, lineups = lake.read("games"), lake.read("actual_lineups")
+    known = sorted(games["season"].unique().to_list())
+    try:
+        wanted = parse_seasons(seasons) if seasons else [s for s in known if s >= gs.FIRST_SEASON]
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    problems = gs.input_problems(games, lineups, max(wanted), EXPECTED_GAMES) if wanted else []
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl ingest --replay for those seasons", err=True)
+        raise typer.Exit(code=1)
+    try:
+        version = reports.version(gs.COMPONENT, datetime.now(UTC))
+        table, scored, models = gs.score(lineups, games, wanted, version)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    days = games.filter(pl.col("season").is_in(wanted))["game_date"].unique().to_list()
+    lake.replace_dates("goalie_starts", table, days)
+    # The development seasons stay unseen until gate 1 (phase 2 plan).
+    shown = [season for season in OPEN_SEASONS if season not in DEVELOPMENT_SEASONS]
+    scores = report.team_game_scores(scored, lineups)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{version}.md"
+    path.write_text(report.markdown_report(scores, models, shown, version))
+    typer.echo(f"{path}: {table.height:,} candidate rows in {len(models)} seasons")
+    # A fit's team-games count only starters among the candidates, so they would give a held-out
+    # season's missed starters: shown, as in the report, only when every season it read is.
+    for fit in report.fits(models, shown):
+        size = "held out" if fit["team_games"] is None else f"{fit['team_games']:,} team-games"
+        typer.echo(f"  {fit['season']}: fitted on {size} to {fit['train_cutoff'][:10]}")
 
 
 @app.command()

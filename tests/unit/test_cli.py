@@ -22,6 +22,7 @@ COMMANDS = [
     "backtest",
     "xg",
     "team-strength",
+    "goalie-start",
     "bets",
     "odds",
     "lake",
@@ -585,6 +586,84 @@ def test_team_strength_rates_every_game_with_the_frozen_settings(
     games = frames["games"].height
     assert f"team_strength: {games:,} games rated with half-life 80, prior 40" in result.output
     assert list((tmp_path / "data" / "lake" / "team_strength").rglob("*.parquet"))
+
+
+def goalie_lake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    from goalie_fixtures import league
+
+    from nhl_edge.ingest import games as games_module
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.lineup import goalie_start as gs
+
+    frames: dict[str, Any] = league()
+    frames["actual_lineups"] = frames.pop("lineups")
+    counts = dict(frames["games"].group_by("season").len().iter_rows())
+    monkeypatch.setattr(games_module, "EXPECTED_GAMES", counts)
+    monkeypatch.setattr(gs, "team_lines", lambda: {})
+    monkeypatch.setattr(Lake, "read", lambda self, table: frames[table])
+    return frames
+
+
+def test_goalie_start_writes_the_table_and_the_report(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    goalie_lake(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["goalie-start"])
+    assert result.exit_code == 0, result.output
+    assert "candidate rows in 2 seasons" in result.output
+    # The fixture's seasons are all training seasons, so every fit shows its size.
+    assert "20122013: fitted on" in result.output and "held out" not in result.output
+    assert list((tmp_path / "data" / "lake" / "goalie_starts").rglob("*.parquet"))
+    (path,) = (tmp_path / "reports" / "goalie-start").glob("goalie-start-*.md")
+    assert "## Per season" in path.read_text()
+
+
+def test_goalie_start_prints_no_held_out_fits_size(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A fit's team-games count only starters who were candidates: shown for a fit on a held-out
+    # season, one fit's count less the previous one's would give that season's missed starters
+    # (leakage check on #76).
+    from nhl_edge.backtest import seasons
+
+    goalie_lake(monkeypatch)
+    monkeypatch.setattr(seasons, "OPEN_SEASONS", (20102011, 20122013))
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["goalie-start"])
+    assert result.exit_code == 0, result.output
+    lines = {line.split(":")[0].strip(): line for line in result.output.splitlines()}
+    assert "fitted on held out" in lines["20122013"]
+    assert "team-games" in lines["20112012"]
+
+
+def test_goalie_start_refuses_a_lake_with_a_team_game_without_a_starter(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+
+    frames = goalie_lake(monkeypatch)
+    lineups = frames["actual_lineups"]
+    frames["actual_lineups"] = lineups.with_columns(
+        starting_goalie=pl.when(pl.col("game_id") == lineups["game_id"][0])
+        .then(False)
+        .otherwise(pl.col("starting_goalie"))
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["goalie-start"])
+    assert result.exit_code == 1
+    assert "2 team-games without a starter" in plain(result.output)
+    assert not (tmp_path / "data").exists()
+
+
+def test_goalie_start_refuses_a_season_with_nothing_earlier(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    goalie_lake(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["goalie-start", "--seasons", "20102011"])
+    assert result.exit_code == 2
+    assert "no earlier season" in plain(result.output)
 
 
 def test_team_strength_tune_logs_every_candidate(
