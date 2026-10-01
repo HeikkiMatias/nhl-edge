@@ -603,6 +603,60 @@ def schedule_terms(
     typer.echo(f"schedule_terms: {frame.height:,} games rated with {st.TUNED.label} ({version})")
 
 
+@app.command("tune-b2")
+def tune_b2(
+    out: Annotated[Path, typer.Option(help="Tuning report directory.")] = DEFAULT_TUNING_OUT,
+) -> None:
+    """Score B2's candidate L2 penalties on the training seasons (#78, ADR 0011, ADR 0013), each
+    season predicted by a fit on the earlier ones, and write the log to <out>/b2-<version>.md.
+    Reads the feature tables from the lake; writes no table."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports, tuning
+    from nhl_edge.game import b2
+    from nhl_edge.ingest.games import EXPECTED_GAMES
+    from nhl_edge.lake.tables import Lake
+
+    lake = Lake()
+    tables = b2.Tables(
+        *(
+            lake.read(name)
+            for name in (
+                "games",
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        )
+    )
+    last = max(b2.TUNING_SEASONS)
+    problems = b2.input_problems(tables, last, EXPECTED_GAMES)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run the feature commands for those seasons", err=True)
+        raise typer.Exit(code=1)
+    version = reports.version(b2.COMPONENT, datetime.now(UTC))
+    window = pl.col("season") <= last
+    tables = b2.Tables(*(frame.filter(window) for frame in tables.__dict__.values()))
+    candidates = [
+        tuning.Candidate(
+            settings, settings.label, b2.tuning_scores(tables, settings, b2.TUNING_SEASONS)
+        )
+        for settings in b2.GRID
+    ]
+    choice = tuning.choose(candidates, b2.steadiness)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{version}.md"
+    path.write_text(tuning.markdown(choice, "B2", version, b2.TUNING_SEASONS))
+    frozen = "matches" if choice.chosen == b2.TUNED else "differs from"
+    typer.echo(f"{path}: chose {choice.chosen.label}, which {frozen} the frozen TUNED")
+
+
 @app.command("goalie-start")
 def goalie_start(
     seasons: Annotated[
