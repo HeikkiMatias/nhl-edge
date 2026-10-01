@@ -1,0 +1,393 @@
+{
+ "id": 2022020993,
+ "season": 20222023,
+ "gameType": 2,
+ "limitedScoring": false,
+ "gameDate": "2023-03-04",
+ "venue": {
+  "default": "SAP Center at San Jose"
+ },
+ "venueLocation": {
+  "default": "San Jose"
+ },
+ "startTimeUTC": "2023-03-04T23:00:00Z",
+ "easternUTCOffset": "-05:00",
+ "venueUTCOffset": "-08:00",
+ "gameState": "OFF",
+ "gameScheduleState": "OK",
+ "periodDescriptor": {
+  "number": 3,
+  "periodType": "REG",
+  "maxRegulationPeriods": 3
+ },
+ "awayTeam": {
+  "id": 15,
+  "commonName": {
+   "default": "Capitals"
+  },
+  "abbrev": "WSH",
+  "score": 8,
+  "sog": 30,
+  "logo": "https://assets.nhle.com/logos/nhl/svg/WSH_secondary_light.svg",
+  "darkLogo": "https://assets.nhle.com/logos/nhl/svg/WSH_secondary_dark.svg",
+  "placeName": {
+   "default": "Washington"
+  },
+  "placeNameWithPreposition": {
+   "default": "Washington",
+   "fr": "de Washington"
+  }
+ },
+ "homeTeam": {
+  "id": 28,
+  "commonName": {
+   "default": "Sharks"
+  },
+  "abbrev": "SJS",
+  "score": 3,
+  "sog": 41,
+  "logo": "https://assets.nhle.com/logos/nhl/svg/SJS_20082009-20232024_light.svg",
+  "darkLogo": "https://assets.nhle.com/logos/nhl/svg/SJS_20082009-20232024_dark.svg",
+  "placeName": {
+   "default": "San Jose"
+  },
+  "placeNameWithPreposition": {
+   "default": "San Jose",
+   "fr": "de San Jose"
+  }
+ },
+ "shootoutInUse": true,
+ "otInUse": true,
+ "clock": {
+  "timeRemaining": "00:00",
+  "secondsRemaining": 0,
+  "running": false,
+  "inIntermission": false
+ },
+ "displayPeriod": 1,
+ "maxPeriods": 5,
+ "gameOutcome": {
+  "lastPeriodType": "REG"
+ },
+ "regPeriods": 3,
+ "plays": [
+  {
+   "eventId": 102,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "00:00",
+   "timeRemaining": "20:00",
+   "situationCode": "1551",
+   "homeTeamDefendingSide": "left",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 11,
+   "details": {
+    "eventOwnerTeamId": 15,
+    "losingPlayerId": 8474053,
+    "winningPlayerId": 8475744,
+    "xCoord": 0,
+    "yCoord": 0,
+    "zoneCode": "N"
+   }
+  },
+  {
+   "eventId": 104,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "00:41",
+   "timeRemaining": "19:19",
+   "situationCode": "1551",
+   "homeTeamDefendingSide": "left",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 22,
+   "details": {
+    "eventOwnerTeamId": 15,
+    "losingPlayerId": 8476881,
+    "winningPlayerId": 8477511,
+    "xCoord": -69,
+    "yCoord": -22,
+    "zoneCode": "O"
+   }
+  },
+  {
+   "eventId": 106,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "03:42",
+   "timeRemaining": "16:18",
+   "situationCode": "1551",
+   "homeTeamDefendingSide": "left",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 71,
+   "details": {
+    "eventOwnerTeamId": 28,
+    "losingPlayerId": 8475343,
+    "winningPlayerId": 8481477,
+    "xCoord": -69,
+    "yCoord": 22,
+    "zoneCode": "D"
+   }
+  },
+  {
+   "eventId": 109,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "04:02",
+   "timeRemaining": "15:58",
+   "situationCode": "1551",
+   "homeTeamDefendingSide": "left",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 80,
+   "details": {
+    "eventOwnerTeamId": 15,
+    "losingPlayerId": 8482667,
+    "winningPlayerId": 8473563,
+    "xCoord": 69,
+    "yCoord": 22,
+    "zoneCode": "D"
+   }
+  },
+  {
+   "eventId": 214,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "06:53",
+   "timeRemaining": "13:07",
+   "situationCode": "1551",
+   "homeTeamDefendingSide": "left",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 116,
+   "details": {
+    "xCoord": -31,
+    "yCoord": -6,
+    "zoneCode": "D",
+    "typeCode": "MIN",
+    "descKey": "high-sticking",
+    "duration": 2,
+    "committedByPlayerId": 8476881,
+    "drawnByPlayerId": 8475225,
+    "eventOwnerTeamId": 28
+   }
+  },
+  {
+   "eventId": 242,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "10:07",
+   "timeRemaining": "09:53",
+   "situationCode": "1551",
+   "homeTeamDefendingSide": "left",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 159,
+   "details": {
+    "xCoord": -38,
+    "yCoord": -18,
+    "zoneCode": "O",
+    "typeCode": "MIN",
+    "descKey": "high-sticking",
+    "duration": 2,
+    "committedByPlayerId": 8477947,
+    "drawnByPlayerId": 8474578,
+    "eventOwnerTeamId": 15
+   }
+  },
+  {
+   "eventId": 120,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "10:07",
+   "timeRemaining": "09:53",
+   "situationCode": "1451",
+   "homeTeamDefendingSide": "left",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 164,
+   "details": {
+    "eventOwnerTeamId": 28,
+    "losingPlayerId": 8475343,
+    "winningPlayerId": 8476881,
+    "xCoord": 69,
+    "yCoord": 22,
+    "zoneCode": "O"
+   }
+  },
+  {
+   "eventId": 506,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "17:22",
+   "timeRemaining": "02:38",
+   "situationCode": "1551",
+   "homeTeamDefendingSide": "left",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 265,
+   "details": {
+    "xCoord": 93,
+    "yCoord": -10,
+    "zoneCode": "D",
+    "typeCode": "MIN",
+    "descKey": "high-sticking-double-minor",
+    "duration": 4,
+    "committedByPlayerId": 8475343,
+    "drawnByPlayerId": 8480188,
+    "eventOwnerTeamId": 15
+   }
+  },
+  {
+   "eventId": 570,
+   "periodDescriptor": {
+    "number": 2,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "05:08",
+   "timeRemaining": "14:52",
+   "situationCode": "1551",
+   "homeTeamDefendingSide": "right",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 366,
+   "details": {
+    "xCoord": 30,
+    "yCoord": -41,
+    "zoneCode": "O",
+    "typeCode": "MIN",
+    "descKey": "slashing",
+    "duration": 2,
+    "committedByPlayerId": 8477979,
+    "drawnByPlayerId": 8481477,
+    "eventOwnerTeamId": 15
+   }
+  },
+  {
+   "eventId": 144,
+   "periodDescriptor": {
+    "number": 2,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "05:45",
+   "timeRemaining": "14:15",
+   "situationCode": "1451",
+   "homeTeamDefendingSide": "right",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 376,
+   "details": {
+    "eventOwnerTeamId": 28,
+    "losingPlayerId": 8475744,
+    "winningPlayerId": 8476881,
+    "xCoord": -20,
+    "yCoord": 22,
+    "zoneCode": "N"
+   }
+  },
+  {
+   "eventId": 624,
+   "periodDescriptor": {
+    "number": 2,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "12:26",
+   "timeRemaining": "07:34",
+   "situationCode": "1551",
+   "homeTeamDefendingSide": "right",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 458,
+   "details": {
+    "xCoord": 43,
+    "yCoord": 24,
+    "zoneCode": "D",
+    "typeCode": "MIN",
+    "descKey": "tripping",
+    "duration": 2,
+    "committedByPlayerId": 8478067,
+    "drawnByPlayerId": 8480873,
+    "eventOwnerTeamId": 28
+   }
+  },
+  {
+   "eventId": 917,
+   "periodDescriptor": {
+    "number": 3,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "05:45",
+   "timeRemaining": "14:15",
+   "situationCode": "1551",
+   "homeTeamDefendingSide": "left",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 641,
+   "details": {
+    "xCoord": 87,
+    "yCoord": -35,
+    "zoneCode": "O",
+    "typeCode": "MIN",
+    "descKey": "clipping",
+    "duration": 2,
+    "committedByPlayerId": 8478099,
+    "drawnByPlayerId": 8482861,
+    "eventOwnerTeamId": 28
+   }
+  },
+  {
+   "eventId": 1152,
+   "periodDescriptor": {
+    "number": 3,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "05:45",
+   "timeRemaining": "14:15",
+   "situationCode": "1541",
+   "homeTeamDefendingSide": "left",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 643,
+   "details": {
+    "xCoord": 5,
+    "yCoord": 40,
+    "zoneCode": "N",
+    "typeCode": "GAM",
+    "descKey": "game-misconduct-head-coach",
+    "duration": 0,
+    "eventOwnerTeamId": 28
+   }
+  }
+ ]
+}

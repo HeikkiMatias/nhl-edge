@@ -564,6 +564,104 @@ class StrengthTime(pa.DataFrameModel):
         return data.lazyframe.select(regular_season_id_of_its_season())
 
 
+# Penalty types in play-by-play (#96): minor (a double minor is a minor of 4 minutes), major,
+# misconduct, game misconduct, match, bench minor, and a penalty shot, which puts no one in the box.
+PENALTY_TYPES = ("MIN", "MAJ", "MIS", "GAM", "MAT", "BEN", "PS")
+
+
+class Penalties(pa.DataFrameModel):
+    """One penalty in a game's play-by-play (#96), periods 1 to 4. The two shootout penalties in
+    2010-26 are not play and are left out.
+
+    seconds is elapsed game time, as in Shots. team is the penalized team, the play's
+    eventOwnerTeamId. committed_by is the player penalized, drawn_by the player fouled and
+    served_by the player who sat in the box for someone else, such as a bench minor or a goalie's
+    penalty; each is null where the feed names no one. type_code is in PENALTY_TYPES and
+    duration_min is the feed's minutes in the box: a misconduct's 10 minutes do not leave the team
+    short-handed, and a penalty shot's 0 is not a power play.
+
+    observed_utc is 10:00 UTC the morning after game_date, as for Shots (ADR 0004).
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    event_id: pl.Int32
+    sort_order: pl.Int32
+    period: pl.Int8 = pa.Field(ge=1, le=OT_PERIOD)
+    seconds: pl.Int32 = pa.Field(ge=0)
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    is_home: pl.Boolean
+    committed_by: pl.Int64 = pa.Field(nullable=True)
+    drawn_by: pl.Int64 = pa.Field(nullable=True)
+    served_by: pl.Int64 = pa.Field(nullable=True)
+    type_code: pl.String = pa.Field(isin=PENALTY_TYPES)
+    desc_key: pl.String
+    duration_min: pl.Int8 = pa.Field(ge=0)
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "event_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def seconds_inside_the_period(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        seconds, period = pl.col("seconds"), pl.col("period")
+        return data.lazyframe.select(
+            (seconds >= period_start_s(period)) & (seconds <= period_end_s(period))
+        )
+
+
+class Faceoffs(pa.DataFrameModel):
+    """One faceoff in a game's play-by-play (#96), periods 1 to 4.
+
+    seconds is elapsed game time, as in Shots. winning_team is the play's eventOwnerTeamId, and
+    home_won says whether it is the home team. zone is where the faceoff was, from the home
+    team's side: the feed's zoneCode is from the winner's side, so it flips O and D when the away
+    team won. Checked on 2019-20 and 2023-24, where plays say which end the home team defends: in
+    a sample of 400 games, all 19,025 faceoffs away from center ice agree with their coordinates.
+
+    observed_utc is 10:00 UTC the morning after game_date, as for Shots (ADR 0004).
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    event_id: pl.Int32
+    sort_order: pl.Int32
+    period: pl.Int8 = pa.Field(ge=1, le=OT_PERIOD)
+    seconds: pl.Int32 = pa.Field(ge=0)
+    winning_team: pl.String = pa.Field(str_matches=TRI_CODE)
+    home_won: pl.Boolean
+    winner_id: pl.Int64
+    loser_id: pl.Int64
+    zone: pl.String = pa.Field(isin=ZONES)
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "event_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def seconds_inside_the_period(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        seconds, period = pl.col("seconds"), pl.col("period")
+        return data.lazyframe.select(
+            (seconds >= period_start_s(period)) & (seconds <= period_end_s(period))
+        )
+
+
 class ShotXg(pa.DataFrameModel):
     """A shot's expected goals (#73, ADR 0010): the probability that the unblocked shot became a
     goal, from the xG model of its season, which was fitted only on shots public before the

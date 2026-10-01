@@ -45,6 +45,7 @@ from nhl_edge.ingest.players import (
     parse_players,
     roster_player_ids,
 )
+from nhl_edge.ingest.plays import parse_faceoffs, parse_penalties
 from nhl_edge.ingest.shift_coverage import chart_strength, shift_coverage
 from nhl_edge.ingest.shifts import parse_shifts
 from nhl_edge.ingest.shots import parse_shots
@@ -144,7 +145,9 @@ def parse_feeds(
         shots = chart_strength(feed_game, shots, shifts, lineups)
     on_chart = (shifts, lineups) if complete else (None, None)
     strength = parse_strength_time(pbp[0], feed_game, pbp[1], *on_chart)
-    tables = (shots, shifts, lineups, coverage, strength)
+    penalties = parse_penalties(pbp[0], feed_game, pbp[1])
+    faceoffs = parse_faceoffs(pbp[0], feed_game, pbp[1])
+    tables = (shots, shifts, lineups, coverage, strength, penalties, faceoffs)
     return dict(zip(FEED_TABLES, tables, strict=True))
 
 

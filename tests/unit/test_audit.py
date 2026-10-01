@@ -320,6 +320,7 @@ def test_audit_report_writes_every_section(tmp_path: Path, monkeypatch: pytest.M
         "Games per season",
         "SBR odds",
         "Shift coverage",
+        "Penalties and faceoffs",
         "Reference files",
         "Live odds snapshots",
         "Starting goalies",
