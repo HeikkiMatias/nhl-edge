@@ -57,18 +57,48 @@ Option 1 for both, chosen by the owner on 2026-10-01.
   - **An earlier run:** `team-strength-20261001-9dc689a`, before Codex's fixes on #86, chose the same setting.
   - **The grid's edge:** the leader sits on the grid's steadiest corner, so a longer memory might do a little better. The owner chose to keep the grid as fixed and freeze this result, since the gaps are within noise and widening the grid would take a second look at the same seasons.
 
+**The goalie effect's application (#75, #88):**
+- **Grid:** memory as a half-life of 20, 40, 80 or 160 of the goalie's own games, and a pull toward zero worth 500, 1,000, 2,000 or 4,000 unblocked shots. That is 16 candidates.
+- **Steadiness order:** the longer half-life first, then the larger pull.
+- **Feature:** the ΔG expected under the goalie-start probabilities (#76, ADR 0012), never the actual starter.
+- **The run** (`goalie-effect-20261001-dc79a24`, committed under `reports/tuning/`) scored 2012-13 to 2017-18.
+  - **Leader:** a half-life of 40 games and a pull worth 4,000 shots, log loss 0.6873 [0.6848, 0.6897].
+  - **Ties:** 13 of the 16. All settings fell within 0.6873 to 0.6877, against 0.6887 for the same win model with no feature.
+  - **Chosen:** the steadiest tie, a half-life of 160 games and a pull worth 4,000 shots, on the grid's steadiest corner. Its tie held by a margin of 2e-6: +0.000367 [-0.000002, +0.000725]. Its neighbor, 160 games and 2,000 shots, missed. The owner chose to follow the rule as set in advance.
+- **Reusing frozen settings:** the expected shots in ΔG use team strength's frozen settings, which were chosen on the same seasons. Codex raised it as a P0 on #88. The owner kept it as this ADR intends (Consequences). Scored with league-average shots instead, which no outcome tuned, the rule chose the same setting.
+
+**The season home edge's application (#77, #89):**
+- **Grid:** a pull toward the three seasons before worth 50, 100, 200, 400, 800 or 1,600 games (a season has about 1,300).
+- **Steadiness order:** the larger pull.
+- **Feature:** h_s, 0 at a neutral site.
+- **The run** (`schedule-terms-20261001-89564c5`) scored 2012-13 to 2017-18. All six tied, from 0.6886 to 0.6890.
+- **Chosen:** the leader, which was also the steadiest, a pull worth 1,600 games, on the grid's edge. This is the "revisit when" case below: the data cannot tell the settings apart, so steadiness alone decided. The owner chose to freeze it and keep the grid. With this pull, a full season of home games still moves the estimate about halfway.
+
+**B2's application (#78, #90, ADR 0013):**
+- **Grid:** an L2 penalty of 0.1, 1, 10, 100 or 1,000 on the standardized inputs' weights.
+- **Steadiness order:** the stronger penalty.
+- **Scored model:** B2 itself, each season predicted by a fit on the earlier ones. The features are the frozen ones, with every table cut to 2017-18 and earlier.
+- **The run** (`b2-20261001-fe11def`) scored 2012-13 to 2017-18.
+  - **Chosen:** an L2 of 100, log loss 0.6780 [0.6741, 0.6821]. It was the leader and the steadiest of its ties.
+  - **Not tied:** 1,000, at +0.0028 [+0.0013, +0.0043]. So the choice sits inside the grid.
+
 ## Backtest evidence
 
-None yet. Team strength's tuning run is on #74's PR, and gate 1 (#79) scores B2 on the development seasons with the frozen values.
+The tuning runs are above, each on its component's PR. B2, built from all four frozen settings, was scored on the development seasons by `backtest-20261001-388bb85` (#90). B2 minus B1 is +0.0112 [+0.0044, +0.0185] on E1 and +0.0078 [+0.0013, +0.0146] on E2, with a calibration slope of 1.35 [1.09, 1.62]. Gate 1 (#79) judges it.
 
 ## Consequences
 
 - The training seasons' tuned features are in-sample for the choice, as 2012-13 to 2017-18 xG is for the rebound term (ADR 0010). They may train later models, but no result may present them as out-of-sample. Every fold from 2018-19 on uses settings chosen entirely before it.
 - **Every tuned output records the run's cutoff,** the last result the run read: `train_cutoff` in `team_strength`, 2018-04-09 10:00 UTC. A tuned output counts as known no earlier than it, so `observed_utc` is the later of the output's own time and the cutoff. A fold that starts before the cutoff then cannot read the tuned seasons' outputs at all. Gate 1's folds start after it.
-- One choice per component, made once. A component tuned later does not reopen an earlier one's settings.
+- One choice per component, made once. A component tuned later does not reopen an earlier one's settings. It reuses them, frozen, even though they were chosen on the same seasons. The owner confirmed this on #88, when Codex raised it as a P0, and #78 applies it to B2.
 - B2's L2 strength (#78) uses the same protocol, with B2 itself as the scored model.
+- Every tuned table records the same cutoff, 2018-04-09 10:00 UTC: `team_strength`, `goalie_effects` and `schedule_terms`. B2's backtest refuses a fold that starts before the latest of them (ADR 0013).
 
 ## Revisit when
 
-- **A component's leader and its ties span the whole grid,** so the data cannot tell the settings apart. Then the steadiness order alone decides, and the grid or the objective needs a second look. Team strength's leader sits on its grid's edge: its grid can grow, under a new ADR, if gate 1 or the player layer shows memory matters.
+- **A component's leader and its ties span the whole grid,** so the data cannot tell the settings apart. Then the steadiness order alone decides, and the grid or the objective needs a second look.
+  - **It happened for the home edge,** where all six settings tied.
+  - **It nearly did for the goalie effect,** where 13 of 16 tied.
+  - **Team strength's leader sits on its grid's edge,** as do the goalie effect's and the home edge's choices.
+  - In each case the owner kept the grid. A grid can grow under a new ADR if gate 1 or the player layer shows the setting matters.
 - **Or gate 1 shows a frozen setting failing badly on the development seasons.** Retuning there would spend them, so it needs the owner and a new ADR.
