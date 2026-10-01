@@ -4,9 +4,9 @@ the minutes of each team's penalties with a player add up to its players' penalt
 boxscore. For the seasons open now, it also gives penalties, minors and faceoffs per game; a
 held-out season keeps its checks but not its rates, which a feature could be shaped by.
 
-A team-game whose minutes differ is a problem. In a sample of 3,000 team-games from five seasons
-the two agreed in all but 8, each off by 10 minutes: a misconduct in the boxscore that the
-play-by-play lacks. A misconduct does not leave a team short-handed.
+A team-game whose minutes differ is a problem. Over the 31,288 team-games of 2010-11 to 2021-22
+the two disagree in 20: 5 by 10 minutes (misconducts, two of them logged in a shootout and so
+left out of penalties), 11 with a minor more in the boxscore, 3 with one fewer, and 1 by 5.
 """
 
 from collections.abc import Collection

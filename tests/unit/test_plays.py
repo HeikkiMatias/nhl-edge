@@ -81,15 +81,20 @@ def test_bench_minor_served_by_a_player() -> None:
     assert (over_glass["committed_by"], over_glass["drawn_by"]) == (8468463, None)
 
 
-def test_penalty_naming_no_player() -> None:
-    penalties, _ = cut(2022020993)
-    coach = row(penalties, 1152)
-    assert (coach["team"], coach["type_code"], coach["duration_min"]) == ("SJS", "GAM", 0)
-    assert coach["committed_by"] is None and coach["drawn_by"] is None
-    assert coach["served_by"] is None
+def test_penalty_naming_no_one_who_took_it() -> None:
+    # NJD's head coach got a game misconduct at NYR: nobody took it or served it.
+    penalties, _ = cut(2012020671)
+    coach = row(penalties, 675)
+    assert (coach["team"], coach["is_home"], coach["type_code"]) == ("NJD", False, "GAM")
+    assert coach["duration_min"] == 0
+    assert coach["committed_by"] is None and coach["served_by"] is None
+    assert coach["drawn_by"] == 8470192
+    # Abuse of officials, a bench minor served by a player.
+    bench = row(penalties, 201)
+    assert (bench["type_code"], bench["committed_by"], bench["served_by"]) == ("BEN", None, 8471851)
 
 
-@pytest.mark.parametrize("game_id", [2010020001, 2013021096, 2022020993])
+@pytest.mark.parametrize("game_id", [2010020001, 2012020671, 2013021096])
 def test_faceoff_zone_from_the_home_side(game_id: int) -> None:
     game = TRIMMED_GAMES[game_id]
     _, faceoffs = cut(game_id)

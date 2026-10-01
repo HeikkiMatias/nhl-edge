@@ -570,8 +570,8 @@ PENALTY_TYPES = ("MIN", "MAJ", "MIS", "GAM", "MAT", "BEN", "PS")
 
 
 class Penalties(pa.DataFrameModel):
-    """One penalty in a game's play-by-play (#96), periods 1 to 4. The two shootout penalties in
-    2010-26 are not play and are left out.
+    """One penalty in a game's play-by-play (#96), periods 1 to 4. A penalty logged in the
+    shootout is not play and is left out: 2 in 2010-11 to 2021-22.
 
     seconds is elapsed game time, as in Shots. team is the penalized team, the play's
     eventOwnerTeamId. committed_by is the player penalized, drawn_by the player fouled and
@@ -624,8 +624,10 @@ class Faceoffs(pa.DataFrameModel):
     seconds is elapsed game time, as in Shots. winning_team is the play's eventOwnerTeamId, and
     home_won says whether it is the home team. zone is where the faceoff was, from the home
     team's side: the feed's zoneCode is from the winner's side, so it flips O and D when the away
-    team won. Checked on 2019-20 and 2023-24, where plays say which end the home team defends: in
-    a sample of 400 games, all 19,025 faceoffs away from center ice agree with their coordinates.
+    team won. Checked on every game of 2019-20 to 2021-22, where plays say which end the home team
+    defends: of 150,175 faceoffs away from center ice, the coordinates agree with the zone for all
+    but 101. All but one of those fill two whole games (2019020249, 2019020256) and a period of
+    2020020175, where the side or the coordinates are flipped throughout.
 
     observed_utc is 10:00 UTC the morning after game_date, as for Shots (ADR 0004).
     """

@@ -1,10 +1,12 @@
 """Penalties and faceoffs from a game's play-by-play (#96, docs/plan.md section 4).
 
 The player layer needs both (#12): each player's penalties taken and drawn give B3's expected
-power plays, and the faceoff that opens a stint gives RAPM its zone start. Every play-by-play
-cached since 2010-11 names the players: committedByPlayerId, drawnByPlayerId and
-servedByPlayerId on a penalty, winningPlayerId and losingPlayerId on a faceoff. Shootout plays
-are not play and are left out, as in Shots.
+power plays, and the faceoff that opens a stint gives RAPM its zone start. A penalty names the
+players in committedByPlayerId, drawnByPlayerId and servedByPlayerId, and a faceoff in
+winningPlayerId and losingPlayerId. Checked on every game of the open seasons, 2010-11 to
+2021-22: each of the 110,753 penalties in play has a team of the game and a time, 2,953 name no
+one who took it and 9,336 no one who drew it, and each of the 819,251 faceoffs names both players
+and a zone. Shootout plays are not play and are left out, as in Shots.
 
 A faceoff's zoneCode is from the side of the team it is logged under, its winner, as for every
 play but a blocked shot (ingest/shots.py). faceoffs keeps the home team's side.
