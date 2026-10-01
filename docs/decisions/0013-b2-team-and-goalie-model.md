@@ -29,14 +29,14 @@ For the training games' goalies:
 
 Option 1 for both, approved by the owner on 2026-10-01.
 
-**Inputs per game,** all read through `known_at` at the experiment's prediction time:
+**Inputs per game,** each row read only once known: its `observed_utc` strictly before the experiment's prediction time, as `known_at` reads.
 - ΔS from `team_strength`;
 - ΔG, the home goalie's `goals_saved` minus the away goalie's (`goalie_effects`);
 - h_s from `schedule_terms`, a fixed term, 0 at a neutral site;
 - ΔR from `schedule_terms`: a back-to-back flag for each team, the rest difference (home minus away), the travel difference per 1,000 km, and each team's time-zone change in absolute hours;
 - the empty-seat share, 1 minus `capacity_share`, at non-neutral games.
 
-**Fit,** per fold: a logistic regression with an L2 penalty on the inputs' weights, not on β0, with the inputs standardized on the training games. It is trained on every game from 2011-12 whose result was public before the fold starts, and whose features were known by then (the tuned seasons' rows from ADR 0011's cutoff). Training games use the goalies who started them. A starter with no `goalie_effects` row, because he was not among the candidates, counts as average (0). `train_cutoff` is the last result read.
+**Fit,** per fold: a logistic regression with an L2 penalty on the inputs' weights, not on β0, with the inputs standardized on the training games. It is trained on every game from 2011-12 whose result and boxscore were public before the fold starts, and whose feature rows were known by then (the tuned seasons' rows from ADR 0011's cutoff). Training games use the goalies who started them. A starter with no `goalie_effects` row known by then, because he was not among the candidates for example, counts as average (0). `train_cutoff` is the last moment any row the fit read became known, and at least B2's tuning cutoff. A fold starting before the latest tuning cutoff, B2's own or a feature table's, is refused.
 
 **Prediction:** the probability averaged over every pair of candidate starters, each pair weighted by the product of the two goalie-start probabilities. A team without candidates counts its goalie as average. A game's own starters are never read (hard rule 9).
 

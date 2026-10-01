@@ -25,7 +25,7 @@ The L2 strength is tuned on the training seasons (ADR 0011).
 """
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import cast
 
@@ -130,20 +130,28 @@ def candidates(tables: Tables) -> pl.DataFrame:
     )
 
 
-def starters_delta(tables: Tables) -> pl.DataFrame:
-    """Each game's ΔG with the goalies who started it, for training only, and when its
-    boxscore became public. A starter without a goalie_effects row counts as average."""
+def starters_delta(
+    tables: Tables, start: datetime | None = None, known: str = "observed_utc"
+) -> pl.DataFrame:
+    """Each game's ΔG with the goalies who started it, for training only, when its boxscore
+    became public (lineup_utc), and when the goalie rows it read became known (effects_utc). With
+    start, a goalie_effects row counts only if known before it by the column known. A starter
+    without a known row counts as average."""
     starters = team_goalie_games(tables.actual_lineups).select(
         "game_id", "team", goalie_id="starter", lineup_utc="observed_utc"
     )
+    effects = tables.goalie_effects
+    if start is not None:
+        effects = effects.filter(pl.col(known) < start)
     saved = starters.join(
-        tables.goalie_effects.select("game_id", "team", "goalie_id", "goals_saved"),
+        effects.select("game_id", "team", "goalie_id", "goals_saved", effect_utc=known),
         on=["game_id", "team", "goalie_id"],
         how="left",
     ).with_columns(pl.col("goals_saved").fill_null(0.0))
     sides = tables.games.select("game_id", "home", "away")
-    home = saved.select("game_id", home="team", home_saved="goals_saved", home_utc="lineup_utc")
-    away = saved.select("game_id", away="team", away_saved="goals_saved", away_utc="lineup_utc")
+    columns = {"goals_saved": "saved", "lineup_utc": "utc", "effect_utc": "effect"}
+    home = saved.select("game_id", home="team", **{f"home_{v}": k for k, v in columns.items()})
+    away = saved.select("game_id", away="team", **{f"away_{v}": k for k, v in columns.items()})
     return (
         sides.join(home, on=["game_id", "home"])
         .join(away, on=["game_id", "away"])
@@ -151,6 +159,7 @@ def starters_delta(tables: Tables) -> pl.DataFrame:
             "game_id",
             delta_g=pl.col("home_saved") - pl.col("away_saved"),
             lineup_utc=pl.max_horizontal("home_utc", "away_utc"),
+            effects_utc=pl.max_horizontal("home_effect", "away_effect"),
         )
     )
 
@@ -236,7 +245,8 @@ class B2Model:
 
 def fit(train: pl.DataFrame, settings: Settings, season: int) -> B2Model:
     """B2 fitted on train: one row per game with INPUTS (delta_g from its starters), offset,
-    home_win and result_utc."""
+    home_win and known_utc, the last moment its rows became known. train_cutoff is the latest of
+    those."""
     if train.height == 0 or train["home_win"].n_unique() < 2:
         raise ValueError(f"no earlier games to fit B2 on for {season}")
     raw = train.select(INPUTS).to_numpy().astype(float)
@@ -250,7 +260,7 @@ def fit(train: pl.DataFrame, settings: Settings, season: int) -> B2Model:
     if not result.success:
         raise ValueError(f"B2's fit for {season} did not converge: {result.message}")
     beta = cast(NDArray[np.float64], result.x)
-    cutoff = train["result_utc"].max()
+    cutoff = train["known_utc"].max()
     assert isinstance(cutoff, datetime)
     return B2Model(
         season=season,
@@ -280,8 +290,12 @@ def training_games(
         inputs.drop("delta_g", strict=False)
         .filter(pl.col("season").is_between(FIRST_SEASON, season - 1), pl.col(known) < start)
         .join(results, on="game_id")
-        .join(starters_delta(tables), on="game_id")
+        .join(starters_delta(tables, start, known), on="game_id")
         .filter(pl.col("result_utc") < start, pl.col("lineup_utc") < start)
+        .with_columns(
+            # The last moment any row this game gave the fit became known.
+            known_utc=pl.max_horizontal("result_utc", "lineup_utc", known, "effects_utc")
+        )
         .sort("game_id")
     )
 
@@ -301,6 +315,18 @@ def known_before(
     return usable, ready
 
 
+def tuning_cutoff(tables: Tables) -> datetime:
+    """The latest tuning cutoff behind B2: its own, and each feature table's train_cutoff."""
+    cutoffs = [TUNED_CUTOFF]
+    for name in ("team_strength", "schedule_terms", "goalie_effects"):
+        table = getattr(tables, name)
+        if "train_cutoff" in table.columns and table.height:
+            latest = table["train_cutoff"].max()
+            assert isinstance(latest, datetime)
+            cutoffs.append(latest)
+    return max(cutoffs)
+
+
 def predictions(
     tables: Tables,
     moments: pl.DataFrame,
@@ -313,14 +339,20 @@ def predictions(
     games before start, with its train_cutoff, and the fit.
 
     In the backtest (known observed_utc), a fold starting before the tuning cutoff is refused: its
-    features were tuned on its own season's results (ADR 0011)."""
-    if known == "observed_utc" and start <= TUNED_CUTOFF:
-        raise ValueError(
-            f"{season}'s fold starts at {start:%Y-%m-%d}, before the tuning cutoff "
-            f"{TUNED_CUTOFF:%Y-%m-%d}: its features are in-sample (ADR 0011)"
-        )
+    features, or B2's own L2 setting, were tuned on its own season's results (ADR 0011). The
+    cutoff is B2's own and the latest train_cutoff of the feature tables, so a retuned table moves
+    it. The fit's train_cutoff is then at least B2's tuning cutoff."""
+    if known == "observed_utc":
+        cutoff = tuning_cutoff(tables)
+        if start <= cutoff:
+            raise ValueError(
+                f"{season}'s fold starts at {start:%Y-%m-%d}, before the tuning cutoff "
+                f"{cutoff:%Y-%m-%d}: its features are in-sample (ADR 0011)"
+            )
     inputs = game_inputs(tables)
     model = fit(training_games(tables, inputs, season, start, known), settings, season)
+    if known == "observed_utc":
+        model = replace(model, train_cutoff=max(model.train_cutoff, TUNED_CUTOFF))
     usable, ready = known_before(
         inputs.filter(pl.col("season") == season), candidates(tables), moments, known
     )
