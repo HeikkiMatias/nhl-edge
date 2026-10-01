@@ -24,6 +24,7 @@ COMMANDS = [
     "team-strength",
     "goalie-start",
     "goalie-effect",
+    "schedule-terms",
     "bets",
     "odds",
     "lake",
@@ -705,6 +706,71 @@ def test_goalie_effect_refuses_a_game_without_goalie_starts(
     result = runner.invoke(app, ["goalie-effect"])
     assert result.exit_code == 1
     assert "1 games without goalie starts" in plain(result.output)
+
+
+def schedule_lake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    from schedule_fixtures import league
+
+    from nhl_edge.ingest import games as games_module
+    from nhl_edge.lake.tables import Lake
+
+    frames: dict[str, Any] = league()
+    counts = dict(frames["games"].group_by("season").len().iter_rows())
+    monkeypatch.setattr(games_module, "EXPECTED_GAMES", counts)
+    monkeypatch.setattr(Lake, "read", lambda self, table: frames[table])
+    return frames
+
+
+def test_schedule_terms_rates_every_game_with_the_frozen_setting(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+
+    from nhl_edge.features import schedule_terms as st
+
+    frames = schedule_lake(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["schedule-terms"])
+    assert result.exit_code == 0, result.output
+    rated = frames["schedule"].filter(pl.col("season") >= st.FIRST_SEASON).height
+    assert f"schedule_terms: {rated:,} games rated with {st.TUNED.label}" in result.output
+    assert list((tmp_path / "data" / "lake" / "schedule_terms").rglob("*.parquet"))
+
+
+def test_schedule_terms_tune_logs_every_candidate(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nhl_edge.features import schedule_terms as st
+
+    schedule_lake(monkeypatch)
+    monkeypatch.setattr(st, "TUNING_SEASONS", (20122013,))
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["schedule-terms", "--tune"])
+    assert result.exit_code == 0, result.output
+    assert "chose prior" in result.output and "the frozen TUNED" in result.output
+    (report,) = (tmp_path / "reports" / "tuning").glob("schedule-terms-*.md")
+    text = report.read_text()
+    assert text.count("| prior ") == 6 and "(chosen)" in text
+    assert not (tmp_path / "data").exists()
+
+
+def test_schedule_terms_refuses_a_game_without_an_arena(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+
+    frames = schedule_lake(monkeypatch)
+    schedule = frames["schedule"]
+    first = schedule.filter(pl.col("season") == 20112012)["game_id"][0]
+    frames["schedule"] = schedule.with_columns(
+        venue=pl.when(pl.col("game_id") == first)
+        .then(pl.lit("Nowhere Arena"))
+        .otherwise(pl.col("venue"))
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["schedule-terms"])
+    assert result.exit_code == 1
+    assert "1 games without an arena" in plain(result.output)
 
 
 def test_goalie_start_refuses_a_lake_with_a_team_game_without_a_starter(

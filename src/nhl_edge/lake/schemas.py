@@ -639,6 +639,57 @@ class TeamStrength(pa.DataFrameModel):
         return data.lazyframe.select((pl.col("delta_s") - parts).abs() < 1e-9)
 
 
+class ScheduleTerms(pa.DataFrameModel):
+    """One game's schedule terms and season home edge (#77, ADR 0011), as of as_of_utc: 10:00 US
+    Eastern on its date, or an hour before the start if that is earlier.
+
+    Per side: rest_days since the team's last game this season (capped at 4; a season's first
+    game takes the cap), back_to_back, travel_km from the arena of that game (or the team's home
+    arena) to tonight's, and tz_shift, the change in UTC offset in hours (positive going east).
+    capacity_share is the share of seats open to spectators as announced by then.
+
+    home_win_rate is the season's home win rate in its non-neutral games public by then
+    (season_games of them), pulled toward the three seasons before with a weight worth
+    prior_games games, and h_s its log-odds. train_cutoff is the last result the tuning run that
+    chose prior_games read, and observed_utc the later of the two (ADR 0011)."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    neutral_site: pl.Boolean
+    capacity_share: pl.Float64 = pa.Field(ge=0, le=1)
+    home_rest_days: pl.Int8 = pa.Field(ge=0, le=4)
+    away_rest_days: pl.Int8 = pa.Field(ge=0, le=4)
+    home_back_to_back: pl.Boolean
+    away_back_to_back: pl.Boolean
+    home_travel_km: pl.Float64 = pa.Field(ge=0)
+    away_travel_km: pl.Float64 = pa.Field(ge=0)
+    home_tz_shift: pl.Float64 = pa.Field(ge=-12, le=12)
+    away_tz_shift: pl.Float64 = pa.Field(ge=-12, le=12)
+    home_win_rate: pl.Float64 = pa.Field(gt=0, lt=1)
+    h_s: pl.Float64
+    season_games: pl.Int32 = pa.Field(ge=0)
+    prior_games: pl.Float64 = pa.Field(gt=0)
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^schedule-terms-\d{8}-")
+    as_of_utc: UtcDatetime
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def known_no_earlier_than_its_cutoffs(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        observed = pl.col("observed_utc")
+        return data.lazyframe.select(
+            (observed >= pl.col("as_of_utc")) & (observed >= pl.col("train_cutoff"))
+        )
+
+
 class GoalieEffects(pa.DataFrameModel):
     """A candidate goalie's effect before a team-game (#75, ADR 0011), one row per goalie_starts
     candidate. effect is his goals saved above expected per unblocked shot, decayed by his own
