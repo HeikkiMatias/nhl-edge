@@ -517,6 +517,92 @@ def goalie_effect(
     )
 
 
+@app.command("schedule-terms")
+def schedule_terms(
+    seasons: Annotated[
+        str | None,
+        typer.Option(
+            help="Seasons to rate, as 20232024, a comma list or a range. Default: 2011-12 on."
+        ),
+    ] = None,
+    tune: Annotated[
+        bool,
+        typer.Option(
+            "--tune", help="Run the tuning grid on the training seasons and log it; write no table."
+        ),
+    ] = False,
+    out: Annotated[Path, typer.Option(help="Tuning report directory.")] = DEFAULT_TUNING_OUT,
+    r2: Annotated[
+        bool, typer.Option("--r2", help="Mirror the schedule_terms table to R2.")
+    ] = False,
+) -> None:
+    """Rate every game's rest, travel, open seats and season home edge with the frozen setting
+    (#77, ADR 0011) into the lake's schedule_terms. With --tune, score the home edge's candidate
+    pulls on the training seasons instead and write the log to <out>/schedule-terms-<version>.md."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports, tuning
+    from nhl_edge.features import schedule_terms as st
+    from nhl_edge.ingest.games import EXPECTED_GAMES
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    schedule, games = lake.read("schedule"), lake.read("games")
+    known = sorted(schedule["season"].unique().to_list())
+    try:
+        wanted = parse_seasons(seasons) if seasons else [s for s in known if s >= st.FIRST_SEASON]
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    early = [season for season in wanted if season < st.FIRST_SEASON]
+    if early and not tune:
+        raise typer.BadParameter(
+            f"{early} have no earlier season for the home edge: it starts with {st.FIRST_SEASON}",
+            param_hint="--seasons",
+        )
+    last = max(st.TUNING_SEASONS) if tune else max(wanted)
+    problems = st.input_problems(schedule, games, last, EXPECTED_GAMES)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl ingest --replay, or fix the reference files", err=True)
+        raise typer.Exit(code=1)
+    version = reports.version(st.COMPONENT, datetime.now(UTC))
+    if tune:
+        rated_seasons = [s for s in known if st.FIRST_SEASON <= s <= last]
+        candidates = [
+            tuning.Candidate(
+                settings,
+                settings.label,
+                tuning.scored_games(
+                    st.tuning_feature(st.terms(schedule, games, settings, rated_seasons)),
+                    games,
+                    st.TUNING_SEASONS,
+                ),
+            )
+            for settings in st.GRID
+        ]
+        choice = tuning.choose(candidates, st.steadiness)
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"{version}.md"
+        path.write_text(tuning.markdown(choice, "season home edge", version, st.TUNING_SEASONS))
+        frozen = "matches" if choice.chosen == st.TUNED else "differs from"
+        typer.echo(f"{path}: chose {choice.chosen.label}, which {frozen} the frozen TUNED")
+        return
+    try:
+        if schedule.filter(pl.col("season").is_in(wanted)).is_empty():
+            raise ValueError(f"no games of {wanted} in the schedule")
+        frame = st.rows(st.terms(schedule, games, st.TUNED, wanted), st.TUNED, version)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    lake.replace_dates("schedule_terms", frame, frame["game_date"].unique().to_list())
+    typer.echo(f"schedule_terms: {frame.height:,} games rated with {st.TUNED.label} ({version})")
+
+
 @app.command("goalie-start")
 def goalie_start(
     seasons: Annotated[
