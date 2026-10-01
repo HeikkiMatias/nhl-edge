@@ -562,9 +562,12 @@ def team_lake(monkeypatch: pytest.MonkeyPatch, drop_xg: bool = False) -> dict[st
     import polars as pl
     from team_fixtures import league
 
+    from nhl_edge.ingest import games as games_module
     from nhl_edge.lake.tables import Lake
 
     frames: dict[str, Any] = league()
+    counts = dict(frames["games"].group_by("season").len().iter_rows())
+    monkeypatch.setattr(games_module, "EXPECTED_GAMES", counts)
     if drop_xg:
         first = frames["games"]["game_id"][0]
         frames["shot_xg"] = frames["shot_xg"].filter(pl.col("game_id") != first)

@@ -9,9 +9,11 @@ import polars as pl
 from team_fixtures import league
 
 from nhl_edge.backtest import tuning
+from nhl_edge.backtest.market import PREDICTION_LAG
 from nhl_edge.backtest.seasons import SeasonRole, season_role
 from nhl_edge.features import team_strength as ts
 from nhl_edge.ingest.sbr import open_assumed_utc
+from nhl_edge.lake.tables import known_at as lake_known_at
 
 LEAGUE = league()
 SETTINGS = ts.Settings(half_life=20, prior_games=10)
@@ -76,17 +78,17 @@ def test_a_game_public_only_after_ten_eastern_is_not_read() -> None:
     )
 
 
-def test_every_rating_is_public_before_its_game_starts() -> None:
+def test_every_rating_is_as_of_a_moment_before_its_game_starts() -> None:
     history = ts.team_games(LEAGUE["shots"], LEAGUE["shot_xg"], LEAGUE["strength_time"])
     frame = ts.rows(LEAGUE["games"], history, ts.TUNED, "team-strength-20261001-abc1234")
     starts = LEAGUE["games"].select("game_id", "start_utc")
     joined = frame.join(starts, on="game_id")
-    assert (joined["observed_utc"] <= joined["start_utc"]).all()
-    # Every team-game a rating read was public before it: the history counts match.
+    assert (joined["as_of_utc"] < joined["start_utc"]).all()
+    # Every team-game a rating read was public before its as-of time: the history counts match.
     public = history.select("team", "observed_utc")
     for row in joined.sample(20, seed=1).iter_rows(named=True):
         seen = public.filter(
-            pl.col("team") == row["home"], pl.col("observed_utc") < row["observed_utc"]
+            pl.col("team") == row["home"], pl.col("observed_utc") < row["as_of_utc"]
         ).height
         assert row["home_history"] == seen
 
@@ -110,17 +112,25 @@ def test_tuning_reads_the_training_seasons_only() -> None:
     assert max(ts.TUNING_SEASONS) == 20172018
 
 
-def test_every_rating_is_public_before_e2_and_e1_predict() -> None:
+def test_every_rating_is_known_before_e2_and_e1_predict_after_the_cutoff() -> None:
     history = ts.team_games(LEAGUE["shots"], LEAGUE["shot_xg"], LEAGUE["strength_time"])
     frame = ts.rows(LEAGUE["games"], history, ts.TUNED, "team-strength-20261001-abc1234")
-    for row in frame.join(LEAGUE["games"].select("game_id", "start_utc"), on="game_id").iter_rows(
-        named=True
-    ):
-        # E2 predicts at 10:00 ET or later, and E1 at the start.
-        e2 = open_assumed_utc(
-            row["game_date"], row["start_utc"], row["start_utc"] - timedelta(days=30)
-        )
-        assert row["observed_utc"] <= e2 <= row["start_utc"]
+    games = LEAGUE["games"].select("game_id", "start_utc")
+    for row in frame.join(games, on="game_id").iter_rows(named=True):
+        # E2 predicts just after 10:00 ET (or its schedule time), and E1 at the start: the
+        # rating's as-of time is strictly before both (Codex on #86).
+        public = row["start_utc"] - timedelta(days=30)
+        e2 = open_assumed_utc(row["game_date"], row["start_utc"], public) + PREDICTION_LAG
+        assert row["as_of_utc"] < min(e2, row["start_utc"])
+        # These seasons were tuned on, so the rating counts as known only from the cutoff: no
+        # fold starting before it can read one (Codex on #86).
+        assert row["observed_utc"] == max(row["as_of_utc"], ts.TUNED_CUTOFF)
+    tuned_on = frame.filter(pl.col("as_of_utc") < ts.TUNED_CUTOFF)
+    assert lake_known_at(tuned_on, ts.TUNED_CUTOFF).is_empty()
+    assert (
+        lake_known_at(tuned_on, ts.TUNED_CUTOFF + timedelta(microseconds=1)).height
+        == tuned_on.height
+    )
 
 
 def test_a_team_game_public_exactly_at_the_cutoff_is_not_read() -> None:

@@ -58,7 +58,20 @@ def league(seed: int = 3) -> dict[str, pl.DataFrame]:
                                 "observed_utc": public,
                             }
                         )
-                    for skaters, count in (((5, 5), 25), ((5, 4), 4), ((6, 5), 2)):
+                    is_home = team == home
+                    # (skaters for, against, the shooting team's goalie in, shots). The last row is
+                    # 5 on 5 with the shooting team's goalie pulled, which team strength leaves out.
+                    for for_, against, goalie_in, count in (
+                        (5, 5, True, 25),
+                        (5, 4, True, 4),
+                        (6, 5, False, 2),
+                        (5, 5, False, 1),
+                    ):
+                        own = "1" if goalie_in else "0"
+                        side = (for_, against) if is_home else (against, for_)
+                        code = (
+                            f"1{side[1]}{side[0]}{own}" if is_home else f"{own}{side[1]}{side[0]}1"
+                        )
                         for _ in range(count):
                             event += 1
                             shots.append(
@@ -66,11 +79,15 @@ def league(seed: int = 3) -> dict[str, pl.DataFrame]:
                                     "game_id": game_id,
                                     "event_id": event,
                                     "team": team,
-                                    "skaters_for": skaters[0],
-                                    "skaters_against": skaters[1],
+                                    "is_home": is_home,
+                                    "skaters_for": for_,
+                                    "skaters_against": against,
+                                    "situation_code": code,
                                 }
                             )
-                            quality = QUALITY[team] * (1.5 if skaters == (5, 4) else 1.0)
+                            quality = QUALITY[team] * (1.5 if (for_, against) == (5, 4) else 1.0)
+                            if not goalie_in:
+                                quality = 0.5
                             xg.append(
                                 {
                                     "game_id": game_id,

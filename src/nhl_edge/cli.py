@@ -363,6 +363,7 @@ def team_strength(
 
     from nhl_edge.backtest import reports, tuning
     from nhl_edge.features import team_strength as ts
+    from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
@@ -377,7 +378,7 @@ def team_strength(
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
     last = max(ts.TUNING_SEASONS) if tune else max(wanted)
     shot_xg, strength_time = lake.read("shot_xg"), lake.read("strength_time")
-    problems = ts.input_problems(games, shot_xg, strength_time, last)
+    problems = ts.input_problems(games, shot_xg, strength_time, last, EXPECTED_GAMES)
     if problems:
         for problem in problems:
             typer.echo(problem, err=True)

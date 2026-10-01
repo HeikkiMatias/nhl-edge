@@ -22,18 +22,22 @@ def test_team_games_split_xg_and_minutes_by_state() -> None:
     home = rows.filter(pl.col("team") == game["home"]).row(0, named=True)
     away = rows.filter(pl.col("team") == game["away"]).row(0, named=True)
     xg = LEAGUE["shot_xg"].join(LEAGUE["shots"], on=["game_id", "event_id"])
-    xg = xg.filter(pl.col("game_id") == game["game_id"])
+    xg = xg.filter(pl.col("game_id") == game["game_id"]).with_columns(goalie_in=ts.own_goalie_in())
 
-    def total(team: str, skaters: tuple[int, int]) -> float:
+    def total(team: str, skaters: tuple[int, int], goalie_in: bool = True) -> float:
         rows_ = xg.filter(
             pl.col("team") == team,
             pl.col("skaters_for") == skaters[0],
             pl.col("skaters_against") == skaters[1],
+            pl.col("goalie_in") == goalie_in,
         )
         return float(rows_["xg"].sum())
 
     assert home["xgf_5v5"] == pytest.approx(total(game["home"], (5, 5)))
     assert home["xga_5v5"] == pytest.approx(total(game["away"], (5, 5)))
+    # A 5-on-5 shot with the shooting team's own goalie pulled counts for neither side (Codex on
+    # #86): the minutes count only with both nets manned.
+    assert total(game["home"], (5, 5), goalie_in=False) > 0
     # Power-play xG counts for the team on the advantage and against the other's penalty kill;
     # 6v5 shots, with the shooting team's goalie pulled, count for neither.
     assert home["xgf_pp"] == pytest.approx(total(game["home"], (5, 4)))
@@ -109,11 +113,11 @@ def test_decay_by_games_played() -> None:
             datetime(2026, 12, 16, 0, tzinfo=UTC),
             datetime(2026, 12, 15, 15, tzinfo=UTC),
         ),
-        # A game starting before 10:00 ET is rated as of its start.
+        # A game starting before 10:00 ET is rated an hour before its start (Codex on #86).
         (
             date(2026, 10, 15),
             datetime(2026, 10, 15, 13, tzinfo=UTC),
-            datetime(2026, 10, 15, 13, tzinfo=UTC),
+            datetime(2026, 10, 15, 12, tzinfo=UTC),
         ),
     ],
 )
@@ -130,17 +134,80 @@ def test_rows_validate_and_carry_the_settings() -> None:
     frame = ts.rows(LEAGUE["games"], HISTORY, ts.TUNED, "team-strength-20261001-abc1234")
     TeamStrength.validate(frame)
     assert set(frame["half_life"]) == {80.0} and set(frame["prior_games"]) == {40.0}
-    assert (frame["observed_utc"] <= LEAGUE["games"].sort("game_id")["start_utc"]).all()
+    assert (frame["as_of_utc"] < LEAGUE["games"].sort("game_id")["start_utc"]).all()
+    # These seasons were tuned on: their ratings count as known only from the tuning cutoff.
+    assert set(frame["observed_utc"]) == {ts.TUNED_CUTOFF}
 
 
 def test_input_problems_name_games_without_xg_or_strength_time() -> None:
     games, shot_xg, time_on = LEAGUE["games"], LEAGUE["shot_xg"], LEAGUE["strength_time"]
-    assert ts.input_problems(games, shot_xg, time_on, 20122013) == []
+    expected = dict(games.group_by("season").len().iter_rows())
+    assert ts.input_problems(games, shot_xg, time_on, 20122013, expected) == []
     first = games["game_id"][0]
     problems = ts.input_problems(
-        games, shot_xg.filter(pl.col("game_id") != first), time_on, 20122013
+        games, shot_xg.filter(pl.col("game_id") != first), time_on, 20122013, expected
     )
     assert problems == [f"20112012: 1 games without xG, e.g. {first}"]
+
+
+def test_a_season_short_of_its_games_is_a_problem() -> None:
+    # Codex on #86: a game missing from games entirely is caught by the season's count.
+    games = LEAGUE["games"]
+    expected = dict(games.group_by("season").len().iter_rows())
+    short = games.filter(pl.col("game_id") != games["game_id"][0])
+    problems = ts.input_problems(
+        short, LEAGUE["shot_xg"], LEAGUE["strength_time"], 20122013, expected
+    )
+    assert problems == [f"20112012: {expected[20112012] - 1:,} of {expected[20112012]:,} games"]
+
+
+def test_a_team_without_special_teams_history_keeps_its_5v5_part() -> None:
+    # Codex on #86: with no pull toward the league, a team with games but no power-play or
+    # penalty-kill minutes has no special-teams rate; its 5v5 part still counts.
+    no_special = HISTORY.with_columns(
+        pl.when(pl.col("team") == "BOS").then(0.0).otherwise(pl.col(c)).alias(c)
+        for c in ("xgf_pp", "xga_pk", "min_pp", "min_pk")
+    )
+    later = LEAGUE["games"].filter(
+        pl.col("season") == 20122013, (pl.col("home") == "BOS") | (pl.col("away") == "BOS")
+    )
+    frame = ts.strength(later, no_special, ts.Settings(half_life=20, prior_games=0))
+    assert (frame["delta_5v5"].abs() > 0).all()
+    assert (frame["delta_s"] == frame["delta_5v5"] + frame["delta_special_teams"]).all()
+
+
+def test_a_renamed_team_keeps_its_history() -> None:
+    # Codex on #86: TOR plays the second season as XYZ. Linked as one line, its ratings read its
+    # first season; unlinked, it starts from nothing.
+    renamed = {
+        name: frame.with_columns(
+            pl.when((pl.col(col) == "TOR") & (pl.col("season") == 20122013))
+            .then(pl.lit("XYZ"))
+            .otherwise(pl.col(col))
+            .alias(col)
+            for col in cols
+        )
+        for name, frame, cols in (
+            ("games", LEAGUE["games"], ("home", "away")),
+            ("strength_time", LEAGUE["strength_time"], ("team",)),
+        )
+    }
+    shots = (
+        LEAGUE["shots"]
+        .join(LEAGUE["games"].select("game_id", "season"), on="game_id")
+        .with_columns(
+            team=pl.when((pl.col("team") == "TOR") & (pl.col("season") == 20122013))
+            .then(pl.lit("XYZ"))
+            .otherwise(pl.col("team"))
+        )
+    )
+    history = ts.team_games(shots, LEAGUE["shot_xg"], renamed["strength_time"])
+    games = renamed["games"].filter(pl.col("season") == 20122013, pl.col("home") == "XYZ").head(3)
+    lines = {team: team for team in ("BOS", "BUF", "DET", "FLA", "MTL", "TOR")}
+    linked = ts.strength(games, history, SETTINGS, {**lines, "XYZ": "TOR"})
+    unlinked = ts.strength(games, history, SETTINGS, lines)
+    assert (linked["home_history"] > unlinked["home_history"] + 30).all()
+    assert (linked["delta_s"] < 0).all()  # TOR, the weakest team, is rated as such at once
 
 
 def test_the_grid_and_its_steadiness_order() -> None:
