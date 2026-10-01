@@ -210,7 +210,7 @@ def test_the_walk_forward_scores_b2_beside_b1() -> None:
         predictions, coverage, b1_fits, [TEST], "backtest-x", datetime.now(UTC)
     )
     report = b2_report.add(
-        report, predictions, fits, games, tables.goalie_starts, tables.actual_lineups, [TEST]
+        report, predictions, fits, games, tables.goalie_starts, tables.actual_lineups
     )
     model = report["experiments"]["E1"]["models"]["B2"]
     assert set(model) >= {
@@ -226,7 +226,10 @@ def test_the_walk_forward_scores_b2_beside_b1() -> None:
     listed = b2_report.gap_rows(predictions.filter(pl.col("experiment") == "E1"), games)
     assert gaps["games_compared"] == 40 and gaps["count"] == listed.height
     assert (listed["gap"].abs() > 0.08).all() and "home_win" not in listed.columns
-    quality = report["lineup_quality"]["goalie_starts"]
+    quality = model["lineup_quality"]["goalie_starts"]
+    assert quality["pooled"]["brier"]["games"] == 2 * model["gaps_over_8_points"]["games_compared"]
+    # The fold's cutoff covers B2's fit as well as B1's.
+    assert report["train_cutoff"][str(TEST)] >= model["fits"][str(TEST)]["train_cutoff"]
     # Two candidates at 0.7 and 0.3: the Brier score is 2 * 0.3 ** 2 when A starts, 2 * 0.7 ** 2
     # when B does.
     expected = P_A * 2 * 0.3**2 + (1 - P_A) * 2 * 0.7**2

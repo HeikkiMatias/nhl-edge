@@ -281,7 +281,6 @@ def backtest(
         games,
         tables.goalie_starts,
         tables.actual_lineups,
-        wanted,
     )
     report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
     report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}

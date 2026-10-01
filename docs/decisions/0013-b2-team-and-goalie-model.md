@@ -56,6 +56,7 @@ None yet. #78's run of `nhl backtest` on the development seasons gives B2 agains
 
 ## Consequences
 
+- **Hard rule 9 governs predictions.** A training game's starter only teaches B2 what a known goalie is worth. Its boxscore was public before the fold, and no game's own lineup feeds its own prediction. Codex read the rule as covering training games too (P0 on #90). The owner kept this design on 2026-10-01, since switching would also change B2 after its development-season results were seen.
 - B2's goalie weight is learned from known starters, while its predictions carry the start uncertainty through the mixture. A confirmed starter (the live polls, #42) would replace the mixture by a single pair, with no refit.
 - h_s enters at full weight, so a season's home edge cannot be discounted by the fit. The empty-seat input and β0 can still correct it.
 - The training seasons' features are in-sample for their tuned settings (ADR 0011). B2 may train on them, but no B2 result on 2011-12 to 2017-18 counts as out-of-sample.

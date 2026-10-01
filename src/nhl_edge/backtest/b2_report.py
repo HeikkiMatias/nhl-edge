@@ -6,12 +6,12 @@ against B1, which reports.experiment gives every model:
 - how many games differ from B1 by more than GAP (hard rule 8), and the games themselves in
   gaps.csv for manual review, without their results, so the review looks at the inputs, not at
   who won;
-- lineup quality: the goalie-start model's Brier score over the test seasons' team-games.
+- lineup quality: the goalie-start model's Brier score over the team-games of the games B2
+  scored in the experiment.
 
 Intervals are weekly block bootstrap (hard rule 7).
 """
 
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -112,13 +112,14 @@ def write_gaps(predictions: pl.DataFrame, games: pl.DataFrame, out: Path) -> Pat
 
 
 def lineup_quality(
-    goalie_starts: pl.DataFrame, lineups: pl.DataFrame, seasons: Sequence[int]
+    goalie_starts: pl.DataFrame, lineups: pl.DataFrame, scored: pl.Series
 ) -> dict[str, Any]:
-    """The goalie-start model's Brier score per team-game with a flagged starter in the seasons,
-    a starter who was not a candidate counting at probability 0, and the share of such starters."""
+    """The goalie-start model's Brier score per team-game with a flagged starter, over the scored
+    games, a starter who was not a candidate counting at probability 0, and the share of such
+    starters."""
     starters = (
         team_goalie_games(lineups)
-        .filter(pl.col("season").is_in(list(seasons)), pl.col("starter").is_not_null())
+        .filter(pl.col("game_id").is_in(scored.implode()), pl.col("starter").is_not_null())
         .select("game_id", "season", "game_date", "team", "starter")
     )
     rows = goalie_starts.join(starters.select("game_id", "team", "starter"), on=["game_id", "team"])
@@ -154,17 +155,28 @@ def add(
     games: pl.DataFrame,
     goalie_starts: pl.DataFrame,
     lineups: pl.DataFrame,
-    seasons: Sequence[int],
 ) -> dict[str, Any]:
-    """The report with B2's fits, calibration and gaps under each experiment's B2, and lineup
-    quality."""
+    """The report with B2's fits, calibration, gaps and lineup quality under each experiment's
+    B2, the lineup quality over the games B2 scored there, and each season's train_cutoff raised
+    to B2's fits where they read a later row than B1's (Codex on #90)."""
     for experiment, body in report["experiments"].items():
         results = body["models"].get(MODEL)
         if results is None:
             continue
         rows = predictions.filter(pl.col("experiment") == experiment)
+        scored = rows.filter(pl.col("model") == MODEL)
         results["fits"] = fit_rows(fits.get(experiment, {}))
-        results["calibration"] = calibrated(rows.filter(pl.col("model") == MODEL))
+        results["calibration"] = calibrated(scored)
         results["gaps_over_8_points"] = gaps(rows, games)
-    report["lineup_quality"] = {"goalie_starts": lineup_quality(goalie_starts, lineups, seasons)}
+        results["lineup_quality"] = {
+            "goalie_starts": lineup_quality(goalie_starts, lineups, scored["game_id"])
+        }
+    for season, cutoff in report["train_cutoff"].items():
+        later = [
+            model.train_cutoff.isoformat()
+            for by_season in fits.values()
+            for fitted, model in by_season.items()
+            if str(fitted) == season
+        ]
+        report["train_cutoff"][season] = max([cutoff, *later])
     return report

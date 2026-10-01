@@ -381,7 +381,7 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert e2["b2_trained_on"] == 20 * len([s for s in earlier if s >= b2.FIRST_SEASON])
     assert "gaps_over_8_points" in summary["experiments"]["E1"]["models"]["B2"]
     assert (tmp_path / "out" / "gaps.csv").exists()
-    assert "goalie_starts" in summary["lineup_quality"]
+    assert "goalie_starts" in summary["experiments"]["E2"]["models"]["B2"]["lineup_quality"]
 
 
 def test_a_market_below_100_percent_is_counted_and_left_out() -> None:
