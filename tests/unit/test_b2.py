@@ -223,8 +223,9 @@ def test_the_walk_forward_scores_b2_beside_b1() -> None:
     assert model["fits"][str(TEST)]["l2"] == b2.TUNED.l2
     assert set(model["calibration"]["pooled"]) == {"intercept", "slope"}
     gaps = model["gaps_over_8_points"]
-    assert gaps["games_compared"] == 40 and gaps["count"] == len(gaps["games"])
-    assert all(abs(g["gap"]) > 0.08 and "home_win" not in g for g in gaps["games"])
+    listed = b2_report.gap_rows(predictions.filter(pl.col("experiment") == "E1"), games)
+    assert gaps["games_compared"] == 40 and gaps["count"] == listed.height
+    assert (listed["gap"].abs() > 0.08).all() and "home_win" not in listed.columns
     quality = report["lineup_quality"]["goalie_starts"]
     # Two candidates at 0.7 and 0.3: the Brier score is 2 * 0.3 ** 2 when A starts, 2 * 0.7 ** 2
     # when B does.

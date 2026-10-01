@@ -3,14 +3,16 @@ against B1, which reports.experiment gives every model:
 - its fits, one per experiment and season, with their weights and train_cutoff;
 - its calibration intercept and slope: a logistic regression of the outcome on the log-odds of
   B2's probability, where 0 and 1 mean calibrated;
-- the games where it differs from B1 by more than GAP (hard rule 8), listed for manual review
-  without their results, so the review looks at the inputs, not at who won;
+- how many games differ from B1 by more than GAP (hard rule 8), and the games themselves in
+  gaps.csv for manual review, without their results, so the review looks at the inputs, not at
+  who won;
 - lineup quality: the goalie-start model's Brier score over the test seasons' team-games.
 
 Intervals are weekly block bootstrap (hard rule 7).
 """
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -23,6 +25,7 @@ from nhl_edge.lineup.goalie_start import team_goalie_games
 MODEL = "B2"
 BASELINE = "B1"
 GAP = 0.08
+GAPS_FILE = "gaps.csv"
 
 
 def fit_rows(fits: dict[int, B2Model]) -> dict[str, Any]:
@@ -56,42 +59,56 @@ def calibrated(rows: pl.DataFrame) -> dict[str, Any]:
     }
 
 
-def gaps(rows: pl.DataFrame, games: pl.DataFrame) -> dict[str, Any]:
-    """The games where B2's probability differs from B1's by more than GAP, with both and the
-    teams, but not the result."""
+def gap_rows(rows: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
+    """The games of one experiment where B2's probability differs from B1's by more than GAP,
+    with both and the teams, but not the result."""
     keys = ["season", "game_id", "game_date"]
     both = (
         rows.filter(pl.col("model") == MODEL)
         .select(*keys, p_b2="p_home")
         .join(
-            rows.filter(pl.col("model") == BASELINE).select("game_id", p_b1="p_home"), on="game_id"
+            rows.filter(pl.col("model") == BASELINE).select("game_id", p_b1="p_home"),
+            on="game_id",
         )
         .with_columns(gap=pl.col("p_b2") - pl.col("p_b1"))
     )
-    flagged = (
+    return (
         both.filter(pl.col("gap").abs() > GAP)
         .join(games.select("game_id", "home", "away"), on="game_id")
+        .select("season", "game_id", "game_date", "home", "away", "p_b2", "p_b1", "gap")
         .sort("game_date", "game_id")
     )
+
+
+def gaps(rows: pl.DataFrame, games: pl.DataFrame) -> dict[str, Any]:
+    """How many games B2 and B1 both scored, and how many differ by more than GAP, per season.
+    The games themselves go to gaps.csv (write_gaps)."""
+    compared = rows.filter(pl.col("model") == MODEL).join(
+        rows.filter(pl.col("model") == BASELINE).select("game_id"), on="game_id"
+    )
+    flagged = gap_rows(rows, games)
     counts = dict(flagged.group_by("season").len().iter_rows())
+    seasons = sorted(compared["season"].unique().to_list())
     return {
         "threshold": GAP,
-        "games_compared": both.height,
+        "games_compared": compared.height,
         "count": flagged.height,
-        "per_season": {str(s): counts.get(s, 0) for s in sorted(both["season"].unique().to_list())},
-        "games": [
-            {
-                "game_id": row["game_id"],
-                "game_date": row["game_date"].isoformat(),
-                "home": row["home"],
-                "away": row["away"],
-                "p_b2": round(row["p_b2"], 4),
-                "p_b1": round(row["p_b1"], 4),
-                "gap": round(row["gap"], 4),
-            }
-            for row in flagged.iter_rows(named=True)
-        ],
+        "per_season": {str(s): counts.get(s, 0) for s in seasons},
+        "listed_in": GAPS_FILE,
     }
+
+
+def write_gaps(predictions: pl.DataFrame, games: pl.DataFrame, out: Path) -> Path:
+    """Every experiment's gaps above GAP to out/gaps.csv, for manual review (hard rule 8)."""
+    frames = [
+        gap_rows(predictions.filter(pl.col("experiment") == experiment), games).select(
+            pl.lit(experiment).alias("experiment"), pl.all()
+        )
+        for experiment in sorted(predictions["experiment"].unique().to_list())
+    ]
+    path = out / GAPS_FILE
+    pl.concat(frames).with_columns(pl.col("p_b2", "p_b1", "gap").round(4)).write_csv(path)
+    return path
 
 
 def lineup_quality(

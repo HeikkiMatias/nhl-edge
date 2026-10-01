@@ -286,6 +286,7 @@ def backtest(
     report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
     report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}
     path = reports.write(report, out)
+    b2_report.write_gaps(predictions, games, out)
     typer.echo(f"{path}: {report['version']}")
     parts = [(name, body) for name, body in report["experiments"].items()]
     parts += [(f"E2 {name}", body["E2"]) for name, body in report["sensitivity"].items()]
