@@ -33,6 +33,7 @@ DEFAULT_BACKTEST_SEASONS = ",".join(str(season) for season in DEVELOPMENT_SEASON
 DEFAULT_BACKTEST_OUT = Path("reports/backtest")
 DEFAULT_AUDIT_OUT = Path("reports/audit")
 DEFAULT_XG_OUT = Path("reports/xg")
+DEFAULT_TUNING_OUT = Path("reports/tuning")
 
 
 def _not_implemented(command: str, phase: str) -> NoReturn:
@@ -334,6 +335,86 @@ def xg(
         typer.echo(
             f"  {model.season}: fitted on {model.shots:,} shots to {model.train_cutoff:%Y-%m-%d}"
         )
+
+
+@app.command("team-strength")
+def team_strength(
+    seasons: Annotated[
+        str | None,
+        typer.Option(
+            help="Seasons to rate, as 20232024, a comma list or a range. Default: 2011-12 on."
+        ),
+    ] = None,
+    tune: Annotated[
+        bool,
+        typer.Option(
+            "--tune", help="Run the tuning grid on the training seasons and log it; write no table."
+        ),
+    ] = False,
+    out: Annotated[Path, typer.Option(help="Tuning report directory.")] = DEFAULT_TUNING_OUT,
+    r2: Annotated[bool, typer.Option("--r2", help="Mirror the team_strength table to R2.")] = False,
+) -> None:
+    """Rate every game's rolling team strength ΔS with the frozen settings (#74, ADR 0011) into the
+    lake's team_strength. With --tune, score the 16 candidate settings on the training seasons
+    instead and write the log to <out>/team-strength-<version>.md."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports, tuning
+    from nhl_edge.features import team_strength as ts
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    games = lake.read("games")
+    known = sorted(games["season"].unique().to_list())
+    try:
+        wanted = parse_seasons(seasons) if seasons else [s for s in known if s >= ts.FIRST_SEASON]
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    last = max(ts.TUNING_SEASONS) if tune else max(wanted)
+    shot_xg, strength_time = lake.read("shot_xg"), lake.read("strength_time")
+    problems = ts.input_problems(games, shot_xg, strength_time, last)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl ingest --replay and nhl xg for those seasons", err=True)
+        raise typer.Exit(code=1)
+    history = ts.team_games(lake.read("shots"), shot_xg, strength_time)
+    version = reports.version(ts.COMPONENT, datetime.now(UTC))
+    if tune:
+        rated = games.filter(pl.col("season").is_between(ts.FIRST_SEASON, last))
+        candidates = [
+            tuning.Candidate(
+                settings,
+                settings.label,
+                tuning.scored_games(
+                    ts.strength(rated, history, settings).select("game_id", x="delta_s"),
+                    games,
+                    ts.TUNING_SEASONS,
+                ),
+            )
+            for settings in ts.GRID
+        ]
+        choice = tuning.choose(candidates, ts.steadiness)
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"{version}.md"
+        path.write_text(tuning.markdown(choice, "team strength", version, ts.TUNING_SEASONS))
+        frozen = "matches" if choice.chosen == ts.TUNED else "differs from"
+        typer.echo(f"{path}: chose {choice.chosen.label}, which {frozen} the frozen TUNED")
+        return
+    try:
+        rated = games.filter(pl.col("season").is_in(wanted))
+        if rated.is_empty():
+            raise ValueError(f"no games of {wanted} in the lake")
+        frame = ts.rows(rated, history, ts.TUNED, version)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    lake.replace_dates("team_strength", frame, rated["game_date"].unique().to_list())
+    typer.echo(f"team_strength: {frame.height:,} games rated with {ts.TUNED.label} ({version})")
 
 
 @app.command()
