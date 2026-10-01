@@ -84,6 +84,8 @@ Option 1 for both, chosen by the owner on 2026-10-01.
 
 ## Backtest evidence
 
+The tuning runs' losses record each choice and are not walk-forward evidence. The training seasons are in-sample by design, and a later run reuses earlier settings chosen on the same seasons. The development seasons, scored once every choice was frozen, are the evidence.
+
 The tuning runs are above, each on its component's PR. B2, built from all four frozen settings, was scored on the development seasons by `backtest-20261001-388bb85` (#90). B2 minus B1 is +0.0112 [+0.0044, +0.0185] on E1 and +0.0078 [+0.0013, +0.0146] on E2, with a calibration slope of 1.35 [1.09, 1.62]. Gate 1 (#79) judges it.
 
 ## Consequences
