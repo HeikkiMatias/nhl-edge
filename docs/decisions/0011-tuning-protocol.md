@@ -63,6 +63,7 @@ None yet. Team strength's tuning run is on #74's PR, and gate 1 (#79) scores B2 
 ## Consequences
 
 - The training seasons' tuned features are in-sample for the choice, as 2012-13 to 2017-18 xG is for the rebound term (ADR 0010). They may train later models, but no result may present them as out-of-sample. Every fold from 2018-19 on uses settings chosen entirely before it.
+- **Every tuned output records the run's cutoff,** the last result the run read: `train_cutoff` in `team_strength`, 2018-04-09 10:00 UTC. B2's walk-forward (#78) must not score a fold that starts before it as out-of-sample. Gate 1's folds start after it.
 - One choice per component, made once. A component tuned later does not reopen an earlier one's settings.
 - B2's L2 strength (#78) uses the same protocol, with B2 itself as the scored model.
 

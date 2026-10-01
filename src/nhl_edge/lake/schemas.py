@@ -597,7 +597,11 @@ class TeamStrength(pa.DataFrameModel):
     Eastern on the game date or the start if earlier. delta_5v5 and delta_special_teams are its
     parts. home_history and away_history count the team-games each rating read (0 before a
     team's first game with xG). half_life and prior_games are the settings it was computed with,
-    and artifact_version names the run."""
+    and artifact_version names the run.
+
+    train_cutoff is the last result the tuning run that chose the settings read (ADR 0011). A
+    row observed before it is in-sample for the settings: 2011-12 to 2017-18 by design. A
+    walk-forward fold that starts before it must not score such rows as out-of-sample (#78)."""
 
     game_id: pl.Int64
     season: pl.Int32
@@ -611,6 +615,7 @@ class TeamStrength(pa.DataFrameModel):
     away_history: pl.Int32 = pa.Field(ge=0)
     half_life: pl.Float64 = pa.Field(gt=0)
     prior_games: pl.Float64 = pa.Field(ge=0)
+    train_cutoff: UtcDatetime
     artifact_version: pl.String = pa.Field(str_matches=r"^team-strength-\d{8}-")
     observed_utc: UtcDatetime
 

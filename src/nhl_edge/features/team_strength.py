@@ -34,6 +34,7 @@ that is earlier, so E1 and E2 see the same history. Only team-games public befor
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import numpy as np
 import polars as pl
@@ -277,15 +278,24 @@ def steadiness(settings: Settings) -> tuple[float, float]:
 # Frozen by run team-strength-20261001-9dc689a on #74's PR (ADR 0011): the leader, on the
 # grid's steadiest corner. The owner kept the grid as fixed.
 TUNED = Settings(half_life=80, prior_games=40)
+# The last result that run read: 2017-18's final night, public the next morning. A rating
+# observed before it used settings chosen with its own season's results (in-sample, ADR 0011).
+TUNED_CUTOFF = datetime(2018, 4, 9, 10, tzinfo=UTC)
 
 
 def rows(
-    games: pl.DataFrame, history: pl.DataFrame, settings: Settings, artifact_version: str
+    games: pl.DataFrame,
+    history: pl.DataFrame,
+    settings: Settings,
+    artifact_version: str,
+    train_cutoff: datetime = TUNED_CUTOFF,
 ) -> pl.DataFrame:
-    """The games' TeamStrength rows."""
+    """The games' TeamStrength rows, each with the cutoff of the tuning run that chose the
+    settings."""
     frame = strength(games, history, settings).with_columns(
         half_life=pl.lit(float(settings.half_life)),
         prior_games=pl.lit(float(settings.prior_games)),
+        train_cutoff=pl.lit(train_cutoff),
         artifact_version=pl.lit(artifact_version),
         observed_utc=pl.col("as_of_utc"),
     )
