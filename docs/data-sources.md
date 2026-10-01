@@ -170,8 +170,10 @@ A game's chart is `complete` when it has no bad rows and every dressed player's 
 `team_strength` (#74, ADR 0011) holds each game's rolling team strength ΔS from 2011-12 on: the home team's expected goal margin over the away team.
 - **Inputs:** 5v5 xG for and against per minute, power-play xG for and penalty-kill xG against per minute, and power-play and penalty-kill minutes per game. They come from `shot_xg`, `shots` and `strength_time`.
 - **Memory and shrinkage:** each team's figures are decayed by games played and shrunk toward the league. The settings come from the tuning grid and are frozen: a half-life of 80 games and a pull worth 40 games.
-- **Timing:** a game is rated as of 10:00 US Eastern on its date, or its start if earlier, from team-games public before then.
-- **`train_cutoff`:** the last result the tuning run read (2018-04-09 10:00 UTC). Ratings of 2011-12 to 2017-18 are in-sample for the settings, by design.
+- **Timing:** a game is rated as of 10:00 US Eastern on its date, or an hour before its start if earlier, from team-games public before then (`as_of_utc`).
+- **Renamed teams:** a team's history follows its line through code changes (PHX, ARI, UTA; ATL, WPG).
+- **Goalie in net:** shots count only with the shooting team's own goalie in net.
+- **`train_cutoff`:** the last result the tuning run read (2018-04-09 10:00 UTC). Ratings of 2011-12 to 2017-18 are in-sample for the settings by design, so their `observed_utc` is the cutoff, and no fold starting before it can read them.
 - **Commands:** `nhl team-strength` writes the table, and `--tune` reruns the grid on the training seasons and logs it to `reports/tuning/`. It refuses while a game it needs has no xG or no strength time.
 ## Odds snapshots
 

@@ -55,7 +55,8 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 - **#74, team strength ΔS** (phase 2, task 5), the PR on `phase-2/team-strength`:
   - It adds `features/team_strength.py`, `backtest/tuning.py`, `nhl team-strength` (`--tune`) and the `team_strength` table.
   - ADR 0011, the tuning protocol, was accepted by the owner. Settings are judged on later games' winners, near-ties go to the steadier setting, and they are tuned on the training seasons, then frozen.
-  - The run chose a half-life of 80 games and a pull worth 40 games, the grid's steadiest corner. The owner chose to keep the grid as fixed.
+  - The run (`team-strength-20261001-38b38ae`) chose a half-life of 80 games and a pull worth 40 games, the grid's steadiest corner. The owner chose to keep the grid as fixed.
+  - Ratings of 2011-12 to 2017-18 count as known only from the tuning cutoff, 2018-04-09 (`observed_utc`), so no fold before it can read them.
   - After merge: `nhl team-strength --r2`.
 - **#30's recheck** runs nightly; the first 2026-27 games are due on 2026-10-07.
 

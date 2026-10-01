@@ -328,8 +328,8 @@ def steadiness(settings: Settings) -> tuple[float, float]:
     return settings.half_life, settings.prior_games
 
 
-# Frozen by run team-strength-20261001-9dc689a on #74's PR (ADR 0011): the leader, on the
-# grid's steadiest corner. The owner kept the grid as fixed.
+# Frozen by run team-strength-20261001-38b38ae on #86 (ADR 0011): the leader, on the grid's
+# steadiest corner. The owner kept the grid as fixed.
 TUNED = Settings(half_life=80, prior_games=40)
 # The last result that run read: 2017-18's final night, public the next morning. A rating
 # observed before it used settings chosen with its own season's results (in-sample, ADR 0011).
