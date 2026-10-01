@@ -74,6 +74,12 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
 - **Lineup quality:** the goalie-start model's Brier score over the team-games of the games B2 scored is 0.415 [0.404, 0.426] on E1 and 0.415 [0.405, 0.427] on E2 (0.405 in 2018-19, 0.424 in 2021-22). 0.9% of starters were not among its candidates.
 - **Training on the starters who played** (ADR 0013): Codex read hard rule 9 as forbidding it (P0 on #90). The owner kept it, since the rule governs predictions, and no game's own lineup feeds its own prediction.
 
+**Held-out seasons seen for data format only** (#96, PR #108):
+- **What was seen:** the first draft of the `penalties` and `faceoffs` tables surveyed every cached season, 2023-24, 2025-26 and the first 2026-27 games included. It recorded which penalty codes exist and which fields can be blank, and it checked the faceoff zones of 200 games of 2023-24.
+- **What was not:** no outcome, rate or model figure from those seasons.
+- **The fix:** the leakage check caught it. The survey and the zone check were redone on 2010-11 to 2021-22, the design came out the same, and the tables quote only those figures.
+- **The owner's ruling, 2026-10-01:** gate 2's tests on those seasons stay valid, and this note records that their format was seen.
+
 ## Run history
 
 See `reports/backtest/runs.csv`.
