@@ -39,6 +39,10 @@ COLUMNS = [
     "is_penalty_shot",
     "situation_code",
     "strength_source",
+    "prev_event_type",
+    "prev_seconds",
+    "prev_by_shooting_team",
+    "prev_zone",
     "observed_utc",
     "raw_key",
 ]

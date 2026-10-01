@@ -38,6 +38,7 @@ from nhl_edge.lake.schemas import (
     ShiftCoverage,
     Shifts,
     Shots,
+    ShotXg,
     StrengthTime,
     dtypes,
 )
@@ -72,6 +73,7 @@ TABLES: dict[str, Table] = {
         ("game_id", "team", "strength", "own_net_empty", "opp_net_empty", "strength_source"),
         BY_DATE,
     ),
+    "shot_xg": Table(ShotXg, ("game_id", "event_id"), BY_DATE),
     "odds_snapshots": Table(LakeOddsSnapshots, ODDS_KEY, ("snapshot_date",)),
     "sbr_odds": Table(SbrOdds, SBR_KEY, ("season",)),
     "pregame_goalies": Table(PregameGoalies, PREGAME_GOALIES_KEY, BY_DATE),
@@ -156,12 +158,20 @@ class Lake:
         return written
 
     def read(self, table: str) -> pl.DataFrame:
-        """The whole local table, or an empty frame with the schema's columns."""
+        """The whole local table in its schema's columns, or an empty frame with them. A partition
+        written before a nullable column joined the schema reads it as null, so a table stays
+        readable while a replay rewrites its older partitions (#73). A partition without a
+        required column raises: replay it."""
         spec = TABLES[table]
         paths = sorted((self.base_dir / table).rglob("*.parquet"))
         if not paths:
             return spec.empty()
-        return pl.read_parquet(paths).sort(spec.key)
+        frame = pl.read_parquet(paths, schema=dtypes(spec.schema), missing_columns="insert")
+        columns = spec.schema.to_schema().columns
+        missing = [n for n, c in columns.items() if not c.nullable and frame[n].null_count()]
+        if missing:
+            raise ValueError(f"{table} has partitions without {missing}: replay them")
+        return frame.sort(spec.key)
 
     def pull(
         self, table: str, seasons: Collection[int] | None = None, workers: int = PULL_WORKERS

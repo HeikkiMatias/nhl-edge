@@ -171,3 +171,41 @@ def test_bucket_usage_follows_pagination() -> None:
 def test_mirror_needs_bucket_and_client(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="both"):
         Lake(tmp_path, bucket="lake")
+
+
+PREV = ["prev_event_type", "prev_seconds", "prev_by_shooting_team", "prev_zone"]
+
+
+def rewrite_partition(lake: Lake, table: str, drop: list[str]) -> Path:
+    """One partition of the table, rewritten as if written before the dropped columns existed."""
+    path = sorted((lake.base_dir / table).rglob("*.parquet"))[0]
+    pl.read_parquet(path).drop(drop).write_parquet(path)
+    return path
+
+
+def test_a_partition_older_than_a_nullable_column_reads_it_as_null(tmp_path: Path) -> None:
+    # #73 added the prev_ columns to shots: until a replay rewrites every partition, the table
+    # still reads, with nulls where the columns are missing.
+    from shot_fixtures import synthetic_shots
+
+    lake = Lake(tmp_path)
+    shots = synthetic_shots([20102011], per_season=200)
+    lake.write("shots", shots)
+    old = rewrite_partition(lake, "shots", PREV)
+    frame = lake.read("shots")
+    assert frame.columns == shots.columns and frame.height == shots.height
+    stale = frame.join(
+        pl.read_parquet(old).select("game_id", "event_id"), on=["game_id", "event_id"]
+    )
+    assert stale.height > 0 and stale.select(PREV).null_count().row(0) == (stale.height,) * 4
+    assert frame["prev_event_type"].null_count() == stale.height
+
+
+def test_a_partition_without_a_required_column_raises(tmp_path: Path) -> None:
+    from shot_fixtures import synthetic_shots
+
+    lake = Lake(tmp_path)
+    lake.write("shots", synthetic_shots([20102011], per_season=200))
+    rewrite_partition(lake, "shots", ["raw_key"])
+    with pytest.raises(ValueError, match=r"shots has partitions without \['raw_key'\]"):
+        lake.read("shots")
