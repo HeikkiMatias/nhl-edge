@@ -1,0 +1,391 @@
+"""Rolling team strength ΔS (#74, docs/plan.md §5, ADR 0011): the home team's expected goal margin
+over the away team, from each team's earlier games only, decayed by games played and shrunk toward
+the league.
+
+Per team and game, from `shot_xg`, `shots` and `strength_time`:
+- **5v5 with both nets manned:** xG for and against, and minutes;
+- **power play** (more skaters, both nets manned, at most five): xG for and minutes;
+- **penalty kill** (the mirror): xG against and minutes.
+
+Shorthanded xG for, power-play xG against, 4v4, 3v3 and empty-net play are left out: they are
+small, and B2's other terms absorb them.
+
+A team's rate before a game sums its earlier games, a game k games back weighing 0.5 ** (k /
+half_life), plus `prior_games` games at the league rate:
+
+    rate = (sum of weighted xG + prior_games * league xG per game)
+           / (sum of weighted minutes + prior_games * league minutes per game)
+
+Its power-play and penalty-kill minutes per game shrink the same way. The league figures are
+those of every team-game public before the prediction time, in the game's season and the one
+before it.
+
+ΔS is the home team's expected goals minus the away team's:
+- **5v5:** the league's 5v5 minutes per game times the average of one team's xG for and the other's
+  xG against per minute;
+- **power play:** expected minutes, the average of one team's power-play minutes per game and the
+  other's penalty-kill minutes per game, times the average of its power-play xG for and the other's
+  penalty-kill xG against per minute.
+
+A game's ΔS is computed as of 10:00 US Eastern on its date, E2's prediction time, or an hour
+before its start if that is earlier, so E1 and E2 see the same history and a rating is always
+public before puck drop. Only team-games public before then count (hard rule 1), which with ADR
+0004 means every game up to the day before. A team's history follows its line through code changes
+(PHX, ARI and UTA; ATL and WPG), as `reference.lineage` links them.
+
+Shots count only with the shooting team's own goalie in net, from situationCode's goalie digit, as
+the minutes count only with both nets manned.
+"""
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+import numpy as np
+import polars as pl
+
+from nhl_edge.backtest.seasons import TRAINING_SEASONS
+from nhl_edge.features import xg
+from nhl_edge.ingest.sbr import ET, OPEN_ASSUMED_AT_ET
+from nhl_edge.lake.schemas import TeamStrength, dtypes
+from nhl_edge.reference import lineage, load_teams
+
+COMPONENT = "team-strength"
+# The first season with xG, and so with team strength.
+FIRST_SEASON = xg.FIRST_SEASON
+# Tuned seasons: every training season after the first with xG, each predicted by a model fitted
+# on the earlier ones (ADR 0011).
+TUNING_SEASONS = tuple(season for season in TRAINING_SEASONS if season > FIRST_SEASON)
+
+# A game starting before 10:00 ET is rated this long before puck drop.
+BEFORE_START = timedelta(hours=1)
+
+POWER_PLAY = ("5v4", "5v3", "4v3")
+PENALTY_KILL = ("4v5", "3v5", "3v4")
+# Each team-game's sums: (xG column, minutes column) per component, and the minutes alone.
+RATES = {
+    "xgf_5v5": "min_5v5",
+    "xga_5v5": "min_5v5",
+    "xgf_pp": "min_pp",
+    "xga_pk": "min_pk",
+}
+PER_GAME = ("min_5v5", "min_pp", "min_pk")
+SUMS = (*RATES, *PER_GAME)
+
+
+@dataclass(frozen=True)
+class Settings:
+    """Team strength's two tuned settings (ADR 0011)."""
+
+    half_life: float
+    prior_games: float
+
+    @property
+    def label(self) -> str:
+        return f"half-life {self.half_life:g}, prior {self.prior_games:g}"
+
+
+def as_of(game_date: pl.Expr, start_utc: pl.Expr) -> pl.Expr:
+    """10:00 US Eastern on the game date, or an hour before the start if that is earlier: always
+    strictly before puck drop, when E1 predicts."""
+    ten = game_date.dt.combine(OPEN_ASSUMED_AT_ET).dt.replace_time_zone(str(ET))
+    return pl.min_horizontal(ten.dt.convert_time_zone("UTC"), start_utc - BEFORE_START)
+
+
+def team_lines() -> dict[str, str]:
+    """Each team code mapped to its line's first code, so a renamed team keeps its history."""
+    return lineage(load_teams())
+
+
+def own_goalie_in() -> pl.Expr:
+    """Whether the shooting team's goalie was in net, from situationCode's goalie digit for its
+    side (away first, home last). A shot without a code counts as with the goalie in."""
+    code = pl.col("situation_code")
+    digit = pl.when(pl.col("is_home")).then(code.str.slice(3, 1)).otherwise(code.str.slice(0, 1))
+    return digit.is_null() | (digit == "1")
+
+
+def team_games(
+    shots: pl.DataFrame, shot_xg: pl.DataFrame, strength_time: pl.DataFrame
+) -> pl.DataFrame:
+    """One row per team and game with xG: its 5v5, power-play and penalty-kill xG and minutes,
+    and when the game's feeds became public. Games without xG (2010-11) are left out."""
+    both_manned = ~pl.col("own_net_empty") & ~pl.col("opp_net_empty")
+
+    def minutes(states: Sequence[str]) -> pl.Expr:
+        mask = both_manned & pl.col("strength").is_in(list(states))
+        return (pl.col("seconds").filter(mask).sum() / 60).cast(pl.Float64)
+
+    time_on = strength_time.group_by("game_id", "team").agg(
+        min_5v5=minutes(["5v5"]),
+        min_pp=minutes(POWER_PLAY),
+        min_pk=minutes(PENALTY_KILL),
+        time_observed=pl.col("observed_utc").max(),
+    )
+    for_, against = pl.col("skaters_for"), pl.col("skaters_against")
+    xg = shot_xg.join(
+        shots.select(
+            "game_id",
+            "event_id",
+            "team",
+            "is_home",
+            "skaters_for",
+            "skaters_against",
+            "situation_code",
+        ),
+        on=["game_id", "event_id"],
+    ).with_columns(goalie_in=own_goalie_in())
+    by_team = xg.group_by("game_id", "team").agg(
+        xg_5v5=pl.col("xg").filter((for_ == 5) & (against == 5) & pl.col("goalie_in")).sum(),
+        xg_pp=pl.col("xg").filter((for_ > against) & (for_ <= 5) & pl.col("goalie_in")).sum(),
+        shots_observed=pl.col("observed_utc").max(),
+    )
+    games = strength_time.select("game_id", "season", "game_date", "team").unique()
+    # Games with xG at all; within one, a team without an xG row (every attempt without
+    # coordinates, say) had none, rather than the game dropping out of both histories.
+    games = games.join(shot_xg.select("game_id").unique(), on="game_id", how="semi")
+    pairs = games.join(games.rename({"team": "opponent"}), on=["game_id", "season", "game_date"])
+    pairs = pairs.filter(pl.col("team") != pl.col("opponent"))
+    own = by_team.rename({"xg_5v5": "xgf_5v5", "xg_pp": "xgf_pp"})
+    opp = by_team.select(
+        "game_id", opponent="team", xga_5v5="xg_5v5", xga_pk="xg_pp", opp_observed="shots_observed"
+    )
+    frame = (
+        pairs.join(own, on=["game_id", "team"], how="left")
+        .join(opp, on=["game_id", "opponent"], how="left")
+        .join(time_on, on=["game_id", "team"], how="inner")
+        .with_columns(pl.col("xgf_5v5", "xga_5v5", "xgf_pp", "xga_pk").fill_null(0.0))
+    )
+    return frame.select(
+        "game_id",
+        "season",
+        "game_date",
+        "team",
+        "opponent",
+        *SUMS,
+        observed_utc=pl.max_horizontal("shots_observed", "opp_observed", "time_observed"),
+    ).sort("team", "game_date", "game_id")
+
+
+def _decayed(values: np.ndarray, decay: float) -> np.ndarray:
+    """Running sums with older rows decayed: out[j] = values[j] + decay * out[j - 1]."""
+    out = np.empty_like(values)
+    total = np.zeros(values.shape[1])
+    for j, row in enumerate(values):
+        total = row + decay * total
+        out[j] = total
+    return out
+
+
+def team_states(
+    history: pl.DataFrame,
+    targets: pl.DataFrame,
+    settings: Settings,
+    lines: Mapping[str, str] | None = None,
+) -> pl.DataFrame:
+    """Each target (team, as_of) row with the decayed sums over the team-games of its line public
+    before as_of, and the decayed game count. lines maps codes to lines (team_lines())."""
+    lines = team_lines() if lines is None else lines
+    decay = 0.5 ** (1 / settings.half_life)
+    columns = [*SUMS, "games"]
+    history = history.with_columns(line=pl.col("team").replace(dict(lines)))
+    targets = targets.with_columns(line=pl.col("team").replace(dict(lines)))
+    frames = []
+    for (line,), rows in targets.group_by("line"):
+        # A full sort key: the same rows are always summed in the same order, so a rating does
+        # not move in its last digits with rows it never reads (CI on #86).
+        past = history.filter(pl.col("line") == line).sort(
+            "observed_utc", "game_date", "game_id", "team"
+        )
+        values = past.select(*SUMS, games=pl.lit(1.0)).to_numpy().astype(float)
+        sums = _decayed(values, decay) if len(values) else np.zeros((0, len(columns)))
+        # The team-games public before each target: a prefix of the history, by observed_utc.
+        seen = np.searchsorted(
+            past["observed_utc"].to_numpy(), rows["as_of_utc"].to_numpy(), side="left"
+        )
+        state = np.zeros((rows.height, len(columns)))
+        has = seen > 0
+        state[has] = sums[seen[has] - 1]
+        frames.append(
+            rows.with_columns(
+                pl.Series(name, state[:, i]) for i, name in enumerate(columns)
+            ).with_columns(history_games=pl.Series(seen, dtype=pl.Int32))
+        )
+    return pl.concat(frames).drop("line")
+
+
+def league_states(history: pl.DataFrame, targets: pl.DataFrame) -> pl.DataFrame:
+    """For each distinct (season, as_of), the league's totals over every team-game public before
+    as_of in that season and the one before."""
+    out = []
+    for (season,), rows in targets.select("season", "as_of_utc").unique().group_by("season"):
+        past = history.filter(pl.col("season").is_in([season, season - 10001])).sort(
+            "observed_utc", "game_id", "team"
+        )
+        totals = past.select(*SUMS, games=pl.lit(1.0)).to_numpy().astype(float).cumsum(axis=0)
+        seen = np.searchsorted(
+            past["observed_utc"].to_numpy(), rows["as_of_utc"].to_numpy(), side="left"
+        )
+        state = np.zeros((rows.height, len(SUMS) + 1))
+        has = seen > 0
+        state[has] = totals[seen[has] - 1]
+        out.append(
+            rows.with_columns(
+                pl.Series(f"league_{name}", state[:, i]) for i, name in enumerate([*SUMS, "games"])
+            )
+        )
+    return pl.concat(out)
+
+
+def strength(
+    games: pl.DataFrame,
+    history: pl.DataFrame,
+    settings: Settings,
+    lines: Mapping[str, str] | None = None,
+) -> pl.DataFrame:
+    """ΔS and its parts for every game in games, from the team-games in history (team_games)."""
+    targets = games.select(
+        "game_id",
+        "season",
+        "game_date",
+        "home",
+        "away",
+        as_of_utc=as_of(pl.col("game_date"), pl.col("start_utc")),
+    )
+    sides = pl.concat(
+        [
+            targets.select("game_id", "season", "as_of_utc", team=pl.col(side), side=pl.lit(side))
+            for side in ("home", "away")
+        ]
+    )
+    teams = team_states(history, sides, settings, lines)
+    league = league_states(history, sides)
+    rows = teams.join(league, on=["season", "as_of_utc"])
+    m = settings.prior_games
+    games_ = pl.col("league_games")
+    rates = {}
+    for total, minutes in RATES.items():
+        league_xg = pl.col(f"league_{total}") / games_
+        league_min = pl.col(f"league_{minutes}") / games_
+        rates[f"{total}_per_min"] = (pl.col(total) + m * league_xg) / (
+            pl.col(minutes) + m * league_min
+        )
+    for minutes in PER_GAME:
+        league_min = pl.col(f"league_{minutes}") / games_
+        rates[f"{minutes}_per_game"] = (pl.col(minutes) + m * league_min) / (pl.col("games") + m)
+    rated = rows.with_columns(
+        league_5v5_per_game=pl.col("league_min_5v5") / games_, **rates
+    ).select(
+        "game_id",
+        "side",
+        "history_games",
+        "league_5v5_per_game",
+        *rates,
+    )
+    home = rated.filter(pl.col("side") == "home").drop("side")
+    away = rated.filter(pl.col("side") == "away").drop("side", "league_5v5_per_game")
+    both = targets.join(home, on="game_id").join(away, on="game_id", suffix="_away")
+
+    def expected(attack: str, defend: str) -> tuple[pl.Expr, pl.Expr]:
+        a = "" if attack == "home" else "_away"
+        d = "" if defend == "home" else "_away"
+        five = (
+            pl.col("league_5v5_per_game")
+            * (pl.col(f"xgf_5v5_per_min{a}") + pl.col(f"xga_5v5_per_min{d}"))
+            / 2
+        )
+        pp_minutes = (pl.col(f"min_pp_per_game{a}") + pl.col(f"min_pk_per_game{d}")) / 2
+        pp = pp_minutes * (pl.col(f"xgf_pp_per_min{a}") + pl.col(f"xga_pk_per_min{d}")) / 2
+        return five, pp
+
+    home_five, home_pp = expected("home", "away")
+    away_five, away_pp = expected("away", "home")
+    # Each part is 0 where it has nothing to rate on: before any team-game with xG is public
+    # (2011-12's first night), or, with no pull toward the league, for a team with no power-play
+    # or penalty-kill minutes yet, whose 5v5 part still counts.
+    parts = {
+        "home_five": home_five,
+        "away_five": away_five,
+        "home_pp": home_pp,
+        "away_pp": away_pp,
+    }
+    filled = both.with_columns(
+        expr.fill_nan(0.0).fill_null(0.0).alias(name) for name, expr in parts.items()
+    )
+    five = pl.col("home_five") - pl.col("away_five")
+    special = pl.col("home_pp") - pl.col("away_pp")
+    return filled.select(
+        "game_id",
+        "season",
+        "game_date",
+        "home",
+        "away",
+        delta_s=five + special,
+        delta_5v5=five,
+        delta_special_teams=special,
+        home_history=pl.col("history_games"),
+        away_history=pl.col("history_games_away"),
+        as_of_utc="as_of_utc",
+    ).sort("game_id")
+
+
+# The tuning grid and the order that breaks ties toward the steadier setting (ADR 0011).
+GRID = tuple(Settings(h, m) for h in (10, 20, 40, 80) for m in (0, 10, 20, 40))
+
+
+def steadiness(settings: Settings) -> tuple[float, float]:
+    """Longer memory first, then more pull toward the league."""
+    return settings.half_life, settings.prior_games
+
+
+# Frozen by run team-strength-20261001-38b38ae on #86 (ADR 0011): the leader, on the grid's
+# steadiest corner. The owner kept the grid as fixed.
+TUNED = Settings(half_life=80, prior_games=40)
+# The last result that run read: 2017-18's final night, public the next morning. A rating
+# observed before it used settings chosen with its own season's results (in-sample, ADR 0011).
+TUNED_CUTOFF = datetime(2018, 4, 9, 10, tzinfo=UTC)
+
+
+def rows(
+    games: pl.DataFrame,
+    history: pl.DataFrame,
+    settings: Settings,
+    artifact_version: str,
+    train_cutoff: datetime = TUNED_CUTOFF,
+) -> pl.DataFrame:
+    """The games' TeamStrength rows, each with the cutoff of the tuning run that chose the
+    settings. A rating is observed at its as-of time, or at the cutoff if that is later: a rating
+    of a season the settings were tuned on was not available before they were (Codex on #86)."""
+    frame = strength(games, history, settings).with_columns(
+        half_life=pl.lit(float(settings.half_life)),
+        prior_games=pl.lit(float(settings.prior_games)),
+        train_cutoff=pl.lit(train_cutoff),
+        artifact_version=pl.lit(artifact_version),
+        observed_utc=pl.max_horizontal("as_of_utc", pl.lit(train_cutoff)),
+    )
+    columns = dtypes(TeamStrength)
+    return TeamStrength.validate(frame.select(list(columns)).cast(columns))  # type: ignore[arg-type]
+
+
+def input_problems(
+    games: pl.DataFrame,
+    shot_xg: pl.DataFrame,
+    strength_time: pl.DataFrame,
+    last: int,
+    expected: Mapping[int, int],
+) -> list[str]:
+    """Why the lake cannot rate games up to the season last: a season short of its games
+    (expected), or a game of 2011-12 on without xG or strength time, would drop out of its teams'
+    histories and the tuning unnoticed."""
+    needed = games.filter(pl.col("season").is_between(FIRST_SEASON, last))
+    problems = []
+    for season in sorted(s for s in expected if FIRST_SEASON <= s <= last):
+        count = needed.filter(pl.col("season") == season).height
+        if count != expected[season]:
+            problems.append(f"{season}: {count:,} of {expected[season]:,} games")
+    for label, table in (("xG", shot_xg), ("strength time", strength_time)):
+        missing = needed.join(table.select("game_id").unique(), on="game_id", how="anti")
+        for (season,), frame in missing.sort("game_id").group_by("season", maintain_order=True):
+            examples = ", ".join(str(g) for g in frame["game_id"].head(3).to_list())
+            problems.append(f"{season}: {frame.height:,} games without {label}, e.g. {examples}")
+    return sorted(problems)

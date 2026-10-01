@@ -591,6 +591,54 @@ class ShotXg(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("train_cutoff") < pl.col("observed_utc"))
 
 
+class TeamStrength(pa.DataFrameModel):
+    """One game's rolling team strength ΔS (#74, ADR 0011): the home team's expected goal margin
+    over the away team, from each team's team-games public before as_of_utc: 10:00 US Eastern on
+    the game date, or an hour before the start if that is earlier. delta_5v5 and
+    delta_special_teams are its parts. home_history and away_history count the team-games each
+    rating read (0 before a team's first game with xG). half_life and prior_games are the
+    settings it was computed with, and artifact_version names the run.
+
+    train_cutoff is the last result the tuning run that chose the settings read (ADR 0011).
+    observed_utc, when the rating could be known, is the later of as_of_utc and train_cutoff: a
+    rating of 2011-12 to 2017-18, the seasons the settings were tuned on, is unavailable before
+    the cutoff, so no fold starting before it can read one (Codex on #86)."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    delta_s: pl.Float64
+    delta_5v5: pl.Float64
+    delta_special_teams: pl.Float64
+    home_history: pl.Int32 = pa.Field(ge=0)
+    away_history: pl.Int32 = pa.Field(ge=0)
+    half_life: pl.Float64 = pa.Field(gt=0)
+    prior_games: pl.Float64 = pa.Field(ge=0)
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^team-strength-\d{8}-")
+    as_of_utc: UtcDatetime
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def known_no_earlier_than_its_cutoffs(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        observed = pl.col("observed_utc")
+        return data.lazyframe.select(
+            (observed >= pl.col("as_of_utc")) & (observed >= pl.col("train_cutoff"))
+        )
+
+    @pa.dataframe_check
+    def parts_add_up(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        parts = pl.col("delta_5v5") + pl.col("delta_special_teams")
+        return data.lazyframe.select((pl.col("delta_s") - parts).abs() < 1e-9)
+
+
 class Shifts(pa.DataFrameModel):
     """One player shift from the shift chart (type 517 rows), periods 1 to 4.
 

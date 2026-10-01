@@ -21,6 +21,7 @@ COMMANDS = [
     "predict",
     "backtest",
     "xg",
+    "team-strength",
     "bets",
     "odds",
     "lake",
@@ -555,3 +556,70 @@ def test_xg_refuses_a_season_with_nothing_before_it(
     result = runner.invoke(app, ["xg", "--seasons", "20102011"])
     assert result.exit_code == 2
     assert "no earlier season" in plain(result.output)
+
+
+def team_lake(monkeypatch: pytest.MonkeyPatch, drop_xg: bool = False) -> dict[str, Any]:
+    import polars as pl
+    from team_fixtures import league
+
+    from nhl_edge.ingest import games as games_module
+    from nhl_edge.lake.tables import Lake
+
+    frames: dict[str, Any] = league()
+    counts = dict(frames["games"].group_by("season").len().iter_rows())
+    monkeypatch.setattr(games_module, "EXPECTED_GAMES", counts)
+    if drop_xg:
+        first = frames["games"]["game_id"][0]
+        frames["shot_xg"] = frames["shot_xg"].filter(pl.col("game_id") != first)
+    monkeypatch.setattr(Lake, "read", lambda self, table: frames[table])
+    return frames
+
+
+def test_team_strength_rates_every_game_with_the_frozen_settings(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frames = team_lake(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["team-strength"])
+    assert result.exit_code == 0, result.output
+    games = frames["games"].height
+    assert f"team_strength: {games:,} games rated with half-life 80, prior 40" in result.output
+    assert list((tmp_path / "data" / "lake" / "team_strength").rglob("*.parquet"))
+
+
+def test_team_strength_tune_logs_every_candidate(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nhl_edge.features import team_strength as ts
+
+    team_lake(monkeypatch)
+    monkeypatch.setattr(ts, "TUNING_SEASONS", (20122013,))
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["team-strength", "--tune"])
+    assert result.exit_code == 0, result.output
+    assert "chose half-life" in result.output and "the frozen TUNED" in result.output
+    (report,) = (tmp_path / "reports" / "tuning").glob("team-strength-*.md")
+    text = report.read_text()
+    assert text.count("| half-life ") == 16 and "(chosen)" in text
+    assert not (tmp_path / "data").exists()
+
+
+def test_team_strength_refuses_games_without_xg(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    team_lake(monkeypatch, drop_xg=True)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["team-strength"])
+    assert result.exit_code == 1
+    assert "1 games without xG" in plain(result.output)
+
+
+def test_team_strength_refuses_a_season_without_xg(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    team_lake(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["team-strength", "--seasons", "20102011"])
+    assert result.exit_code == 2
+    assert "have no xG, so no team strength" in plain(result.output)
+    assert not (tmp_path / "data").exists()
