@@ -4,11 +4,11 @@ counts once its result is public (ADR 0003), tonight's own row only for its venu
 home edge reads results public before the as-of time. Tonight's result, later games and their
 schedule rows never move them."""
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 import polars as pl
 from polars.testing import assert_frame_equal
-from schedule_fixtures import league
+from schedule_fixtures import frames, game_row, league
 
 from nhl_edge.backtest.market import PREDICTION_LAG
 from nhl_edge.backtest.seasons import SeasonRole, season_role
@@ -108,10 +108,9 @@ def test_a_result_public_at_the_as_of_time_is_not_read() -> None:
 def test_every_row_is_known_before_e1_and_e2_and_after_the_cutoff() -> None:
     frame = st.terms(LEAGUE["schedule"], LEAGUE["games"], SETTINGS, [20112012, SEASON], REF)
     out = st.rows(frame, SETTINGS, VERSION)
-    starts = LEAGUE["schedule"].select("game_id", "start_utc")
+    starts = LEAGUE["schedule"].select("game_id", "start_utc", public="observed_utc")
     for row in out.join(starts, on="game_id").iter_rows(named=True):
-        public = row["start_utc"] - timedelta(days=30)
-        e2 = open_assumed_utc(row["game_date"], row["start_utc"], public) + PREDICTION_LAG
+        e2 = open_assumed_utc(row["game_date"], row["start_utc"], row["public"]) + PREDICTION_LAG
         assert row["as_of_utc"] < min(e2, row["start_utc"])
         assert row["observed_utc"] == max(row["as_of_utc"], st.TUNED_CUTOFF)
     assert known_at(out, st.TUNED_CUTOFF).is_empty()
@@ -137,6 +136,33 @@ def test_a_game_retimed_on_the_day_is_rated_once_its_schedule_is_public() -> Non
     rated = tonight({**LEAGUE, "schedule": schedule})
     retimed = rated.filter(pl.col("game_id") == game).row(0, named=True)
     assert retimed["as_of_utc"] == public + timedelta(microseconds=1) < row["start_utc"]
+    # E2 waits for the moved schedule too (the opener's assumed time), so it can still read it.
+    e2 = open_assumed_utc(row["game_date"], row["start_utc"], public) + PREDICTION_LAG
+    assert retimed["as_of_utc"] < e2
     # The other games tonight are rated as before.
     others = pl.col("game_id") != game
     assert same(rated.filter(others), BEFORE.filter(others))
+
+
+def test_a_seat_limit_is_read_only_once_announced() -> None:
+    # Florida's 25% from 2021-01-13 was announced on 2021-01-06, public the next morning (ADR
+    # 0003's rule). Announced on the game day instead, it is not known yet: the arena counts as
+    # full.
+    data = frames([game_row(1, 20202021, date(2021, 2, 1), "FLA", "BOS", "BB&T Center")])
+    late = Reference(
+        **{
+            **REF.__dict__,
+            "attendance_limits": REF.attendance_limits.with_columns(
+                announced=pl.when(pl.col("arena_id") == "amerant_bank_arena")
+                .then(pl.lit(date(2021, 2, 1)))
+                .otherwise(pl.col("announced"))
+            ),
+        }
+    )
+
+    def share(ref: Reference) -> float:
+        frame = st.terms(data["schedule"], data["games"], SETTINGS, [20202021], ref)
+        return frame["capacity_share"].item()
+
+    assert share(REF) == 0.25
+    assert share(late) == 1.0

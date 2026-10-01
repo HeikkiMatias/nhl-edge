@@ -62,7 +62,8 @@ class Settings:
 def rating_time() -> pl.Expr:
     """When a scheduled game is rated: team strength's as-of time, or just after its schedule row
     became public if that is later. Only a game re-timed on the day is (the Lake Tahoe game,
-    ADR 0005): its row is read once public, still hours before its start, but after E2 predicts."""
+    ADR 0005): its row is read once public, before E2, which waits for that schedule too
+    (open_assumed_utc), and hours before its start."""
     as_of = ts.as_of(pl.col("game_date"), pl.col("start_utc"))
     return pl.max_horizontal(as_of, pl.col("observed_utc") + timedelta(microseconds=1))
 
