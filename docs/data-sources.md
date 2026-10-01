@@ -117,7 +117,7 @@ The 16 seasons come to 19,152 games. With the feeds this is about 64,000 request
 
 ## Per-game tables
 
-`nhl ingest` parses each final game's three feeds into four lake tables, partitioned like `games` (`season=S/game_date=D/`) and replaced a whole game date at a time. `--replay` rebuilds them from the raw cache. The parsers are in `src/nhl_edge/ingest/` (`shots.py`, `shifts.py`, `lineups.py`, `shift_coverage.py`), and the schemas in `lake/schemas.py` document every column.
+`nhl ingest` parses each final game's three feeds into seven lake tables, partitioned like `games` (`season=S/game_date=D/`) and replaced a whole game date at a time. `--replay` rebuilds them from the raw cache. The parsers are in `src/nhl_edge/ingest/` (`shots.py`, `shifts.py`, `lineups.py`, `shift_coverage.py`, `strength_time.py`, `plays.py`), and the schemas in `lake/schemas.py` document every column.
 
 | Table | From | Grain | What it holds |
 | --- | --- | --- | --- |
@@ -126,6 +126,8 @@ The 16 seasons come to 19,152 games. With the feeds this is about 64,000 request
 | `actual_lineups` | boxscore | one dressed player | role (F, D, G), sweater number, starting goalie and time on ice |
 | `shift_coverage` | all three | one game | how far the shift chart can be trusted (below) |
 | `strength_time` | play-by-play and shift chart | one team, game and strength state | seconds at each strength state (such as `5v4`), with each net manned or empty (below) |
+| `penalties` | play-by-play | one penalty | the penalized team, the players who took it, drew it and served it, its type and minutes (below) |
+| `faceoffs` | play-by-play | one faceoff | winning team, winner, loser and the zone from the home team's side (below) |
 
 Every row counts as public at 10:00 UTC the morning after its game date, like the game's result (ADR 0003). A game's own shots, shifts and lineup never feed a prediction for it, and backtest lineups come only from earlier games' boxscores (hard rule 9). The backfilled feeds were fetched years after the games and include post-game corrections, which live does not see. The tables leave out scoring credits, but corrections can still change kept values: a goal's scorer, a shot record, time on ice. ADR 0004 accepts this small look-ahead, and #30 measures it.
 
@@ -161,6 +163,11 @@ Shift chart rows the parser leaves out, counted in `shift_coverage`:
 The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (2025-04-08 to 2025-04-15). A live request on 2026-09-29 still gave none, so those games have no shifts and count as incomplete. No other game from 2010-11 on has an empty chart. Those copies were fetched long after their games, so they count as settled and are not fetched again.
 
 A game's chart is `complete` when it has no bad rows and every dressed player's shifts add up to his boxscore time on ice within 60 seconds (a missing boxscore time counts as not adding up). At every unblocked shot except penalty shots, the players on the ice by the chart are also compared with `situationCode`, and `skater_mismatches` and `goalie_mismatches` count where they differ. RAPM drops the stints that contradict the strength state. `nhl audit shifts` prints the per-season summary, which is reviewed before RAPM depends on the charts.
+
+`penalties` and `faceoffs` (#96) are for the player layer (#12): each player's penalties taken and drawn give B3's expected power plays, and the faceoff that opens a stint gives RAPM its zone start. Checked on every game of the open seasons, 2010-11 to 2021-22: each of the 110,753 penalties in play has a team of the game and a time, 2,953 name no one who took it and 9,336 no one who drew it, and each of the 819,251 faceoffs names both players and a zone.
+- **Penalties.** `team` is the penalized team, the play's `eventOwnerTeamId`. `committed_by` is the player penalized, `drawn_by` the player fouled, and `served_by` the player who sat in the box for someone else: a bench minor, a goalie's penalty, some majors. Each is null where the feed names no one, such as a head coach's game misconduct. `type_code` is MIN (a double minor is a MIN of 4 minutes), MAJ, MIS, GAM, MAT, BEN or PS. A penalty shot's 0 minutes and a misconduct's 10 put no team short-handed. A new type code fails the schema, which stops the ingest rather than pass unread. The two penalties of 2010-11 to 2021-22 logged in a shootout (2013021096, 2017020755) are left out.
+- **Faceoffs.** `winning_team` is the play's `eventOwnerTeamId`. The feed's `zoneCode` is from the winner's side, so `zone` flips O and D when the away team won and gives the home team's side. On every game of 2019-20 to 2021-22, where plays say which end the home team defends, the coordinates of 150,074 of the 150,175 faceoffs away from center ice agree with their zone. All but one of the other 101 fill two whole games (2019020249, 2019020256) and a period of 2020020175, where the side or the coordinates are flipped throughout.
+- **Checks.** The audit report's "Penalties and faceoffs" section lists games without faceoffs, and the team-games whose penalties with a player do not add up to the penalty minutes of its players in the boxscore. Over the 31,288 team-games of 2010-11 to 2021-22, 20 do not: 5 by 10 minutes (misconducts, two of them logged in a shootout), 11 with a minor more in the boxscore, 3 with one fewer, and 1 by 5. A bench minor counts toward no player in the boxscore, so the check leaves out penalties without a player.
 
 
 ## Fitted tables

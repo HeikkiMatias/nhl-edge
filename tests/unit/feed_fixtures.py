@@ -30,6 +30,12 @@ MTL_ARI = 2022020060
 
 # Games of the trimmed fixtures, with the NHL team ids their feeds use.
 TRIMMED_GAMES = {
+    # penalties and faceoffs: a bench minor served by a player, a minor without a drawer
+    2010020001: FeedGame(2010020001, 20102011, date(2010, 10, 7), "TOR", "MTL", 10, 8),
+    # penalties and faceoffs: a head coach's game misconduct naming no one who took or served it
+    2012020671: FeedGame(2012020671, 20122013, date(2013, 4, 21), "NYR", "NJD", 3, 1),
+    # penalties and faceoffs: an overtime penalty, a game misconduct logged in the shootout
+    2013021096: FeedGame(2013021096, 20132014, date(2014, 3, 27), "TBL", "NYI", 14, 2),
     # 21 unblocked shots without a situationCode
     2010020124: FeedGame(2010020124, 20102011, date(2010, 10, 27), "CAR", "WSH", 12, 15),
     # Brent Burns in the forwards group with position code D

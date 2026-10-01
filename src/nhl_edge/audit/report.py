@@ -14,6 +14,7 @@ import polars as pl
 from nhl_edge.audit import corrections as correction_audit
 from nhl_edge.audit import games as game_audit
 from nhl_edge.audit import goalies as goalie_audit
+from nhl_edge.audit import plays as play_audit
 from nhl_edge.audit import sbr as sbr_audit
 from nhl_edge.audit import snapshots as snapshot_audit
 from nhl_edge.audit import strength_time as strength_audit
@@ -50,6 +51,7 @@ def build(lake: Lake, store: RawStore, as_of: date) -> list[Section]:
         _sbr_section(lake, store, listed, games, as_of),
         _shift_section(lake.read("shift_coverage").filter(pl.col("game_date") <= as_of)),
         _strength_section(lake.read("strength_time"), games),
+        _plays_section(lake, store, games),
         _reference_section(games),
         _snapshot_section(lake, store, listed, as_of),
         _goalie_section(lake, games, as_of),
@@ -130,6 +132,30 @@ def _strength_section(frame: pl.DataFrame, games: pl.DataFrame) -> Section:
         + strength_audit.markdown_report(report)
     )
     return Section("Strength time", body, strength_audit.problems(frame, games))
+
+
+def _plays_section(lake: Lake, store: RawStore, games: pl.DataFrame) -> Section:
+    # As the strength section: the one-time test season stays out, and the per-game rates show
+    # only for open seasons.
+    design = [s for s, role in SEASON_ROLES.items() if role is not SeasonRole.ONE_TIME_TEST]
+    games = games.filter(pl.col("season").is_in(design))
+    wanted = games["game_id"].implode()
+    penalties, faceoffs = (
+        lake.read(table).filter(pl.col("game_id").is_in(wanted))
+        for table in ("penalties", "faceoffs")
+    )
+    lineups = lake.read("actual_lineups").filter(pl.col("game_id").is_in(wanted))
+    checked = play_audit.pim_check(penalties, play_audit.boxscore_pims(store, lineups), games)
+    report = play_audit.season_report(penalties, faceoffs, checked, games, OPEN_SEASONS)
+    body = (
+        "Penalties and faceoffs from play-by-play (`penalties`, `faceoffs`, #96), without the "
+        "one-time test season: the share of penalties that name the player who took it and the "
+        "one who drew it, and the team-games whose penalties with a player add up to the "
+        "penalty minutes of its players in the boxscore the tables read. For the seasons open "
+        "now, penalties, minors (bench minors included) and faceoffs per game.\n\n"
+        + play_audit.markdown_report(report)
+    )
+    return Section("Penalties and faceoffs", body, play_audit.problems(faceoffs, checked, games))
 
 
 def _reference_section(games: pl.DataFrame) -> Section:
