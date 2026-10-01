@@ -125,3 +125,45 @@ def difference(
     draws_b = resampled_means(b, value, rng, draws)
     mean = float(a[value].mean()) - float(b[value].mean())  # type: ignore[arg-type]
     return interval(mean, draws_a - draws_b)
+
+
+def _calibration_fit(logit: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """Intercept and slope of a logistic regression of y on logit, by Newton's method."""
+    x = np.column_stack([np.ones_like(logit), logit])
+    beta = np.array([0.0, 1.0])
+    for _ in range(50):
+        p = 1 / (1 + np.exp(-(x @ beta)))
+        hessian = (x * (p * (1 - p))[:, None]).T @ x
+        step = np.linalg.solve(hessian + 1e-12 * np.eye(2), x.T @ (y - p))
+        beta = beta + step
+        if np.abs(step).max() < 1e-10:
+            break
+    return float(beta[0]), float(beta[1])
+
+
+def calibration(
+    frame: pl.DataFrame, p: str, y: str, draws: int = DRAWS, seed: int = SEED
+) -> dict[str, Interval]:
+    """The calibration intercept and slope of probability p for outcome y, from a logistic
+    regression of y on p's log-odds, with weekly block bootstrap intervals: 0 and 1 when
+    calibrated. The frame needs season and game_date."""
+    if frame.is_empty():
+        raise ValueError(f"no games to estimate {p}'s calibration on")
+    clipped = frame[p].clip(EPSILON, 1 - EPSILON).to_numpy()
+    logit = np.log(clipped / (1 - clipped))
+    outcome = frame[y].cast(pl.Float64).to_numpy()
+    intercept, slope = _calibration_fit(logit, outcome)
+    rng = np.random.default_rng(seed)
+    seasons = [
+        (season["row"].to_list(), picks) for season, picks in _picks(_weeks(frame), draws, rng)
+    ]
+    fitted = np.empty((draws, 2))
+    for d in range(draws):
+        rows = np.concatenate(
+            [np.concatenate([weeks[w] for w in picks[d]]) for weeks, picks in seasons]
+        ).astype(int)
+        fitted[d] = _calibration_fit(logit[rows], outcome[rows])
+    return {
+        "intercept": interval(intercept, fitted[:, 0]),
+        "slope": interval(slope, fitted[:, 1]),
+    }

@@ -191,16 +191,18 @@ def backtest(
     ] = DEFAULT_BACKTEST_SEASONS,
     out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_BACKTEST_OUT,
 ) -> None:
-    """Run the walk-forward backtest. Phase 1 has the market baselines on the SBR archive, for E1
-    (the close) and E2 (the opener): B0 under each de-vig method, and B1 fitted per season on the
-    earlier seasons' prices. E2 refuses implausible openers (ADR 0007), and E2 on every opener is
-    reported beside it, as is the diagnostic of SBR's change of closing book (#65)."""
+    """Run the walk-forward backtest on the SBR archive, for E1 (the close) and E2 (the opener):
+    B0 under each de-vig method, B1 fitted per season on the earlier seasons' prices, and B2, the
+    team and goalie model (ADR 0013), with its calibration, its gaps to B1 above 8 points and the
+    goalie-start model's Brier score. E2 refuses implausible openers (ADR 0007), and E2 on every
+    opener is reported beside it, as is the diagnostic of SBR's change of closing book (#65)."""
     from datetime import UTC
 
     import polars as pl
 
-    from nhl_edge.backtest import book_era, reports, sensitivity, walk_forward
+    from nhl_edge.backtest import b2_report, book_era, reports, sensitivity, walk_forward
     from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
+    from nhl_edge.game import b2
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.ingest.sbr import SEASON_PAGES
@@ -242,13 +244,48 @@ def backtest(
         counts = ", ".join(f"{n:,} of {EXPECTED_GAMES[s]:,} in {s}" for s, n in short.items())
         typer.echo(f"games has {counts}: run nhl ingest for those seasons", err=True)
         raise typer.Exit(code=1)
-    predictions, coverage, fits = walk_forward.run(sbr_odds, games, wanted)
+    # B2 (ADR 0013) reads the feature tables, which cover every game from 2011-12.
+    tables = b2.Tables(
+        games,
+        *(
+            lake.read(name)
+            for name in (
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        ),
+    )
+    problems = b2.input_problems(tables, max(wanted), EXPECTED_GAMES)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run the feature commands for those seasons", err=True)
+        raise typer.Exit(code=1)
+    b2_fits: dict[str, dict[int, b2.B2Model]] = {}
+    try:
+        predictions, coverage, fits = walk_forward.run(
+            sbr_odds, games, wanted, b2_tables=tables, b2_fits=b2_fits
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
     now = datetime.now(UTC)
     run_version = reports.version("backtest", now)
     report = reports.summary(predictions, coverage, fits, wanted, run_version, now)
+    report = b2_report.add(
+        report,
+        predictions,
+        b2_fits,
+        games,
+        tables.goalie_starts,
+        tables.actual_lineups,
+    )
     report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
     report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}
     path = reports.write(report, out)
+    b2_report.write_gaps(predictions, games, out)
     typer.echo(f"{path}: {report['version']}")
     parts = [(name, body) for name, body in report["experiments"].items()]
     parts += [(f"E2 {name}", body["E2"]) for name, body in report["sensitivity"].items()]
@@ -601,6 +638,60 @@ def schedule_terms(
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
     lake.replace_dates("schedule_terms", frame, frame["game_date"].unique().to_list())
     typer.echo(f"schedule_terms: {frame.height:,} games rated with {st.TUNED.label} ({version})")
+
+
+@app.command("tune-b2")
+def tune_b2(
+    out: Annotated[Path, typer.Option(help="Tuning report directory.")] = DEFAULT_TUNING_OUT,
+) -> None:
+    """Score B2's candidate L2 penalties on the training seasons (#78, ADR 0011, ADR 0013), each
+    season predicted by a fit on the earlier ones, and write the log to <out>/b2-<version>.md.
+    Reads the feature tables from the lake; writes no table."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports, tuning
+    from nhl_edge.game import b2
+    from nhl_edge.ingest.games import EXPECTED_GAMES
+    from nhl_edge.lake.tables import Lake
+
+    lake = Lake()
+    tables = b2.Tables(
+        *(
+            lake.read(name)
+            for name in (
+                "games",
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        )
+    )
+    last = max(b2.TUNING_SEASONS)
+    problems = b2.input_problems(tables, last, EXPECTED_GAMES)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run the feature commands for those seasons", err=True)
+        raise typer.Exit(code=1)
+    version = reports.version(b2.COMPONENT, datetime.now(UTC))
+    window = pl.col("season") <= last
+    tables = b2.Tables(*(frame.filter(window) for frame in tables.__dict__.values()))
+    candidates = [
+        tuning.Candidate(
+            settings, settings.label, b2.tuning_scores(tables, settings, b2.TUNING_SEASONS)
+        )
+        for settings in b2.GRID
+    ]
+    choice = tuning.choose(candidates, b2.steadiness)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{version}.md"
+    path.write_text(tuning.markdown(choice, "B2", version, b2.TUNING_SEASONS))
+    frozen = "matches" if choice.chosen == b2.TUNED else "differs from"
+    typer.echo(f"{path}: chose {choice.chosen.label}, which {frozen} the frozen TUNED")
 
 
 @app.command("goalie-start")

@@ -15,6 +15,7 @@ are read to score a prediction and, for games before the fold, to fit B1.
 
 from collections.abc import Iterable
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
@@ -31,11 +32,17 @@ from nhl_edge.market.devig import (
     overround,
 )
 
+if TYPE_CHECKING:
+    from nhl_edge.game.b2 import B2Model, Tables
+
 # B1 recalibrates the default de-vig method's probabilities (ADR 0008).
 B1_METHOD = DEFAULT_METHOD
+# B2 reads no price, so it has no de-vig method.
+NO_METHOD = "none"
 
 Coverage = dict[str, dict[int, dict[str, int]]]
 Fits = dict[str, dict[int, recalibration.Recalibration]]
+B2Fits = dict[str, dict[int, "B2Model"]]
 
 PREDICTION_SCHEMA = {
     "experiment": pl.String,
@@ -150,7 +157,7 @@ def b1(
 
 
 def _scored(
-    frame: pl.DataFrame, experiment: Experiment, model: str, method: Method
+    frame: pl.DataFrame, experiment: Experiment, model: str, method: Method | str
 ) -> pl.DataFrame:
     if "train_cutoff" not in frame.columns:
         frame = frame.with_columns(train_cutoff=pl.lit(None, PREDICTION_SCHEMA["train_cutoff"]))
@@ -158,7 +165,7 @@ def _scored(
         frame.with_columns(
             experiment=pl.lit(experiment.value),
             model=pl.lit(model),
-            method=pl.lit(method.value),
+            method=pl.lit(method.value if isinstance(method, Method) else method),
             log_loss=log_loss(pl.col("p_home"), pl.col("home_win")),
         )
         .select(list(PREDICTION_SCHEMA))
@@ -172,6 +179,8 @@ def run(
     seasons: Iterable[int],
     methods: Iterable[Method] = tuple(Method),
     refuse_implausible: bool = True,
+    b2_tables: "Tables | None" = None,
+    b2_fits: B2Fits | None = None,
 ) -> tuple[pl.DataFrame, Coverage, Fits]:
     """Every prediction for the test seasons, scored, the coverage per experiment and season, and
     B1's fit per experiment and season. sbr_odds and games hold the test seasons and the earlier
@@ -184,7 +193,11 @@ def run(
     Coverage counts the season's games, those with a price, those priced but without a result,
     those whose market de-vigging refuses, those scored, and B1's training games. E2's also counts
     the implausible openers it refuses, and the games whose opener differs from the close, which
-    sizes how much E2's opener can have moved before its assumed time (ADR 0006)."""
+    sizes how much E2's opener can have moved before its assumed time (ADR 0006).
+
+    With b2_tables, B2 (ADR 0013) predicts the games B1 scores, at the experiment's prediction
+    time, from a fit on the games before the fold, and b2_fits receives its fit per experiment and
+    season. Coverage then counts the games B2 scored and those it trained on."""
     seasons = sorted(set(seasons))
     held_out = [season for season in seasons if season_role(season) not in OPEN_ROLES]
     if held_out:
@@ -243,6 +256,24 @@ def run(
             predicted, fit = b1(fold, folds[season], season)
             frames.append(_scored(predicted, experiment, "B1", B1_METHOD))
             fits[experiment][season] = fit
+            b2_counts: dict[str, int] = {}
+            if b2_tables is not None:
+                from nhl_edge.game import b2
+
+                moments = predicted.select("game_id", "prediction_utc")
+                b2_rows, b2_fit = b2.predictions(
+                    b2_tables, moments, season, folds[season], b2.TUNED
+                )
+                scored_b2 = b2_rows.join(
+                    predicted.select(
+                        "game_id", "season", "game_date", "prediction_utc", "home_win"
+                    ),
+                    on="game_id",
+                )
+                frames.append(_scored(scored_b2, experiment, "B2", NO_METHOD))
+                if b2_fits is not None:
+                    b2_fits.setdefault(experiment, {})[season] = b2_fit
+                b2_counts = {"b2_scored": scored_b2.height, "b2_trained_on": b2_fit.games}
             counts = {
                 "games": games.filter(in_season).height,
                 "priced": quoted.filter(in_season).height,
@@ -255,6 +286,7 @@ def run(
                 counts[key] for key in ("unsettled", "refused", "implausible") if key in counts
             )
             counts["b1_trained_on"] = fit.games
+            counts |= b2_counts
             if experiment is Experiment.E2:
                 counts["opener_differs_from_close"] = moved.filter(in_season).height
             coverage[experiment][season] = counts
