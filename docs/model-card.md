@@ -4,7 +4,12 @@ Current production model, how it scored, and its known weaknesses. It is updated
 
 ## Current model
 
-None. Phase 1 has the two market baselines. B0 is the de-vigged SBR moneyline, with nothing fitted, under the default multiplicative method (ADR 0008). B1 is the recalibrated market, a logistic regression on B0's log-odds fitted per test season on the earlier seasons. Backtest `backtest-20260930-7301709` on the development seasons 2018-19 and 2021-22. E2 refuses implausible SBR openers (ADR 0007).
+None. The backtest has the two market baselines and phase 2's model:
+- **B0** is the de-vigged SBR moneyline, with nothing fitted, under the default multiplicative method (ADR 0008).
+- **B1** is the recalibrated market, a logistic regression on B0's log-odds fitted per test season on the earlier seasons.
+- **B2** is the team and goalie model (ADR 0013). It is an L2 logistic regression on team strength, goalie effects, rest and travel and empty seats, with the season home edge as a fixed term. Each fold fits it on earlier games with their actual starters. It predicts by averaging over the goalie-start model's pairs of starters, and reads no price. Gate 1 (#79) judges it against B1.
+
+The run is backtest `backtest-20261001-b406a8d` on the development seasons 2018-19 and 2021-22. E2 refuses implausible SBR openers (ADR 0007). B0 and B1 are unchanged from `backtest-20260930-7301709`.
 
 ## Metrics
 
@@ -12,22 +17,29 @@ Every metric is reported with a 95% weekly block bootstrap interval, pooled over
 
 | Metric | B0 | B1 | B2 | B3 | Blend |
 | --- | --- | --- | --- | --- | --- |
-| Log loss, E1 (close) | 0.6571 [0.6469, 0.6668] | 0.6567 [0.6456, 0.6670] | | | |
-| Log loss, E2 (opener) | 0.6603 [0.6505, 0.6698] | 0.6598 [0.6491, 0.6702] | | | |
-| Paired log-loss difference against B1, E1 | +0.0004 [-0.0005, +0.0013] | reference | | | |
-| Paired log-loss difference against B1, E2 | +0.0005 [-0.0006, +0.0015] | reference | | | |
-| Calibration intercept | | | | | |
-| Calibration slope | | | | | |
+| Log loss, E1 (close) | 0.6571 [0.6469, 0.6668] | 0.6567 [0.6456, 0.6670] | 0.6679 [0.6607, 0.6749] | | |
+| Log loss, E2 (opener) | 0.6603 [0.6505, 0.6698] | 0.6598 [0.6491, 0.6702] | 0.6677 [0.6605, 0.6748] | | |
+| Paired log-loss difference against B1, E1 | +0.0004 [-0.0005, +0.0013] | reference | +0.0112 [+0.0044, +0.0185] | | |
+| Paired log-loss difference against B1, E2 | +0.0005 [-0.0006, +0.0015] | reference | +0.0078 [+0.0013, +0.0146] | | |
+| Calibration intercept | | | E1 -0.098 [-0.211, +0.015]; E2 -0.099 [-0.209, +0.013] | | |
+| Calibration slope | | | E1 1.35 [1.09, 1.62]; E2 1.35 [1.10, 1.62] | | |
 | E3 CLV under the frozen policy | | | | | |
 
 ## Artifact versions
 
 | Component | Version | train_cutoff |
 | --- | --- | --- |
-| Backtest (B0, B1; E2 refuses implausible openers, with every opener as a sensitivity) | backtest-20260930-7301709 | per fold, below |
+| Backtest (B0, B1, B2; E2 refuses implausible openers, with every opener as a sensitivity) | backtest-20261001-b406a8d | per fold, below |
 | B0 | the de-vigged market (multiplicative, ADR 0008) | none: B0 fits nothing |
-| B1, 2018-19 fold (E1 and E2) | backtest-20260930-7301709 | 2018-04-09 10:00 UTC |
-| B1, 2021-22 fold (E1 and E2) | backtest-20260930-7301709 | 2021-05-20 10:00 UTC |
+| B1, 2018-19 fold (E1 and E2) | backtest-20261001-b406a8d | 2018-04-09 10:00 UTC |
+| B1, 2021-22 fold (E1 and E2) | backtest-20261001-b406a8d | 2021-05-20 10:00 UTC |
+| B2, 2018-19 fold (E1 and E2), L2 100 tuned by b2-20261001-fe11def | backtest-20261001-b406a8d | 2018-04-09 10:00 UTC |
+| B2, 2021-22 fold (E1 and E2) | backtest-20261001-b406a8d | 2021-05-20 10:00 UTC |
+| Team strength ΔS (ADR 0011) | team-strength-20261001-1b2a5b8 | 2018-04-09 10:00 UTC (tuning) |
+| Goalie-start model (ADR 0012) | goalie-start-20261001-784c4fb | per season, before its first game |
+| Goalie effects ΔG (ADR 0011) | goalie-effect-20261001-c05c300 | 2018-04-09 10:00 UTC (tuning) |
+| Schedule terms and home edge h_s (ADR 0011) | schedule-terms-20261001-84bc182 | 2018-04-09 10:00 UTC (tuning) |
+| xG (ADR 0010) | xg-20261001-de27a2c | per season, before its first game |
 
 ## Known weaknesses
 
@@ -50,6 +62,16 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - **E2 on every opener** is reported under `sensitivity` in summary.json: B0 0.6617 [0.6512, 0.6716], and a cost against E1 of +0.0046 [+0.0011, +0.0083].
 - **The 2021-22 market is under-confident,** most of all in January 2022, when favourites won 70% of games but were priced at 62%. B1, fitted on the seasons before, corrects only part of it. So a later model's gain concentrated in 2021-22 may still be recalibration.
 - **E2 rests on ADR 0006's opener time,** 10:00 US Eastern. From 2018-19 on, all but a handful of openers differ from their close.
+
+**B2 (ADR 0013), from `backtest-20261001-b406a8d`:**
+- **It is worse than the market,** as a model that reads no price is expected to be. B2 minus B1 is +0.0112 [+0.0044, +0.0185] on E1 and +0.0078 [+0.0013, +0.0146] on E2.
+  - Per season on E1: +0.0077 [-0.0011, +0.0180] in 2018-19 and +0.0146 [+0.0050, +0.0245] in 2021-22.
+  - On E2: +0.0055 [-0.0028, +0.0154] and +0.0100 [-0.0004, +0.0201].
+  - Its own log loss per season is 0.6804 and 0.6558 on E1.
+- **It is under-confident.** The calibration slope is 1.35 [1.09, 1.62] on E1, driven by 2021-22 (1.55 [1.25, 1.86]; 2018-19 1.06 [0.59, 1.59]). Its probabilities spread less than the market's (standard deviation 0.082 against 0.122 on E1), though the two agree in direction (correlation 0.78). Expected-goals team strength with an 80-game memory misses talent that shows in goals, and the goalie mixture flattens further.
+- **Gaps above 8 points against B1** (hard rule 8): 822 of 2,583 games on E1 (382 in 2018-19, 440 in 2021-22) and 775 of 2,573 on E2. They are listed in `reports/backtest/gaps.csv` without results, and counted in `summary.json`. The largest are games where team strength rates the teams even and the market does not, such as NJD against WSH in March 2019. That many cannot all get a manual review. Gate 1 (#79) decides how they are reviewed, and none led to a change of model.
+- **Weights** (on standardized inputs, 2021-22 fold): ΔS 0.29, ΔG 0.06, home back-to-back -0.08, away back-to-back +0.09. Rest, travel, time zones and empty seats are all within 0.03.
+- **Lineup quality:** the goalie-start model's Brier score over the test seasons' team-games is 0.415 [0.404, 0.426] (0.405 in 2018-19, 0.424 in 2021-22). 0.9% of starters were not among its candidates.
 
 ## Run history
 

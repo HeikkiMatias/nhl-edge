@@ -18,6 +18,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
   - `team_strength`, every game's rolling team strength ΔS from 2011-12 on (#74, ADR 0011), with frozen settings: a half-life of 80 games and a pull worth 40 games, tuned on the training seasons. Ratings of 2011-12 to 2017-18 count as known only from the tuning cutoff, 2018-04-09.
   - `goalie_starts`, each candidate goalie's probability of starting every team-game from 2011-12 on (#76, ADR 0012), from one model per season fitted on earlier boxscores
   - `goalie_effects`, each of those candidates' goals saved above expected over the game (#75, ADR 0011), with frozen settings: a half-life of 160 of the goalie's games and a pull worth 4,000 shots
+  - `schedule_terms`, every game's rest, travel, time-zone change, neutral site, open seats and season home edge h_s from 2011-12 on (#77, ADR 0011), the home edge's pull frozen at 1,600 games
   - `odds_snapshots`, every stored Odds API snapshot from 2026-09-28 on, matched to NHL games (#20)
   - `sbr_odds`, the SBR archive's opening and closing lines from 2010-11 to 2022-11-27, matched to NHL games (#7, 133,594 prices)
   - `pregame_goalies` and `dailyfaceoff_goalies`, from the goalie polls since 2026-09-29 (#43, #48)
@@ -51,14 +52,15 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 - **Odds snapshots:** a book's market priced at 1.0 (GTbets on 2026-09-30) used to fail the whole snapshot. Now the market is skipped and the raw copy keeps it (#83, #84).
 - **Goalie polls (#42, #43, #48):** the NHL pre-game poll and the Daily Faceoff poll run at every odds slot and hourly at :50. RotoWire is left out, because its terms forbid scraping. On the first night, 2026-09-29, the NHL's starter flag was set for no team in any poll, while Daily Faceoff already listed most starters as Confirmed (6 of 8 teams at 22:40 UTC, 4 of 4 at 01:37 UTC). Late runs left CAR at FLA and NYR at BOS with no poll in their last 80 minutes.
 - **Closed in P1:** #4, #5, #6, #7, #8, #20, #24, #25, #26, #27, #29, #43, #48, #50, #52, #56, #64, #65, #83.
-- **Closed in P2:** #28, #72, #73, #74, #75, #76.
+- **Closed in P2:** #28, #72, #73, #74, #75, #76, #77.
 
 ## In flight
 
-- **#77, schedule terms and the season home edge** (phase 2, task 8), the PR on `phase-2/schedule-terms`:
-  - It adds `features/schedule_terms.py`, `nhl schedule-terms` (`--tune`) and the `schedule_terms` table: rest, back-to-backs, travel, time-zone change, neutral sites and open seats per game, and h_s.
-  - The owner approved the spec. h_s's pull toward the three seasons before was tuned per ADR 0011. All six candidates tied, and the leader was the steadiest, 1,600 games, on the grid's edge. The owner chose to freeze it and keep the grid.
-  - After merge: `nhl schedule-terms --r2`.
+- **#78, B2 in the walk-forward** (phase 2, task 9), the PR on `phase-2/b2`:
+  - It adds `game/b2.py`, `backtest/b2_report.py`, `nhl tune-b2`, and B2 in `nhl backtest` (calibration, gaps above 8 points in `reports/backtest/gaps.csv`, the goalie-start Brier score).
+  - ADR 0013, B2's specification, was approved by the owner. h_s is a fixed term, and training uses the starters who played. Prediction averages over the goalie-start pairs.
+  - The L2 penalty was tuned to 100 (`reports/tuning/b2-20261001-fe11def.md`), a clean leader, not on the grid's edge.
+  - `backtest-20261001-b406a8d`: B2 minus B1 is +0.0112 [+0.0044, +0.0185] on E1 and +0.0078 [+0.0013, +0.0146] on E2. B2 is under-confident (calibration slope 1.35 [1.09, 1.62]) and differs from B1 by more than 8 points in 822 of 2,583 games. The model card has the details. Gate 1 (#79) comes next.
 - **#30's recheck** runs nightly; the first 2026-27 games are due on 2026-10-07.
 
 ## Decisions waiting for the owner
@@ -75,8 +77,8 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
    - #74 team strength, with the tuning protocol (ADR 0011): done;
    - #76 goalie-start model (ADR 0012): done. It came before #75, whose tuning uses its probabilities;
    - #75 goalie effect, tuned per ADR 0011: done. Codex's P0 on reusing team strength's frozen settings in its tuning is a won't-fix by the owner (ADR 0011's one choice per component);
-   - #77 schedule and home terms, h_s tuned per ADR 0011: in review;
-   - #78 B2 in the walk-forward. B2's L2 strength follows ADR 0011 too;
+   - #77 schedule and home terms, h_s tuned per ADR 0011: done;
+   - #78 B2 in the walk-forward (ADR 0013), its L2 strength tuned per ADR 0011: in review;
    - #79 gate 1.
 
 ## Keep an eye on
