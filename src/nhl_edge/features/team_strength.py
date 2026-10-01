@@ -192,7 +192,11 @@ def team_states(
     targets = targets.with_columns(line=pl.col("team").replace(dict(lines)))
     frames = []
     for (line,), rows in targets.group_by("line"):
-        past = history.filter(pl.col("line") == line).sort("observed_utc", "game_date", "game_id")
+        # A full sort key: the same rows are always summed in the same order, so a rating does
+        # not move in its last digits with rows it never reads (CI on #86).
+        past = history.filter(pl.col("line") == line).sort(
+            "observed_utc", "game_date", "game_id", "team"
+        )
         values = past.select(*SUMS, games=pl.lit(1.0)).to_numpy().astype(float)
         sums = _decayed(values, decay) if len(values) else np.zeros((0, len(columns)))
         # The team-games public before each target: a prefix of the history, by observed_utc.
@@ -215,7 +219,9 @@ def league_states(history: pl.DataFrame, targets: pl.DataFrame) -> pl.DataFrame:
     as_of in that season and the one before."""
     out = []
     for (season,), rows in targets.select("season", "as_of_utc").unique().group_by("season"):
-        past = history.filter(pl.col("season").is_in([season, season - 10001])).sort("observed_utc")
+        past = history.filter(pl.col("season").is_in([season, season - 10001])).sort(
+            "observed_utc", "game_id", "team"
+        )
         totals = past.select(*SUMS, games=pl.lit(1.0)).to_numpy().astype(float).cumsum(axis=0)
         seen = np.searchsorted(
             past["observed_utc"].to_numpy(), rows["as_of_utc"].to_numpy(), side="left"

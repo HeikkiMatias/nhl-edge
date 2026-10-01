@@ -6,6 +6,7 @@ average it shrinks toward."""
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
+from polars.testing import assert_frame_equal
 from team_fixtures import league
 
 from nhl_edge.backtest import tuning
@@ -30,6 +31,15 @@ def delta(inputs: dict[str, pl.DataFrame]) -> pl.DataFrame:
 BEFORE = delta(LEAGUE)
 
 
+def same(left: pl.DataFrame, right: pl.DataFrame) -> bool:
+    """Equal up to float rounding: a leak moves a rating by far more than 1e-12."""
+    try:
+        assert_frame_equal(left, right, rel_tol=1e-12, abs_tol=1e-12)
+    except AssertionError:
+        return False
+    return True
+
+
 def scaled_xg(rows: pl.Expr, factor: float) -> dict[str, pl.DataFrame]:
     """The league with the xG of the chosen games' shots multiplied by factor."""
     chosen = LEAGUE["games"].filter(rows).select("game_id")
@@ -43,13 +53,13 @@ def scaled_xg(rows: pl.Expr, factor: float) -> dict[str, pl.DataFrame]:
 
 def test_tonights_and_later_games_never_move_tonights_ratings() -> None:
     changed = scaled_xg(pl.col("game_date") >= NIGHT, 3.0)
-    assert delta(changed).equals(BEFORE)
+    assert same(delta(changed), BEFORE)
 
 
 def test_earlier_games_do_move_them() -> None:
     # The guard above is not vacuous.
     changed = scaled_xg(pl.col("game_date") < NIGHT, 3.0)
-    assert not delta(changed).equals(BEFORE)
+    assert not same(delta(changed), BEFORE)
 
 
 def test_a_game_public_only_after_ten_eastern_is_not_read() -> None:
@@ -74,7 +84,7 @@ def test_a_game_public_only_after_ten_eastern_is_not_read() -> None:
     assert (
         delta(shifted)
         .select("game_id", "delta_s")
-        .equals(delta(dropped).select("game_id", "delta_s"))
+        .pipe(same, delta(dropped).select("game_id", "delta_s"))
     )
 
 
@@ -160,8 +170,8 @@ def test_a_team_game_public_exactly_at_the_cutoff_is_not_read() -> None:
     }
     at = delta(public_at(cutoff)).select("game_id", "delta_s")
     just_before = delta(public_at(cutoff - timedelta(microseconds=1))).select("game_id", "delta_s")
-    assert at.equals(delta(dropped).select("game_id", "delta_s"))
-    assert just_before.equals(BEFORE.select("game_id", "delta_s"))
+    assert same(at, delta(dropped).select("game_id", "delta_s"))
+    assert same(just_before, BEFORE.select("game_id", "delta_s"))
 
 
 def test_an_earlier_result_published_after_the_fold_start_is_not_fitted_on() -> None:
@@ -183,4 +193,4 @@ def test_an_earlier_result_published_after_the_fold_start_is_not_fitted_on() -> 
     )
     left_out = games.filter(~late)
     scored = tuning.scored_games(feature, published_late, [20122013])
-    assert scored.equals(tuning.scored_games(feature, left_out, [20122013]))
+    assert same(scored, tuning.scored_games(feature, left_out, [20122013]))
