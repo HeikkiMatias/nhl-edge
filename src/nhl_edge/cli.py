@@ -425,6 +425,98 @@ def team_strength(
     typer.echo(f"team_strength: {frame.height:,} games rated with {ts.TUNED.label} ({version})")
 
 
+@app.command("goalie-effect")
+def goalie_effect(
+    seasons: Annotated[
+        str | None,
+        typer.Option(
+            help="Seasons to rate, as 20232024, a comma list or a range. Default: 2011-12 on."
+        ),
+    ] = None,
+    tune: Annotated[
+        bool,
+        typer.Option(
+            "--tune", help="Run the tuning grid on the training seasons and log it; write no table."
+        ),
+    ] = False,
+    out: Annotated[Path, typer.Option(help="Tuning report directory.")] = DEFAULT_TUNING_OUT,
+    r2: Annotated[
+        bool, typer.Option("--r2", help="Mirror the goalie_effects table to R2.")
+    ] = False,
+) -> None:
+    """Rate every goalie_starts candidate's effect with the frozen settings (#75, ADR 0011) into
+    the lake's goalie_effects. With --tune, score the 16 candidate settings on the training seasons
+    instead, by the ΔG expected under the goalie-start probabilities, and write the log to
+    <out>/goalie-effect-<version>.md."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports, tuning
+    from nhl_edge.features import goalie as ge
+    from nhl_edge.ingest.games import EXPECTED_GAMES
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    games = lake.read("games")
+    known = sorted(games["season"].unique().to_list())
+    try:
+        wanted = parse_seasons(seasons) if seasons else [s for s in known if s >= ge.FIRST_SEASON]
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    early = [season for season in wanted if season < ge.FIRST_SEASON]
+    if early and not tune:
+        raise typer.BadParameter(
+            f"{early} have no xG, so no goalie effect: it starts with {ge.FIRST_SEASON}",
+            param_hint="--seasons",
+        )
+    last = max(ge.TUNING_SEASONS) if tune else max(wanted)
+    shots, shot_xg, starts = lake.read("shots"), lake.read("shot_xg"), lake.read("goalie_starts")
+    problems = ge.input_problems(games, shot_xg, starts, last, EXPECTED_GAMES)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo(
+            "run nhl ingest --replay, nhl xg and nhl goalie-start for those seasons", err=True
+        )
+        raise typer.Exit(code=1)
+    goalies = ge.goalie_games(shots, shot_xg)
+    team_shots = ge.team_shot_games(games, shots, shot_xg)
+    version = reports.version(ge.COMPONENT, datetime.now(UTC))
+    if tune:
+        rated_games = games.filter(pl.col("season").is_between(ge.FIRST_SEASON, last))
+        candidates = starts.filter(pl.col("season").is_between(ge.FIRST_SEASON, last))
+        scored = []
+        for settings in ge.GRID:
+            rated = ge.effects(candidates, rated_games, goalies, team_shots, settings)
+            feature = ge.expected_delta(rated, candidates, rated_games)
+            games_scored = tuning.scored_games(feature, games, ge.TUNING_SEASONS)
+            scored.append(tuning.Candidate(settings, settings.label, games_scored))
+        choice = tuning.choose(scored, ge.steadiness)
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"{version}.md"
+        path.write_text(tuning.markdown(choice, "goalie effect", version, ge.TUNING_SEASONS))
+        frozen = "matches" if choice.chosen == ge.TUNED else "differs from"
+        typer.echo(f"{path}: chose {choice.chosen.label}, which {frozen} the frozen TUNED")
+        return
+    try:
+        rated_games = games.filter(pl.col("season").is_in(wanted))
+        if rated_games.is_empty():
+            raise ValueError(f"no games of {wanted} in the lake")
+        candidates = starts.filter(pl.col("season").is_in(wanted))
+        rated = ge.effects(candidates, rated_games, goalies, team_shots, ge.TUNED)
+        frame = ge.rows(rated, ge.TUNED, version)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    lake.replace_dates("goalie_effects", frame, rated_games["game_date"].unique().to_list())
+    typer.echo(
+        f"goalie_effects: {frame.height:,} candidates rated with {ge.TUNED.label} ({version})"
+    )
+
+
 @app.command("goalie-start")
 def goalie_start(
     seasons: Annotated[

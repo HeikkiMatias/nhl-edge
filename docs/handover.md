@@ -16,6 +16,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
     - `strength_time` gives each team's seconds at each strength state. Every game's seconds add up but 7 old games' (2011-12 to 2015-16), which the audit report lists.
   - `shot_xg`, every unblocked shot's xG from 2011-12 on (#73, ADR 0010), from one model per season fitted on earlier seasons
   - `team_strength`, every game's rolling team strength ΔS from 2011-12 on (#74, ADR 0011), with frozen settings: a half-life of 80 games and a pull worth 40 games, tuned on the training seasons. Ratings of 2011-12 to 2017-18 count as known only from the tuning cutoff, 2018-04-09.
+  - `goalie_starts`, each candidate goalie's probability of starting every team-game from 2011-12 on (#76, ADR 0012), from one model per season fitted on earlier boxscores
   - `odds_snapshots`, every stored Odds API snapshot from 2026-09-28 on, matched to NHL games (#20)
   - `sbr_odds`, the SBR archive's opening and closing lines from 2010-11 to 2022-11-27, matched to NHL games (#7, 133,594 prices)
   - `pregame_goalies` and `dailyfaceoff_goalies`, from the goalie polls since 2026-09-29 (#43, #48)
@@ -49,15 +50,14 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 - **Odds snapshots:** a book's market priced at 1.0 (GTbets on 2026-09-30) used to fail the whole snapshot. Now the market is skipped and the raw copy keeps it (#83, #84).
 - **Goalie polls (#42, #43, #48):** the NHL pre-game poll and the Daily Faceoff poll run at every odds slot and hourly at :50. RotoWire is left out, because its terms forbid scraping. On the first night, 2026-09-29, the NHL's starter flag was set for no team in any poll, while Daily Faceoff already listed most starters as Confirmed (6 of 8 teams at 22:40 UTC, 4 of 4 at 01:37 UTC). Late runs left CAR at FLA and NYR at BOS with no poll in their last 80 minutes.
 - **Closed in P1:** #4, #5, #6, #7, #8, #20, #24, #25, #26, #27, #29, #43, #48, #50, #52, #56, #64, #65, #83.
-- **Closed in P2:** #28, #72, #73, #74.
+- **Closed in P2:** #28, #72, #73, #74, #76.
 
 ## In flight
 
-- **#76, the goalie-start model** (phase 2, task 7), the PR on `phase-2/goalie-start`:
-  - It adds `lineup/goalie_start.py`, its report `audit/goalie_start.py`, `nhl goalie-start` and the `goalie_starts` table.
-  - ADR 0012, the specification, was approved by the owner. Candidates are the goalies dressed in the team's last 10 games. A conditional logit on fixed inputs is refit per season on earlier seasons, with nothing tuned.
-  - On the training seasons it beats the share of the last ten starts in every season: top pick 70.5% to 73.6%, and 0.6% to 0.9% of starters not among the candidates.
-  - After merge: `nhl goalie-start --r2`.
+- **#75, the goalie effect ΔG** (phase 2, task 6), the PR on `phase-2/goalie-effect`:
+  - It adds `features/goalie.py`, `nhl goalie-effect` (`--tune`) and the `goalie_effects` table: each goalie-start candidate's goals saved above expected per shot, times the shots his team is expected to allow.
+  - Tuned per ADR 0011 by the ΔG expected under the goalie-start probabilities. Thirteen of 16 settings tied. The rule took the steadiest, a half-life of 160 goalie games and a pull worth 4,000 shots, on the grid's corner and tying by about 2e-6. The owner chose to follow the rule.
+  - After merge: `nhl goalie-effect --r2`.
 - **#30's recheck** runs nightly; the first 2026-27 games are due on 2026-10-07.
 
 ## Decisions waiting for the owner
@@ -72,15 +72,17 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
    - #30 recheck (merged as #80; closes after two weeks of rechecked games, about 2026-10-22, once the corrections section is reviewed);
    - #28 strength source (ADR 0009), #72 strength time and #73 xG (ADR 0010): done;
    - #74 team strength, with the tuning protocol (ADR 0011): done;
-   - #76 goalie-start model (ADR 0012): in review. It comes before #75, whose tuning uses its probabilities;
-   - #75 goalie effect and #77 schedule and home terms. Their settings follow ADR 0011;
+   - #76 goalie-start model (ADR 0012): done. It came before #75, whose tuning uses its probabilities;
+   - #75 goalie effect, tuned per ADR 0011: in review;
+   - #77 schedule and home terms. Their settings follow ADR 0011;
    - #78 B2 in the walk-forward. B2's L2 strength follows ADR 0011 too;
    - #79 gate 1.
 
 ## Keep an eye on
 
 - **Missed pre-game polls can't be redone.** If the timer stops, a late poll loses that game's data for #9 and #42.
-- **In-sample training seasons:** xG of 2012-13 to 2017-18 is in-sample for the rebound term per season (ADR 0010), and team strength there for its tuned settings (ADR 0011). Both may train later models, but no result may present them as out-of-sample. Every fold from 2018-19 on is clean.
+- **In-sample training seasons:** xG of 2012-13 to 2017-18 is in-sample for the rebound term per season (ADR 0010), and team strength and goalie effects there for their tuned settings (ADR 0011). Both may train later models, but no result may present them as out-of-sample. Every fold from 2018-19 on is clean.
+- **Later tunings reuse earlier frozen settings:** the goalie effect was tuned on 2012-13 to 2017-18 with team strength's frozen settings in its expected shots, though those were chosen on the same seasons. Codex raised it as a P0 on #88, and the owner kept it as ADR 0011 intends: one choice per component, later ones building on earlier ones. B2's L2 strength (#78) will be tuned the same way, on ΔS and ΔG.
 - **xG's known misses (ADR 0010):** 3v3 overtime is under-predicted by about 1.6 goals per 100 shots, and shots from 0 to 10 feet are over-predicted by about 0.6.
 - **Merged branches left on GitHub:** `phase-1/odds-placeholder-prices`, `phase-2/xg` and earlier ones. The session's git proxy refuses branch deletes. Delete them from GitHub's branch page if you like.
 - **#21 (P5):** the closing proxy should key on the Odds API event and its commence time, not `game_id`.
@@ -90,6 +92,6 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 ## Continuing from a terminal
 
 1. `git pull` on `main`, then `uv sync`.
-2. `uv run nhl status` compares this machine with R2. To catch up: `uv run nhl lake restore-raw`, `uv run nhl ingest --seasons 20102011-20252026 --replay`, `uv run nhl odds replay`, `uv run nhl odds sbr --replay`, `uv run nhl goalies replay`, then `uv run nhl xg`, `uv run nhl team-strength` and `uv run nhl goalie-start`. None of them calls a paid endpoint.
+2. `uv run nhl status` compares this machine with R2. To catch up: `uv run nhl lake restore-raw`, `uv run nhl ingest --seasons 20102011-20252026 --replay`, `uv run nhl odds replay`, `uv run nhl odds sbr --replay`, `uv run nhl goalies replay`, then `uv run nhl xg`, `uv run nhl team-strength`, `uv run nhl goalie-start` and `uv run nhl goalie-effect`. None of them calls a paid endpoint.
 3. `uv run nhl backtest` reruns the backtest in under a minute. Commit code first: the run's version string ends in `-dirty` when `src/`, `pyproject.toml` or `uv.lock` has uncommitted changes.
 4. The SessionStart hook lists the open issues of the earliest milestone. CLAUDE.md's workflow (branch per issue, Codex review budget, merge when ready) applies as before.

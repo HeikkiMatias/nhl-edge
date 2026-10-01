@@ -23,6 +23,7 @@ COMMANDS = [
     "xg",
     "team-strength",
     "goalie-start",
+    "goalie-effect",
     "bets",
     "odds",
     "lake",
@@ -635,6 +636,75 @@ def test_goalie_start_prints_no_held_out_fits_size(
     lines = {line.split(":")[0].strip(): line for line in result.output.splitlines()}
     assert "fitted on held out" in lines["20122013"]
     assert "team-games" in lines["20112012"]
+
+
+def goalie_effect_lake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    import polars as pl
+    from goalie_fixtures import with_shots
+
+    from nhl_edge.features import team_strength as ts
+    from nhl_edge.lineup import goalie_start as gs
+
+    frames = goalie_lake(monkeypatch)
+    monkeypatch.setattr(ts, "team_lines", lambda: {})
+    league = with_shots({"games": frames["games"], "lineups": frames["actual_lineups"]})
+    frames["shots"], frames["shot_xg"] = league["shots"], league["shot_xg"]
+    frames["games"] = league["games"]
+    frames["goalie_starts"], _, _ = gs.score(
+        frames["actual_lineups"],
+        frames["games"],
+        [20112012, 20122013],
+        "goalie-start-20261001-x",
+        {},
+    )
+    # The fixture's 2010-11 has no xG, like the lake's.
+    frames["games"] = frames["games"].filter(pl.col("season") >= 20112012)
+    return frames
+
+
+def test_goalie_effect_rates_every_candidate_with_the_frozen_settings(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nhl_edge.features import goalie as ge
+
+    frames = goalie_effect_lake(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["goalie-effect"])
+    assert result.exit_code == 0, result.output
+    rows = frames["goalie_starts"].height
+    assert f"goalie_effects: {rows:,} candidates rated with {ge.TUNED.label}" in result.output
+    assert list((tmp_path / "data" / "lake" / "goalie_effects").rglob("*.parquet"))
+
+
+def test_goalie_effect_tune_logs_every_candidate(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nhl_edge.features import goalie as ge
+
+    goalie_effect_lake(monkeypatch)
+    monkeypatch.setattr(ge, "TUNING_SEASONS", (20122013,))
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["goalie-effect", "--tune"])
+    assert result.exit_code == 0, result.output
+    assert "chose half-life" in result.output and "the frozen TUNED" in result.output
+    (report,) = (tmp_path / "reports" / "tuning").glob("goalie-effect-*.md")
+    text = report.read_text()
+    assert text.count("| half-life ") == 16 and "(chosen)" in text
+    assert not (tmp_path / "data").exists()
+
+
+def test_goalie_effect_refuses_a_game_without_goalie_starts(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+
+    frames = goalie_effect_lake(monkeypatch)
+    first = frames["games"]["game_id"][0]
+    frames["goalie_starts"] = frames["goalie_starts"].filter(pl.col("game_id") != first)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["goalie-effect"])
+    assert result.exit_code == 1
+    assert "1 games without goalie starts" in plain(result.output)
 
 
 def test_goalie_start_refuses_a_lake_with_a_team_game_without_a_starter(

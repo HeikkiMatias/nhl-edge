@@ -639,6 +639,52 @@ class TeamStrength(pa.DataFrameModel):
         return data.lazyframe.select((pl.col("delta_s") - parts).abs() < 1e-9)
 
 
+class GoalieEffects(pa.DataFrameModel):
+    """A candidate goalie's effect before a team-game (#75, ADR 0011), one row per goalie_starts
+    candidate. effect is his goals saved above expected per unblocked shot, decayed by his own
+    games (half_life) and shrunk toward zero (prior_shots); goalie_games counts the games of his
+    it read. expected_shots is the unblocked shots his team is expected to allow, and goals_saved
+    their product. B2 takes the home goalie's goals_saved minus the away goalie's as ΔG.
+
+    as_of_utc is the game's as-of time, as for team strength. train_cutoff is the last result the
+    tuning run that chose the settings read, and observed_utc the later of the two: an effect of
+    2011-12 to 2017-18, the seasons the settings were tuned on, is unavailable before the cutoff
+    (ADR 0011)."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    goalie_id: pl.Int64
+    effect: pl.Float64
+    goalie_games: pl.Int32 = pa.Field(ge=0)
+    expected_shots: pl.Float64 = pa.Field(ge=0)
+    goals_saved: pl.Float64
+    half_life: pl.Float64 = pa.Field(gt=0)
+    prior_shots: pl.Float64 = pa.Field(ge=0)
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^goalie-effect-\d{8}-")
+    as_of_utc: UtcDatetime
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "team", "goalie_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def known_no_earlier_than_its_cutoffs(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        observed = pl.col("observed_utc")
+        return data.lazyframe.select(
+            (observed >= pl.col("as_of_utc")) & (observed >= pl.col("train_cutoff"))
+        )
+
+    @pa.dataframe_check
+    def goals_saved_is_effect_times_shots(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        product = pl.col("effect") * pl.col("expected_shots")
+        return data.lazyframe.select((pl.col("goals_saved") - product).abs() < 1e-9)
+
+
 class GoalieStarts(pa.DataFrameModel):
     """The probability that a goalie starts a team's game (#76, ADR 0012), one row per candidate:
     each goalie who dressed for the team in its last ten games public before observed_utc. A

@@ -176,6 +176,13 @@ A game's chart is `complete` when it has no bad rows and every dressed player's 
 - **`train_cutoff`:** the last result the tuning run read (2018-04-09 10:00 UTC). Ratings of 2011-12 to 2017-18 are in-sample for the settings by design, so their `observed_utc` is the cutoff, and no fold starting before it can read them.
 - **Commands:** `nhl team-strength` writes the table, and `--tune` reruns the grid on the training seasons and logs it to `reports/tuning/`. It refuses while a game it needs has no xG or no strength time.
 
+`goalie_effects` (#75, ADR 0011) holds, for every `goalie_starts` candidate, the goals he is expected to save above an average goalie over the game.
+- **Effect per shot:** his xG against minus goals against per unblocked shot faced (the shots `shot_xg` scores), decayed by his own games and shrunk toward zero. His history follows him from team to team.
+- **Expected shots:** the average of the opponent's unblocked shots per game and his team's allowed per game, each shrunk toward the league with team strength's frozen settings. `goals_saved` is the effect times them, and ΔG for a pair of goalies is the home one's `goals_saved` minus the away one's.
+- **Settings:** tuned on the training seasons by the ΔG expected under the goalie-start probabilities, then frozen: a half-life of 160 of the goalie's games and a pull worth 4,000 shots. Thirteen of the 16 settings tied, and the rule took the steadiest, on the grid's corner (`reports/tuning/goalie-effect-20261001-dc79a24.md`).
+- **Timing and `train_cutoff`:** as `team_strength`. Effects of 2011-12 to 2017-18 count as known only from the tuning cutoff, 2018-04-09 10:00 UTC.
+- **Commands:** `nhl goalie-effect` writes the table, and `--tune` reruns the grid on the training seasons and logs it to `reports/tuning/`. It refuses while a game it needs has no xG or no goalie-start probabilities.
+
 `goalie_starts` (#76, ADR 0012) holds, for every team-game from 2011-12 on, the probability that each candidate goalie starts it (`p_start`, adding up to 1 per team-game).
 - **Candidates:** the goalies who dressed for the team in its last 10 games public before the as-of time, followed through its line of team codes. A team with no earlier game has no rows.
 - **Model:** a conditional logit on each candidate's share of recent and season starts, his last start, run of starts, back-to-back, rest and whether he dressed last game, all from `actual_lineups` of earlier games (hard rule 9). One model per season, fitted on earlier seasons' starters public before the season's first as-of time; `train_cutoff` is the last of them.
