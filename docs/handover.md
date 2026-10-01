@@ -60,7 +60,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
   - It adds `game/b2.py`, `backtest/b2_report.py`, `nhl tune-b2`, and B2 in `nhl backtest` (calibration, gaps above 8 points in `reports/backtest/gaps.csv`, the goalie-start Brier score).
   - ADR 0013, B2's specification, was approved by the owner. h_s is a fixed term, and training uses the starters who played. Prediction averages over the goalie-start pairs.
   - The L2 penalty was tuned to 100 (`reports/tuning/b2-20261001-fe11def.md`), a clean leader, not on the grid's edge.
-  - `backtest-20261001-b406a8d`: B2 minus B1 is +0.0112 [+0.0044, +0.0185] on E1 and +0.0078 [+0.0013, +0.0146] on E2. B2 is under-confident (calibration slope 1.35 [1.09, 1.62]) and differs from B1 by more than 8 points in 822 of 2,583 games. The model card has the details. Gate 1 (#79) comes next.
+  - `backtest-20261001-388bb85`: B2 minus B1 is +0.0112 [+0.0044, +0.0185] on E1 and +0.0078 [+0.0013, +0.0146] on E2. B2 is under-confident (calibration slope 1.35 [1.09, 1.62]) and differs from B1 by more than 8 points in 822 of 2,583 games. The model card has the details. Gate 1 (#79) comes next.
 - **#30's recheck** runs nightly; the first 2026-27 games are due on 2026-10-07.
 
 ## Decisions waiting for the owner
