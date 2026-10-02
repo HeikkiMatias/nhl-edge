@@ -54,7 +54,7 @@ The phase plan was approved on 2026-10-01. It is pasted in full in every phase 3
 **Open follow-ups:**
 - **#114 (P3):** `nhl status` should compare the stored time-on-ice reports with R2.
 - **#117 (P3):** refetch the landing pages once a season. It first matters for the 2027-28 priors, and it measures ADR 0016's corrections.
-- **#120 (P3):** the lineup model's two misses. Skaters after an early exit are given 0.52 and dress 0.39 of the time. In a season's first game, last season's regulars are given 0.67 and dress 0.63, and the other candidates are given 0.35 and dress 0.44. First measure whether they move #100 or B3; any change needs a new ADR.
+- **#120 (P3):** two possible calibration gaps in the lineup model, seen as point estimates only. Skaters after an early exit: given 0.52, dressed 0.39. A season's first game: last season's regulars given 0.67, dressed 0.63; the others given 0.35, dressed 0.44. None is a finding yet (hard rule 7). First give each gap a weekly block bootstrap interval, then measure whether it moves #100 or B3. Any change needs a new ADR.
 - **#121 (P5):** evaluate Yahoo or Daily Faceoff injury statuses as a live-only lineup source. Check the terms first, then log them and measure them against who dressed.
 
 **Gate 2:** B3 beats B2 on future games, overall and after trades, injuries and lineup changes. That includes the one-time 2025-26 test, which needs the owner's explicit go-ahead. B2 is B3's reference (hard rule 3).
@@ -140,8 +140,11 @@ The phase plan was approved on 2026-10-01. It is pasted in full in every phase 3
   2. `nhl stints`
   3. `nhl team-strength`
   4. `nhl goalie-start`
-  5. `nhl goalie-effect`
-  6. `nhl schedule-terms`
+  5. `nhl lineups` (it copies the goalie-start probabilities)
+  6. `nhl goalie-effect`
+  7. `nhl schedule-terms`
+
+  `nhl player-seasons --r2` rebuilds `player_league_seasons` from the raw landing pages. It has no fitted model, so its place in the order doesn't matter.
 - **Cloud sessions have no `gh`:** use the GitHub MCP tools, or the API through the session's proxy (`curl` with `Content-Type: application/json` for POST and PATCH).
 - **Codex:**
   - It answers as a review with findings, a 👍 reaction, or a comment saying it found no major issues. Check all three.
