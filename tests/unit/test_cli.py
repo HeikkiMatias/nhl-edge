@@ -1048,6 +1048,24 @@ def test_rapm_writes_the_tables_and_the_report(
     assert "## Per season" in text and "### Power play" in text and "## 5v5 leaders" in text
 
 
+def test_rapm_ignores_charts_before_its_first_season(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+
+    frames = rapm_lake(monkeypatch)
+    # 2010-11 has no xG, so RAPM never reads its stints.
+    older = (
+        frames["shift_coverage"]
+        .head(1)
+        .with_columns(game_id=pl.lit(2010020001, pl.Int64), season=pl.lit(20102011, pl.Int32))
+    )
+    frames["shift_coverage"] = pl.concat([older, frames["shift_coverage"]])
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["rapm"])
+    assert result.exit_code == 0, result.output
+
+
 def test_rapm_refuses_a_game_without_lineups(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

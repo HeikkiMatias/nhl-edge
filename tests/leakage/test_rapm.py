@@ -1,6 +1,7 @@
 """Point-in-time rules for RAPM (#101, ADR 0019, hard rule 1). A game's ratings and its fit's terms
 read only stints public before its as-of time: its own night's stints and later ones never move
-them, and a stint public exactly at the as-of time counts as not yet public."""
+them, nor do its own night's and later boxscore roles, and a stint public exactly at the as-of
+time counts as not yet public."""
 
 import numpy as np
 import polars as pl
@@ -70,6 +71,32 @@ def test_tonights_and_later_stints_never_move_tonights_ratings() -> None:
     moved, terms = tonight(doubled(pl.col("game_date") >= NIGHT))
     same(moved, BASE, OUTPUTS)
     same(terms, BASE_TERMS, ("value", "hours"))
+
+
+def test_tonights_and_later_roles_never_move_tonights_ratings() -> None:
+    # The power play's defensemen term reads each game's boxscore roles: swapping forwards and
+    # defensemen from tonight on leaves tonight's ratings as they were.
+    later = GAMES.filter(pl.col("game_date") >= NIGHT)["game_id"].implode()
+    swapped = pl.when(pl.col("role") == "D").then(pl.lit("F")).otherwise(pl.lit("D"))
+    roles = ROLES.with_columns(
+        role=pl.when(pl.col("game_id").is_in(later)).then(swapped).otherwise(pl.col("role"))
+    )
+    ratings, terms = rapm.rate(
+        fx.seasons_of(STINTS), GAMES, roles, VENUES, WANTED, SETTINGS, VERSION
+    )
+    same(ratings.sort("game_id", "player_id", "component"), BASE, OUTPUTS)
+    same(terms.sort("model", "term"), BASE_TERMS, ("value", "hours"))
+
+
+def test_earlier_roles_do_move_them() -> None:
+    earlier = GAMES.filter(pl.col("game_date") < NIGHT)["game_id"].implode()
+    roles = ROLES.with_columns(
+        role=pl.when(pl.col("game_id").is_in(earlier)).then(pl.lit("F")).otherwise(pl.col("role"))
+    )
+    ratings, _ = rapm.rate(fx.seasons_of(STINTS), GAMES, roles, VENUES, WANTED, SETTINGS, VERSION)
+    pp = pl.col("component") == "pp"
+    moved = ratings.sort("game_id", "player_id", "component").filter(pp)["mean"].to_numpy()
+    assert not np.allclose(moved, BASE.filter(pp)["mean"].to_numpy())
 
 
 def test_earlier_stints_do_move_them() -> None:

@@ -83,4 +83,4 @@ None yet. #103 tunes the memory, the pull and aging on 5v5 (ADR 0011), and the p
 
 - **#103** tunes the memory, the pull and aging. A setting outside its grid needs a new ADR.
 - **#102** replaces the prior mean of 0.
-- **Or gate 2** shows the ratings not moving B3, or the arena term or the power-play model's terms behaving oddly. A change to the rows or terms then needs a new ADR.
+- **Or gate 2's development seasons** show the ratings not moving B3, or the arena term or the power-play model's terms behaving oddly. A change to the rows or terms then needs a new ADR. A redesign after the one-time 2025-26 test has been scored uses that test up.

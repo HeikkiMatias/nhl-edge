@@ -1114,7 +1114,8 @@ def rapm_command(
     read = [s for s in known if rapm.FIRST_SEASON <= s <= max(wanted)]
     # Stints built for part of a season would rate its players on part of it.
     played = pl.concat([lake.read("stints", seasons=[s]).select("game_id").unique() for s in read])
-    problems = mins.input_problems(lake.read("shift_coverage"), played, max(wanted))
+    coverage = lake.read("shift_coverage").filter(pl.col("season") >= rapm.FIRST_SEASON)
+    problems = mins.input_problems(coverage, played, max(wanted))
     candidates = rapm.targets(lake.read("lineups", seasons=wanted), games, wanted)
     without = games.filter(pl.col("season").is_in(wanted)).join(
         candidates.select("game_id").unique(), on="game_id", how="anti"
