@@ -229,8 +229,8 @@ def player_seasons(
         bool,
         typer.Option(
             "--r2",
-            help="Restore the landing pages, players and boxscores from R2 first, and mirror "
-            "the table.",
+            help="Restore the landing pages, players, games and boxscores from R2 first, and "
+            "mirror the table.",
         ),
     ] = False,
 ) -> None:
@@ -238,7 +238,8 @@ def player_seasons(
     cache: each player's season lines in every league, for the NHLe priors. Never makes a
     request. A player in players without a cached page, or without a boxscore in
     actual_lineups yet, is counted and left out."""
-    from nhl_edge.ingest.player_seasons import LANDING_PREFIX, build
+    from nhl_edge.ingest.games import EXPECTED_GAMES
+    from nhl_edge.ingest.player_seasons import LANDING_PREFIX, build, lineup_problems
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
@@ -250,12 +251,19 @@ def player_seasons(
         typer.echo(f"restored {restored} raw landing pages from R2")
     lake = Lake.from_env(mirror=r2)
     if r2:
-        lake.pull("players")
-        lake.pull("actual_lineups")
+        for table in ("players", "games", "actual_lineups"):
+            lake.pull(table)
     players, lineups = lake.read("players"), lake.read("actual_lineups")
     if players.is_empty() or lineups.is_empty():
         # Without boxscores every player would look unplayed and the rebuild would empty the table.
         typer.echo("no players or no boxscores in the lake: run nhl ingest", err=True)
+        raise typer.Exit(code=1)
+    # A partial copy of the boxscores would date debuts too late and drop players.
+    problems = lineup_problems(lake.read("games"), lineups, EXPECTED_GAMES)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("the boxscores are incomplete: run nhl ingest --replay, or pass --r2", err=True)
         raise typer.Exit(code=1)
     try:
         frame, report = build(store, players, lineups)

@@ -27,6 +27,7 @@ from nhl_edge.ingest.player_seasons import (
     landing_lines,
     league_name,
     league_name_of,
+    lineup_problems,
     player_league_seasons,
     season_lines_public,
 )
@@ -264,3 +265,19 @@ def test_schema_rejects_a_wrong_time_league_or_game_type() -> None:
             PlayerLeagueSeasons.validate(frame.with_columns(change))
     with pytest.raises(pandera.errors.SchemaError):
         PlayerLeagueSeasons.validate(pl.concat([frame, frame.head(1)]))  # a key twice
+
+
+def test_lineup_problems_name_a_short_season_and_a_game_without_a_boxscore() -> None:
+    lineups = boxscores(SKATER, GOALIE)
+    schema = {"game_id": pl.Int64, "season": pl.Int32}
+    games = pl.DataFrame(
+        {"game_id": [1991020005, 2011020800], "season": [19911992, 20112012]}, schema=schema
+    )
+    assert lineup_problems(games, lineups, {20112012: 1}) == []
+    extra = pl.concat(
+        [games, pl.DataFrame({"game_id": [2011020801], "season": [20112012]}, schema=schema)]
+    )
+    assert lineup_problems(extra, lineups, {20112012: 3}) == [
+        "20112012: 2 of 3 games",
+        "1 games without a boxscore in actual_lineups, e.g. 2011020801",
+    ]

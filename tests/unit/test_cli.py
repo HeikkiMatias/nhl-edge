@@ -263,6 +263,7 @@ def test_player_seasons_rebuilds_the_table_from_the_cached_pages(
     from nhl_edge.lake.tables import Lake
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nhl_edge.ingest.games.EXPECTED_GAMES", {})
     no_requests(monkeypatch)
     Lake().write("players", players(SKATER, GOALIE, NO_PAGE))
     Lake().write("actual_lineups", boxscores(SKATER, GOALIE, NO_PAGE))
@@ -297,6 +298,7 @@ def test_player_seasons_needs_players_and_their_pages(
     from nhl_edge.lake.tables import Lake
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nhl_edge.ingest.games.EXPECTED_GAMES", {})
     no_requests(monkeypatch)
     empty = runner.invoke(app, ["player-seasons"])
     assert empty.exit_code == 1
@@ -312,6 +314,27 @@ def test_player_seasons_needs_players_and_their_pages(
     bare = runner.invoke(app, ["player-seasons"])
     assert bare.exit_code == 1
     assert "no landing pages in the raw cache" in plain(bare.output)
+    assert Lake().read("player_league_seasons").equals(table())
+
+
+def test_player_seasons_refuses_incomplete_boxscores(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from player_season_fixtures import SKATER, boxscores, players, table
+
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    # A season the lake should hold in full has none of its games.
+    monkeypatch.setattr("nhl_edge.ingest.games.EXPECTED_GAMES", {20102011: 1230})
+    no_requests(monkeypatch)
+    Lake().write("players", players(SKATER))
+    Lake().write("actual_lineups", boxscores(SKATER))
+    Lake().write("player_league_seasons", table())
+    result = runner.invoke(app, ["player-seasons"])
+    assert result.exit_code == 1
+    assert "20102011: 0 of 1,230 games" in plain(result.output)
+    assert "the boxscores are incomplete" in plain(result.output)
     assert Lake().read("player_league_seasons").equals(table())
 
 
@@ -335,6 +358,7 @@ def test_player_seasons_restores_the_pages_from_r2_and_mirrors_the_table(
     runner_lake.write("players", players(SKATER, GOALIE))
     runner_lake.write("actual_lineups", boxscores(SKATER, GOALIE))
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nhl_edge.ingest.games.EXPECTED_GAMES", {})
     no_requests(monkeypatch)
     result = runner.invoke(app, ["player-seasons", "--r2"])
     assert result.exit_code == 0, result.output

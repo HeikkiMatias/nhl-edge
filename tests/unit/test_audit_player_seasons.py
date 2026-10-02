@@ -153,3 +153,16 @@ def test_a_first_boxscore_the_lineups_no_longer_show_first_is_a_problem() -> Non
         f"2 players' first_boxscore_utc is not their first boxscore in actual_lineups, e.g. "
         f"{SKATER}, {GOALIE}: rerun nhl player-seasons"
     ]
+
+
+def test_a_player_who_debuted_in_a_hidden_season_is_left_out() -> None:
+    # The goalie's first game moves to the one-time test season: his earlier lines would show it.
+    frame = table()
+    shown = audit.drop_hidden_debuts(frame, boxscores(SKATER, GOALIE))
+    assert shown.equals(frame)
+    hidden = boxscores(SKATER, GOALIE).with_columns(
+        season=pl.when(pl.col("player_id") == GOALIE)
+        .then(pl.lit(20252026, pl.Int32))
+        .otherwise(pl.col("season"))
+    )
+    assert audit.drop_hidden_debuts(frame, hidden)["player_id"].unique().to_list() == [SKATER]

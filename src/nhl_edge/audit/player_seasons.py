@@ -2,8 +2,8 @@
 the lines in the leagues with the most of them. It shows counts only: the landing pages hold the
 goals and assists of held-out seasons, which must stay unseen, and one rule for all seasons keeps
 the section simple. As the stints section, it leaves out the one-time test season and the live
-seasons, which no design choice may see even as counts; the leagues with the most lines are picked
-without them too.
+seasons, which no design choice may see even as counts, and the players who debuted in them, whose
+earlier lines would show it. The leagues with the most lines are picked without them too.
 
 A player in players without a cached landing page is a problem: his lines are missing until his
 page is fetched. So is a row whose first_boxscore_utc is not the player's first boxscore in
@@ -61,6 +61,19 @@ def markdown_report(report: pl.DataFrame, leagues: list[str]) -> str:
         counts = (row[column] for column in ("players", "lines", *leagues, "other"))
         lines.append(f"| {row['season']} | " + " | ".join(f"{n:,}" for n in counts) + " |")
     return "\n".join(lines)
+
+
+def drop_hidden_debuts(frame: pl.DataFrame, lineups: pl.DataFrame) -> pl.DataFrame:
+    """frame without the players whose first boxscore in lineups (actual_lineups) is in a season
+    the section hides: their earlier lines would show who debuted in the one-time test or a live
+    season."""
+    debuts = (
+        lineups.sort("observed_utc")
+        .group_by("player_id")
+        .agg(debut_season=pl.col("season").first())
+        .filter(shown(pl.col("debut_season")))
+    )
+    return frame.join(debuts, on="player_id", how="semi")
 
 
 def first_game_problems(frame: pl.DataFrame, lineups: pl.DataFrame) -> list[str]:

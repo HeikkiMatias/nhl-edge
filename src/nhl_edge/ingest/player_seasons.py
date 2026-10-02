@@ -23,6 +23,7 @@ actual_lineups), and a player without a boxscore has none until he plays.
 """
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -183,6 +184,26 @@ def first_boxscores(lineups: pl.DataFrame) -> pl.DataFrame:
     """Each player's first_boxscore_utc: when his first boxscore in actual_lineups became
     public."""
     return lineups.group_by("player_id").agg(first_boxscore_utc=pl.col("observed_utc").min())
+
+
+def lineup_problems(
+    games: pl.DataFrame, lineups: pl.DataFrame, expected: Mapping[int, int]
+) -> list[str]:
+    """Why lineups (actual_lineups) cannot give every player's first boxscore: a season short of
+    its games (expected), or a game without a boxscore. A rebuild from a partial copy would date
+    debuts too late and drop players, and replace the whole table with that."""
+    problems = []
+    for season in sorted(expected):
+        count = games.filter(pl.col("season") == season).height
+        if count != expected[season]:
+            problems.append(f"{season}: {count:,} of {expected[season]:,} games")
+    missing = games.join(lineups.select("game_id").unique(), on="game_id", how="anti")
+    if missing.height:
+        examples = ", ".join(map(str, missing.sort("game_id")["game_id"].head(3).to_list()))
+        problems.append(
+            f"{missing.height:,} games without a boxscore in actual_lineups, e.g. {examples}"
+        )
+    return problems
 
 
 def player_league_seasons(
