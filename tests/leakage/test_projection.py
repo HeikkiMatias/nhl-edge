@@ -9,7 +9,7 @@ from datetime import timedelta
 
 import numpy as np
 import polars as pl
-from lineup_fixtures import league
+from lineup_fixtures import league, scored_with_minutes
 from polars.testing import assert_frame_equal
 
 from nhl_edge.backtest.market import PREDICTION_LAG
@@ -159,7 +159,7 @@ def test_an_earlier_boxscore_published_after_the_cutoff_is_not_fitted_on() -> No
 
 
 def test_every_probability_is_known_before_e1_and_e2_and_after_its_model() -> None:
-    skaters, _, models = pr.score(LINEUPS, GAMES, [20112012, SEASON], VERSION, {})
+    skaters, _, models = scored_with_minutes(LINEUPS, GAMES, [20112012, SEASON], VERSION)
     starts, _, _ = gs.score(LINEUPS, GAMES, [20112012, SEASON], "goalie-start-20261001-abc1234", {})
     table = pr.with_goalies(skaters, starts)
     for row in table.join(GAMES.select("game_id", "start_utc"), on="game_id").iter_rows(named=True):

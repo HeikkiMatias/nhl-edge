@@ -901,11 +901,14 @@ def test_goalie_start_prints_no_held_out_fits_size(
 
 
 def lineup_lake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    from lineup_fixtures import league
+    import polars as pl
+    from lineup_fixtures import league, minutes_frame
 
+    from nhl_edge.features import team_strength as ts
     from nhl_edge.ingest import games as games_module
     from nhl_edge.lake.tables import Lake
     from nhl_edge.lineup import goalie_start as gs
+    from nhl_edge.lineup import minutes as mins
     from nhl_edge.lineup import projection as pr
 
     frames: dict[str, Any] = league()
@@ -920,6 +923,13 @@ def lineup_lake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     counts = dict(frames["games"].group_by("season").len().iter_rows())
     monkeypatch.setattr(games_module, "EXPECTED_GAMES", counts)
     monkeypatch.setattr(pr, "team_lines", lambda: {})
+    monkeypatch.setattr(ts, "team_lines", lambda: {})
+    # The fixture has no stints: its minutes come straight from the boxscores (#100).
+    monkeypatch.setattr(
+        mins,
+        "lake_minutes",
+        lambda lake, boxscores, last: minutes_frame(boxscores.filter(pl.col("season") <= last)),
+    )
     monkeypatch.setattr(Lake, "read", lambda self, table: frames[table])
     return frames
 
@@ -936,8 +946,11 @@ def test_lineups_writes_the_table_and_the_report(
     # The fixture's seasons are all training seasons, so every fit shows its size.
     assert "20122013: fitted on" in result.output and "held out" not in result.output
     assert list((tmp_path / "data" / "lake" / "lineups").rglob("*.parquet"))
+    assert list((tmp_path / "data" / "lake" / "lineup_replacements").rglob("*.parquet"))
+    assert "replacement rows" in result.output
     (path,) = (tmp_path / "reports" / "lineups").glob("lineup-*.md")
-    assert "## Per season" in path.read_text()
+    text = path.read_text()
+    assert "## Per season" in text and "## Ice time" in text
 
 
 def test_lineups_refuses_a_team_game_without_goalie_starts(

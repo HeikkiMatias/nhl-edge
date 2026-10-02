@@ -1019,6 +1019,9 @@ class GoalieStarts(pa.DataFrameModel):
 # The skaters who dress for a team-game: 18 in all but 20 of 18,711 team-games of 2010-11 to
 # 2017-18 (ADR 0017).
 DRESSED_SKATERS = 18
+# The skaters a team dresses by role, and its first power-play unit (#100, ADR 0018).
+SKATER_SLOTS = {"F": 12, "D": 6}
+PP_UNIT = 5
 
 
 class Lineups(pa.DataFrameModel):
@@ -1034,6 +1037,13 @@ class Lineups(pa.DataFrameModel):
     artifact_version names the run. A goalie (role G) has p_start, copied with its train_cutoff
     and artifact_version from goalie_starts (ADR 0012), and a team-game's goalies add up to 1.
 
+    A skater also has his expected minutes at 5v5, on the power play and on the penalty kill
+    (exp_5v5, exp_pp, exp_pk; #100, ADR 0018): his probability of dressing times his decayed,
+    pulled minutes, scaled so that a team-game's candidates of a role and its replacement skaters
+    (LineupReplacements) add up to the league's minutes of the role the season before. pp_unit
+    marks the five with the most expected power-play minutes. Goalies have none of these.
+    train_cutoff covers both the availability model and the season-before figures of the minutes.
+
     observed_utc is the game's as-of time: 10:00 US Eastern on the game date, or an hour before
     the start if that is earlier, as for team strength."""
 
@@ -1045,6 +1055,10 @@ class Lineups(pa.DataFrameModel):
     role: pl.String = pa.Field(isin=ROLES)
     p_available: pl.Float64 = pa.Field(gt=0, le=1, nullable=True)
     p_start: pl.Float64 = pa.Field(gt=0, le=1, nullable=True)
+    exp_5v5: pl.Float64 = pa.Field(ge=0, nullable=True)
+    exp_pp: pl.Float64 = pa.Field(ge=0, nullable=True)
+    exp_pk: pl.Float64 = pa.Field(ge=0, nullable=True)
+    pp_unit: pl.Boolean = pa.Field(nullable=True)
     train_cutoff: UtcDatetime
     artifact_version: pl.String = pa.Field(str_matches=r"^(lineup|goalie-start)-\d{8}-")
     observed_utc: UtcDatetime
@@ -1064,6 +1078,19 @@ class Lineups(pa.DataFrameModel):
         )
 
     @pa.dataframe_check
+    def only_skaters_have_minutes(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        goalie = pl.col("role") == "G"
+        columns = ("exp_5v5", "exp_pp", "exp_pk", "pp_unit")
+        return data.lazyframe.select(
+            pl.all_horizontal(goalie == pl.col(column).is_null() for column in columns)
+        )
+
+    @pa.dataframe_check
+    def a_power_play_unit_of_at_most_five(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        unit = pl.col("pp_unit").fill_null(False).cast(pl.Int32).sum().over("game_id", "team")
+        return data.lazyframe.select(unit <= PP_UNIT)
+
+    @pa.dataframe_check
     def model_predates_the_game(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(pl.col("train_cutoff") < pl.col("observed_utc"))
 
@@ -1080,6 +1107,45 @@ class Lineups(pa.DataFrameModel):
     def goalies_add_up_to_one(cls, data: pa.PolarsData) -> pl.LazyFrame:
         total = pl.col("p_start").sum().over("game_id", "team")
         return data.lazyframe.select((pl.col("role") != "G") | ((total - 1).abs() < 1e-9))
+
+
+class LineupReplacements(pa.DataFrameModel):
+    """A team's replacement skaters before a game (#100, ADR 0018), one row per role: the slots
+    (SKATER_SLOTS) its candidates in Lineups leave short of, expected count, and their expected
+    minutes in all at 5v5, on the power play and on the penalty kill. Each gets a newcomer's
+    average minutes of the season before, one average for a team's first game of a season and one
+    for its other games. A team-game's candidates of a role and its replacements add up to the
+    league's skater-minutes of the role the season before.
+
+    train_cutoff, artifact_version and observed_utc are those of the team-game's skaters in
+    Lineups."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    role: pl.String = pa.Field(isin=list(SKATER_SLOTS))
+    count: pl.Float64 = pa.Field(ge=0)
+    exp_5v5: pl.Float64 = pa.Field(ge=0)
+    exp_pp: pl.Float64 = pa.Field(ge=0)
+    exp_pk: pl.Float64 = pa.Field(ge=0)
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^lineup-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "team", "role"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def model_predates_the_game(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("train_cutoff") < pl.col("observed_utc"))
+
+    @pa.dataframe_check
+    def at_most_the_role_s_slots(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        slots = pl.col("role").replace_strict(SKATER_SLOTS, return_dtype=pl.Float64)
+        return data.lazyframe.select(pl.col("count") <= slots)
 
 
 class Shifts(pa.DataFrameModel):

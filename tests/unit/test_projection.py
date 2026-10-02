@@ -4,7 +4,7 @@ import numpy as np
 import polars as pl
 import pytest
 from goalie_fixtures import lineup_frame, public_after, start_of
-from lineup_fixtures import league
+from lineup_fixtures import league, scored_with_minutes
 from scipy.optimize import check_grad
 
 from nhl_edge.audit import projection as report
@@ -228,7 +228,8 @@ def test_the_first_seasons_fit_has_no_earlier_first_games() -> None:
 
 
 def scored_league() -> tuple[pl.DataFrame, pl.DataFrame, list[pr.AvailabilityModel]]:
-    return pr.score(LEAGUE["lineups"], LEAGUE["games"], [20112012, 20122013], VERSION, {})
+    # The skaters' rows carry their minutes (#100), as nhl lineups writes them.
+    return scored_with_minutes(LEAGUE["lineups"], LEAGUE["games"], [20112012, 20122013], VERSION)
 
 
 def goalie_starts() -> pl.DataFrame:

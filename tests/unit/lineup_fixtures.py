@@ -9,6 +9,7 @@ start at 23:00 UTC, and each boxscore is public at 10:00 UTC the next morning (A
 
 from datetime import date, timedelta
 from itertools import count
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -163,3 +164,47 @@ def _goalies(
         }
         for k, goalie in enumerate((first, backup))
     ]
+
+
+def minutes_frame(lineups: pl.DataFrame, seed: int = 5) -> pl.DataFrame:
+    """Per-game minutes of every dressed skater, as lineup.minutes.player_minutes gives them from
+    stints (#100): each skater has his own level in each state (by his id), a game's minutes vary
+    around it, and an early exit plays a fifth of them. Every game has stints, public with its
+    boxscore, and each team is its own line."""
+    rng = np.random.default_rng(seed)
+    skaters = lineups.filter(pl.col("role") != "G").sort("game_id", "team", "player_id")
+    ids = skaters["player_id"].to_numpy()
+    defense = (skaters["role"] == "D").to_numpy()
+    share = np.where(skaters["toi_s"].to_numpy() == EARLY_TOI, 0.2, 1.0)
+    level = {
+        "5v5": np.where(defense, 16.0, 12.0) + (ids % 7 - 3) * 0.8,
+        "pp": np.where(ids % 4 == 0, 3.0, 0.4),
+        "pk": np.where(ids % 3 == 0, 2.0, 0.3),
+    }
+    spread = {"5v5": 1.5, "pp": 0.5, "pk": 0.4}
+    played = {
+        state: np.clip(share * (level[state] + rng.normal(0, spread[state], len(ids))), 0, None)
+        for state in level
+    }
+    return skaters.select(
+        "game_id", "season", "game_date", "team", "player_id", "role", "observed_utc"
+    ).with_columns(
+        **{state: pl.Series(values, dtype=pl.Float64) for state, values in played.items()},
+        line=pl.col("team"),
+    )
+
+
+def scored_with_minutes(
+    lineups: pl.DataFrame, games: pl.DataFrame, seasons: list[int], version: str
+) -> tuple[pl.DataFrame, pl.DataFrame, list[Any]]:
+    """projection.score's skater rows with their minutes (#100) from minutes_frame, as nhl
+    lineups writes them, the scored candidates and the models. Each team is its own line."""
+    from nhl_edge.lineup import minutes as mins
+    from nhl_edge.lineup import projection as pr
+
+    rows = pr.candidates(games, lineups, {})
+    skaters, scored, models = pr.score(lineups, games, seasons, version, {}, rows)
+    played = minutes_frame(lineups)
+    constants = {season: mins.season_constants(played, rows, season) for season in seasons}
+    projected, _ = mins.project(scored, played, constants, {})
+    return mins.with_minutes(skaters, projected, constants), scored, models
