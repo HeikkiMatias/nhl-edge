@@ -1148,6 +1148,108 @@ class LineupReplacements(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("count") <= slots)
 
 
+# RAPM's player components (#101, ADR 0019): 5v5 offense and defense, power-play offense and
+# penalty-kill defense. Finishing and penalties (plan §4) come with their tasks.
+RATING_COMPONENTS = ("ev_off", "ev_def", "pp", "pk")
+RAPM_MODELS = ("ev", "pp")
+
+
+class PlayerRatings(pa.DataFrameModel):
+    """A candidate skater's RAPM ratings before a game (#101, ADR 0019), one row per component:
+    his effect on xG per hour of ice time, offense raising his team's and defense lowering the
+    other's (plan §5), from the stints public before as_of_utc, team strength's as-of time.
+    known_utc is the latest stint time read, null before the first stints with xG. The candidates
+    are those of Lineups.
+
+    mean is relative to the average skater at 5v5 and on the penalty kill. On the power play it is
+    relative to the average forward, a defenseman's adding his role's average there. sd is the
+    ridge's posterior spread, the prior's for a player without data, and null before any data; a
+    defenseman's power-play sd includes the role term's variance and covariance with his own.
+    hours is the decayed ice time behind the rating, 0 without data. half_life_days and
+    pull_hours are the settings.
+
+    train_cutoff is the last result the specification's figures read, as for team strength; and
+    observed_utc, when the rating could be known, is the later of as_of_utc and train_cutoff."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    player_id: pl.Int64
+    role: pl.String = pa.Field(isin=["F", "D"])
+    component: pl.String = pa.Field(isin=list(RATING_COMPONENTS))
+    mean: pl.Float64
+    sd: pl.Float64 = pa.Field(ge=0, nullable=True)
+    hours: pl.Float64 = pa.Field(ge=0)
+    known_utc: UtcDatetime = pa.Field(nullable=True)
+    half_life_days: pl.Float64 = pa.Field(gt=0)
+    pull_hours: pl.Float64 = pa.Field(gt=0)
+    as_of_utc: UtcDatetime
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^rapm-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "player_id", "component"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def reads_only_stints_public_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("known_utc").is_null() | (pl.col("known_utc") < pl.col("as_of_utc"))
+        )
+
+    @pa.dataframe_check
+    def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        later = pl.max_horizontal("as_of_utc", "train_cutoff")
+        return data.lazyframe.select(pl.col("observed_utc") == later)
+
+
+class RapmTerms(pa.DataFrameModel):
+    """The terms of each RAPM fit behind PlayerRatings (#101, ADR 0019), once per game date and
+    fit: the intercept, the season, arena, home, score and zone terms that only remove bias, the
+    power play's situation and defensemen terms, and sigma, the residual sd per square-root hour.
+    B3 reads its xG rates from the intercept and season terms, since ratings are relative to a
+    skater rated 0. hours is the decayed ice time of the rows with the term, null for the
+    defensemen term, a count, and sigma.
+
+    known_utc is the latest stint time the fit read, and as_of_utc the earliest as-of time of the
+    date's games it serves; train_cutoff and observed_utc as in PlayerRatings."""
+
+    season: pl.Int32
+    game_date: pl.Date
+    model: pl.String = pa.Field(isin=list(RAPM_MODELS))
+    term: pl.String
+    value: pl.Float64
+    hours: pl.Float64 = pa.Field(ge=0, nullable=True)
+    known_utc: UtcDatetime
+    half_life_days: pl.Float64 = pa.Field(gt=0)
+    pull_hours: pl.Float64 = pa.Field(gt=0)
+    as_of_utc: UtcDatetime
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^rapm-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_date", "known_utc", "model", "term"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def read_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("known_utc") < pl.col("as_of_utc"))
+
+    @pa.dataframe_check
+    def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        later = pl.max_horizontal("as_of_utc", "train_cutoff")
+        return data.lazyframe.select(pl.col("observed_utc") == later)
+
+
 class Shifts(pa.DataFrameModel):
     """One player shift from the shift chart (type 517 rows), periods 1 to 4.
 
