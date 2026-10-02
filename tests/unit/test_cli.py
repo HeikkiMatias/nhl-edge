@@ -861,17 +861,13 @@ def test_stints_cuts_every_complete_game(tmp_path: Any, monkeypatch: pytest.Monk
 
     tables = [parsed_feeds(game_id) for game_id in (*OPENING_WEEK_GAMES, MTL_ARI)]
     frames = {name: pl.concat([t[name] for t in tables]) for name in tables[0]}
-    frames["games"] = frames["shift_coverage"].select("game_id", "season", "game_date")
-    frames["shot_xg"] = pl.DataFrame(
-        schema={
-            "game_id": pl.Int64,
-            "season": pl.Int32,
-            "event_id": pl.Int32,
-            "xg": pl.Float64,
-            "train_cutoff": pl.Datetime("us", "UTC"),
-            "artifact_version": pl.String,
-        }
+    from stint_fixtures import empty_shot_xg, real_calendar
+
+    games = [*OPENING_WEEK_GAMES, MTL_ARI]
+    frames["games"] = frames["shift_coverage"].join(
+        real_calendar(games).with_columns(game_id=pl.Series(games)), on=["game_id", "season"]
     )
+    frames["shot_xg"] = empty_shot_xg()
     stint_lake(monkeypatch, frames)
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["stints", "--seasons", "20102011"])
@@ -883,8 +879,10 @@ def test_stints_cuts_every_complete_game(tmp_path: Any, monkeypatch: pytest.Monk
     assert refused.exit_code == 1
     assert "20222023: no xG" in refused.output
     # A held-out season is written without showing its counts.
-    shot = frames["shots"].filter(pl.col("season") == 20222023, ~pl.col("is_penalty_shot")).head(1)
-    frames["shot_xg"] = shot.select(
+    from nhl_edge.features import xg
+
+    scored = frames["shots"].filter(pl.col("season") == 20222023, xg.scorable())
+    frames["shot_xg"] = scored.select(
         "game_id",
         "season",
         "event_id",

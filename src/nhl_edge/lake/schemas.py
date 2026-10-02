@@ -1032,9 +1032,9 @@ STINT_SKATERS = (3, 6)
 
 
 class Stints(pa.DataFrameModel):
-    """One stint (#97, ADR 0015): a stretch of a period in which the players on the ice do not
-    change, by the game's shift chart. Only games whose chart is complete (ShiftCoverage) have
-    stints. RAPM's rows (docs/plan.md sections 4 and 5).
+    """One stint (#97, ADR 0015): a stretch of a period in which the players on the ice, by the
+    game's shift chart, and the score do not change. Only games whose chart is complete
+    (ShiftCoverage) have stints. RAPM's rows (docs/plan.md sections 4 and 5).
 
     start_s and end_s are elapsed game seconds, and the stint holds every moment t with
     start_s < t <= end_s, as a shift does. stint_id numbers a game's stints in time order.
@@ -1048,8 +1048,10 @@ class Stints(pa.DataFrameModel):
     team's side (Faceoffs), null when the stint starts with a change on the fly. home_xg,
     away_xg, home_goals and away_goals count each team's unblocked shots in the stint, penalty
     shots left out: xG from shot_xg, which gives none to shots at an empty net or without
-    coordinates, and goals from shots. The xG columns, xg_version and xg_train_cutoff are null for
-    a game without xG, such as every game of 2010-11.
+    coordinates, and goals from shots. The xG columns, xg_version and xg_train_cutoff are null in
+    a season without xG, such as 2010-11. A season's xG comes from one model, fitted before its
+    first game (hard rule 1); features/stints.py refuses anything else, and a shot that model
+    scores without a shot_xg row.
 
     drop_reason says why RAPM leaves the stint out (STINT_DROPS, ADR 0015), null for a stint it
     keeps. observed_utc is 10:00 UTC the morning after game_date, with the game's feeds (ADR 0004).

@@ -3,9 +3,9 @@ RAPM's rows (docs/plan.md sections 4 and 5).
 
 A game's stints come from its shift chart, and only a complete chart gives any (ShiftCoverage,
 ADR 0009): every dressed player's shifts add up to his time on ice. Each period is cut at every
-shift start and end. A player is on the ice for the moments t with start_s < t <= end_s, as in
-Shifts, so a stint holds the shots and goals of (start_s, end_s]. Two stretches in a row with the
-same players are one stint.
+shift start and end, and at every goal, so a stint has one score. A player is on the ice for the
+moments t with start_s < t <= end_s, as in Shifts, so a stint holds the shots and goals of
+(start_s, end_s]. Two stretches in a row with the same players and score are one stint.
 
 The chart's counts are kept as they are (ADR 0009 trusts a complete chart over situationCode).
 RAPM leaves out only a stint whose counts are impossible (ADR 0015): a team with fewer than 3 or
@@ -23,6 +23,7 @@ per game, for the lineup projection (#100) and B3 (#106).
 
 import polars as pl
 
+from nhl_edge.backtest.walk_forward import fold_start
 from nhl_edge.features import xg
 from nhl_edge.lake.schemas import STINT_SKATERS, Stints, dtypes
 
@@ -34,14 +35,21 @@ STATES = ("5v5", "pp", "pk", "other")
 GAME_KEYS = ("game_id", "season", "game_date")
 
 
-def _on_ice(shifts: pl.DataFrame, lineups: pl.DataFrame) -> pl.DataFrame:
-    """Each stretch between two consecutive shift starts or ends of a period (start_s, end_s],
-    with every player on the ice for it, the player's side and whether he is a goalie."""
+def _goal_times(shots: pl.DataFrame) -> pl.DataFrame:
+    """The moment of every goal, penalty shots included: the score changes there."""
+    return shots.filter(pl.col("is_goal")).select("game_id", "period", t="seconds").unique()
+
+
+def _on_ice(shifts: pl.DataFrame, lineups: pl.DataFrame, goals: pl.DataFrame) -> pl.DataFrame:
+    """Each stretch between two consecutive shift starts or ends or goals of a period
+    (start_s, end_s], with every player on the ice for it, the player's side and whether he is a
+    goalie."""
     bounds = (
         pl.concat(
             [
                 shifts.select("game_id", "period", t="start_s"),
                 shifts.select("game_id", "period", t="end_s"),
+                goals.join(shifts.select("game_id").unique(), on="game_id"),
             ]
         )
         .unique()
@@ -79,9 +87,9 @@ def _on_ice(shifts: pl.DataFrame, lineups: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _players(on_ice: pl.DataFrame) -> pl.DataFrame:
+def _players(on_ice: pl.DataFrame, goals: pl.DataFrame) -> pl.DataFrame:
     """Per stretch, each team's skaters (sorted ids) and goalies, merged with the stretch before
-    when the same players are on the ice and no gap separates them."""
+    when the same players are on the ice, no gap separates them and no goal changed the score."""
     skater, goalie, home = ~pl.col("is_goalie"), pl.col("is_goalie"), pl.col("is_home")
     ids = pl.col("player_id")
     stretches = (
@@ -98,8 +106,10 @@ def _players(on_ice: pl.DataFrame) -> pl.DataFrame:
     by = ("game_id", "period")
     same = pl.all_horizontal(pl.col(c) == pl.col(c).shift(1).over(by) for c in players)
     joined = pl.col("start_s") == pl.col("end_s").shift(1).over(by)
+    after_goal = goals.select("game_id", "period", start_s="t", after_goal=pl.lit(True))
     return (
-        stretches.with_columns(new=~(same & joined).fill_null(False))
+        stretches.join(after_goal, on=["game_id", "period", "start_s"], how="left")
+        .with_columns(new=~(same & joined).fill_null(False) | pl.col("after_goal").fill_null(False))
         .with_columns(group=pl.col("new").cum_sum())
         .group_by("game_id", "period", "group")
         .agg(
@@ -140,21 +150,56 @@ def _zone(stints: pl.DataFrame, faceoffs: pl.DataFrame) -> pl.DataFrame:
     return stints.join(starts, on=["game_id", "period", "start_s"], how="left")
 
 
-def _shot_totals(stints: pl.DataFrame, shots: pl.DataFrame, shot_xg: pl.DataFrame) -> pl.DataFrame:
-    """Each team's xG and goals in each stint from its unblocked shots, penalty shots left out;
-    xG null for a game without shot_xg rows, with the version and cutoff of its xG model."""
-    models = shot_xg.group_by("game_id").agg(
-        xg_version=pl.col("artifact_version").first(),
-        xg_train_cutoff=pl.col("train_cutoff").max(),
-        versions=pl.col("artifact_version").n_unique(),
-    )
-    mixed = models.filter(pl.col("versions") > 1).sort("game_id")
-    if mixed.height:
-        examples = ", ".join(str(g) for g in mixed["game_id"].head(3).to_list())
-        raise ValueError(
-            f"{mixed.height} games have xG from more than one model, e.g. {examples}: rerun nhl xg"
+def _xg_models(
+    games: pl.DataFrame, shots: pl.DataFrame, shot_xg: pl.DataFrame, calendar: pl.DataFrame
+) -> pl.DataFrame:
+    """The xG model of each game (game_id, xg_version, xg_train_cutoff), from its season's rows of
+    shot_xg; a game of a season without any has none. Fails when a season's rows come from more
+    than one model, when its model was not fitted before the season's first game (fold_start,
+    hard rule 1), or when a shot the model scores (xg.scorable) has no row: nhl xg must run again.
+    games holds the game_id and season of the games whose shots are passed."""
+    seasons = (
+        shot_xg.join(games.select("game_id"), on="game_id")
+        .group_by("season")
+        .agg(
+            xg_version=pl.col("artifact_version").first(),
+            xg_train_cutoff=pl.col("train_cutoff").first(),
+            models=pl.struct("artifact_version", "train_cutoff").n_unique(),
         )
-    models = models.drop("versions")
+    )
+    for row in seasons.sort("season").iter_rows(named=True):
+        if row["models"] > 1:
+            raise ValueError(f"{row['season']} has xG from more than one model: rerun nhl xg")
+        start = fold_start(calendar, row["season"])
+        if row["xg_train_cutoff"] >= start:
+            raise ValueError(
+                f"{row['season']}'s xG model was fitted at {row['xg_train_cutoff']}, not before "
+                f"the season's first game at {start}: rerun nhl xg"
+            )
+    models = games.select("game_id", "season").join(seasons.drop("models"), on="season")
+    unscored = (
+        shots.join(models.select("game_id"), on="game_id")
+        .filter(xg.scorable())
+        .join(shot_xg.select("game_id", "event_id"), on=["game_id", "event_id"], how="anti")
+        .sort("game_id", "event_id")
+    )
+    if unscored.height:
+        examples = ", ".join(
+            f"{g} event {e}" for g, e in unscored.select("game_id", "event_id").head(3).rows()
+        )
+        raise ValueError(
+            f"{unscored.height} shots of {unscored['game_id'].n_unique()} games have no xG, "
+            f"e.g. {examples}: rerun nhl xg"
+        )
+    return models.drop("season")
+
+
+def _shot_totals(
+    stints: pl.DataFrame, shots: pl.DataFrame, shot_xg: pl.DataFrame, models: pl.DataFrame
+) -> pl.DataFrame:
+    """Each team's xG and goals in each stint from its unblocked shots, penalty shots left out,
+    with the game's xG model (models); xG null for a game without one. A shot the model does not
+    score, at an empty net or without coordinates, counts 0 xG."""
     located = (
         shots.filter(~pl.col("is_penalty_shot"))
         .join(shot_xg.select("game_id", "event_id", "xg"), on=["game_id", "event_id"], how="left")
@@ -208,17 +253,21 @@ def build(
     shots: pl.DataFrame,
     shot_xg: pl.DataFrame,
     faceoffs: pl.DataFrame,
+    calendar: pl.DataFrame,
 ) -> pl.DataFrame:
     """The stints of every game coverage rates complete, as Stints rows, from the games' own
-    per-game tables and their shots' xG."""
-    complete = coverage.filter(pl.col("complete")).select("game_id")
+    per-game tables and their shots' xG. calendar holds the season and start_utc of every game of
+    the seasons, for each season's fold start."""
+    complete = coverage.filter(pl.col("complete")).select("game_id", "season")
     shifts = shifts.join(complete, on="game_id", how="semi")
     if shifts.is_empty():
         return pl.DataFrame(schema=dtypes(Stints))
+    goals = _goal_times(shots)
+    models = _xg_models(complete, shots, shot_xg, calendar)
     low, high = STINT_SKATERS
     count = {side: pl.col(f"{side}_skaters").list.len() for side in ("home", "away")}
     goalies = {side: pl.col(f"{side}_goalies") for side in ("home", "away")}
-    stints = _players(_on_ice(shifts, lineups)).with_columns(
+    stints = _players(_on_ice(shifts, lineups, goals), goals).with_columns(
         seconds=pl.col("end_s") - pl.col("start_s"),
         strength=pl.format("{}v{}", count["home"], count["away"]),
         drop_reason=pl.when(
@@ -234,7 +283,7 @@ def build(
             for side in ("home", "away")
         },
     )
-    stints = _shot_totals(_zone(_score(stints, shots), faceoffs), shots, shot_xg)
+    stints = _shot_totals(_zone(_score(stints, shots), faceoffs), shots, shot_xg, models)
     observed = (
         pl.concat(
             [

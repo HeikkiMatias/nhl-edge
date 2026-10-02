@@ -10,7 +10,9 @@ from stint_fixtures import (
     XG_VERSION,
     build,
     coverage_frame,
+    empty_shot_xg,
     full_period,
+    real_calendar,
     without,
 )
 
@@ -21,22 +23,14 @@ FIXTURE_GAMES = (*OPENING_WEEK_GAMES, MTL_ARI)
 
 def fixture_stints(game_id: int) -> tuple[pl.DataFrame, dict[str, pl.DataFrame]]:
     tables = parsed_feeds(game_id)
-    shot_xg = pl.DataFrame(
-        schema={
-            "game_id": pl.Int64,
-            "event_id": pl.Int32,
-            "xg": pl.Float64,
-            "train_cutoff": pl.Datetime("us", "UTC"),
-            "artifact_version": pl.String,
-        }
-    )
     frame = stints.build(
         tables["shift_coverage"],
         tables["shifts"],
         tables["actual_lineups"],
         tables["shots"],
-        shot_xg,
+        empty_shot_xg(),
         tables["faceoffs"],
+        real_calendar([game_id]),
     )
     return frame, tables
 
@@ -167,27 +161,43 @@ def test_xg_adds_up_per_team_and_carries_its_model() -> None:
     shots = [
         (1, 100, True, False),
         (2, 200, False, False),
-        (3, 300, True, True),
+        (3, 250, True, False),
         (4, 400, True, False),
     ]
-    frame = build(full_period(), shots=shots, xg={1: 0.1, 2: 0.2, 3: 0.3})
+    # Shot 4 has no coordinates, so the xG model gives it none, as it gives an empty-net shot.
+    frame = build(full_period(), shots=shots, xg={1: 0.1, 2: 0.2, 3: 0.3}, no_coordinates=(4,))
     row = frame.row(0, named=True)
-    # Shot 4 has no xG, as an empty-net shot or one without coordinates would not.
     assert row["home_xg"] == pytest.approx(0.4)
     assert row["away_xg"] == pytest.approx(0.2)
-    assert (row["home_goals"], row["away_goals"]) == (1, 0)
     assert (row["xg_version"], row["xg_train_cutoff"]) == (XG_VERSION, XG_CUTOFF)
 
 
-def test_a_game_with_xg_from_two_models_is_refused() -> None:
-    from stint_fixtures import coverage_frame as coverage
+def test_a_shot_the_xg_model_scores_without_xg_is_refused() -> None:
+    shots = [(1, 100, True, False), (2, 200, False, False)]
+    with pytest.raises(ValueError, match="1 shots of 1 games have no xG"):
+        build(full_period(), shots=shots, xg={1: 0.1})
+
+
+def test_a_goal_cuts_the_stint_even_when_no_one_changes() -> None:
+    shots = [(1, 300, True, True), (2, 500, False, False)]
+    frame = build(full_period(), shots=shots, faceoffs=[(0, "N"), (300, "N")])
+    assert frame.select("start_s", "end_s", "score_state", "home_goals", "zone_start").rows() == [
+        (0, 300, 0, 1, "N"),
+        (300, PERIOD_END, 1, 0, "N"),
+    ]
+    assert frame["home_skaters"].to_list() == [[1, 2, 3, 4, 5]] * 2
+
+
+def test_a_season_with_xg_from_two_models_is_refused() -> None:
     from stint_fixtures import (
+        calendar_frame,
         faceoffs_frame,
         lineups_frame,
         shifts_frame,
         shot_xg_frame,
         shots_frame,
     )
+    from stint_fixtures import coverage_frame as coverage
 
     shot_xg = shot_xg_frame({1: 0.1, 2: 0.2}).with_columns(
         artifact_version=pl.Series(["xg-20261001-abc1234", "xg-20261002-def5678"])
@@ -200,6 +210,7 @@ def test_a_game_with_xg_from_two_models_is_refused() -> None:
             shots_frame([(1, 100, True, False), (2, 200, False, False)]),
             shot_xg,
             faceoffs_frame([]),
+            calendar_frame(),
         )
 
 
@@ -212,7 +223,9 @@ def test_a_game_without_xg_has_null_xg_but_counts_its_goals() -> None:
 
 def test_penalty_shots_stay_out_of_the_stints_totals() -> None:
     frame = build(full_period(), shots=[(1, 100, True, True)], xg={}, penalty_shots=(1,))
-    assert frame["home_goals"].to_list() == [0]
+    assert frame["home_goals"].to_list() == [0, 0]
+    # The goal still changes the score, so it cuts the stint.
+    assert frame["score_state"].to_list() == [0, 1]
 
 
 def test_an_incomplete_chart_gives_no_stints() -> None:

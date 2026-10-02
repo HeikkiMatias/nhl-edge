@@ -431,6 +431,7 @@ def stints(
                 tables["shots"],
                 tables["shot_xg"],
                 tables["faceoffs"],
+                games.filter(pl.col("season") == season).select("season", "start_utc"),
             )
         except ValueError as exc:
             typer.echo(f"{season}: {exc}", err=True)

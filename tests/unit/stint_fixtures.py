@@ -22,6 +22,8 @@ AWAY_GOALIE = 40
 PERIOD_END = 1200
 XG_VERSION = "xg-20261001-abc1234"
 XG_CUTOFF = datetime(2019, 4, 7, 10, tzinfo=UTC)
+# The season's first game starts its fold; its xG model must be fitted before it.
+SEASON_START = datetime(2019, 10, 2, 23, tzinfo=UTC)
 
 Shift = tuple[int, int, int]  # player, start_s, end_s
 
@@ -84,7 +86,11 @@ def coverage_frame(complete: bool = True) -> pl.DataFrame:
 Shot = tuple[int, int, bool, bool]  # event_id, seconds, is_home, is_goal
 
 
-def shots_frame(shots: list[Shot], penalty_shots: tuple[int, ...] = ()) -> pl.DataFrame:
+def shots_frame(
+    shots: list[Shot], penalty_shots: tuple[int, ...] = (), no_coordinates: tuple[int, ...] = ()
+) -> pl.DataFrame:
+    """Shots of the made-up game; those in no_coordinates have none, so the xG model would not
+    score them."""
     return pl.DataFrame(
         [
             {
@@ -96,6 +102,9 @@ def shots_frame(shots: list[Shot], penalty_shots: tuple[int, ...] = ()) -> pl.Da
                 "is_home": is_home,
                 "is_goal": is_goal,
                 "is_penalty_shot": event_id in penalty_shots,
+                "is_empty_net": False,
+                "x": None if event_id in no_coordinates else 60,
+                "y": None if event_id in no_coordinates else 0,
                 "observed_utc": OBSERVED,
             }
             for event_id, seconds, is_home, is_goal in shots
@@ -109,8 +118,17 @@ def shots_frame(shots: list[Shot], penalty_shots: tuple[int, ...] = ()) -> pl.Da
             "is_home": pl.Boolean,
             "is_goal": pl.Boolean,
             "is_penalty_shot": pl.Boolean,
+            "is_empty_net": pl.Boolean,
+            "x": pl.Int16,
+            "y": pl.Int16,
             "observed_utc": pl.Datetime("us", "UTC"),
         },
+    )
+
+
+def calendar_frame() -> pl.DataFrame:
+    return pl.DataFrame(
+        {"season": [SEASON], "start_utc": [SEASON_START]}, schema_overrides={"season": pl.Int32}
     )
 
 
@@ -165,6 +183,7 @@ def build(
     faceoffs: Sequence[tuple[int, str]] = (),
     complete: bool = True,
     penalty_shots: tuple[int, ...] = (),
+    no_coordinates: tuple[int, ...] = (),
 ) -> pl.DataFrame:
     from nhl_edge.features import stints
 
@@ -172,7 +191,25 @@ def build(
         coverage_frame(complete),
         shifts_frame(shifts),
         lineups_frame(),
-        shots_frame(list(shots), penalty_shots),
+        shots_frame(list(shots), penalty_shots, no_coordinates),
         shot_xg_frame(xg or {}),
         faceoffs_frame(faceoffs),
+        calendar_frame(),
+    )
+
+
+def empty_shot_xg() -> pl.DataFrame:
+    return shot_xg_frame({})
+
+
+def real_calendar(game_ids: Sequence[int]) -> pl.DataFrame:
+    """Each real fixture game's season and start, as the season calendar of its fold start."""
+    from feed_fixtures import games_row, start_utc
+
+    return pl.DataFrame(
+        {
+            "season": [games_row(g)["season"] for g in game_ids],
+            "start_utc": [start_utc(g) for g in game_ids],
+        },
+        schema={"season": pl.Int32, "start_utc": pl.Datetime("us", "UTC")},
     )

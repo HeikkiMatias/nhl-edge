@@ -5,17 +5,20 @@ stints only once they are public. The column set is locked here, as for the per-
 
 from datetime import UTC, datetime, timedelta
 
-import pandera.errors
 import polars as pl
 import pytest
 from feed_fixtures import MTL_ARI, OPENING_WEEK_GAMES, assert_public_the_morning_after, parsed_feeds
 from stint_fixtures import (
     OBSERVED,
+    SEASON_START,
     XG_VERSION,
+    calendar_frame,
     coverage_frame,
+    empty_shot_xg,
     faceoffs_frame,
     full_period,
     lineups_frame,
+    real_calendar,
     shifts_frame,
     shot_xg_frame,
     shots_frame,
@@ -56,22 +59,14 @@ COLUMNS = [
 def stints_of(game_ids: tuple[int, ...]) -> pl.DataFrame:
     tables = [parsed_feeds(game_id) for game_id in game_ids]
     joined = {name: pl.concat([t[name] for t in tables]) for name in tables[0]}
-    shot_xg = pl.DataFrame(
-        schema={
-            "game_id": pl.Int64,
-            "event_id": pl.Int32,
-            "xg": pl.Float64,
-            "train_cutoff": pl.Datetime("us", "UTC"),
-            "artifact_version": pl.String,
-        }
-    )
     return stints.build(
         joined["shift_coverage"],
         joined["shifts"],
         joined["actual_lineups"],
         joined["shots"],
-        shot_xg,
+        empty_shot_xg(),
         joined["faceoffs"],
+        real_calendar(game_ids),
     )
 
 
@@ -91,27 +86,27 @@ def test_a_games_stints_read_nothing_of_any_other_game() -> None:
     assert alone.equals(together)
 
 
-def test_xg_from_a_model_fitted_after_the_game_is_refused() -> None:
-    late = shot_xg_frame({1: 0.1}).with_columns(train_cutoff=pl.lit(OBSERVED + timedelta(days=1)))
-    with pytest.raises(pandera.errors.SchemaError):
-        stints.build(
+def test_xg_from_a_model_fitted_after_its_season_began_is_refused() -> None:
+    def build(shot_xg: pl.DataFrame) -> pl.DataFrame:
+        return stints.build(
             coverage_frame(),
             shifts_frame(full_period()),
             lineups_frame(),
             shots_frame([(1, 100, True, False)]),
-            late,
+            shot_xg,
             faceoffs_frame([]),
+            calendar_frame(),
         )
-    fitted_before = shot_xg_frame({1: 0.1})
-    frame = stints.build(
-        coverage_frame(),
-        shifts_frame(full_period()),
-        lineups_frame(),
-        shots_frame([(1, 100, True, False)]),
-        fitted_before,
-        faceoffs_frame([]),
-    )
-    assert frame["xg_version"].to_list() == [XG_VERSION]
+
+    # Fitted after the season's first game but before this game's feeds were public: still a
+    # model that may have read results of the fold it scores (hard rule 1).
+    in_season = SEASON_START + timedelta(minutes=30)
+    assert in_season < OBSERVED
+    for cutoff in (in_season, OBSERVED + timedelta(days=1)):
+        late = shot_xg_frame({1: 0.1}).with_columns(train_cutoff=pl.lit(cutoff))
+        with pytest.raises(ValueError, match="not before the season's first game"):
+            build(late)
+    assert build(shot_xg_frame({1: 0.1}))["xg_version"].to_list() == [XG_VERSION]
 
 
 def test_a_real_games_xg_comes_from_a_model_fitted_before_its_season() -> None:
@@ -122,6 +117,7 @@ def test_a_real_games_xg_comes_from_a_model_fitted_before_its_season() -> None:
     )
     shot_xg = scored.select(
         "game_id",
+        "season",
         "event_id",
         xg=pl.lit(0.1),
         train_cutoff=pl.lit(cutoff),
@@ -134,10 +130,11 @@ def test_a_real_games_xg_comes_from_a_model_fitted_before_its_season() -> None:
         tables["shots"],
         shot_xg,
         tables["faceoffs"],
+        real_calendar([MTL_ARI]),
     )
     assert (frame["xg_version"] == XG_VERSION).all()
     assert (frame["xg_train_cutoff"] < frame["observed_utc"]).all()
-    total = frame["home_xg"].sum() + frame["away_xg"].sum()
+    total = frame.select((pl.col("home_xg") + pl.col("away_xg")).sum()).item()
     assert total == pytest.approx(0.1 * scored.height)
 
 
