@@ -30,7 +30,9 @@ VERSION = "lineup-20261002-abc1234"
 
 
 def constants() -> dict[int, mins.SeasonConstants]:
-    return {season: mins.season_constants(MINUTES, ROWS, season) for season in SEASONS}
+    return {
+        season: mins.season_constants(MINUTES, ROWS, season, LEAGUE["games"]) for season in SEASONS
+    }
 
 
 def projected() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
@@ -93,7 +95,7 @@ def test_history_weights_each_game_by_half_every_ten_games() -> None:
 
 
 def test_season_constants_come_from_the_season_before() -> None:
-    c = mins.season_constants(MINUTES, ROWS, 20122013)
+    c = mins.season_constants(MINUTES, ROWS, 20122013, LEAGUE["games"])
     assert (c.season, c.source) == (20122013, 20112012)
     before = MINUTES.filter(pl.col("season") == 20112012)
     forwards = before.filter(pl.col("role") == "F")
@@ -108,7 +110,7 @@ def test_season_constants_come_from_the_season_before() -> None:
 
 def test_2011_12_first_games_use_the_other_newcomer_average() -> None:
     # 2010-11's first games had no candidates, so no newcomers to average.
-    c = mins.season_constants(MINUTES, ROWS, 20112012)
+    c = mins.season_constants(MINUTES, ROWS, 20112012, LEAGUE["games"])
     for role in ("F", "D"):
         for state in mins.STATES:
             assert c.newcomer[role, True, state] == c.newcomer[role, False, state]
@@ -116,7 +118,7 @@ def test_2011_12_first_games_use_the_other_newcomer_average() -> None:
 
 def test_season_constants_refuse_a_season_without_the_one_before() -> None:
     with pytest.raises(ValueError, match="no games with stints in 20092010"):
-        mins.season_constants(MINUTES, ROWS, 20102011)
+        mins.season_constants(MINUTES, ROWS, 20102011, LEAGUE["games"])
 
 
 # The projection

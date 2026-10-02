@@ -205,6 +205,6 @@ def scored_with_minutes(
     rows = pr.candidates(games, lineups, {})
     skaters, scored, models = pr.score(lineups, games, seasons, version, {}, rows)
     played = minutes_frame(lineups)
-    constants = {season: mins.season_constants(played, rows, season) for season in seasons}
+    constants = {season: mins.season_constants(played, rows, season, games) for season in seasons}
     projected, _ = mins.project(scored, played, constants, {})
     return mins.with_minutes(skaters, projected, constants), scored, models

@@ -35,6 +35,7 @@ import polars as pl
 from nhl_edge.features.stints import player_seconds
 from nhl_edge.features.team_strength import team_lines
 from nhl_edge.lake.schemas import PP_UNIT, SKATER_SLOTS, LineupReplacements, Lineups, dtypes
+from nhl_edge.lineup.goalie_start import season_cutoff
 from nhl_edge.lineup.projection import SKATER_ROLES
 
 if TYPE_CHECKING:
@@ -94,10 +95,13 @@ def previous_season(season: int) -> int:
     return season - 10_001
 
 
-def season_constants(minutes: pl.DataFrame, rows: pl.DataFrame, season: int) -> SeasonConstants:
+def season_constants(
+    minutes: pl.DataFrame, rows: pl.DataFrame, season: int, games: pl.DataFrame
+) -> SeasonConstants:
     """The constants for season from the season before. minutes is player_minutes; rows are the
     lineup model's candidates (projection.candidates), which tell the newcomers (dressed skaters
-    who were not candidates) and a team's first game of a season."""
+    who were not candidates) and a team's first game of a season. Refuses when a game of the
+    season before was public only at or after the season's first as-of time (games)."""
     source = previous_season(season)
     played = minutes.filter(pl.col("season") == source)
     if played.is_empty():
@@ -133,6 +137,11 @@ def season_constants(minutes: pl.DataFrame, rows: pl.DataFrame, season: int) -> 
             )
     cutoff = played["observed_utc"].max()
     assert isinstance(cutoff, datetime)
+    first = season_cutoff(games, season)
+    if cutoff >= first:
+        raise ValueError(
+            f"{source}'s stints were public at {cutoff}, not before {season}'s first as-of {first}"
+        )
     return SeasonConstants(season, source, mean, pull, total, newcomer, cutoff)
 
 

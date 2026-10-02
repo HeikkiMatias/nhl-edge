@@ -1017,7 +1017,9 @@ def lineups(
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
     try:
         played = mins.lake_minutes(lake, boxscores, max(wanted))
-        constants = {season: mins.season_constants(played, rows, season) for season in wanted}
+        constants = {
+            season: mins.season_constants(played, rows, season, games) for season in wanted
+        }
         projected, replacements = mins.project(scored, played, constants, lines)
     except ValueError as exc:
         typer.echo(str(exc), err=True)

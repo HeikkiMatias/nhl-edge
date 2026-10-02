@@ -8,10 +8,10 @@
 B3 weights each skater's ratings by his expected minutes in each state (docs/plan.md §5): T·(μ_s + Σ_home (t_i/T)·o_i − Σ_away (t_j/T)·d_j), with the minutes adding up to 5 skaters × T. #99 (ADR 0017) gives each candidate's probability of dressing. #100 (phase 3 task 6) needs each candidate's minutes at 5v5, on the power play and on the penalty kill, his team's power-play unit 1, and a rule for the newcomers the lineup model expects. Everything comes from earlier games only (hard rule 9). The phase 3 plan says the lineup model tunes nothing, so the choices are fixed here before any fit is scored.
 
 The counts behind it come from the training seasons 2011-12 to 2017-18, from the stints of the 8,024 games with a complete shift chart. No model was fitted.
-- **Skater-minutes per team-game**, about the same every season:
-  - forwards: 143 to 145 at 5v5, 17.6 to 18.4 on the power play, 9.7 to 10.8 on the penalty kill;
-  - defensemen: 96 to 97 at 5v5, 6.6 to 8.6 on the power play, 9.9 to 10.8 on the penalty kill.
-- **How noisy one player's minutes are against how much players differ.** For players with at least 20 games in a season, the game-to-game variance divided by the variance between players' averages is:
+- **Skater-minutes per team-game**, about the same every season (the range over the seven seasons' averages, as each season's figures appear in the first run's report):
+  - forwards: 142.3 to 145.1 at 5v5, 17.5 to 18.4 on the power play, 9.7 to 10.6 on the penalty kill;
+  - defensemen: 95.5 to 97.1 at 5v5, 6.6 to 8.6 on the power play, 9.9 to 10.8 on the penalty kill.
+- **How noisy one player's minutes are against how much players differ.** For players with at least 20 games in a season, pooled over the seven seasons, the game-to-game variance divided by the variance between players' averages is:
   - forwards: 1.2 at 5v5, 1.0 on the power play, 1.0 on the penalty kill;
   - defensemen: 1.9 at 5v5, 0.9 on the power play, 1.7 on the penalty kill.
 
@@ -64,7 +64,7 @@ None yet. B3's walk-forward (#106) and gate 2 (#107) will score the minutes thro
 
 - **B3 (#106)** reads `exp_5v5`, `exp_pp` and `exp_pk` as its t_i, and `lineup_replacements` for the replacement-level skaters.
 - **The power play** is the league's average, the same for every team, until #104 projects each team's power-play opportunities.
-- **Games without a complete shift chart** (about 1.5% in the training seasons) add nothing to a player's average.
+- **Games without a complete shift chart** (117 of 8,141 in the training seasons, 1.4%) add nothing to a player's average.
 - **The 12 and 6 slots** ignore the nights a team dresses 11 forwards and 7 defensemen, or 13 and 5.
 - **Corrections:** minutes come from shift charts, which post-game corrections can change (ADR 0004, measured by #30).
 - **Nothing here is tuned.** The memory is the owner's choice, and the pull and totals are measured from the season before.
