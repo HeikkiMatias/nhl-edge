@@ -59,7 +59,7 @@ None yet. xG (#73) and team strength (#74) are the first components to read `str
 
 - `ingest/shots.py` and the ingest take the chart's counts after `shift_coverage` rates the chart. `shots` gains `strength_source`, and `nhl ingest --replay` rebuilds every season.
 - #72's time-at-strength table uses the same source, the chart for complete games and `situationCode` otherwise.
-- RAPM (phase 3) builds its stints from the chart already, and drops those that contradict the strength state (plan §9).
+- RAPM (phase 3) builds its stints from the chart already. It was to drop those that contradict the strength state (plan §9); ADR 0015 drops only those whose counts are impossible, since this ADR trusts the chart over `situationCode`.
 - `tests/leakage/test_shots.py` keeps holding every row to the morning after its game. The source is the game's own feeds, which ADR 0004 already dates.
 - Through the completeness check, a shot's strength now also depends on the shift chart and the boxscore's time on ice. Both can change after the morning after: the nightly lookback fetches an incomplete chart again for three days, and the backfill read later copies. So a corrected time on ice can move a whole game's shots between the two sources. ADR 0004 accepts such corrections as small, and #30's recheck report counts changed `strength`, `skaters_for` and `skaters_against` values, the fields ADR 0004's revisit trigger names.
 

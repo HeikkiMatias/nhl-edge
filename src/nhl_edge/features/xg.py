@@ -61,17 +61,22 @@ MAX_ITER = 1000
 OUTPUT_KEYS = ("game_id", "season", "game_date", "event_id")
 
 
+def scorable() -> pl.Expr:
+    """The shots the model fits and scores: every unblocked shot with coordinates, but penalty
+    shots and shots at an empty net."""
+    return (
+        ~pl.col("is_penalty_shot")
+        & ~pl.col("is_empty_net")
+        & pl.col("x").is_not_null()
+        & pl.col("y").is_not_null()
+    )
+
+
 def model_frame(shots: pl.DataFrame) -> pl.DataFrame:
-    """The shots the model fits and scores, with its inputs: every unblocked shot with
-    coordinates, but penalty shots and shots at an empty net."""
+    """The shots the model fits and scores (scorable), with its inputs."""
     x, y = pl.col("x").cast(pl.Float64), pl.col("y").cast(pl.Float64)
     for_, against = pl.col("skaters_for"), pl.col("skaters_against")
-    return shots.filter(
-        ~pl.col("is_penalty_shot"),
-        ~pl.col("is_empty_net"),
-        pl.col("x").is_not_null(),
-        pl.col("y").is_not_null(),
-    ).with_columns(
+    return shots.filter(scorable()).with_columns(
         distance=((NET_X - x) ** 2 + y**2).sqrt(),
         angle=pl.arctan2(y.abs(), NET_X - x).degrees(),
         shot_kind=pl.when(pl.col("shot_type").is_in(SHOT_TYPES))
