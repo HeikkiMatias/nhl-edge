@@ -33,17 +33,18 @@ import httpx
 import polars as pl
 
 from nhl_edge.ingest.games import EXPECTED_GAMES
-from nhl_edge.ingest.nhl_api import NhlApiError, NotCachedError, parse_utc, utc_now
+from nhl_edge.ingest.nhl_api import (
+    BROWSER_USER_AGENT,
+    NhlApiError,
+    NotCachedError,
+    parse_utc,
+    utc_now,
+)
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.schemas import SbrOdds, dtypes
 
 BASE_URL = "https://www.sportsbookreviewsonline.com"
 SOURCE = "sbr"
-# Any current desktop browser string works; the site rejects the default httpx one with a 404.
-BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0 Safari/537.36"
-)
 MIN_INTERVAL_S = 2.0
 BACKOFF_S = (5.0, 10.0, 20.0)
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})

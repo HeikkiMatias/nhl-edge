@@ -5,11 +5,14 @@ in the raw store under nhl/<kind>/<entity>/<fetch stamp> before anything parses 
 checks the cache: the newest stored copy is reused when the caller's reuse rule accepts it, so a
 backfill can stop and restart without refetching. In offline (replay) mode the client never touches
 the network and fails on a cache miss.
+
+The same client fetches the NHL's HTML time-on-ice reports on www.nhl.com (#68), for the games
+whose shift chart is empty, once only and by `nhl toi-reports` alone (ingest/toi_reports.py).
 """
 
 import json
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -22,11 +25,18 @@ from nhl_edge.lake.schemas import PERIOD_S
 
 BASE_URL = "https://api-web.nhle.com"
 STATS_URL = "https://api.nhle.com/stats/rest"
+REPORTS_URL = "https://www.nhl.com/scores/htmlreports"
 SOURCE = "nhl"
 MIN_INTERVAL_S = 1.0
 BACKOFF_S = (5.0, 10.0, 20.0)
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 USER_AGENT = "nhl-edge/0.1 (personal research)"
+# For web pages that refuse a non-browser client: the SBR archive answers 404 to the httpx default.
+# The NHL's report pages are asked for the same way, as a request with "Mozilla/5.0" was served.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36"
+)
 REGULAR_SEASON = 2
 PLAYOFFS = 3
 # Shift chart rows of this type are shifts; type 505 rows are goal markers.
@@ -42,6 +52,9 @@ MIN_TEAM_PERIOD_S = 4 * PERIOD_S
 # the per-game tables never read.
 FEED_KINDS = ("play-by-play", "boxscore", "shiftcharts")
 RECHECK_SUFFIX = "-recheck"
+# A team's time-on-ice report by side, its raw kind and the letter in the page's name (#68).
+TOI_KINDS = {"home": "toi-home", "visitor": "toi-visitor"}
+TOI_LETTERS = {"home": "H", "visitor": "V"}
 
 
 @dataclass(frozen=True)
@@ -160,6 +173,12 @@ def feed_url(kind: str, game_id: int) -> str:
     raise ValueError(f"{kind} is not a per-game feed")
 
 
+def toi_report_url(season: int, game_id: int, side: str) -> str:
+    """The URL of one team's time-on-ice report: TH for the home team, TV for the visitors, then
+    the last six digits of the game id, in the season's folder."""
+    return f"{REPORTS_URL}/{season}/T{TOI_LETTERS[side]}{game_id % 1_000_000:06d}.HTM"
+
+
 def fetched_after(moment: datetime) -> Reuse:
     def reuse(body: bytes, meta: dict[str, Any]) -> bool:
         return parse_utc(meta["fetched_utc"]) >= moment
@@ -200,15 +219,18 @@ class NhlApi:
             self.sleep(wait)
         self._last_request = self.monotonic()
 
-    def _get(self, url: str) -> tuple[bytes, datetime, dict[str, Any]]:
-        """GET with retries on timeouts, 429 and 5xx. A 404 raises NotFoundError at once."""
+    def _get(
+        self, url: str, headers: Mapping[str, str] | None = None
+    ) -> tuple[bytes, datetime, dict[str, Any]]:
+        """GET with retries on timeouts, 429 and 5xx. A 404 raises NotFoundError at once. headers
+        go with this request only, over the client's own."""
         error = ""
         for attempt, backoff in enumerate((*self.backoff_s, None), start=1):
             self._throttle()
             self.requests += 1
             retry_after: float | None = None
             try:
-                response = self.client.get(url)
+                response = self.client.get(url, headers=headers)
             except httpx.TransportError as exc:
                 error = type(exc).__name__
             else:
@@ -231,7 +253,14 @@ class NhlApi:
             self.sleep(max(backoff, retry_after or 0.0))
         raise NhlApiError(f"GET {url} failed after {len(self.backoff_s) + 1} attempts: {error}")
 
-    def fetch(self, kind: str, entity: str, url: str, reuse: Reuse) -> Response:
+    def fetch(
+        self,
+        kind: str,
+        entity: str,
+        url: str,
+        reuse: Reuse,
+        headers: Mapping[str, str] | None = None,
+    ) -> Response:
         """The newest cached copy when reuse accepts it (or in replay), otherwise a fresh GET that
         is stored raw before it is returned."""
         prefix = f"{SOURCE}/{kind}/{entity}"
@@ -243,7 +272,7 @@ class NhlApi:
                 return Response(body, cached, parse_utc(meta["fetched_utc"]), cached=True)
         if self.offline:
             raise NotCachedError(f"{prefix} is not in the raw cache; run without --replay")
-        body, fetched_utc, meta = self._get(url)
+        body, fetched_utc, meta = self._get(url, headers)
         raw_key = self.store.put(
             SOURCE, f"{kind}/{entity}/{fetched_utc:%Y%m%dT%H%M%SZ}", body, meta
         )
@@ -276,6 +305,13 @@ class NhlApi:
         return self.fetch(
             f"{kind}{RECHECK_SUFFIX}", f"{season}/{game_id}", url, fetched_after(after)
         )
+
+    def toi_report(self, season: int, game_id: int, side: str) -> Response:
+        """One team's HTML time-on-ice report (#68), side "home" or "visitor", stored under
+        nhl/toi-<side>/ and always reused: the owner allowed one fetch of each page."""
+        url = toi_report_url(season, game_id, side)
+        headers = {"User-Agent": BROWSER_USER_AGENT}
+        return self.fetch(TOI_KINDS[side], f"{season}/{game_id}", url, always, headers)
 
     def roster(self, team: str, season: int, reuse: Reuse) -> Response:
         return self.fetch("roster", f"{season}/{team}", f"/v1/roster/{team}/{season}", reuse)

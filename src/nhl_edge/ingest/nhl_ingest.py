@@ -2,18 +2,21 @@
 
 A window is a season or a date range. For each week of it: fetch the schedule, keep the final
 regular-season games, and fetch play-by-play, boxscore and shift chart for each (feeds), parsed
-into shots, shifts, actual_lineups and shift_coverage. Then fetch the rosters of every team that
-played, and a landing page for every player on them or in the boxscores who is not in the players
-table yet. Games, their schedule and the per-game tables are written as whole game_date
-partitions, players merged by player_id, and games upserted to Supabase. Every response goes to
-the raw store first, and cached copies are reused by the rules in nhl_api, so a stopped backfill
-restarts where it left off and --replay rebuilds the tables with no network at all.
+into shots, shifts, actual_lineups and shift_coverage. A game whose shift chart has no shifts takes
+them from its time-on-ice reports when both are in the raw cache (#68); `nhl toi-reports` fetches
+those, the ingest never does. Then fetch the rosters of every team that played, and a landing page
+for every player on them or in the boxscores who is not in the players table yet. Games, their
+schedule and the per-game tables are written as whole game_date partitions, players merged by
+player_id, and games upserted to Supabase. Every response goes to the raw store first, and cached
+copies are reused by the rules in nhl_api, so a stopped backfill restarts where it left off and
+--replay rebuilds the tables with no network at all.
 """
 
 import os
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from functools import partial
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -50,6 +53,7 @@ from nhl_edge.ingest.shift_coverage import chart_strength, shift_coverage
 from nhl_edge.ingest.shifts import parse_shifts
 from nhl_edge.ingest.shots import parse_shots
 from nhl_edge.ingest.strength_time import parse_strength_time
+from nhl_edge.ingest.toi_reports import HOME_REPORTS, CachedReports, parse_reports
 from nhl_edge.lake.schemas import Games, dtypes
 from nhl_edge.lake.supabase import Supabase
 from nhl_edge.lake.tables import FEED_TABLES, TABLES, Lake
@@ -90,6 +94,7 @@ class Summary:
     shots: int = 0
     shifts: int = 0
     shift_charts_complete: int = 0
+    shifts_from_reports: int = 0
 
 
 def yesterday_et(now: datetime) -> date:
@@ -130,16 +135,29 @@ def warn(echo: Echo, message: str) -> None:
 
 
 def parse_feeds(
-    game: dict[str, Any], feeds: Mapping[str, tuple[bytes, str]]
+    game: dict[str, Any],
+    feeds: Mapping[str, tuple[bytes, str]],
+    toi_reports: CachedReports | None = None,
 ) -> dict[str, pl.DataFrame]:
     """A game's three feeds, each (body, raw_key) by kind in FEED_KINDS, parsed into the per-game
-    tables of FEED_TABLES."""
+    tables of FEED_TABLES. When the shift chart gives no shifts and toi_reports finds both of the
+    game's time-on-ice reports, the shifts come from them instead (#68), and everything below runs
+    on them as on a chart: coverage with its completeness check, and the skater counts. Coverage
+    then takes the home report's raw_key."""
     pbp, box, chart = (feeds[kind] for kind in FEED_KINDS)
     feed_game = FeedGame.from_boxscore(game, box[0])
     shots = parse_shots(pbp[0], feed_game, pbp[1])
     shifts, drops = parse_shifts(chart[0], feed_game, chart[1])
     lineups = parse_actual_lineups(box[0], feed_game, box[1])
-    coverage = shift_coverage(feed_game, shots, shifts, lineups, drops, chart[1])
+    shifts_key = chart[1]
+    if shifts.is_empty() and toi_reports is not None:
+        reports = toi_reports.find(feed_game.season, feed_game.game_id)
+        if reports is not None:
+            built = parse_reports(reports, feed_game, lineups)
+            shifts, drops, shifts_key = built.shifts, built.drops, reports["home"][1]
+            for problem in built.problems:
+                toi_reports.warn(f"{feed_game.game_id}: {problem}")
+    coverage = shift_coverage(feed_game, shots, shifts, lineups, drops, shifts_key)
     # A complete chart supplies the skater counts, which situationCode can drift from (ADR 0009).
     # The coverage above still compares the chart with situationCode.
     complete = coverage["complete"].item()
@@ -231,7 +249,10 @@ class Ingest:
             for table, frame in parsed.items():
                 self.lake.replace_dates(table, frame, window_days)
             summary.shots, summary.shifts = parsed["shots"].height, parsed["shifts"].height
-            summary.shift_charts_complete = parsed["shift_coverage"].filter("complete").height
+            coverage = parsed["shift_coverage"]
+            summary.shift_charts_complete = coverage.filter("complete").height
+            from_reports = pl.col("raw_key").str.starts_with(HOME_REPORTS)
+            summary.shifts_from_reports = coverage.filter(from_reports).height
         if games.height and self.supabase is not None:
             self.supabase.upsert("games", games, TABLES["games"].key)
         if self.players:
@@ -243,14 +264,16 @@ class Ingest:
 
     def game_feeds(self, game: dict[str, Any], frames: dict[str, list[pl.DataFrame]]) -> set[int]:
         """Fetch (or reuse) a game's play-by-play, boxscore and shift chart, parse them into the
-        per-game tables, and return the ids of the players dressed."""
+        per-game tables, and return the ids of the players dressed. A chart without shifts falls
+        back on the game's time-on-ice reports in the raw cache, which are never fetched here."""
         season, game_id = game["season"], game["game_id"]
         pbp = self.api.play_by_play(season, game_id)
         box = self.api.boxscore(season, game_id)
         chart = self.api.shift_chart(season, game_id, game["game_date"])
         responses = zip(FEED_KINDS, (pbp, box, chart), strict=True)
         feeds = {kind: (response.body, response.raw_key) for kind, response in responses}
-        for table, frame in parse_feeds(game, feeds).items():
+        reports = CachedReports(self.api.store, partial(warn, self.echo))
+        for table, frame in parse_feeds(game, feeds, reports).items():
             frames[table].append(frame)
         return boxscore_player_ids(box.body)
 
@@ -298,6 +321,11 @@ def _report(summary: Summary, window: Window, echo: Echo, *, feeds: bool) -> Non
         + (
             f"; {summary.shots} shots, {summary.shifts} shifts, shift charts complete in "
             f"{summary.shift_charts_complete} of {summary.written} games"
+            + (
+                f", {summary.shifts_from_reports} games' shifts from time-on-ice reports"
+                if summary.shifts_from_reports
+                else ""
+            )
             if feeds
             else ""
         )

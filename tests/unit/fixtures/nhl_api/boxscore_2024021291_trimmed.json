@@ -1,0 +1,105 @@
+{
+ "id": 2024021291,
+ "season": 20242025,
+ "gameType": 2,
+ "gameDate": "2025-04-15",
+ "startTimeUTC": "2025-04-15T23:00:00Z",
+ "awayTeam": {
+  "id": 1,
+  "abbrev": "NJD"
+ },
+ "homeTeam": {
+  "id": 6,
+  "abbrev": "BOS"
+ },
+ "playerByGameStats": {
+  "homeTeam": {
+   "forwards": [
+    {
+     "playerId": 8479987,
+     "sweaterNumber": 39,
+     "name": {
+      "default": "M. Geekie"
+     },
+     "toi": "18:54"
+    },
+    {
+     "playerId": 8480880,
+     "sweaterNumber": 94,
+     "name": {
+      "default": "J. Lauko"
+     },
+     "toi": "12:26"
+    }
+   ],
+   "defense": [],
+   "goalies": [
+    {
+     "playerId": 8480280,
+     "sweaterNumber": 1,
+     "name": {
+      "default": "J. Swayman"
+     },
+     "toi": "61:28",
+     "starter": true
+    },
+    {
+     "playerId": 8476914,
+     "sweaterNumber": 70,
+     "name": {
+      "default": "J. Korpisalo"
+     },
+     "toi": "00:00",
+     "starter": false
+    }
+   ]
+  },
+  "awayTeam": {
+   "forwards": [
+    {
+     "playerId": 8476292,
+     "sweaterNumber": 18,
+     "name": {
+      "default": "O. Palat",
+      "cs": "O. Palát",
+      "sk": "O. Palát"
+     },
+     "toi": "02:51"
+    },
+    {
+     "playerId": 8475287,
+     "sweaterNumber": 56,
+     "name": {
+      "default": "E. Haula"
+     },
+     "toi": "17:59"
+    }
+   ],
+   "defense": [],
+   "goalies": [
+    {
+     "playerId": 8474593,
+     "sweaterNumber": 25,
+     "name": {
+      "default": "J. Markstrom",
+      "cs": "J. Markström",
+      "fi": "J. Markström",
+      "sk": "J. Markström",
+      "sv": "J. Markström"
+     },
+     "toi": "00:00",
+     "starter": false
+    },
+    {
+     "playerId": 8474596,
+     "sweaterNumber": 34,
+     "name": {
+      "default": "J. Allen"
+     },
+     "toi": "61:30",
+     "starter": true
+    }
+   ]
+  }
+ }
+}

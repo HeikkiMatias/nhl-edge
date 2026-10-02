@@ -31,6 +31,7 @@ COMMANDS = [
     "lake",
     "audit",
     "status",
+    "toi-reports",
 ]
 STUBS = [
     ["rate"],
@@ -170,6 +171,74 @@ def test_audit_shifts_leaves_out_the_test_season_unless_asked(
     assert [line.split(" | ")[0] for line in default.output.splitlines()[2:]] == ["| 20222023"]
     asked = runner.invoke(app, ["audit", "shifts", "--seasons", "20252026"])
     assert asked.output.splitlines()[2].startswith("| 20252026 | 1 |")
+
+
+def chartless_coverage() -> Any:
+    """The shift_coverage row of the time-on-ice fixture game, whose chart gave no shifts."""
+    from toi_fixtures import toi_feeds, toi_games_row
+
+    from nhl_edge.ingest.nhl_ingest import parse_feeds
+
+    return parse_feeds(toi_games_row(), toi_feeds())["shift_coverage"]
+
+
+def no_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail any request the NHL client would make: these tests never reach nhl.com."""
+    from nhl_edge.ingest.nhl_api import NhlApi
+
+    def fail(self: object, url: str, headers: object = None) -> None:
+        raise AssertionError(f"no request expected, got {url}")
+
+    monkeypatch.setattr(NhlApi, "_get", fail)
+
+
+def test_toi_reports_reuses_stored_pages_without_a_request(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pathlib import Path
+
+    from toi_fixtures import STAMP, TOI_GAME, toi_page
+
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    no_requests(monkeypatch)
+    Lake().write("shift_coverage", chartless_coverage())
+    store = RawStore(Path("data") / "raw")
+    for side in ("home", "visitor"):
+        meta = {"fetched_utc": "2026-10-02T12:00:00+00:00"}
+        store.put("nhl", f"toi-{side}/20242025/{TOI_GAME}/{STAMP}", toi_page(side), meta)
+    result = runner.invoke(app, ["toi-reports"])
+    assert result.exit_code == 0, result.output
+    assert "1 games in 20242025 whose shift chart gave no shifts" in result.output
+    assert (
+        "2 time-on-ice reports: 2 already stored, 0 fetched in 0 requests; 6 players, 76 shifts"
+        in plain(result.output)
+    )
+
+
+def test_toi_reports_refuses_a_game_the_owner_did_not_allow(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import date
+
+    import polars as pl
+
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    no_requests(monkeypatch)
+    other = chartless_coverage().with_columns(
+        game_id=pl.lit(2013020971, pl.Int64),
+        season=pl.lit(20132014, pl.Int32),
+        game_date=pl.lit(date(2014, 4, 9)),
+    )
+    Lake().write("shift_coverage", other)
+    result = runner.invoke(app, ["toi-reports", "--seasons", "20132014"])
+    assert result.exit_code == 1
+    assert "outside the owner's decision" in plain(result.output)
+    assert not (tmp_path / "data" / "raw").exists()
 
 
 def test_audit_reference_needs_games_in_the_lake(

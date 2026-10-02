@@ -172,6 +172,57 @@ def recheck(
         typer.echo(f"warning: no {missing} to recheck", err=True)
 
 
+@app.command("toi-reports")
+def toi_reports(
+    seasons: Annotated[
+        str, typer.Option(help="Seasons as 20242025, a comma list or a range.")
+    ] = "20242025",
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2", help="Read shift_coverage from R2, reuse its stored pages and mirror new ones."
+        ),
+    ] = False,
+) -> None:
+    """Fetch the NHL's HTML time-on-ice reports, home and visitor, of the games whose shift chart
+    gave no shifts (#68), once each, into the raw store under nhl/toi-home/ and nhl/toi-visitor/.
+    Only the 57 games of 2024-25 the owner allowed on 2026-10-02 are fetched, and a stored page is
+    never fetched again. nhl ingest then builds those games' shifts from the stored pages."""
+    from nhl_edge.ingest.nhl_api import NhlApi
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.ingest.toi_reports import chartless_games, fetch_reports
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    try:
+        wanted = parse_seasons(seasons)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    load_env()
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    lake = Lake.from_env(mirror=r2)
+    if r2:
+        lake.pull("shift_coverage", wanted)
+    games = chartless_games(lake.read("shift_coverage", wanted))
+    typer.echo(f"{len(games)} games in {seasons} whose shift chart gave no shifts")
+    api = NhlApi(store)
+    try:
+        summary = fetch_reports(api, games)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        f"{summary.reports} time-on-ice reports: {summary.stored_before} already stored, "
+        f"{summary.fetched} fetched in {api.requests} requests; "
+        f"{summary.players} players, {summary.shifts} shifts"
+    )
+    for problem in summary.problems:
+        typer.echo(f"warning: {problem}", err=True)
+    if summary.problems:
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def rate() -> None:
     """Refresh team, goalie and player ratings."""

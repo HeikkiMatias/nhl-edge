@@ -7,6 +7,7 @@ The fixed list of sources and endpoints. Work from this file instead of guessing
 | Source | What it gives | Access and limits | Role in the model |
 | --- | --- | --- | --- |
 | [NHL API](https://github.com/Zmalski/NHL-API-Reference) (api-web.nhle.com, api.nhle.com/stats/rest) | Schedule, play-by-play with shot coordinates, boxscores, shift charts, rosters, player bios and career stats, draft picks, team prospects | Free, unofficial and undocumented, no published rate limit; throttle to about 1 request per second and cache every response | Backbone: shifts for RAPM, shots for xG, rosters, schedule for rest and travel |
+| [NHL time-on-ice reports](https://www.nhl.com/scores/htmlreports/20242025/TH021235.HTM) (www.nhl.com/scores/htmlreports) | One HTML page per game and team (TH home, TV visitors): each player's sweater number and name, then every shift with its number, period, start and end, duration and a goal or penalty mark | robots.txt allows `/scores/htmlreports`. NHL.com's terms of service (updated 2025-10-29) forbid "unauthorized spidering, scraping, or harvesting of content or information, or use any other unauthorized automated means to compile information". The owner decided on 2026-10-02 to fetch them once, for #68 only: 114 pages (57 games, home and visitor), throttled, kept in the raw store and R2, never fetched again | Shifts of the 57 games of 2024-25 whose shift chart is empty (#68), so their `shift_coverage`, `strength_time`, chart skater counts and RAPM stints work as for any other game |
 | [MoneyPuck data](https://moneypuck.com/data.htm) | Shot-level data with xG for 2007 to 2026, skater, goalie, team and line stats by season and game, player bios | Free CSV downloads for non-commercial use, attribution required, no scraping | Sanity check for the simple in-house xG model and player stats; not a backtest input, since its xG was likely fitted across many seasons |
 | [The Odds API](https://the-odds-api.com/) | Live NHL moneyline, puck line and totals from EU books including Pinnacle; props per event | Free: 500 credits a month. Paid from $30 a month for 20,000 credits. Historical odds from 2020, paid plans only, 10 credits per market per region ([docs](https://the-odds-api.com/liveapi/guides/v4/)) | Live odds snapshots from day one on the free tier; historical backfill deferred to v2 |
 | [SBR odds archive](https://www.sportsbookreviewsonline.com/scoresoddsarchives/nhl/nhloddsarchives.htm) | Opening and closing moneylines, puck lines and totals, 2007-08 to 2022-23 (2022-23 stops on 2022-11-27) | Free HTML tables (the Excel files are gone), no longer updated, book source not stated; answers 404 without a browser User-Agent | Opening lines for the historical tradable test (E2), closes for the information test (E1); quality unknown until the phase 1 audit |
@@ -25,17 +26,21 @@ NHL API (api-web.nhle.com)
   GET /v1/gamecenter/{gameId}/boxscore
   GET /v1/gamecenter/{gameId}/landing     # pre-game goalie poll only
   GET /v1/gamecenter/{gameId}/right-rail  # pre-game goalie poll only
-
-Daily Faceoff (www.dailyfaceoff.com), HTML page, never /api/
-  GET /starting-goalies/{YYYY-MM-DD}      # US Eastern date
   GET /v1/roster/{team}/{season}          # season as 20252026
   GET /v1/player/{playerId}/landing       # bio + career stats by league
   GET /v1/player/{playerId}/game-log/{season}/{gameType}
   GET /v1/draft/picks/{season}/all
   GET /v1/prospects/{team}
 
+Daily Faceoff (www.dailyfaceoff.com), HTML page, never /api/
+  GET /starting-goalies/{YYYY-MM-DD}      # US Eastern date
+
 NHL stats API (api.nhle.com/stats/rest)
   GET /en/shiftcharts?cayenneExp=gameId={gameId}
+
+NHL time-on-ice reports (www.nhl.com, browser User-Agent), once for #68's 57 games, nhl toi-reports only
+  GET /scores/htmlreports/{season}/TH{last 6 digits of gameId}.HTM   # home team, e.g. 20242025/TH021235.HTM
+  GET /scores/htmlreports/{season}/TV{last 6 digits of gameId}.HTM   # visitors
 
 The Odds API (api.the-odds-api.com)
   GET /v4/sports/icehockey_nhl/odds?regions=eu&markets=h2h,spreads,totals&oddsFormat=decimal
@@ -48,6 +53,7 @@ SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
 ## Access rules
 
 - Throttle the NHL API to about 1 request per second and cache every response. Raw responses are stored untouched as JSON under `data/raw/` locally and under the `raw/` prefix in the R2 lake, so parser bugs can be fixed and replayed without calling the API again.
+- NHL.com's terms forbid unauthorized automated harvesting of its pages. Its time-on-ice reports are fetched only under the owner's one-time decision of 2026-10-02 (#68): `nhl toi-reports` refuses any game outside 2024021235 to 2024021291 before it makes a request, and a stored page is never fetched again. Any other page or game needs a new decision.
 - The NHL API is unofficial and changes without notice. A nightly contract test on one golden game catches schema drift.
 - The NHL API has no end-of-game time. A result counts as public at 10:00 UTC the morning after its game date, and at least six hours after its start (`games.observed_utc`, ADR 0003).
 - Shift chart coverage varies for older seasons. Phase 1 checks coverage per season before RAPM depends on it.
@@ -80,6 +86,7 @@ Raw responses go to `data/raw/nhl/<kind>/<entity>/<fetch stamp>.json.gz`, with a
 | `shiftcharts` | `{season}/{game_id}` | two teams each have valid shifts of this game adding up to at least four players' full period in each of periods 1 to 3, or it was fetched 3 days or more after the game. The NHL sometimes publishes a chart late or cut short, so the nightly lookback refetches it. The 3 days match the lookback (`--recent 3`, which a test ties together), and after that a gap counts as the source's. |
 | `roster` | `{season}/{team}` | it was fetched after the team's last ingested game was observed |
 | `player-landing` | `{player_id}` | always (bio and draft facts do not change) |
+| `toi-home`, `toi-visitor` | `{season}/{game_id}` | always. Only `nhl toi-reports` fetches them (#68, below), and only for the 57 games whose shift chart is empty. The HTML is stored untouched like the JSON. |
 
 Two cached responses reflect later knowledge, so neither may feed a point-in-time input:
 - A past season's roster is an after-the-fact view. It only finds player ids for `players` and must never feed a lineup (hard rule 9).
@@ -117,12 +124,12 @@ The 16 seasons come to 19,152 games. With the feeds this is about 64,000 request
 
 ## Per-game tables
 
-`nhl ingest` parses each final game's three feeds into seven lake tables, partitioned like `games` (`season=S/game_date=D/`) and replaced a whole game date at a time. `--replay` rebuilds them from the raw cache. The parsers are in `src/nhl_edge/ingest/` (`shots.py`, `shifts.py`, `lineups.py`, `shift_coverage.py`, `strength_time.py`, `plays.py`), and the schemas in `lake/schemas.py` document every column.
+`nhl ingest` parses each final game's three feeds into seven lake tables, partitioned like `games` (`season=S/game_date=D/`) and replaced a whole game date at a time. `--replay` rebuilds them from the raw cache. The parsers are in `src/nhl_edge/ingest/` (`shots.py`, `shifts.py`, `toi_reports.py`, `lineups.py`, `shift_coverage.py`, `strength_time.py`, `plays.py`), and the schemas in `lake/schemas.py` document every column.
 
 | Table | From | Grain | What it holds |
 | --- | --- | --- | --- |
 | `shots` | play-by-play | one unblocked attempt | shots on goal, missed shots and goals in periods 1 to 4, with time, shooter, goalie, coordinates, shot type and strength |
-| `shifts` | shift chart | one player shift | team, period and start and end in elapsed game seconds |
+| `shifts` | shift chart, or the time-on-ice reports where the chart is empty (below) | one player shift | team, period and start and end in elapsed game seconds |
 | `actual_lineups` | boxscore | one dressed player | role (F, D, G), sweater number, starting goalie and time on ice |
 | `shift_coverage` | all three | one game | how far the shift chart can be trusted (below) |
 | `strength_time` | play-by-play and shift chart | one team, game and strength state | seconds at each strength state (such as `5v4`), with each net manned or empty (below) |
@@ -160,7 +167,7 @@ Shift chart rows the parser leaves out, counted in `shift_coverage`:
 | `foreign_rows` | teams not in the game | 2021020513 (WSH at NYI) lists every shift twice and STL and MIN shifts besides |
 | `bad_rows` | malformed times, shifts outside their period, a shift number repeated with other times | |
 
-The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (2025-04-08 to 2025-04-15). A live request on 2026-09-29 still gave none, so those games have no shifts and count as incomplete. No other game from 2010-11 on has an empty chart. Those copies were fetched long after their games, so they count as settled and are not fetched again.
+The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (2025-04-08 to 2025-04-15). A live request on 2026-09-29 still gave none. One other game from 2010-11 on gives no shifts, 2013020971, whose chart holds a goal marker and nothing else; it stays without shifts (#68 covers only the 57). Those copies were fetched long after their games, so they count as settled and are not fetched again. Their shifts come from the NHL's time-on-ice reports instead (#68, below).
 
 A game's chart is `complete` when it has no bad rows and every dressed player's shifts add up to his boxscore time on ice within 60 seconds (a missing boxscore time counts as not adding up). At every unblocked shot except penalty shots, the players on the ice by the chart are also compared with `situationCode`, and `skater_mismatches` and `goalie_mismatches` count where they differ. RAPM drops the stints that contradict the strength state. `nhl audit shifts` prints the per-season summary, which is reviewed before RAPM depends on the charts.
 
@@ -169,6 +176,16 @@ A game's chart is `complete` when it has no bad rows and every dressed player's 
 - **Faceoffs.** `winning_team` is the play's `eventOwnerTeamId`. The feed's `zoneCode` is from the winner's side, so `zone` flips O and D when the away team won and gives the home team's side. On every game of 2019-20 to 2021-22, where plays say which end the home team defends, the coordinates of 150,074 of the 150,175 faceoffs away from center ice agree with their zone. All but one of the other 101 fill two whole games (2019020249, 2019020256) and a period of 2020020175, where the side or the coordinates are flipped throughout.
 - **Checks.** The audit report's "Penalties and faceoffs" section lists games without faceoffs, and the team-games whose penalties with a player do not add up to the penalty minutes of its players in the boxscore. Over the 31,288 team-games of 2010-11 to 2021-22, 20 do not: 5 by 10 minutes (misconducts, two of them logged in a shootout), 11 with a minor more in the boxscore, 3 with one fewer, and 1 by 5. A bench minor counts toward no player in the boxscore, so the check leaves out penalties without a player.
 
+
+### Time-on-ice reports
+
+The NHL's time-on-ice reports (TH for the home team, TV for the visitors) list the same shifts as the shift chart, and they exist for the 57 games of 2024-25 whose chart is empty (#68). NHL.com's terms forbid unauthorized automated harvesting, so the owner allowed one fetch of those 114 pages (2026-10-02, Sources above).
+- **Fetch.** `nhl toi-reports [--seasons 20242025] [--r2]` selects the season's games whose `shift_coverage` row has no shift rows, or has them from the reports already, and prints how many. It fetches each game's two pages through the NHL client's throttle, with a browser User-Agent, under `nhl/toi-home/` and `nhl/toi-visitor/` in the raw store (mirrored to R2 with `--r2`). A stored page is always reused, so a rerun makes no request. It refuses every game outside 2024021235 to 2024021291 before any request. It reads each page to check it is the right game and side, and prints the players and shifts found. It is not part of any workflow.
+- **Ingest.** When a game's chart gives no shifts and both of its reports are in the raw cache, `nhl ingest` (and `--replay`) builds the game's shifts from them; it never fetches a report. The rest runs as on a chart: `shift_coverage` with the same completeness check, the chart's skater counts in `shots` and `strength_time` when complete (ADR 0009), and so `stints`. Only `raw_key` shows the source: each shift's is its own report's, and the game's `shift_coverage` row takes the home report's. The rows are public at 10:00 UTC the morning after the game, like the chart's, however late the pages were fetched. The window's summary line counts the games whose shifts came from reports.
+- **Parsing** (`ingest/toi_reports.py`). Each player's heading starts with his sweater number ("4 BYRAM, BOWEN"), which the game's boxscore (`actual_lineups`) maps to his player id for that team. A shift's start and end are "elapsed / remaining" period clocks, and the elapsed one gives `start_s` and `end_s` in game seconds, overtime as period 4. The rows then go through the chart's own checks, so `dropped_rows` and `bad_rows` mean the same.
+- **Problems.** These also count as bad rows, which make the game incomplete: a clock whose two halves do not add up to the period, a period other than 1 to 3 or OT, and every shift of a player whose number is not in his team's boxscore (or is there twice). The ingest also prints a warning naming that player. A page of another game or team stops the ingest.
+- **Timing.** The rows count as public at 10:00 UTC the morning after the game, as every per-game table does (ADR 0004): the NHL posts these pages during and right after the game. They are fetched about 18 months later, so they may carry post-game corrections, the backfill risk ADR 0004 accepts and #30 measures. A live game with an empty chart would have no reports read, so these 57 games are the only ones whose backtest shifts have no live counterpart.
+- **Checked** on the pages of 2024021235, 2024021260 and 2024021291 against their boxscores: every number maps to a player, every clock reads, and each player's shifts add up exactly to his boxscore time on ice, so all three games are complete.
 
 ## Fitted tables
 

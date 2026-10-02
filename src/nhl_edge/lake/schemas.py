@@ -879,6 +879,11 @@ class Shifts(pa.DataFrameModel):
     through the game's two teams. The parser drops zero-length placeholders, rows of teams not in
     the game, shootout rows and malformed rows, and ShiftCoverage counts them.
 
+    A game whose chart has no shifts takes them from the NHL's time-on-ice reports when both are
+    in the raw cache (#68, ingest/toi_reports.py): the 57 games of 2024-25 with an empty chart.
+    There a player is found by his sweater number in the game's boxscore, and raw_key is the
+    report's (nhl/toi-home/ or nhl/toi-visitor/).
+
     observed_utc is 10:00 UTC the morning after game_date, as for Shots.
     """
 
@@ -979,8 +984,10 @@ class ShiftCoverage(pa.DataFrameModel):
     goalie_mismatches count the shots where they differ. Stints keep the chart's counts and leave
     out only impossible ones (ADR 0015).
 
-    observed_utc is 10:00 UTC the morning after game_date, as for Shots; raw_key is the shift
-    chart's.
+    observed_utc is 10:00 UTC the morning after game_date, as for Shots. raw_key is the shift
+    chart's, or, for a game whose shifts come from its time-on-ice reports (#68), the home team's
+    report's: one key per row, though the visitors' report gave half the shifts. The row's counts
+    and checks then describe the reports' shifts, by the same rules.
     """
 
     game_id: pl.Int64
