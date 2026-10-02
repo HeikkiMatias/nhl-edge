@@ -59,6 +59,7 @@ None yet. B3's walk-forward (#106) and gate 2 (#107) will score the lineups thro
 - Ice time and power-play units (#100) weight each candidate's minutes by `p_available`. The gap to 18 is the expected newcomers, which get a replacement-level skater of their role there.
 - A newcomer (a call-up, a trade arrival or a signing) has no row until he dresses for the team.
 - Summer trades and signings stay unseen until a boxscore shows them, so a first game's candidates include players who have left. The lower total and the products absorb that on average, not player by player.
+- The early exit reads `toi_s`, which a post-game correction can change (ADR 0004). The backtest sees the corrected times while live sees the first ones; #30 measures how often they differ.
 - The training seasons' probabilities come from models fitted only on earlier seasons, so they are out-of-sample. No choice here was made on a fitted score.
 
 ## Revisit when

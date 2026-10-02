@@ -102,6 +102,34 @@ def test_dressing_elsewhere_counts_only_once_public() -> None:
     assert inputs(pl.concat([LINEUPS, early])).is_empty()
 
 
+def test_a_renamed_teams_boxscore_counts_only_once_public() -> None:
+    # UTA's first game follows ARI's last, through the line PHX, ARI, UTA. ARI's boxscore public
+    # at UTA's as-of time is not read; a microsecond earlier, it is.
+    lines = {"ARI": "PHX", "UTA": "PHX"}
+    # Tonight's first game, played by UTA, with BOS's earlier boxscores as ARI's.
+    target = TONIGHT.head(1).with_columns(home=pl.lit("UTA"), away=pl.lit("CHI"))
+    moment = target.select(as_of(pl.col("game_date"), pl.col("start_utc"))).item()
+    history = LINEUPS.filter(pl.col("game_date") < NIGHT, pl.col("team") == "BOS").with_columns(
+        team=pl.lit("ARI"), game_id=-pl.col("game_id")
+    )
+    last = history["game_date"].max()
+
+    def rated(observed: object) -> pl.DataFrame:
+        late = history.with_columns(
+            observed_utc=pl.when(pl.col("game_date") == last)
+            .then(pl.lit(observed))
+            .otherwise(pl.col("observed_utc"))
+        )
+        rows = pr.candidates(target, late, lines).drop(LABELS)
+        return rows.filter(pl.col("team") == "UTA")
+
+    without = pr.candidates(target, history.filter(pl.col("game_date") < last), lines)
+    without = without.drop(LABELS).filter(pl.col("team") == "UTA")
+    assert not without.is_empty()
+    assert same(rated(moment), without)
+    assert not same(rated(moment - timedelta(microseconds=1)), without)
+
+
 def fitted(lineups: pl.DataFrame) -> np.ndarray:
     """The 2012-13 model's coefficients and expected newcomers."""
     rows = pr.candidates(GAMES, lineups, {})
