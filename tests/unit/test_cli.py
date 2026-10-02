@@ -26,6 +26,7 @@ COMMANDS = [
     "goalie-start",
     "goalie-effect",
     "schedule-terms",
+    "lineups",
     "bets",
     "odds",
     "lake",
@@ -897,6 +898,80 @@ def test_goalie_start_prints_no_held_out_fits_size(
     lines = {line.split(":")[0].strip(): line for line in result.output.splitlines()}
     assert "fitted on held out" in lines["20122013"]
     assert "team-games" in lines["20112012"]
+
+
+def lineup_lake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    from lineup_fixtures import league
+
+    from nhl_edge.ingest import games as games_module
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.lineup import goalie_start as gs
+    from nhl_edge.lineup import projection as pr
+
+    frames: dict[str, Any] = league()
+    frames["actual_lineups"] = frames.pop("lineups")
+    frames["goalie_starts"], _, _ = gs.score(
+        frames["actual_lineups"],
+        frames["games"],
+        [20112012, 20122013],
+        "goalie-start-20261001-x",
+        {},
+    )
+    counts = dict(frames["games"].group_by("season").len().iter_rows())
+    monkeypatch.setattr(games_module, "EXPECTED_GAMES", counts)
+    monkeypatch.setattr(pr, "team_lines", lambda: {})
+    monkeypatch.setattr(Lake, "read", lambda self, table: frames[table])
+    return frames
+
+
+def test_lineups_writes_the_table_and_the_report(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frames = lineup_lake(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["lineups"])
+    assert result.exit_code == 0, result.output
+    goalies = frames["goalie_starts"].height
+    assert f"skater and {goalies:,} goalie rows in 2 seasons" in result.output
+    # The fixture's seasons are all training seasons, so every fit shows its size.
+    assert "20122013: fitted on" in result.output and "held out" not in result.output
+    assert list((tmp_path / "data" / "lake" / "lineups").rglob("*.parquet"))
+    (path,) = (tmp_path / "reports" / "lineups").glob("lineup-*.md")
+    assert "## Per season" in path.read_text()
+
+
+def test_lineups_refuses_a_team_game_without_goalie_starts(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+
+    frames = lineup_lake(monkeypatch)
+    starts = frames["goalie_starts"]
+    frames["goalie_starts"] = starts.filter(pl.col("game_id") != starts["game_id"].min())
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["lineups"])
+    assert result.exit_code == 1
+    assert "2 team-games have no goalie-start probabilities" in plain(result.output)
+    assert "run nhl goalie-start" in plain(result.output)
+    assert not (tmp_path / "data").exists()
+
+
+def test_lineups_refuses_a_lake_with_a_team_game_without_skaters(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+
+    frames = lineup_lake(monkeypatch)
+    boxscores = frames["actual_lineups"]
+    first = boxscores["game_id"].min()
+    frames["actual_lineups"] = boxscores.filter(
+        (pl.col("game_id") != first) | (pl.col("role") == "G")
+    )
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["lineups"])
+    assert result.exit_code == 1
+    assert "2 team-games without skaters" in plain(result.output)
+    assert not (tmp_path / "data").exists()
 
 
 def goalie_effect_lake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
