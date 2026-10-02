@@ -449,6 +449,46 @@ def test_status_sends_odds_drift_to_the_odds_replay(
     assert "nhl ingest" not in result.output.split("Against R2:")[1]
 
 
+def test_status_sends_fitted_table_drift_to_its_own_command(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, date, datetime
+
+    import polars as pl
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.schemas import ShotXg, dtypes
+    from nhl_edge.lake.tables import Lake
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    row = {
+        "game_id": 2026020001,
+        "season": 20262027,
+        "game_date": date(2026, 9, 29),
+        "event_id": 7,
+        "xg": 0.1,
+        "train_cutoff": datetime(2026, 4, 17, 10, tzinfo=UTC),
+        "artifact_version": "xg-20261002-a9b8ac4",
+        "observed_utc": datetime(2026, 9, 30, 10, tzinfo=UTC),
+    }
+    frame = pl.DataFrame([row], schema=dtypes(ShotXg))
+    Lake(tmp_path / "runner", "test", bucket).write("shot_xg", frame)
+    monkeypatch.chdir(tmp_path)
+    behind = plain(runner.invoke(app, ["status"]).output).split("Against R2:")[1]
+    assert "shot_xg is behind R2: with the tables it reads up to date, nhl xg rebuilds it" in behind
+    assert "nhl ingest" not in behind
+    # This machine ahead of R2: the command with --r2 writes the rows.
+    bucket.objects.clear()
+    Lake(tmp_path / "data" / "lake").write("shot_xg", frame)
+    ahead = plain(runner.invoke(app, ["status"]).output).split("Against R2:")[1]
+    assert "R2 lacks shot_xg rows here: nhl xg --r2 from a clean main checkout" in ahead
+    assert "nhl ingest" not in ahead
+
+
 def test_status_sends_sbr_drift_to_the_sbr_import(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
