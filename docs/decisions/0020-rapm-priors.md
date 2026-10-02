@@ -1,6 +1,6 @@
 # 0020. RAPM priors: traits fitted inside RAPM at each season's start, NHLe from the last two seasons
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-02
 
 ## Context
