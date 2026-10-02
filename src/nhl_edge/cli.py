@@ -1383,6 +1383,15 @@ def _status_against_r2(local: "list[TableState]") -> None:
         "dailyfaceoff_goalies": "nhl goalies replay --r2",
         "sbr_odds": "nhl odds sbr --replay --r2",
     }
+    # Tables fitted from the others, rebuilt by their own command in this order (#110).
+    FITTED = {
+        "shot_xg": "nhl xg",
+        "stints": "nhl stints",
+        "team_strength": "nhl team-strength",
+        "goalie_starts": "nhl goalie-start",
+        "goalie_effects": "nhl goalie-effect",
+        "schedule_terms": "nhl schedule-terms",
+    }
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
 
@@ -1427,9 +1436,12 @@ def _status_against_r2(local: "list[TableState]") -> None:
     replayed_there = sorted(
         {key.split("/")[0] for key in missing_there if key.split("/")[0] in REPLAYED}
     )
+    fitted_here = [t for t in FITTED if any(key.split("/")[0] == t for key in missing_here)]
+    fitted_there = [t for t in FITTED if any(key.split("/")[0] == t for key in missing_there)]
     drifted_here, drifted_there = missing_here, missing_there
-    missing_here = [key for key in missing_here if key.split("/")[0] not in REPLAYED]
-    missing_there = [key for key in missing_there if key.split("/")[0] not in REPLAYED]
+    own = {*REPLAYED, *FITTED}
+    missing_here = [key for key in missing_here if key.split("/")[0] not in own]
+    missing_there = [key for key in missing_there if key.split("/")[0] not in own]
     if missing_here or raw_behind:
         window = replay_window(missing_here) or "--recent 3"
         typer.echo(
@@ -1446,6 +1458,16 @@ def _status_against_r2(local: "list[TableState]") -> None:
     for table in replayed_there:
         command = _replay_command(REPLAYED[table], table, drifted_there)
         typer.echo(f"  R2 lacks {table} rows here: nhl lake sync-raw, then {command}")
+    for table in fitted_here:
+        typer.echo(
+            f"  {table} is behind R2: with the tables it reads up to date, {FITTED[table]} "
+            "rebuilds it"
+        )
+    for table in fitted_there:
+        typer.echo(
+            f"  R2 lacks {table} rows here: {FITTED[table]} --r2 from a clean main checkout "
+            "writes them"
+        )
     if polls_behind:
         typer.echo("  pre-game goalie polls are behind R2: nhl lake restore-raw copies them")
     if polls_ahead:
@@ -1457,6 +1479,14 @@ def _status_against_r2(local: "list[TableState]") -> None:
             f"  {len(differ):,} files differ from R2 in {', '.join(tables)}: check which copy is "
             "current before syncing either way"
         )
-    in_step = not (missing_here or missing_there or replayed_here or replayed_there or differ)
+    in_step = not (
+        missing_here
+        or missing_there
+        or replayed_here
+        or replayed_there
+        or fitted_here
+        or fitted_there
+        or differ
+    )
     if in_step and not (raw_behind or raw_ahead or polls_behind or polls_ahead):
         typer.echo("  up to date with R2")
