@@ -250,6 +250,8 @@ class Report:
     without_page: list[int] = field(default_factory=list)  # players with no cached page
     # Players with a page but no boxscore yet, and their lines left out.
     without_boxscore: list[int] = field(default_factory=list)
+    # Players with a boxscore but not in players (his page could not be fetched): no lines.
+    not_in_players: list[int] = field(default_factory=list)
     unplayed_lines: int = 0
     lines: int = 0  # per-team lines kept
     other_game_types: int = 0  # lines of game types other than 2 and 3
@@ -262,12 +264,13 @@ def build(
 ) -> tuple[pl.DataFrame, Report]:
     """The whole table, from the newest cached landing page of every player in players, read
     with its fetch time as the ingest reads it, and his first boxscore in lineups
-    (actual_lineups). A player without a cached page, or without a boxscore, is counted in the
-    report, not an error: his lines stay out until his page is fetched and he has played. A page
-    that belongs to another player is an error."""
+    (actual_lineups). A player without a cached page, without a boxscore, or with a boxscore but
+    not in players, is counted in the report, not an error: his lines stay out until his page is
+    fetched and he has played. A page that belongs to another player is an error."""
     report = Report(players=players.height)
     debuts = first_boxscores(lineups)
     played = set(debuts["player_id"].to_list())
+    report.not_in_players = sorted(played - set(players["player_id"].to_list()))
     rows: list[dict[str, Any]] = []
     for player_id in sorted(players["player_id"].to_list()):
         raw_key = store.latest(f"{LANDING_PREFIX}/{player_id}")

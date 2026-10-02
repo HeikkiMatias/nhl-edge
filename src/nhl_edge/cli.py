@@ -291,6 +291,13 @@ def player_seasons(
             f"{', '.join(map(str, report.without_page))}",
             err=True,
         )
+    if report.not_in_players:
+        typer.echo(
+            f"warning: {len(report.not_in_players)} players with a boxscore are not in players, "
+            f"so they have no lines: {', '.join(map(str, report.not_in_players))} "
+            "(nhl ingest fetches their pages)",
+            err=True,
+        )
 
 
 @app.command()

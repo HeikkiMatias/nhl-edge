@@ -166,3 +166,12 @@ def test_a_player_who_debuted_in_a_hidden_season_is_left_out() -> None:
         .otherwise(pl.col("season"))
     )
     assert audit.drop_hidden_debuts(frame, hidden)["player_id"].unique().to_list() == [SKATER]
+
+
+def test_a_player_with_a_boxscore_but_not_in_players_is_a_problem() -> None:
+    # The goalie starts his own first game, so his boxscore names no one else.
+    assert audit.unlisted_players(players(SKATER, GOALIE), boxscores(GOALIE)) == []
+    assert audit.unlisted_players(players(SKATER), boxscores(GOALIE)) == [
+        f"1 players with a boxscore are not in players, so they have no lines, e.g. {GOALIE}: "
+        "nhl ingest fetches their pages"
+    ]

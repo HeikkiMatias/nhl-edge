@@ -8,6 +8,7 @@ from player_season_fixtures import (
     FETCHED,
     GOALIE,
     NO_PAGE,
+    OTHER_GOALIE,
     SKATER,
     boxscores,
     debuts,
@@ -229,6 +230,8 @@ def test_build_reads_the_newest_page_and_reports_a_player_without_one(tmp_path: 
     assert frame.equals(table())
     assert (report.players, report.pages, report.without_page) == (3, 2, [NO_PAGE])
     assert (report.without_boxscore, report.unplayed_lines) == ([], 0)
+    # The starter beside the skater's first game has a boxscore but is not in players.
+    assert report.not_in_players == [OTHER_GOALIE]
     assert (report.lines, report.other_game_types, report.partial, report.rows) == (50, 1, 0, 47)
     assert set(frame["raw_key"].to_list()) == {raw_key(SKATER), raw_key(GOALIE)}
 
@@ -281,3 +284,12 @@ def test_lineup_problems_name_a_short_season_and_a_game_without_a_boxscore() -> 
         "20112012: 2 of 3 games",
         "1 games without a boxscore in actual_lineups, e.g. 2011020801",
     ]
+
+
+def test_build_reports_a_player_with_a_boxscore_who_is_not_in_players(tmp_path: Path) -> None:
+    # The goalie played, but his page could not be fetched, so players has no row for him.
+    store = RawStore(tmp_path)
+    store_pages(store, SKATER, GOALIE)
+    frame, report = build(store, players(SKATER), boxscores(SKATER, GOALIE))
+    assert frame.equals(table(FETCHED, SKATER))
+    assert report.not_in_players == sorted([GOALIE, OTHER_GOALIE])

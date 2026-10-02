@@ -191,8 +191,10 @@ def _stints_section(lake: Lake, games: pl.DataFrame) -> Section:
 def _player_seasons_section(lake: Lake, store: RawStore, as_of: date) -> Section:
     # Counts only: the landing pages hold held-out seasons' goals and assists. As the stints
     # section, the one-time test season and the live seasons stay out.
-    found = player_season_audit.problems(lake.read("players"), store)
+    players = lake.read("players")
+    found = player_season_audit.problems(players, store)
     table, lineups = lake.read("player_league_seasons"), lake.read("actual_lineups")
+    found += player_season_audit.unlisted_players(players, lineups)
     found += player_season_audit.first_game_problems(table, lineups)
     frame = player_season_audit.drop_hidden_debuts(
         table.filter(

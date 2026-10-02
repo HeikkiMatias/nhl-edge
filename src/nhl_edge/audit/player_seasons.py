@@ -7,7 +7,8 @@ earlier lines would show it. The leagues with the most lines are picked without 
 
 A player in players without a cached landing page is a problem: his lines are missing until his
 page is fetched. So is a row whose first_boxscore_utc is not the player's first boxscore in
-actual_lineups: the table was built before the boxscores changed and needs a rebuild.
+actual_lineups: the table was built before the boxscores changed and needs a rebuild. And so is
+a player with a boxscore who is not in players, since his page could not be fetched.
 """
 
 import polars as pl
@@ -74,6 +75,21 @@ def drop_hidden_debuts(frame: pl.DataFrame, lineups: pl.DataFrame) -> pl.DataFra
         .filter(shown(pl.col("debut_season")))
     )
     return frame.join(debuts, on="player_id", how="semi")
+
+
+def unlisted_players(players: pl.DataFrame, lineups: pl.DataFrame) -> list[str]:
+    """Players with a boxscore in lineups (actual_lineups) who are not in players: their page
+    could not be fetched, so they have no lines."""
+    missing = sorted(
+        set(lineups["player_id"].unique().to_list()) - set(players["player_id"].to_list())
+    )
+    if not missing:
+        return []
+    examples = ", ".join(map(str, missing[:EXAMPLES]))
+    return [
+        f"{len(missing)} players with a boxscore are not in players, so they have no lines, "
+        f"e.g. {examples}: nhl ingest fetches their pages"
+    ]
 
 
 def first_game_problems(frame: pl.DataFrame, lineups: pl.DataFrame) -> list[str]:
