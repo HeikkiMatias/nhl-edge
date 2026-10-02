@@ -14,6 +14,7 @@ import polars as pl
 from nhl_edge.audit import corrections as correction_audit
 from nhl_edge.audit import games as game_audit
 from nhl_edge.audit import goalies as goalie_audit
+from nhl_edge.audit import player_seasons as player_season_audit
 from nhl_edge.audit import plays as play_audit
 from nhl_edge.audit import sbr as sbr_audit
 from nhl_edge.audit import snapshots as snapshot_audit
@@ -54,6 +55,7 @@ def build(lake: Lake, store: RawStore, as_of: date) -> list[Section]:
         _strength_section(lake.read("strength_time"), games),
         _plays_section(lake, store, games),
         _stints_section(lake, games),
+        _player_seasons_section(lake, store, as_of),
         _reference_section(games),
         _snapshot_section(lake, store, listed, as_of),
         _goalie_section(lake, games, as_of),
@@ -184,6 +186,44 @@ def _stints_section(lake: Lake, games: pl.DataFrame) -> Section:
         "only its chart coverage.\n\n" + stint_audit.markdown_report(report)
     )
     return Section("Stints", body, stint_audit.problems(stints, coverage))
+
+
+def _player_seasons_section(lake: Lake, store: RawStore, as_of: date) -> Section:
+    # Counts only: the landing pages hold held-out seasons' goals and assists. As the stints
+    # section, the one-time test season and the live seasons stay out.
+    players = lake.read("players")
+    found = player_season_audit.problems(players, store)
+    table, lineups = lake.read("player_league_seasons"), lake.read("actual_lineups")
+    found += player_season_audit.unlisted_players(players, lineups)
+    found += player_season_audit.first_game_problems(table, lineups)
+    frame = player_season_audit.drop_hidden_debuts(
+        table.filter(
+            pl.col("observed_utc").dt.date() <= as_of, player_season_audit.shown(pl.col("season"))
+        ),
+        lineups,
+    )
+    if frame.is_empty():
+        return Section(
+            "Player league seasons",
+            "No player league seasons in the lake: run `nhl player-seasons`.",
+            ["no player league seasons", *found],
+        )
+    leagues = player_season_audit.top_leagues(frame)
+    shared = player_season_audit.shared_leagues(frame)
+    body = (
+        "Each player's season lines in every league, from his cached landing page "
+        "(`player_league_seasons`, #98), for the NHLe priors: per season public by the audit "
+        "date, without the one-time test season and the live seasons or the players who debuted "
+        "in them, the players with lines and "
+        "the lines (one per player, league abbreviation and game type, his teams summed) in the "
+        f"{len(leagues)} leagues with the most of them. Counts only: no goals, assists or rates. "
+        f"{shared:,} player-season-game types have lines of one league under two abbreviations, "
+        "which a reader adding up by league must check.\n\n"
+        + player_season_audit.markdown_report(
+            player_season_audit.season_report(frame, leagues), leagues
+        )
+    )
+    return Section("Player league seasons", body, found)
 
 
 def _reference_section(games: pl.DataFrame) -> Section:

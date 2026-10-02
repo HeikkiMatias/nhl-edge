@@ -1,6 +1,6 @@
 """One pandera schema per table. Every write validates against its schema."""
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 import pandera.polars as pa
@@ -415,6 +415,151 @@ class Players(pa.DataFrameModel):
     def drafted_or_not(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(
             pl.col("draft_year").is_null() == pl.col("draft_overall").is_null()
+        )
+
+
+PLAYER_LEAGUE_SEASONS_KEY = ("player_id", "season", "league_abbrev", "game_type")
+# The game types a season line is kept for: regular season (2) and playoffs (3).
+SEASON_LINE_GAME_TYPES = (2, 3)
+# A season's lines count as public on this day (month, day), at 00:00 UTC, after the season:
+# nearly every league's season and the NHL playoffs are over by then (#98). The exceptions below
+# come later.
+SEASON_LINES_PUBLIC = (7, 1)
+# Leagues whose season, as the NHL labels it, can end after July 1. Their lines count as public on
+# October 1 instead, before any NHL season but 2026-27 starts, and none of them matters to an NHL
+# player's prior then.
+LATE_LEAGUES = (
+    # The Australian league, played from April to September in a calendar year the label does not
+    # give.
+    "AIHL",
+    "AUSTRALIA",
+    # The World Cup of Hockey, played in August and September (2004's labelled 2003-04).
+    "WCUP",
+    # The Brick Invitational, a tournament for 10-year-olds played in early July and labelled with
+    # the season before.
+    "BRICK INVITATIONAL",
+    # The Olympic qualification: the August 2025 final round is labelled 2024-25, while the August
+    # 2021 one is labelled 2021-22.
+    "OGQ",
+    # JPL-Pro, a summer pro-am league whose label is not known.
+    "JPL-PRO",
+    # Small events whose dates or labels are not known, as a precaution: exhibitions, camps, an
+    # early Olympic qualification and youth tournaments whose players' ages fit either a spring
+    # event or a summer one labelled with the season before.
+    "EXHIB.",
+    "IIHF DEV. CAMP",
+    "OLY-Q",
+    "OGC-16",
+    "QGC-16",
+    "WCCC-16",
+    "WSI U12",
+    "WSI U13",
+    "WSI U14",
+    "WSI U15",
+    "WSI U16",
+)
+LATE_LINES_PUBLIC = (10, 1)
+# Seasons whose NHL playoffs ended after July 1: the 2020 bubble (Cup Final on September 28) and
+# 2020-21 (July 7). None of their lines counts as public before the day given.
+LATE_SEASONS = {
+    20192020: datetime(2020, 10, 1, tzinfo=UTC),
+    20202021: datetime(2021, 7, 9, tzinfo=UTC),
+}
+# One league's season that ended after July 1, by (season, league): the 2022 World Juniors,
+# stopped in December 2021 and replayed in August 2022 under the 2021-22 label.
+LATE_LEAGUE_SEASONS = {(20212022, "WJC-20"): datetime(2022, 10, 1, tzinfo=UTC)}
+
+
+def season_lines_public_utc(season: pl.Expr, league: pl.Expr) -> pl.Expr:
+    """When the lines of a season given as 20152016 count as public: July 1 of its second year,
+    October 1 for a late league (LATE_LEAGUES), and never before the end of a late season
+    (LATE_SEASONS) or a late league-season (LATE_LEAGUE_SEASONS)."""
+    year = season % 10_000
+    by_league = (
+        pl.when(league.is_in(LATE_LEAGUES))
+        .then(pl.datetime(year, LATE_LINES_PUBLIC[0], LATE_LINES_PUBLIC[1], time_zone="UTC"))
+        .otherwise(
+            pl.datetime(year, SEASON_LINES_PUBLIC[0], SEASON_LINES_PUBLIC[1], time_zone="UTC")
+        )
+    )
+    season_end = season.replace_strict(
+        LATE_SEASONS, default=None, return_dtype=pl.Datetime("us", "UTC")
+    )
+    league_season_end = [
+        pl.when((season == late_season) & (league == late_league)).then(pl.lit(end))
+        for (late_season, late_league), end in LATE_LEAGUE_SEASONS.items()
+    ]
+    return pl.max_horizontal(by_league, season_end, *league_season_end)
+
+
+class PlayerLeagueSeasons(pa.DataFrameModel):
+    """A player's season in one league and game type (#98), from the seasonTotals array of his
+    landing page, the NHL's career stats in every league: the input of the NHLe offensive priors
+    (#102).
+
+    A player with several teams in a league-season has one line per team; they are summed, and
+    teams counts them. league_abbrev is the page's leagueAbbrev as it is and part of the key.
+    league is the same name trimmed and in upper case, with the known variants of one league
+    mapped to one name (Sweden to SHL, Swiss and NLA to NL; LEAGUE_VARIANTS in
+    ingest/player_seasons.py), so one league can sit under two keys in a player's season.
+    game_type is 2 (regular season) or 3 (playoffs). games_played, goals and assists are null
+    when a line summed lacks them, as most goalie lines lack goals and assists. age_at_season is
+    the player's age in whole years on September 15 of the season's first year, the NHL draft
+    cutoff, from players.birth_date.
+
+    A season's lines are public on July 1 (00:00 UTC) after it; October 1 for the leagues that
+    can end later or whose dates are not known (LATE_LEAGUES), such as the Australian league, the
+    World Cup of Hockey and the Olympic qualification; and never before the end of the 2020 and
+    2021 NHL playoffs, which ran past July 1 (LATE_SEASONS), or of the 2022 World Juniors, replayed
+    in August 2022 (LATE_LEAGUE_SEASONS). The pages were fetched in 2026, so their fetch time would
+    hide all history from the backtest. A line whose season was not yet public when the page was
+    fetched is a partial season and is not kept. A page fetched long after a season may carry
+    later corrections to its goals and assists, which ADR 0016 accepts.
+
+    The table holds only players who reached the NHL, so that a player has rows is hindsight
+    before his first NHL game. first_boxscore_utc is when his first boxscore in the lake became
+    public (actual_lineups), and observed_utc is the later of it and his season's public date. So
+    known_at shows a player's lines only once he has played, and a player without a boxscore has
+    no rows. The lake starts in 2010-11, so a player who debuted earlier counts from his first
+    game in it.
+    """
+
+    player_id: pl.Int64
+    season: pl.Int32
+    league_abbrev: pl.String = pa.Field(str_length={"min_value": 1})
+    league: pl.String = pa.Field(str_length={"min_value": 1})
+    game_type: pl.Int8 = pa.Field(isin=SEASON_LINE_GAME_TYPES)
+    teams: pl.Int16 = pa.Field(ge=1)
+    games_played: pl.Int16 = pa.Field(ge=0, nullable=True)
+    goals: pl.Int16 = pa.Field(ge=0, nullable=True)
+    assists: pl.Int16 = pa.Field(ge=0, nullable=True)
+    age_at_season: pl.Int16 = pa.Field(ge=0, nullable=True)
+    first_boxscore_utc: UtcDatetime
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(PLAYER_LEAGUE_SEASONS_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def season_spans_two_years(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        season = pl.col("season")
+        return data.lazyframe.select(season % 10_000 == season // 10_000 + 1)
+
+    @pa.dataframe_check
+    def league_trimmed_upper_case(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        league = pl.col("league")
+        return data.lazyframe.select(league == league.str.strip_chars().str.to_uppercase())
+
+    @pa.dataframe_check
+    def observed_when_the_season_is_over_and_he_has_played(
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        public = season_lines_public_utc(pl.col("season"), pl.col("league"))
+        return data.lazyframe.select(
+            pl.col("observed_utc") == pl.max_horizontal(public, pl.col("first_boxscore_utc"))
         )
 
 
