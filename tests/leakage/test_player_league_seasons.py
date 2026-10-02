@@ -9,14 +9,26 @@ The landing pages were fetched in 2026, and a line whose season was still under 
 a partial season that never enters the table. The column set is locked: a new column, such as a
 later stat or the page's fetch time, needs a look at when it became public first."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pandera.errors
 import polars as pl
 import pytest
-from player_season_fixtures import GOALIE, SKATER, debuts, first_boxscore_utc, table
+from player_season_fixtures import (
+    GOALIE,
+    SKATER,
+    boxscores,
+    debuts,
+    first_boxscore_utc,
+    table,
+)
 
-from nhl_edge.ingest.player_seasons import LINE_SCHEMA, player_league_seasons, season_lines_public
+from nhl_edge.ingest.player_seasons import (
+    LINE_SCHEMA,
+    first_boxscores,
+    player_league_seasons,
+    season_lines_public,
+)
 from nhl_edge.lake.schemas import PlayerLeagueSeasons, dtypes
 from nhl_edge.lake.tables import known_at
 
@@ -65,6 +77,17 @@ def test_a_player_s_lines_stay_hidden_until_his_first_boxscore_is_public() -> No
     assert before.height > 0
     assert known_at(before, debut).is_empty()
     assert known_at(before, debut + timedelta(seconds=1)).height == before.height
+
+
+def test_a_player_s_first_boxscore_is_his_earliest() -> None:
+    # The goalie's later game is listed first: his lines still count from the earlier one.
+    later = boxscores(GOALIE).with_columns(
+        game_id=pl.lit(2011020900, pl.Int64),
+        game_date=pl.lit(date(2012, 3, 1)),
+        observed_utc=pl.lit(datetime(2012, 3, 2, 10, tzinfo=UTC)),
+    )
+    first = first_boxscores(pl.concat([later, boxscores(GOALIE)]))
+    assert first.rows() == [(GOALIE, first_boxscore_utc(GOALIE))]
 
 
 def test_a_player_without_a_boxscore_has_no_rows() -> None:

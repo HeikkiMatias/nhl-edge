@@ -192,7 +192,9 @@ def _player_seasons_section(lake: Lake, store: RawStore, as_of: date) -> Section
     # Counts only: the landing pages hold held-out seasons' goals and assists. As the stints
     # section, the one-time test season and the live seasons stay out.
     found = player_season_audit.problems(lake.read("players"), store)
-    frame = lake.read("player_league_seasons").filter(
+    table = lake.read("player_league_seasons")
+    found += player_season_audit.first_game_problems(table, lake.read("actual_lineups"))
+    frame = table.filter(
         pl.col("observed_utc").dt.date() <= as_of, player_season_audit.shown(pl.col("season"))
     )
     if frame.is_empty():

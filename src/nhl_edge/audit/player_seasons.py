@@ -6,7 +6,8 @@ seasons, which no design choice may see even as counts; the leagues with the mos
 without them too.
 
 A player in players without a cached landing page is a problem: his lines are missing until his
-page is fetched.
+page is fetched. So is a row whose first_boxscore_utc is not the player's first boxscore in
+actual_lineups: the table was built before the boxscores changed and needs a rebuild.
 """
 
 import polars as pl
@@ -60,6 +61,26 @@ def markdown_report(report: pl.DataFrame, leagues: list[str]) -> str:
         counts = (row[column] for column in ("players", "lines", *leagues, "other"))
         lines.append(f"| {row['season']} | " + " | ".join(f"{n:,}" for n in counts) + " |")
     return "\n".join(lines)
+
+
+def first_game_problems(frame: pl.DataFrame, lineups: pl.DataFrame) -> list[str]:
+    """Players whose first_boxscore_utc differs from their first boxscore in lineups
+    (actual_lineups), or who have none there."""
+    first = lineups.group_by("player_id").agg(first=pl.col("observed_utc").min())
+    wrong = (
+        frame.group_by("player_id")
+        .agg(pl.col("first_boxscore_utc").first())
+        .join(first, on="player_id", how="left")
+        .filter(pl.col("first").is_null() | (pl.col("first") != pl.col("first_boxscore_utc")))
+        .sort("player_id")
+    )
+    if wrong.is_empty():
+        return []
+    examples = ", ".join(map(str, wrong["player_id"].head(EXAMPLES).to_list()))
+    return [
+        f"{wrong.height} players' first_boxscore_utc is not their first boxscore in "
+        f"actual_lineups, e.g. {examples}: rerun nhl player-seasons"
+    ]
 
 
 def problems(players: pl.DataFrame, store: RawStore) -> list[str]:

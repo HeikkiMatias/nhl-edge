@@ -229,7 +229,8 @@ def player_seasons(
         bool,
         typer.Option(
             "--r2",
-            help="Restore the landing pages and players from R2 first, and mirror the table.",
+            help="Restore the landing pages, players and boxscores from R2 first, and mirror "
+            "the table.",
         ),
     ] = False,
 ) -> None:

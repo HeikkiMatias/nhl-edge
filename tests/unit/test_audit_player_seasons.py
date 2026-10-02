@@ -6,6 +6,7 @@ from player_season_fixtures import (
     GOALIE,
     NO_PAGE,
     SKATER,
+    boxscores,
     debuts,
     players,
     store_pages,
@@ -75,6 +76,7 @@ def test_audit_report_has_the_player_seasons_section(
     lake = Lake()
     lake.write("games", OPENING)
     lake.write("players", players(SKATER, GOALIE, NO_PAGE))
+    lake.write("actual_lineups", boxscores(SKATER, GOALIE, NO_PAGE))
     lake.write("player_league_seasons", table())
     store_pages(RawStore(), SKATER, GOALIE)
     result = runner.invoke(app, ["audit", "report", "--as-of", "2010-10-08"])
@@ -92,6 +94,7 @@ def test_audit_report_has_the_player_seasons_section(
     assert "| 20122013 |" not in section
     assert "0 player-season-game types have lines of one league under two" in section
     assert f"have no landing page in the raw cache, e.g. {NO_PAGE}" in section
+    assert "first_boxscore_utc is not" not in section
     # The table holds counts only: players, lines and lines per league.
     counts = section.split("\n\n")[1]
     assert counts.startswith("| Season | Players | Lines | NHL | NCAA |")
@@ -114,6 +117,7 @@ def test_the_section_leaves_out_the_one_time_test_season_and_the_live_seasons(
     lake = Lake()
     lake.write("games", OPENING)
     lake.write("players", players(SKATER, GOALIE))
+    lake.write("actual_lineups", boxscores(SKATER, GOALIE))
     lake.write(
         "player_league_seasons",
         pl.concat([table(), player_league_seasons(later, players(SKATER), debuts(SKATER))]),
@@ -133,4 +137,19 @@ def test_the_section_leaves_out_the_one_time_test_season_and_the_live_seasons(
         False,
         False,
         False,
+    ]
+
+
+def test_a_first_boxscore_the_lineups_no_longer_show_first_is_a_problem() -> None:
+    frame = table()
+    assert audit.first_game_problems(frame, boxscores(SKATER, GOALIE)) == []
+    # The skater's first game is gone from actual_lineups, and an earlier one for the goalie came
+    # in: the table needs a rebuild.
+    earlier = boxscores(GOALIE).with_columns(
+        observed_utc=pl.col("observed_utc") - pl.duration(days=30)
+    )
+    found = audit.first_game_problems(frame, earlier)
+    assert found == [
+        f"2 players' first_boxscore_utc is not their first boxscore in actual_lineups, e.g. "
+        f"{SKATER}, {GOALIE}: rerun nhl player-seasons"
     ]
