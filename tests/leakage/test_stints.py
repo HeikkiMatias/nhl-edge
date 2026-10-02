@@ -3,7 +3,7 @@ public at 10:00 UTC the morning after (ADR 0004), and from its season's xG model
 the season began. So no prediction for the game sees them, and RAPM (#101) may read a game's
 stints only once they are public. The column set is locked here, as for the per-game tables."""
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pandera.errors
 import polars as pl
@@ -112,6 +112,33 @@ def test_xg_from_a_model_fitted_after_the_game_is_refused() -> None:
         faceoffs_frame([]),
     )
     assert frame["xg_version"].to_list() == [XG_VERSION]
+
+
+def test_a_real_games_xg_comes_from_a_model_fitted_before_its_season() -> None:
+    tables = parsed_feeds(MTL_ARI)
+    cutoff = datetime(2022, 9, 1, tzinfo=UTC)
+    scored = tables["shots"].filter(
+        ~pl.col("is_penalty_shot") & ~pl.col("is_empty_net") & pl.col("x").is_not_null()
+    )
+    shot_xg = scored.select(
+        "game_id",
+        "event_id",
+        xg=pl.lit(0.1),
+        train_cutoff=pl.lit(cutoff),
+        artifact_version=pl.lit(XG_VERSION),
+    )
+    frame = stints.build(
+        tables["shift_coverage"],
+        tables["shifts"],
+        tables["actual_lineups"],
+        tables["shots"],
+        shot_xg,
+        tables["faceoffs"],
+    )
+    assert (frame["xg_version"] == XG_VERSION).all()
+    assert (frame["xg_train_cutoff"] < frame["observed_utc"]).all()
+    total = frame["home_xg"].sum() + frame["away_xg"].sum()
+    assert total == pytest.approx(0.1 * scored.height)
 
 
 def test_stints_hold_only_the_games_own_play_and_its_xg_model() -> None:

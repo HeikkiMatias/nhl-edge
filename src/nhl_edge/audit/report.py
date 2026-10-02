@@ -178,8 +178,8 @@ def _stints_section(lake: Lake, games: pl.DataFrame) -> Section:
     body = (
         "Stints from complete shift charts (`stints`, #97, ADR 0015), without the one-time test "
         "season: the stints RAPM leaves out and why (a team with fewer than 3 or more than 6 "
-        "skaters, or two goalies), and the share of faceoffs that open a stint and so give it a "
-        "zone. For the seasons open now, the share of all games' playing time and of all xG in "
+        "skaters, or two goalies). For the seasons open now, the share of faceoffs that open a "
+        "stint and so give it a zone, and the share of all games' playing time and of all xG in "
         "the stints RAPM keeps.\n\n" + stint_audit.markdown_report(report)
     )
     return Section("Stints", body, stint_audit.problems(stints, coverage))

@@ -77,8 +77,11 @@ def test_the_season_report_counts_what_rapm_leaves_out_and_keeps() -> None:
 def test_a_held_out_season_keeps_its_counts_but_not_its_shares() -> None:
     row = report((HELD_OUT,)).row(0, named=True)
     assert row["stints"] == 4
+    assert row["faceoff_starts"] is None
     assert row["time_kept"] is None and row["xg_kept"] is None
-    assert "| held out |" in audit.markdown_report(report((HELD_OUT,)))
+    assert f"| {SEASON} | 2 | 1 | 1 | 4 | 1 | 0 | 100 | held out | | |" in audit.markdown_report(
+        report((HELD_OUT,))
+    )
 
 
 def test_the_markdown_has_a_row_per_season() -> None:
