@@ -5,14 +5,13 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 ## Start here (a fresh session)
 
 1. **Read** CLAUDE.md, this file and `docs/model-card.md`.
-2. **Finish any waiting item whose time has come** (next section). The SessionStart hook lists the open issues of the earliest milestone, P1 (#9, #10, #42). They wait on the calendar, not on work, so don't start them early.
+2. **Finish any waiting item whose time has come** (next section). The SessionStart hook lists the open issues of the earliest milestone, P1 (#9, #42, and the tooling issues #109 and #110). #9 and #42 wait on the calendar, not on work, so don't start them early.
 3. **Then phase 3** (#12), starting in plan mode (below). The owner asked on 2026-10-01 for a fresh session to start it alongside the waiting items. Gate 1 is a checkpoint, not a stop (ADR 0002).
 
 ## Waiting items: when and how
 
 | Issue | Ready when | Then |
 | --- | --- | --- |
-| #10, the phase 1 gate | All five odds slots of one US Eastern slot day landing on the timer. The first complete day is **2026-10-01**: morning 11:05, midday 16:45, pre7 22:45 and pre8 23:45 UTC, then pre10 at 01:45 UTC on 10-02. The timer went live during 2026-09-30's evening slots, so that day is incomplete. | If #10 is still open after 02:00 UTC on 2026-10-02: list the `odds-snapshots.yml` runs and confirm each of the five dispatched and succeeded. Pull `odds_snapshots` (`nhl odds replay --r2`), then run `nhl audit report --as-of 2026-10-01`; it defaults to yesterday and leaves out later slot days. Check its live odds section, and close #10 with a comment that quotes it. A one-time check-in routine does this at 02:20 UTC on 2026-10-02 in the session that wrote this file; do it by hand only if #10 is still open after that. |
 | #9 and #42, the committed audit report | Two weeks of goalie polls, from 2026-09-29: about **2026-10-13**. | First bring this machine's lake up to R2 with the commands `nhl status` prints. The report reads only the local lake, and it joins the polls to 2026-27's `games` and `actual_lineups`. Then run `nhl audit report` and commit it to `reports/audit/`. Review it as the comment on #9 says: every problem gets an issue in a milestone, and a dropped season or source gets an ADR. #42 closes with the report's answer on the NHL's starter flag (on the first night it was set for no team, while Daily Faceoff listed most starters as Confirmed). #9 closes with the reviewed report. |
 | #30, post-game corrections | Two weeks of rechecked 2026-27 games: games of 2026-09-29 to about 10-12, each rechecked 7 days later, so about **2026-10-22**. The nightly ingest runs `nhl recheck --recent 3 --r2`. | Run `nhl audit report` and review its corrections section on #30. If corrections change more than scorer credit on more than a few games a season, reopen ADR 0004 with the owner. Close #30. GitHub closed it once by mistake (a pasted plan contained a closing keyword); it was reopened on 2026-10-01. |
 | #79, gate 1 (draft PR #93, branch `phase-2/gate-1`) | #30 is reviewed. | Write ADR 0014 with the owner, from the outline in the comment on #79. If #30's corrections change any table B2 reads, through its features or its training (`shots`, `shifts` or `actual_lineups`, which feeds the goalie-start model and the starters B2 trains on), rerun `/leakage-check` and `/run-backtest`. Update the model card's gate 1 entry. Merge main into the branch: take main's `docs/handover.md` over the branch's version. Mark #93 ready (Codex reviews it then), triage, merge. Then close #11, phase 2's summary issue, by hand. |
@@ -100,9 +99,10 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
     - While it's down, start the goalie polls by hand. Never start an odds slot by hand: it spends Odds API credits.
 - **Odds snapshots:** a book's market priced at 1.0 is skipped, and the raw copy keeps it (#83, #84).
 - **Goalie polls (#42, #43, #48):** the NHL pre-game poll and Daily Faceoff run at every odds slot and hourly at :50. RotoWire is left out: its terms forbid scraping.
-- **Closed in P1:** #4, #5, #6, #7, #8, #20, #24, #25, #26, #27, #29, #43, #48, #50, #52, #56, #64, #65, #83.
+- **Closed in P1:** #4, #5, #6, #7, #8, #10 (the phase 1 gate, 2026-10-02: all five odds slots of 2026-10-01 landed on the timer), #20, #24, #25, #26, #27, #29, #43, #48, #50, #52, #56, #64, #65, #83.
 - **Closed in P2:** #28, #72, #73, #74, #75, #76, #77, #78, #91.
-- **Open, waiting:** #9, #10, #42 (P1); #30, #79, #11 (P2).
+- **Open, waiting:** #9, #42 (P1); #30, #79, #11 (P2).
+- **Open, to do:** #109 and #110 (P1, lake tooling found while building #97).
 - **Later milestones:** #66 (P4, the owner decides on 2022-23 when phase 4 starts), #67 and #21 (P5), #68 (P3).
 
 ## Keep an eye on
@@ -111,6 +111,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 - **In-sample training seasons:** xG of 2012-13 to 2017-18 is in-sample for its rebound term (ADR 0010), and the tuned tables there for their settings (ADR 0011). They may train later models, but no result may present them as out-of-sample.
 - **xG's known misses (ADR 0010):** 3v3 overtime is under-predicted by about 1.6 goals per 100 shots, and shots from 0 to 10 feet are over-predicted by about 0.6.
 - **Closing keywords:** a closing keyword followed by another issue's number, anywhere in a PR description, closes that issue on merge. That includes pasted plans; it is how #30 closed by mistake.
+- **Replaying live dates (#109):** a `--replay --r2` over a live date whose cached schedule predates its games' end deletes those games, here and in R2. Until #109 is fixed, replay live dates only with the nightly's own window, and check the per-table game counts after.
 - **Writing feature tables to R2:** run each command with `--r2` from a clean checkout of main, so the rows' `artifact_version` names the merged commit and doesn't end in `-dirty`. Their order is:
   1. `nhl xg`
   2. `nhl stints`

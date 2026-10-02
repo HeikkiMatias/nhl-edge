@@ -1,6 +1,6 @@
 # 0015. Stints leave out only impossible on-ice counts
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-01
 
 ## Context
