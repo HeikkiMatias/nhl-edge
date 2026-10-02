@@ -230,6 +230,49 @@ def test_games_not_final_are_skipped_with_a_warning(tmp_path: Path) -> None:
     )
 
 
+def test_a_replay_leaves_a_date_alone_when_its_schedule_copy_has_a_game_not_final(
+    tmp_path: Path,
+) -> None:
+    store, lake = RawStore(tmp_path / "raw"), Lake(tmp_path / "lake")
+    ingest(make_api(store, FakeNhl()), lake, []).run([OPENING])
+    tables = ("games", "schedule", *FEED_TABLES)
+    before = {table: lake.read(table) for table in tables}
+    # A later copy of the week, fetched while one of 2010-10-07's two games was still being
+    # played (#109).
+    week = json.loads(OPENING_WEEK)
+    for day in week["gameWeek"]:
+        for game in day["games"]:
+            if game["id"] == 2010020004:
+                game["gameState"] = "LIVE"
+    meta = {"fetched_utc": "2026-09-29T00:00:00+00:00", "status": 200}
+    store.put("nhl", "schedule/2010-10-07/20260929T000000Z", json.dumps(week).encode(), meta)
+    # The held date's final game has lost its feed from the cache: the replay must not read it.
+    for path in (tmp_path / "raw" / "nhl" / "play-by-play" / "20102011" / "2010020003").iterdir():
+        path.unlink()
+    lines: list[str] = []
+    [summary] = ingest(make_api(store, fail, offline=True), lake, lines).run([OPENING])
+    # 2010-10-07 keeps exactly what the first run wrote; 2010-10-08 is rebuilt from the new copy.
+    held = pl.col("game_date") == date(2010, 10, 7)
+    for table in tables:
+        after = lake.read(table)
+        assert after.filter(held).height > 0, table
+        assert after.filter(held).equals(before[table].filter(held)), table
+        assert after.filter(~held).height == before[table].filter(~held).height, table
+    assert summary.written == 1
+    assert summary.held == [date(2010, 10, 7)]
+    assert any("left 2010-10-07 as they were" in line for line in lines)
+
+
+def test_a_live_run_still_writes_a_date_with_a_game_not_final(tmp_path: Path) -> None:
+    lines: list[str] = []
+    window = DateRange(date(2026, 9, 29), date(2026, 9, 29))
+    [summary] = ingest(make_api(RawStore(tmp_path / "raw"), FakeNhl()), Lake(tmp_path), lines).run(
+        [window]
+    )
+    assert summary.held == []
+    assert not any("as they were" in line for line in lines)
+
+
 def test_season_window_uses_the_probe_bounds_and_checks_the_count(tmp_path: Path) -> None:
     fake, lines = FakeNhl(), []
     api = make_api(RawStore(tmp_path / "raw"), fake)
