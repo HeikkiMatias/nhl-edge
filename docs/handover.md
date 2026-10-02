@@ -5,7 +5,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 ## Start here (a fresh session)
 
 1. **Read** CLAUDE.md, this file and `docs/model-card.md`.
-2. **Finish any waiting item whose time has come** (next section). The SessionStart hook lists the open issues of the earliest milestone, P1 (#9, #42, and the tooling issue #110). #9 and #42 wait on the calendar, not on work, so don't start them early.
+2. **Finish any waiting item whose time has come** (next section). The SessionStart hook lists the open issues of the earliest milestone, P1 (#9, #42). They wait on the calendar, not on work, so don't start them early.
 3. **Then phase 3** (#12), starting in plan mode (below). The owner asked on 2026-10-01 for a fresh session to start it alongside the waiting items. Gate 1 is a checkpoint, not a stop (ADR 0002).
 
 ## Waiting items: when and how
@@ -99,10 +99,9 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
     - While it's down, start the goalie polls by hand. Never start an odds slot by hand: it spends Odds API credits.
 - **Odds snapshots:** a book's market priced at 1.0 is skipped, and the raw copy keeps it (#83, #84).
 - **Goalie polls (#42, #43, #48):** the NHL pre-game poll and Daily Faceoff run at every odds slot and hourly at :50. RotoWire is left out: its terms forbid scraping.
-- **Closed in P1:** #4, #5, #6, #7, #8, #10 (the phase 1 gate, 2026-10-02: all five odds slots of 2026-10-01 landed on the timer), #20, #24, #25, #26, #27, #29, #43, #48, #50, #52, #56, #64, #65, #83.
+- **Closed in P1:** #4, #5, #6, #7, #8, #10 (the phase 1 gate, 2026-10-02: all five odds slots of 2026-10-01 landed on the timer), #20, #24, #25, #26, #27, #29, #43, #48, #50, #52, #56, #64, #65, #83, #109 (replays leave a date with an unfinished game alone), #110 (`nhl status` hints for fitted tables).
 - **Closed in P2:** #28, #72, #73, #74, #75, #76, #77, #78, #91.
 - **Open, waiting:** #9, #42 (P1); #30, #79, #11 (P2).
-- **Open, to do:** #110 (P1, lake tooling found while building #97).
 - **Later milestones:** #66 (P4, the owner decides on 2022-23 when phase 4 starts), #67 and #21 (P5), #68 (P3).
 
 ## Keep an eye on
