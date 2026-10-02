@@ -28,20 +28,20 @@ Measured on the built table (`nhl stints`, open seasons):
 
 | Season | Stints left out (skaters, goalies) | Games | Seconds | Share of stint time | Share of xG |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 2010-11 | 9 (9, 0) | 4 | 84 | 0.002% | no xG |
+| 2010-11 | 10 (10, 0) | 4 | 86 | 0.002% | no xG |
 | 2011-12 | 7 (7, 0) | 6 | 76 | 0.002% | 0.002% |
 | 2012-13 | 6 (6, 0) | 3 | 116 | 0.004% | 0.001% |
 | 2013-14 | 7 (7, 0) | 6 | 71 | 0.002% | 0.002% |
 | 2014-15 | 13 (8, 5) | 9 | 162 | 0.004% | 0.002% |
-| 2015-16 | 20 (11, 9) | 12 | 219 | 0.005% | 0.005% |
+| 2015-16 | 21 (12, 9) | 12 | 226 | 0.005% | 0.005% |
 | 2016-17 | 17 (9, 8) | 9 | 217 | 0.005% | 0.004% |
 | 2017-18 | 21 (2, 19) | 9 | 186 | 0.004% | 0.006% |
 | 2018-19 | 24 (7, 17) | 13 | 282 | 0.006% | 0.004% |
-| 2019-20 | 169 (169, 0) | 94 | 1,738 | 0.045% | 0.028% |
+| 2019-20 | 170 (170, 0) | 95 | 1,741 | 0.045% | 0.028% |
 | 2020-21 | 154 (154, 0) | 76 | 1,479 | 0.048% | 0.022% |
 | 2021-22 | 21 (18, 3) | 12 | 246 | 0.005% | 0.009% |
 
-The rule removes at most 0.05% of a season's stint time. What RAPM loses is mostly games without a complete chart (7 to 31 a season): the stints it keeps hold 96.9% to 99.4% of each season's playing time and 97.0% to 99.4% of its xG (the audit report's stints section).
+The rule removes at most 0.05% of a season's stint time. Four of these stints, 38 seconds in all, are stretches with nobody recorded on the ice. What RAPM loses is mostly games without a complete chart (7 to 31 a season): the stints it keeps hold 96.9% to 99.4% of each season's playing time and 97.0% to 99.4% of its xG (the audit report's stints section).
 
 ## Backtest evidence
 
@@ -50,7 +50,7 @@ None yet. Nothing reads stints until RAPM (#101), and the decision shows in a ba
 ## Consequences
 
 - `features/stints.py` builds `stints` from complete charts only, with `drop_reason`; `lake/schemas.py` checks that a stint is left out exactly when its counts are impossible.
-- The audit report's stints section gives each season's stints left out per reason and, for the open seasons, the share of playing time and xG kept.
+- The audit report's stints section gives, for the open seasons, the stints left out per reason and the share of playing time and xG kept. A held-out season shows only its chart coverage, since goals cut stints and so its counts carry its results.
 - ADR 0009's consequence on RAPM and plan §9's risk row now point here.
 - A chart error that stays possible, such as a player left on the ice too long, stays in RAPM's rows. A complete chart limits it: every player's shifts add up to his time on ice within a minute.
 

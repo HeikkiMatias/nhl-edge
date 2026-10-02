@@ -174,8 +174,57 @@ def test_xg_adds_up_per_team_and_carries_its_model() -> None:
 
 def test_a_shot_the_xg_model_scores_without_xg_is_refused() -> None:
     shots = [(1, 100, True, False), (2, 200, False, False)]
-    with pytest.raises(ValueError, match="1 shots of 1 games have no xG"):
+    with pytest.raises(ValueError, match="1 shots the xG model scores have no xG"):
         build(full_period(), shots=shots, xg={1: 0.1})
+
+
+def test_an_xg_row_for_a_shot_the_model_no_longer_scores_is_refused() -> None:
+    # Shot 2 lost its coordinates after nhl xg scored it: its old row is stale.
+    shots = [(1, 100, True, False), (2, 200, False, False)]
+    with pytest.raises(ValueError, match="1 xG rows have no shot the model scores"):
+        build(full_period(), shots=shots, xg={1: 0.1, 2: 0.2}, no_coordinates=(2,))
+
+
+def test_a_seasons_xg_counts_even_when_only_other_games_have_it() -> None:
+    from stint_fixtures import (
+        calendar_frame,
+        faceoffs_frame,
+        lineups_frame,
+        shifts_frame,
+        shot_xg_frame,
+        shots_frame,
+    )
+    from stint_fixtures import coverage_frame as coverage
+
+    # The season's xG rows are all for another game, so this game's scorable shot is unscored.
+    other_game = shot_xg_frame({1: 0.1}).with_columns(game_id=pl.lit(2019020002, pl.Int64))
+    with pytest.raises(ValueError, match="have no xG"):
+        stints.build(
+            coverage(),
+            shifts_frame(full_period()),
+            lineups_frame(),
+            shots_frame([(1, 100, True, False)]),
+            other_game,
+            faceoffs_frame([]),
+            calendar_frame(),
+        )
+
+
+def test_a_stretch_with_nobody_on_the_ice_is_a_stint_rapm_leaves_out() -> None:
+    # Everyone's shifts start 5 seconds in, and stop for 10 seconds at 600.
+    shifts = [(p, 5, 600) for p, _, _ in full_period()] + [
+        (p, 610, PERIOD_END) for p, _, _ in full_period()
+    ]
+    frame = build(shifts, shots=[(1, 605, True, True)])
+    rows = frame.select("start_s", "end_s", "strength", "drop_reason", "home_goals").rows()
+    assert rows == [
+        (0, 5, "0v0", "skaters", 0),
+        (5, 600, "5v5", None, 0),
+        (600, 605, "0v0", "skaters", 1),
+        (605, 610, "0v0", "skaters", 0),
+        (610, PERIOD_END, "5v5", None, 0),
+    ]
+    assert frame["seconds"].sum() == PERIOD_END
 
 
 def test_a_goal_cuts_the_stint_even_when_no_one_changes() -> None:

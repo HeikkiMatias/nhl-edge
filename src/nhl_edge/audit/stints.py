@@ -1,8 +1,9 @@
 """The audit report's stints section (#97, ADR 0015): per season, the games whose complete shift
-chart gives stints, and the stints RAPM leaves out and why. For the seasons open now, it also
-gives the share of faceoffs that open a stint and so give it a zone, and the share of the season's
-playing time and xG in the stints RAPM keeps. A held-out season keeps its counts but not its
-shares, which a design choice could be shaped by.
+chart gives stints. For the seasons open now, it also gives the stints and those RAPM leaves out
+and why, the share of faceoffs that open a stint and so give it a zone, and the share of the
+season's playing time and xG in the stints RAPM keeps. A held-out season shows only its chart
+coverage: goals cut stints, so even its stint counts carry its results, which a design choice
+could be shaped by.
 
 A game with a complete chart and no stints is a problem.
 """
@@ -25,8 +26,8 @@ def season_report(
     games: pl.DataFrame,
     open_seasons: Collection[int],
 ) -> pl.DataFrame:
-    """Per season: games, those with a complete chart and those with stints, and stints and those
-    left out per reason with their seconds. For open_seasons only: the share of faceoffs in games
+    """Per season: games, and those with a complete chart and those with stints. For open_seasons
+    only: stints and those left out per reason with their seconds, the share of faceoffs in games
     with stints that fall on a stint's start, and the shares of all games' seconds (from
     strength_time) and of all xG (shot_xg) in the stints RAPM keeps."""
     reason = pl.col("drop_reason")
@@ -74,6 +75,7 @@ def season_report(
         .join(xg_total, on="season", how="left")
         .with_columns(pl.col(c).fill_null(0) for c in counts)
         .with_columns(
+            *(pl.when(shown).then(pl.col(c)).alias(c) for c in counts[2:]),
             faceoff_starts=pl.when(shown).then(pl.col("faceoff_starts")),
             time_kept=pl.when(shown).then(pl.col("kept_seconds") / pl.col("game_seconds")),
             xg_kept=pl.when(shown).then(pl.col("kept_xg") / pl.col("total_xg")),
@@ -94,17 +96,17 @@ def markdown_report(report: pl.DataFrame) -> str:
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in report.iter_rows(named=True):
-        if row["time_kept"] is None and row["with_stints"]:
-            shares = "| held out | | "
+        if row["stints"] is None:
+            rest = "| held out | | | | | | "
         else:
-            shares = (
-                f"| {_share(row['faceoff_starts'])} | {_share(row['time_kept'])} "
-                f"| {_share(row['xg_kept'])} "
+            rest = (
+                f"| {row['stints']:,} | {row['dropped_skaters']:,} | {row['dropped_goalies']:,} "
+                f"| {row['dropped_seconds']:,} | {_share(row['faceoff_starts'])} "
+                f"| {_share(row['time_kept'])} | {_share(row['xg_kept'])} "
             )
         lines.append(
             f"| {row['season']} | {row['games']:,} | {row['complete']:,} "
-            f"| {row['with_stints']:,} | {row['stints']:,} | {row['dropped_skaters']:,} "
-            f"| {row['dropped_goalies']:,} | {row['dropped_seconds']:,} " + shares + "|"
+            f"| {row['with_stints']:,} " + rest + "|"
         )
     return "\n".join(lines)
 
