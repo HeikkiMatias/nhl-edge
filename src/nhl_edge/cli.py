@@ -35,6 +35,7 @@ DEFAULT_AUDIT_OUT = Path("reports/audit")
 DEFAULT_XG_OUT = Path("reports/xg")
 DEFAULT_TUNING_OUT = Path("reports/tuning")
 DEFAULT_GOALIE_START_OUT = Path("reports/goalie-start")
+DEFAULT_LINEUPS_OUT = Path("reports/lineups")
 
 
 def _not_implemented(command: str, phase: str) -> NoReturn:
@@ -959,6 +960,79 @@ def goalie_start(
         typer.echo(f"  {fit['season']}: fitted on {size} to {fit['train_cutoff'][:10]}")
 
 
+@app.command("lineups")
+def lineups(
+    seasons: Annotated[
+        str | None,
+        typer.Option(
+            help="Seasons to score, as 20232024, a comma list or a range. Default: 2011-12 on."
+        ),
+    ] = None,
+    out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_LINEUPS_OUT,
+    r2: Annotated[bool, typer.Option("--r2", help="Mirror the lineups table to R2.")] = False,
+) -> None:
+    """Fit the lineup model per season on earlier seasons' boxscores (#99, ADR 0017), write each
+    candidate skater's probability of dressing, and each candidate goalie's start probability
+    from goalie_starts, to the lake's lineups, and the report to <out>/<version>.md: figures for
+    the training seasons, while the development and held-out seasons wait for gate 2."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.audit import projection as report
+    from nhl_edge.backtest import reports
+    from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, OPEN_SEASONS
+    from nhl_edge.ingest.games import EXPECTED_GAMES
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.lineup import projection as proj
+    from nhl_edge.settings import load_env
+
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    games, boxscores = lake.read("games"), lake.read("actual_lineups")
+    known = sorted(games["season"].unique().to_list())
+    try:
+        wanted = parse_seasons(seasons) if seasons else [s for s in known if s >= proj.FIRST_SEASON]
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    problems = proj.input_problems(games, boxscores, max(wanted), EXPECTED_GAMES) if wanted else []
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl ingest --replay for those seasons", err=True)
+        raise typer.Exit(code=1)
+    try:
+        version = reports.version(proj.COMPONENT, datetime.now(UTC))
+        skaters, scored, models = proj.score(boxscores, games, wanted, version)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    try:
+        table = proj.with_goalies(skaters, lake.read("goalie_starts"))
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        typer.echo("run nhl goalie-start for those seasons", err=True)
+        raise typer.Exit(code=1) from None
+    days = games.filter(pl.col("season").is_in(wanted))["game_date"].unique().to_list()
+    lake.replace_dates("lineups", table, days)
+    # The development seasons stay unseen until gate 2 (phase 3 plan).
+    shown = [season for season in OPEN_SEASONS if season not in DEVELOPMENT_SEASONS]
+    scores = report.team_game_scores(scored, boxscores)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{version}.md"
+    path.write_text(report.markdown_report(scores, models, shown, version))
+    goalies = table.filter(pl.col("role") == "G").height
+    typer.echo(
+        f"{path}: {table.height - goalies:,} skater and {goalies:,} goalie rows "
+        f"in {len(models)} seasons"
+    )
+    # A fit's team-games and newcomers would describe a held-out season: shown, as in the
+    # report, only when every season it read is.
+    for fit in report.fits(models, shown):
+        size = "held out" if fit["team_games"] is None else f"{fit['team_games']:,} team-games"
+        typer.echo(f"  {fit['season']}: fitted on {size} to {fit['train_cutoff'][:10]}")
+
+
 @app.command()
 def bets() -> None:
     """Show the paper bet ledger and CLV."""
@@ -1520,6 +1594,7 @@ def _status_against_r2(local: "list[TableState]") -> None:
         "goalie_starts": "nhl goalie-start",
         "goalie_effects": "nhl goalie-effect",
         "schedule_terms": "nhl schedule-terms",
+        "lineups": "nhl lineups",
     }
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env

@@ -1016,6 +1016,72 @@ class GoalieStarts(pa.DataFrameModel):
         return data.lazyframe.select((total - 1).abs() < 1e-9)
 
 
+# The skaters who dress for a team-game: 18 in all but 20 of 18,711 team-games of 2010-11 to
+# 2017-18 (ADR 0017).
+DRESSED_SKATERS = 18
+
+
+class Lineups(pa.DataFrameModel):
+    """A team's projected lineup before a game (#99, ADR 0017), one row per candidate: each player
+    who dressed for the team in its last ten games public before observed_utc, through its line
+    of team codes, and has not dressed for another team since. A team with no earlier game has
+    no rows.
+
+    A skater (role F or D, as listed in his latest game for the team) has p_available, the
+    probability that he dresses. A team-game's skaters add up to the 18 who dress less the
+    newcomers expected among them, so to at most 18. Their model was fitted on earlier seasons'
+    boxscores public before the season's first as-of time; train_cutoff is the last of them, and
+    artifact_version names the run. A goalie (role G) has p_start, copied with its train_cutoff
+    and artifact_version from goalie_starts (ADR 0012), and a team-game's goalies add up to 1.
+
+    observed_utc is the game's as-of time: 10:00 US Eastern on the game date, or an hour before
+    the start if that is earlier, as for team strength."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    player_id: pl.Int64
+    role: pl.String = pa.Field(isin=ROLES)
+    p_available: pl.Float64 = pa.Field(gt=0, le=1, nullable=True)
+    p_start: pl.Float64 = pa.Field(gt=0, le=1, nullable=True)
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^(lineup|goalie-start)-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "team", "player_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def skaters_dress_and_goalies_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        goalie = pl.col("role") == "G"
+        return data.lazyframe.select(
+            (goalie == pl.col("p_available").is_null())
+            & (goalie == pl.col("p_start").is_not_null())
+            & (goalie == pl.col("artifact_version").str.starts_with("goalie-start-"))
+        )
+
+    @pa.dataframe_check
+    def model_predates_the_game(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("train_cutoff") < pl.col("observed_utc"))
+
+    @pa.dataframe_check
+    def one_as_of_time_per_team_game(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("observed_utc").n_unique().over("game_id", "team") == 1)
+
+    @pa.dataframe_check
+    def skaters_add_up_to_at_most_those_who_dress(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        total = pl.col("p_available").sum().over("game_id", "team")
+        return data.lazyframe.select(total <= DRESSED_SKATERS + 1e-9)
+
+    @pa.dataframe_check
+    def goalies_add_up_to_one(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        total = pl.col("p_start").sum().over("game_id", "team")
+        return data.lazyframe.select((pl.col("role") != "G") | ((total - 1).abs() < 1e-9))
+
+
 class Shifts(pa.DataFrameModel):
     """One player shift from the shift chart (type 517 rows), periods 1 to 4.
 

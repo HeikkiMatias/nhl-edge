@@ -140,7 +140,7 @@ Sixteen tables cover v1. Every row records when its underlying fact became publi
 | `team_ratings` | Team, as\_of | ev\_off, ev\_def, pp, pk, sd, train\_cutoff, artifact\_version | Lake; latest in Supabase |
 | `player_ratings` | Player, as\_of, component | component (ev\_off, ev\_def, pp, pk, finishing, penalties), mean, sd, train\_cutoff, artifact\_version | Lake; latest in Supabase |
 | `goalie_ratings` | Goalie, as\_of | saves\_above\_expected\_per\_shot, sd, train\_cutoff, artifact\_version | Lake; latest in Supabase |
-| `lineups` | Game, team, as\_of, player | projected from earlier `actual_lineups`: source (projected, actual), p\_available, expected\_toi by strength, pp\_unit, p\_start for goalies, observed\_utc | Lake, Supabase |
+| `lineups` | Game, team, as\_of, player | projected from earlier `actual_lineups`: role, p\_available for skaters (ADR 0017), p\_start for goalies copied from the goalie-start model, train\_cutoff, artifact\_version, observed\_utc; expected\_toi by strength and pp\_unit (#100) and source (projected, actual) to come | Lake, Supabase |
 | `odds_snapshots` | Snapshot, game, book, market, side | snapshot\_utc, last\_update\_utc, line, price\_decimal, is\_closing\_proxy | Supabase live; lake for history |
 | `predictions` | Game, predicted\_utc, model | market\_price\_used, p\_b1, p\_b2, p\_b3, p\_blend, uncertainty\_score, goalie\_confirmed, artifact versions | Supabase |
 | `bets` | One per bet (paper or real) | placed\_utc, side, price\_pinnacle, price\_best\_eu, best\_eu\_book, stake\_units, p\_blend, prob\_gap, exp\_return, close\_proxy\_pinnacle, clv, result, pnl\_units | Supabase |

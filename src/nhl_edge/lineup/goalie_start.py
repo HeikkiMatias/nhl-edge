@@ -231,14 +231,15 @@ def objective(
 
 
 def season_cutoff(games: pl.DataFrame, season: int) -> datetime:
-    """The season's first as-of time: its model reads only starters public before it, so it
-    predates every rating it gives, and the backtest's fold start."""
+    """The season's first as-of time: its model reads only boxscores public before it, so it
+    predates every rating it gives, and the backtest's fold start. The lineup model (ADR 0017)
+    starts its seasons here too."""
     first = games.filter(pl.col("season") == season).select(
         as_of(pl.col("game_date"), pl.col("start_utc")).min()
     )
     moment = first.item() if first.height else None
     if not isinstance(moment, datetime):
-        raise ValueError(f"no games of {season} to start its goalie-start model")
+        raise ValueError(f"no games of {season} to start its model")
     return moment
 
 
