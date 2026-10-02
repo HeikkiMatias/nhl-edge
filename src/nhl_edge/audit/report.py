@@ -189,9 +189,12 @@ def _stints_section(lake: Lake, games: pl.DataFrame) -> Section:
 
 
 def _player_seasons_section(lake: Lake, store: RawStore, as_of: date) -> Section:
-    # Counts only, for every season: the landing pages hold held-out seasons' goals and assists.
+    # Counts only: the landing pages hold held-out seasons' goals and assists. As the stints
+    # section, the one-time test season and the live seasons stay out.
     found = player_season_audit.problems(lake.read("players"), store)
-    frame = lake.read("player_league_seasons").filter(pl.col("observed_utc").dt.date() <= as_of)
+    frame = lake.read("player_league_seasons").filter(
+        pl.col("observed_utc").dt.date() <= as_of, player_season_audit.shown(pl.col("season"))
+    )
     if frame.is_empty():
         return Section(
             "Player league seasons",
@@ -203,9 +206,9 @@ def _player_seasons_section(lake: Lake, store: RawStore, as_of: date) -> Section
     body = (
         "Each player's season lines in every league, from his cached landing page "
         "(`player_league_seasons`, #98), for the NHLe priors: per season public by the audit "
-        "date, the players with lines and the lines (one per player, league abbreviation and game "
-        f"type, his teams summed) in the {len(leagues)} leagues with the most of them. Counts "
-        "only, for every season: no goals, assists or rates. "
+        "date, without the one-time test season and the live seasons, the players with lines and "
+        "the lines (one per player, league abbreviation and game type, his teams summed) in the "
+        f"{len(leagues)} leagues with the most of them. Counts only: no goals, assists or rates. "
         f"{shared:,} player-season-game types have lines of one league under two abbreviations, "
         "which a reader adding up by league must check.\n\n"
         + player_season_audit.markdown_report(

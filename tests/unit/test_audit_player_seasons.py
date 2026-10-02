@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from nhl_edge.audit import player_seasons as audit
 from nhl_edge.cli import app
+from nhl_edge.ingest.player_seasons import LINE_SCHEMA, player_league_seasons
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import Lake
 
@@ -81,3 +82,41 @@ def test_audit_report_has_the_player_seasons_section(
     counts = section.split("\n\n")[1]
     assert counts.startswith("| Season | Players | Lines | NHL | NCAA |")
     assert not {"goals", "assists", "points"} & set(counts.lower().replace("|", " ").split())
+
+
+def test_the_section_leaves_out_the_one_time_test_season_and_the_live_seasons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    later = pl.DataFrame(
+        [
+            (SKATER, season, league, 2, 10, 1, 1, "k")
+            for season in (20242025, 20252026, 20262027)
+            for league in ("NHL", "KHL")
+        ],
+        schema=LINE_SCHEMA,
+        orient="row",
+    )
+    lake = Lake()
+    lake.write("games", OPENING)
+    lake.write("players", players(SKATER, GOALIE))
+    lake.write(
+        "player_league_seasons",
+        pl.concat([table(), player_league_seasons(later, players(SKATER))]),
+    )
+    store_pages(RawStore(), SKATER, GOALIE)
+    result = runner.invoke(app, ["audit", "report", "--as-of", "2027-07-02"])
+    assert result.exit_code == 0, result.output
+    text = (tmp_path / "reports" / "audit" / "2027-07-02.md").read_text()
+    section = text.split("\n## Player league seasons\n")[1].split("\n## ")[0]
+    assert "| 20242025 | 1 | 2 |" in section
+    assert "| 20252026 |" not in section
+    assert "| 20262027 |" not in section
+    seasons = pl.Series([20092010, 20242025, 20252026, 20262027, 20272028])
+    assert pl.select(audit.shown(pl.lit(seasons))).to_series().to_list() == [
+        True,
+        True,
+        False,
+        False,
+        False,
+    ]

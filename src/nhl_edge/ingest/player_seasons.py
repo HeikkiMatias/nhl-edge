@@ -6,9 +6,11 @@ boxscore, and reuses it from then on (NhlApi.player_landing). So this reads the 
 of every player in players and makes no request; a season played after a page's fetch needs that
 page fetched again.
 
-Point in time: a season's lines count as public on July 1 (00:00 UTC) after it, when every league's
-season and the NHL playoffs are over (lake/schemas.py, SEASON_LINES_PUBLIC); the Australian league,
-played from April to September, only on October 1 (SUMMER_LEAGUES). The pages' fetch time
+Point in time: a season's lines count as public on July 1 (00:00 UTC) after it, when nearly every
+league's season and the NHL playoffs are over (lake/schemas.py, SEASON_LINES_PUBLIC). The
+exceptions come later: the Australian league (April to September) and the World Cup of Hockey
+(August and September) on October 1 (LATE_LEAGUES), and every line of 2019-20 and 2020-21, whose
+NHL playoffs ran past July 1, from their end (LATE_SEASONS). The pages' fetch time
 would hide all history from the backtest, since the backfill fetched them in 2026. A line whose
 season had not reached that day when its page was fetched is a partial season and is dropped. A
 page fetched long after a season may carry later corrections, as ADR 0004 accepts for the
@@ -25,11 +27,12 @@ import polars as pl
 from nhl_edge.ingest.nhl_api import parse_utc
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.schemas import (
+    LATE_LEAGUES,
+    LATE_LINES_PUBLIC,
+    LATE_SEASONS,
     PLAYER_LEAGUE_SEASONS_KEY,
     SEASON_LINE_GAME_TYPES,
     SEASON_LINES_PUBLIC,
-    SUMMER_LEAGUES,
-    SUMMER_LINES_PUBLIC,
     PlayerLeagueSeasons,
     dtypes,
     season_lines_public_utc,
@@ -98,11 +101,19 @@ LEAGUE_VARIANTS: dict[str, str] = {
 
 
 def season_lines_public(season: int, league_abbrev: str) -> datetime:
-    """When the lines of a season given as 20152016 count as public: July 1 (00:00 UTC) of its
-    second year, or October 1 for a summer league, as season_lines_public_utc in lake/schemas.py."""
-    summer = league_abbrev.strip().upper() in SUMMER_LEAGUES
-    month, day = SUMMER_LINES_PUBLIC if summer else SEASON_LINES_PUBLIC
-    return datetime(season % 10_000, month, day, tzinfo=UTC)
+    """When the lines of a season given as 20152016 count as public, as season_lines_public_utc in
+    lake/schemas.py: July 1 (00:00 UTC) of its second year, October 1 for a late league, and never
+    before a late season's end."""
+    late = league_name_of(league_abbrev) in LATE_LEAGUES
+    month, day = LATE_LINES_PUBLIC if late else SEASON_LINES_PUBLIC
+    public = datetime(season % 10_000, month, day, tzinfo=UTC)
+    return max(public, LATE_SEASONS.get(season, public))
+
+
+def league_name_of(abbrev: str) -> str:
+    """league_name for one raw abbreviation."""
+    name = abbrev.strip().upper()
+    return LEAGUE_VARIANTS.get(name, name)
 
 
 def league_name(abbrev: pl.Expr) -> pl.Expr:
@@ -132,7 +143,7 @@ class PageLines:
 
 
 def landing_lines(body: bytes, fetched_utc: datetime, raw_key: str) -> PageLines:
-    """The regular-season and playoff lines, one per team, of the seasons whose July 1 had come
+    """The regular-season and playoff lines, one per team, that were public (season_lines_public)
     when the page was fetched. Other game types (the World Cup of Hockey's 6 and 7) and the lines
     of a season still under way are counted and left out. A page without seasonTotals has none."""
     data = json.loads(body)

@@ -155,11 +155,21 @@ def test_a_season_counts_as_public_on_july_1_after_it() -> None:
     assert frame["observed_utc"].to_list() == expected
 
 
-def test_the_australian_league_counts_as_public_on_october_1() -> None:
-    # Played from April to September, whichever calendar year the NHL's label gives it.
-    for abbrev in ("AIHL", "Australia", " aihl "):
+def test_the_late_leagues_count_as_public_on_october_1() -> None:
+    # The Australian league plays from April to September, whichever calendar year the NHL's label
+    # gives it, and the World Cup of Hockey in August and September.
+    for abbrev in ("AIHL", "Australia", " aihl ", "WCup", "W-Cup"):
         assert season_lines_public(20172018, abbrev) == datetime(2018, 10, 1, tzinfo=UTC)
     assert season_lines_public(20172018, "Austria") == datetime(2018, 7, 1, tzinfo=UTC)
+
+
+def test_the_late_nhl_seasons_count_as_public_from_their_end() -> None:
+    # The 2020 playoffs ended on September 28, 2020 and the 2021 ones on July 7, 2021.
+    for abbrev in ("NHL", "AHL", "AIHL"):
+        assert season_lines_public(20192020, abbrev) == datetime(2020, 10, 1, tzinfo=UTC)
+    assert season_lines_public(20202021, "NHL") == datetime(2021, 7, 9, tzinfo=UTC)
+    assert season_lines_public(20202021, "AIHL") == datetime(2021, 10, 1, tzinfo=UTC)
+    assert season_lines_public(20212022, "NHL") == datetime(2022, 7, 1, tzinfo=UTC)
 
 
 def test_a_season_not_over_when_the_page_was_fetched_is_dropped() -> None:

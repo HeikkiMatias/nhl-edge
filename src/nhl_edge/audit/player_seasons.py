@@ -1,7 +1,9 @@
 """The audit report's player league seasons section (#98): per season, the players with lines and
-the lines in the leagues with the most of them. It shows counts only, for every season. The
-landing pages hold the goals and assists of held-out seasons, which must stay unseen, and one rule
-for all seasons keeps the section simple.
+the lines in the leagues with the most of them. It shows counts only: the landing pages hold the
+goals and assists of held-out seasons, which must stay unseen, and one rule for all seasons keeps
+the section simple. As the stints section, it leaves out the one-time test season and the live
+seasons, which no design choice may see even as counts; the leagues with the most lines are picked
+without them too.
 
 A player in players without a cached landing page is a problem: his lines are missing until his
 page is fetched.
@@ -9,11 +11,18 @@ page is fetched.
 
 import polars as pl
 
+from nhl_edge.backtest.seasons import FIRST_LIVE_SEASON, SEASON_ROLES, SeasonRole
 from nhl_edge.ingest.player_seasons import LANDING_PREFIX
 from nhl_edge.lake.raw import RawStore
 
 TOP_LEAGUES = 8
 EXAMPLES = 10
+HIDDEN = [s for s, role in SEASON_ROLES.items() if role is SeasonRole.ONE_TIME_TEST]
+
+
+def shown(season: pl.Expr) -> pl.Expr:
+    """The seasons the section shows: all before the live seasons but the one-time test season."""
+    return (season < FIRST_LIVE_SEASON) & ~season.is_in(HIDDEN)
 
 
 def top_leagues(frame: pl.DataFrame, n: int = TOP_LEAGUES) -> list[str]:

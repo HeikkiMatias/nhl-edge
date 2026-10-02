@@ -1,6 +1,6 @@
 """One pandera schema per table. Every write validates against its schema."""
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 import pandera.polars as pa
@@ -424,24 +424,35 @@ SEASON_LINE_GAME_TYPES = (2, 3)
 # A season's lines in every league count as public on this day (month, day), at 00:00 UTC, after
 # the season: every league's season and the NHL playoffs are over by then (#98).
 SEASON_LINES_PUBLIC = (7, 1)
-# Leagues played over the northern summer, as the league column names them: the Australian league
-# runs from April to September, so its season is public only from October 1 of the season's
-# second year, whichever calendar year the NHL's label gives it.
-SUMMER_LEAGUES = ("AIHL", "AUSTRALIA")
-SUMMER_LINES_PUBLIC = (10, 1)
+# Leagues whose season, as the NHL labels it, can end after July 1: the Australian league, played
+# from April to September in a calendar year the label does not give, and the World Cup of Hockey,
+# played in August and September. Their lines count as public on October 1 instead.
+LATE_LEAGUES = ("AIHL", "AUSTRALIA", "WCUP")
+LATE_LINES_PUBLIC = (10, 1)
+# Seasons whose NHL playoffs ended after July 1: the 2020 bubble (Cup Final on September 28) and
+# 2020-21 (July 7). None of their lines counts as public before the day given.
+LATE_SEASONS = {
+    20192020: datetime(2020, 10, 1, tzinfo=UTC),
+    20202021: datetime(2021, 7, 9, tzinfo=UTC),
+}
 
 
 def season_lines_public_utc(season: pl.Expr, league: pl.Expr) -> pl.Expr:
     """When the lines of a season given as 20152016 count as public: July 1 of its second year,
-    or October 1 for a summer league (SUMMER_LEAGUES)."""
+    October 1 for a late league (LATE_LEAGUES), and never before a late season's end
+    (LATE_SEASONS)."""
     year = season % 10_000
-    return (
-        pl.when(league.is_in(SUMMER_LEAGUES))
-        .then(pl.datetime(year, SUMMER_LINES_PUBLIC[0], SUMMER_LINES_PUBLIC[1], time_zone="UTC"))
+    by_league = (
+        pl.when(league.is_in(LATE_LEAGUES))
+        .then(pl.datetime(year, LATE_LINES_PUBLIC[0], LATE_LINES_PUBLIC[1], time_zone="UTC"))
         .otherwise(
             pl.datetime(year, SEASON_LINES_PUBLIC[0], SEASON_LINES_PUBLIC[1], time_zone="UTC")
         )
     )
+    season_end = season.replace_strict(
+        LATE_SEASONS, default=None, return_dtype=pl.Datetime("us", "UTC")
+    )
+    return pl.max_horizontal(by_league, season_end)
 
 
 class PlayerLeagueSeasons(pa.DataFrameModel):
@@ -459,10 +470,11 @@ class PlayerLeagueSeasons(pa.DataFrameModel):
     the player's age in whole years on September 15 of the season's first year, the NHL draft
     cutoff, from players.birth_date.
 
-    observed_utc is July 1 (00:00 UTC) after the season, or October 1 for the Australian league,
-    played over the northern summer (SUMMER_LEAGUES). The pages were fetched in 2026, so their
-    fetch time would hide all history from the backtest. A line whose season had not reached its
-    July 1 when the page was fetched is a partial season and is not kept. A page fetched long
+    observed_utc is July 1 (00:00 UTC) after the season; October 1 for the Australian league and
+    the World Cup of Hockey, which can end later (LATE_LEAGUES); and never before the end of the
+    2020 and 2021 NHL playoffs, which ran past July 1 (LATE_SEASONS). The pages were fetched in
+    2026, so their fetch time would hide all history from the backtest. A line whose season was not
+    yet public when the page was fetched is a partial season and is not kept. A page fetched long
     after a season may carry later corrections, as ADR 0004 accepts for the per-game feeds.
     The table holds only players in players, who all reached the NHL from 2010-11 on, so that a
     player has rows here is hindsight before his first NHL game: a prior fitted for a fold picks

@@ -1,9 +1,11 @@
-"""Point-in-time rules for player_league_seasons (#98). A season's lines in every league count as
-public on July 1 (00:00 UTC) after it, when every league's season and the NHL playoffs are over, so
-known_at shows none of them before then. The landing pages were fetched in 2026, and a line whose
-season was still under way at the fetch is a partial season that never enters the table. The
-column set is locked: a new column, such as a later stat or the page's fetch time, needs a look at
-when it became public first."""
+"""Point-in-time rules for player_league_seasons (#98). A season's lines count as public on July 1
+(00:00 UTC) after it, when nearly every league's season and the NHL playoffs are over, so known_at
+shows none of them before then. The late leagues (the Australian league and the World Cup of
+Hockey) wait until October 1, and the 2019-20 and 2020-21 seasons, whose NHL playoffs ran past
+July 1, until their end. The landing pages were fetched in 2026, and a line whose season was still
+under way at the fetch is a partial season that never enters the table. The column set is locked:
+a new column, such as a later stat or the page's fetch time, needs a look at when it became public
+first."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -68,16 +70,15 @@ def test_the_column_set_is_locked() -> None:
             PlayerLeagueSeasons.validate(frame.with_columns(pl.lit(value).alias(column)))
 
 
-def test_a_summer_league_season_stays_hidden_past_july_1() -> None:
-    # The Australian league plays from April to September: its 2017-18 line could hold games up
-    # to September 2018, so it is unknown on July 1 and until October 1, 2018.
+def one_line(season: int, abbrev: str, game_type: int = 2) -> pl.DataFrame:
+    """player_league_seasons of a single line."""
     lines = pl.DataFrame(
         [
             {
                 "player_id": SKATER,
-                "season": 20172018,
-                "league_abbrev": "AIHL",
-                "game_type": 2,
+                "season": season,
+                "league_abbrev": abbrev,
+                "game_type": game_type,
                 "games_played": 10,
                 "goals": 1,
                 "assists": 1,
@@ -89,7 +90,35 @@ def test_a_summer_league_season_stays_hidden_past_july_1() -> None:
     players = pl.DataFrame(
         {"player_id": [SKATER], "birth_date": [None]}, schema_overrides={"birth_date": pl.Date}
     )
-    frame = player_league_seasons(lines, players)
-    assert known_at(frame, datetime(2018, 7, 1, 0, 0, 1, tzinfo=UTC)).is_empty()
-    assert known_at(frame, datetime(2018, 10, 1, tzinfo=UTC)).is_empty()
-    assert known_at(frame, datetime(2018, 10, 1, 0, 0, 1, tzinfo=UTC)).height == 1
+    return player_league_seasons(lines, players)
+
+
+def hidden_until(frame: pl.DataFrame, public: datetime) -> None:
+    """frame is unknown on July 1 after its season and up to public, and known right after."""
+    july = datetime(public.year, 7, 1, 0, 0, 1, tzinfo=UTC)
+    assert known_at(frame, july).is_empty()
+    assert known_at(frame, public).is_empty()
+    assert known_at(frame, public + timedelta(seconds=1)).height == frame.height
+
+
+@pytest.mark.parametrize("abbrev", ["AIHL", "Australia", "WCup", "W-Cup"])
+def test_a_late_league_season_stays_hidden_past_july_1(abbrev: str) -> None:
+    # The Australian league plays from April to September, so its 2017-18 line could hold games up
+    # to September 2018. The World Cup of Hockey is played in August and September.
+    hidden_until(one_line(20172018, abbrev), datetime(2018, 10, 1, tzinfo=UTC))
+
+
+def test_the_2020_playoffs_stay_hidden_until_the_bubble_is_over() -> None:
+    # The 2020 Stanley Cup Final ended on September 28, 2020: a 2019-20 playoff line holds games
+    # up to then, and the season's other lines wait with it.
+    for abbrev, game_type in (("NHL", 3), ("NHL", 2), ("AHL", 2)):
+        frame = one_line(20192020, abbrev, game_type)
+        assert known_at(frame, datetime(2020, 9, 28, 23, 59, tzinfo=UTC)).is_empty()
+        hidden_until(frame, datetime(2020, 10, 1, tzinfo=UTC))
+
+
+def test_the_2021_playoffs_stay_hidden_until_july_9() -> None:
+    # The 2021 Stanley Cup Final ended on July 7, 2021.
+    frame = one_line(20202021, "NHL", 3)
+    assert known_at(frame, datetime(2021, 7, 8, 12, tzinfo=UTC)).is_empty()
+    hidden_until(frame, datetime(2021, 7, 9, tzinfo=UTC))
