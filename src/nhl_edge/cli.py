@@ -36,6 +36,7 @@ DEFAULT_XG_OUT = Path("reports/xg")
 DEFAULT_TUNING_OUT = Path("reports/tuning")
 DEFAULT_GOALIE_START_OUT = Path("reports/goalie-start")
 DEFAULT_LINEUPS_OUT = Path("reports/lineups")
+DEFAULT_RATINGS_OUT = Path("reports/ratings")
 
 
 def _not_implemented(command: str, phase: str) -> NoReturn:
@@ -1066,6 +1067,99 @@ def lineups(
         typer.echo(f"  {fit['season']}: fitted on {size} to {fit['train_cutoff'][:10]}")
 
 
+@app.command(name="rapm")
+def rapm_command(
+    seasons: Annotated[
+        str | None,
+        typer.Option(
+            help="Seasons to rate, as 20232024, a comma list or a range. Default: 2011-12 on."
+        ),
+    ] = None,
+    out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_RATINGS_OUT,
+    r2: Annotated[
+        bool, typer.Option("--r2", help="Mirror player_ratings and rapm_terms to R2.")
+    ] = False,
+) -> None:
+    """Refit RAPM every game day from the stints public before it (#101, ADR 0019), with the
+    provisional settings until #103, and write each lineup candidate's ratings to the lake's
+    player_ratings, each fit's terms to rapm_terms, and the report to <out>/<version>.md: counts
+    for every season, and terms and leaders for the training seasons only."""
+    from collections.abc import Iterator
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.audit import rapm as report
+    from nhl_edge.backtest import reports
+    from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, OPEN_SEASONS
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.lineup import minutes as mins
+    from nhl_edge.ratings import rapm
+    from nhl_edge.reference import load_venues
+    from nhl_edge.settings import load_env
+
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    games = lake.read("games")
+    known = sorted(games["season"].unique().to_list())
+    try:
+        wanted = parse_seasons(seasons) if seasons else [s for s in known if s >= rapm.FIRST_SEASON]
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    if not wanted or min(wanted) < rapm.FIRST_SEASON:
+        raise typer.BadParameter(
+            f"RAPM starts in {rapm.FIRST_SEASON}, the first season with xG", param_hint="--seasons"
+        )
+    read = [s for s in known if rapm.FIRST_SEASON <= s <= max(wanted)]
+    # Stints built for part of a season would rate its players on part of it.
+    played = pl.concat([lake.read("stints", seasons=[s]).select("game_id").unique() for s in read])
+    problems = mins.input_problems(lake.read("shift_coverage"), played, max(wanted))
+    candidates = rapm.targets(lake.read("lineups", seasons=wanted), games, wanted)
+    without = games.filter(pl.col("season").is_in(wanted)).join(
+        candidates.select("game_id").unique(), on="game_id", how="anti"
+    )
+    if without.height:
+        examples = ", ".join(map(str, without["game_id"].sort().head(3).to_list()))
+        problems.append(f"{without.height:,} games without lineups, e.g. {examples}")
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl stints and nhl lineups for those seasons", err=True)
+        raise typer.Exit(code=1)
+
+    def stint_seasons() -> Iterator[pl.DataFrame]:
+        # A season at a time: every season's stints at once would not fit in memory.
+        for season in read:
+            yield lake.read("stints", seasons=[season])
+
+    version = reports.version(rapm.COMPONENT, datetime.now(UTC))
+    roles = lake.read("actual_lineups").select("game_id", "player_id", "role")
+    try:
+        ratings, terms = rapm.rate(
+            stint_seasons(), games, roles, load_venues(), candidates, rapm.PROVISIONAL, version
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    days = games.filter(pl.col("season").is_in(wanted))["game_date"].unique().to_list()
+    lake.replace_dates("player_ratings", ratings, days)
+    lake.replace_dates("rapm_terms", terms, days)
+    # The development seasons stay unseen until gate 2 (phase 3 plan).
+    shown = [season for season in OPEN_SEASONS if season not in DEVELOPMENT_SEASONS]
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{version}.md"
+    path.write_text(
+        report.markdown_report(
+            ratings, terms, lake.read("players"), shown, version, rapm.PROVISIONAL
+        )
+    )
+    typer.echo(
+        f"{path}: {ratings.height:,} ratings of {ratings['player_id'].n_unique():,} skaters "
+        f"in {len(wanted)} seasons, {terms.height:,} terms"
+    )
+
+
 @app.command()
 def bets() -> None:
     """Show the paper bet ledger and CLV."""
@@ -1629,6 +1723,8 @@ def _status_against_r2(local: "list[TableState]") -> None:
         "schedule_terms": "nhl schedule-terms",
         "lineups": "nhl lineups",
         "lineup_replacements": "nhl lineups",
+        "player_ratings": "nhl rapm",
+        "rapm_terms": "nhl rapm",
     }
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env

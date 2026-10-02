@@ -1009,6 +1009,83 @@ def test_lineups_refuses_a_lake_with_a_team_game_without_skaters(
     assert not (tmp_path / "data").exists()
 
 
+def rapm_lake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    import polars as pl
+    import rapm_fixtures as fx
+
+    from nhl_edge import reference
+    from nhl_edge.lake.tables import Lake
+
+    frames: dict[str, Any] = fx.league()
+    frames["actual_lineups"] = frames.pop("roles")
+    frames["shift_coverage"] = (
+        frames["stints"].select("game_id", "season").unique().with_columns(complete=pl.lit(True))
+    )
+    frames["players"] = pl.DataFrame({"player_id": [101], "name": ["A Forward"]})
+    venues = frames.pop("venues")
+    monkeypatch.setattr(reference, "load_venues", lambda: venues)
+
+    def read(self: Lake, table: str, seasons: Any = None) -> pl.DataFrame:
+        frame = frames[table]
+        return frame if seasons is None else frame.filter(pl.col("season").is_in(list(seasons)))
+
+    monkeypatch.setattr(Lake, "read", read)
+    return frames
+
+
+def test_rapm_writes_the_tables_and_the_report(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frames = rapm_lake(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["rapm"])
+    assert result.exit_code == 0, result.output
+    assert f"{4 * frames['lineups'].height:,} ratings" in plain(result.output)
+    assert list((tmp_path / "data" / "lake" / "player_ratings").rglob("*.parquet"))
+    assert list((tmp_path / "data" / "lake" / "rapm_terms").rglob("*.parquet"))
+    (path,) = (tmp_path / "reports" / "ratings").glob("rapm-*.md")
+    text = path.read_text()
+    assert "## Per season" in text and "### Power play" in text and "## 5v5 leaders" in text
+
+
+def test_rapm_refuses_a_game_without_lineups(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+
+    frames = rapm_lake(monkeypatch)
+    first = frames["lineups"]["game_id"].min()
+    frames["lineups"] = frames["lineups"].filter(pl.col("game_id") != first)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["rapm"])
+    assert result.exit_code == 1
+    assert f"1 games without lineups, e.g. {first}" in plain(result.output)
+    assert not (tmp_path / "data").exists()
+
+
+def test_rapm_refuses_a_complete_chart_without_stints(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+
+    frames = rapm_lake(monkeypatch)
+    extra = frames["shift_coverage"].head(1).with_columns(game_id=pl.lit(2011029999, pl.Int64))
+    frames["shift_coverage"] = pl.concat([frames["shift_coverage"], extra])
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["rapm"])
+    assert result.exit_code == 1
+    assert "1 games with a complete chart and no stints, e.g. 2011029999" in plain(result.output)
+    assert not (tmp_path / "data").exists()
+
+
+def test_rapm_refuses_a_season_before_xg(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    rapm_lake(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["rapm", "--seasons", "20102011"])
+    assert result.exit_code == 2
+    assert "RAPM starts in 20112012" in plain(result.output)
+
+
 def goalie_effect_lake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     import polars as pl
     from goalie_fixtures import with_shots
