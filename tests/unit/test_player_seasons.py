@@ -79,10 +79,22 @@ def test_a_count_one_team_line_lacks_leaves_the_sum_null() -> None:
 
 
 def test_league_is_trimmed_upper_case_with_known_variants_mapped() -> None:
-    abbrevs = [" Swiss", "NLA", "NL", "MtJHL", "Sweden", "SHL", "H-East", "WC-A", "Russia", "CHL"]
-    leagues = pl.DataFrame({"abbrev": abbrevs}).select(league_name(pl.col("abbrev")))
-    leagues = leagues.to_series().to_list()
-    assert leagues == ["NL", "NL", "NL", "MTJHL", "SHL", "SHL", "NCAA", "WC", "RUSSIA", "CHL"]
+    expected = {
+        " Swiss": "NL",
+        "NLA": "NL",
+        "NL": "NL",
+        "MtJHL": "MTJHL",
+        "Sweden": "SHL",
+        "SHL": "SHL",
+        "H-East": "NCAA",
+        "WC-A": "WC",
+        "W-Cup": "WCUP",
+        "Russia": "RUSSIA",  # the Superleague, before the KHL: kept apart
+        "CHL": "CHL",  # the Central Hockey League, not the Champions HL
+    }
+    frame = pl.DataFrame({"abbrev": list(expected)})
+    leagues = frame.select(league_name(pl.col("abbrev"))).to_series().to_list()
+    assert leagues == list(expected.values())
     # The raw name stays in the key, the league beside it.
     swiss = row(table(), SKATER, 20042005, "Swiss")
     assert swiss["league"] == "NL"

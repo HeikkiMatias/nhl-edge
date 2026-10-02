@@ -90,6 +90,7 @@ LEAGUE_VARIANTS: dict[str, str] = {
     "WJC-A": "WJC-20",  # to 2015-16: the World Junior Championship's top division
     "WJ18-A": "WJC-18",  # to 2015-16: the U18 World Championship's top division
     "OLYMPICS": "OG",  # to 2013-14: the Olympic Games
+    "W-CUP": "WCUP",  # 1996-97 (and game types 6 and 7 of 2003-04): the World Cup of Hockey
 }
 
 
