@@ -7,7 +7,8 @@ of every player in players and makes no request; a season played after a page's 
 page fetched again.
 
 Point in time: a season's lines count as public on July 1 (00:00 UTC) after it, when every league's
-season and the NHL playoffs are over (lake/schemas.py, SEASON_LINES_PUBLIC). The pages' fetch time
+season and the NHL playoffs are over (lake/schemas.py, SEASON_LINES_PUBLIC); the Australian league,
+played from April to September, only on October 1 (SUMMER_LEAGUES). The pages' fetch time
 would hide all history from the backtest, since the backfill fetched them in 2026. A line whose
 season had not reached that day when its page was fetched is a partial season and is dropped. A
 page fetched long after a season may carry later corrections, as ADR 0004 accepts for the
@@ -27,6 +28,8 @@ from nhl_edge.lake.schemas import (
     PLAYER_LEAGUE_SEASONS_KEY,
     SEASON_LINE_GAME_TYPES,
     SEASON_LINES_PUBLIC,
+    SUMMER_LEAGUES,
+    SUMMER_LINES_PUBLIC,
     PlayerLeagueSeasons,
     dtypes,
     season_lines_public_utc,
@@ -94,10 +97,11 @@ LEAGUE_VARIANTS: dict[str, str] = {
 }
 
 
-def season_lines_public(season: int) -> datetime:
+def season_lines_public(season: int, league_abbrev: str) -> datetime:
     """When the lines of a season given as 20152016 count as public: July 1 (00:00 UTC) of its
-    second year, as season_lines_public_utc in lake/schemas.py."""
-    month, day = SEASON_LINES_PUBLIC
+    second year, or October 1 for a summer league, as season_lines_public_utc in lake/schemas.py."""
+    summer = league_abbrev.strip().upper() in SUMMER_LEAGUES
+    month, day = SUMMER_LINES_PUBLIC if summer else SEASON_LINES_PUBLIC
     return datetime(season % 10_000, month, day, tzinfo=UTC)
 
 
@@ -136,7 +140,7 @@ def landing_lines(body: bytes, fetched_utc: datetime, raw_key: str) -> PageLines
     for line in data.get("seasonTotals") or []:
         if line["gameTypeId"] not in SEASON_LINE_GAME_TYPES:
             page.other_game_types += 1
-        elif season_lines_public(line["season"]) > fetched_utc:
+        elif season_lines_public(line["season"], line["leagueAbbrev"]) > fetched_utc:
             page.partial += 1
         else:
             page.rows.append(
@@ -170,10 +174,10 @@ def player_league_seasons(lines: pl.DataFrame, players: pl.DataFrame) -> pl.Data
         lines.group_by(list(PLAYER_LEAGUE_SEASONS_KEY))
         .agg(pl.len().alias("teams"), *summed, pl.col("raw_key").first())
         .join(players.select("player_id", "birth_date"), on="player_id", how="left")
+        .with_columns(league=league_name(pl.col("league_abbrev")))
         .with_columns(
-            league=league_name(pl.col("league_abbrev")),
             age_at_season=age_at_season(pl.col("season"), pl.col("birth_date")),
-            observed_utc=season_lines_public_utc(pl.col("season")),
+            observed_utc=season_lines_public_utc(pl.col("season"), pl.col("league")),
         )
     )
     schema = dtypes(PlayerLeagueSeasons)

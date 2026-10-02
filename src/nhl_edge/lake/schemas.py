@@ -424,12 +424,24 @@ SEASON_LINE_GAME_TYPES = (2, 3)
 # A season's lines in every league count as public on this day (month, day), at 00:00 UTC, after
 # the season: every league's season and the NHL playoffs are over by then (#98).
 SEASON_LINES_PUBLIC = (7, 1)
+# Leagues played over the northern summer, as the league column names them: the Australian league
+# runs from April to September, so its season is public only from October 1 of the season's
+# second year, whichever calendar year the NHL's label gives it.
+SUMMER_LEAGUES = ("AIHL", "AUSTRALIA")
+SUMMER_LINES_PUBLIC = (10, 1)
 
 
-def season_lines_public_utc(season: pl.Expr) -> pl.Expr:
-    """When the lines of a season given as 20152016 count as public: July 1 of its second year."""
-    month, day = SEASON_LINES_PUBLIC
-    return pl.datetime(season % 10_000, month, day, time_zone="UTC")
+def season_lines_public_utc(season: pl.Expr, league: pl.Expr) -> pl.Expr:
+    """When the lines of a season given as 20152016 count as public: July 1 of its second year,
+    or October 1 for a summer league (SUMMER_LEAGUES)."""
+    year = season % 10_000
+    return (
+        pl.when(league.is_in(SUMMER_LEAGUES))
+        .then(pl.datetime(year, SUMMER_LINES_PUBLIC[0], SUMMER_LINES_PUBLIC[1], time_zone="UTC"))
+        .otherwise(
+            pl.datetime(year, SEASON_LINES_PUBLIC[0], SEASON_LINES_PUBLIC[1], time_zone="UTC")
+        )
+    )
 
 
 class PlayerLeagueSeasons(pa.DataFrameModel):
@@ -447,7 +459,8 @@ class PlayerLeagueSeasons(pa.DataFrameModel):
     the player's age in whole years on September 15 of the season's first year, the NHL draft
     cutoff, from players.birth_date.
 
-    observed_utc is July 1 (00:00 UTC) after the season. The pages were fetched in 2026, so their
+    observed_utc is July 1 (00:00 UTC) after the season, or October 1 for the Australian league,
+    played over the northern summer (SUMMER_LEAGUES). The pages were fetched in 2026, so their
     fetch time would hide all history from the backtest. A line whose season had not reached its
     July 1 when the page was fetched is a partial season and is not kept. A page fetched long
     after a season may carry later corrections, as ADR 0004 accepts for the per-game feeds.
@@ -485,9 +498,9 @@ class PlayerLeagueSeasons(pa.DataFrameModel):
         return data.lazyframe.select(league == league.str.strip_chars().str.to_uppercase())
 
     @pa.dataframe_check
-    def observed_july_1_after_the_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+    def observed_when_the_season_is_over(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(
-            pl.col("observed_utc") == season_lines_public_utc(pl.col("season"))
+            pl.col("observed_utc") == season_lines_public_utc(pl.col("season"), pl.col("league"))
         )
 
 

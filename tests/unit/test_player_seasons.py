@@ -147,9 +147,19 @@ def test_age_comes_from_players_and_is_null_without_a_birth_date() -> None:
 def test_a_season_counts_as_public_on_july_1_after_it() -> None:
     frame = table()
     assert row(frame, SKATER, 20002001, "NHL")["observed_utc"] == datetime(2001, 7, 1, tzinfo=UTC)
-    assert season_lines_public(20152016) == datetime(2016, 7, 1, tzinfo=UTC)
-    expected = [season_lines_public(season) for season in frame["season"].to_list()]
+    assert season_lines_public(20152016, "NHL") == datetime(2016, 7, 1, tzinfo=UTC)
+    expected = [
+        season_lines_public(season, abbrev)
+        for season, abbrev in frame.select("season", "league_abbrev").rows()
+    ]
     assert frame["observed_utc"].to_list() == expected
+
+
+def test_the_australian_league_counts_as_public_on_october_1() -> None:
+    # Played from April to September, whichever calendar year the NHL's label gives it.
+    for abbrev in ("AIHL", "Australia", " aihl "):
+        assert season_lines_public(20172018, abbrev) == datetime(2018, 10, 1, tzinfo=UTC)
+    assert season_lines_public(20172018, "Austria") == datetime(2018, 7, 1, tzinfo=UTC)
 
 
 def test_a_season_not_over_when_the_page_was_fetched_is_dropped() -> None:

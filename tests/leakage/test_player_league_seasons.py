@@ -12,7 +12,7 @@ import polars as pl
 import pytest
 from player_season_fixtures import SKATER, table
 
-from nhl_edge.ingest.player_seasons import season_lines_public
+from nhl_edge.ingest.player_seasons import LINE_SCHEMA, player_league_seasons, season_lines_public
 from nhl_edge.lake.schemas import PlayerLeagueSeasons, dtypes
 from nhl_edge.lake.tables import known_at
 
@@ -34,14 +34,13 @@ COLUMNS = [
 
 def test_a_season_is_unknown_before_july_1_after_it_and_known_right_after() -> None:
     frame = table()
-    for season in frame["season"].unique().to_list():
-        public = season_lines_public(season)
-        before = known_at(frame, public)
-        after = known_at(frame, public + timedelta(seconds=1))
-        assert before.filter(pl.col("season") >= season).is_empty()
-        assert after.filter(pl.col("season") == season).height == (
-            frame.filter(pl.col("season") == season).height
-        )
+    for season, abbrev in frame.select("season", "league_abbrev").unique().rows():
+        public = season_lines_public(season, abbrev)
+        line = (pl.col("season") == season) & (pl.col("league_abbrev") == abbrev)
+        assert known_at(frame.filter(line), public).is_empty()
+        assert known_at(frame, public).filter(pl.col("season") > season).is_empty()
+        after = known_at(frame.filter(line), public + timedelta(seconds=1))
+        assert after.height == frame.filter(line).height
 
 
 def test_the_nhl_playoffs_of_a_season_stay_hidden_until_july_1() -> None:
@@ -67,3 +66,30 @@ def test_the_column_set_is_locked() -> None:
     for column, value in (("fetched_utc", datetime(2026, 9, 28, tzinfo=UTC)), ("points", 1)):
         with pytest.raises(pandera.errors.SchemaError):
             PlayerLeagueSeasons.validate(frame.with_columns(pl.lit(value).alias(column)))
+
+
+def test_a_summer_league_season_stays_hidden_past_july_1() -> None:
+    # The Australian league plays from April to September: its 2017-18 line could hold games up
+    # to September 2018, so it is unknown on July 1 and until October 1, 2018.
+    lines = pl.DataFrame(
+        [
+            {
+                "player_id": SKATER,
+                "season": 20172018,
+                "league_abbrev": "AIHL",
+                "game_type": 2,
+                "games_played": 10,
+                "goals": 1,
+                "assists": 1,
+                "raw_key": "k",
+            }
+        ],
+        schema=LINE_SCHEMA,
+    )
+    players = pl.DataFrame(
+        {"player_id": [SKATER], "birth_date": [None]}, schema_overrides={"birth_date": pl.Date}
+    )
+    frame = player_league_seasons(lines, players)
+    assert known_at(frame, datetime(2018, 7, 1, 0, 0, 1, tzinfo=UTC)).is_empty()
+    assert known_at(frame, datetime(2018, 10, 1, tzinfo=UTC)).is_empty()
+    assert known_at(frame, datetime(2018, 10, 1, 0, 0, 1, tzinfo=UTC)).height == 1
