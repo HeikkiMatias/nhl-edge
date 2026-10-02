@@ -451,6 +451,9 @@ class PlayerLeagueSeasons(pa.DataFrameModel):
     fetch time would hide all history from the backtest. A line whose season had not reached its
     July 1 when the page was fetched is a partial season and is not kept. A page fetched long
     after a season may carry later corrections, as ADR 0004 accepts for the per-game feeds.
+    The table holds only players in players, who all reached the NHL from 2010-11 on, so that a
+    player has rows here is hindsight before his first NHL game: a prior fitted for a fold picks
+    its players as of the fold start.
     """
 
     player_id: pl.Int64
