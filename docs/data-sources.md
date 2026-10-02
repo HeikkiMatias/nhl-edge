@@ -90,7 +90,7 @@ Two cached responses reflect later knowledge, so neither may feed a point-in-tim
 
 The landing page's `position` is today's, so it stays out of `players`. The boxscore's position code is today's too: Brent Burns is listed `D` in the forwards group through his 2013-14 season at forward. The group a player is listed in (forwards, defense, goalies) is his role in that game, and `actual_lineups.role` comes from it.
 
-`--replay` reads only the local raw cache, never the network, and fails on a miss. It re-parses every player, so a parser fix reaches old rows. The odds job's schedule check always fetches fresh.
+`--replay` reads only the local raw cache, never the network, and fails on a miss. It re-parses every player, so a parser fix reaches old rows. A replay leaves a date as it is, and warns, when the schedule copy it reads lists a game there that is not final: an earlier run with a fresher schedule may already have written that game, and rewriting the date would delete it (#109). The odds job's schedule check always fetches fresh.
 
 **Raw cache copies.** R2 `raw/` is the primary copy, and the laptop's `data/raw/` is the second copy outside R2 that plan §10 asks for. The raw cache holds responses that cannot be fetched again if the API changes.
 - The nightly ingest and the odds snapshots run on GitHub Actions and write only to R2. `nhl lake restore-raw` downloads every complete response missing locally, and never overwrites a local file. Run it weekly and before any replay, so the laptop keeps up.
