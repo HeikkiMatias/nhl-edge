@@ -237,26 +237,30 @@ def test_a_replay_leaves_a_date_alone_when_its_schedule_copy_has_a_game_not_fina
     ingest(make_api(store, FakeNhl()), lake, []).run([OPENING])
     tables = ("games", "schedule", *FEED_TABLES)
     before = {table: lake.read(table) for table in tables}
-    # A later copy of the week, fetched while 2010-10-08's game was still being played (#109).
+    # A later copy of the week, fetched while one of 2010-10-07's two games was still being
+    # played (#109).
     week = json.loads(OPENING_WEEK)
     for day in week["gameWeek"]:
         for game in day["games"]:
-            if day["date"] == "2010-10-08":
+            if game["id"] == 2010020004:
                 game["gameState"] = "LIVE"
     meta = {"fetched_utc": "2026-09-29T00:00:00+00:00", "status": 200}
     store.put("nhl", "schedule/2010-10-07/20260929T000000Z", json.dumps(week).encode(), meta)
+    # The held date's final game has lost its feed from the cache: the replay must not read it.
+    for path in (tmp_path / "raw" / "nhl" / "play-by-play" / "20102011" / "2010020003").iterdir():
+        path.unlink()
     lines: list[str] = []
     [summary] = ingest(make_api(store, fail, offline=True), lake, lines).run([OPENING])
-    # 2010-10-08 keeps exactly what the first run wrote; 2010-10-07 is rebuilt from the new copy.
-    held = pl.col("game_date") == date(2010, 10, 8)
+    # 2010-10-07 keeps exactly what the first run wrote; 2010-10-08 is rebuilt from the new copy.
+    held = pl.col("game_date") == date(2010, 10, 7)
     for table in tables:
         after = lake.read(table)
         assert after.filter(held).height > 0, table
         assert after.filter(held).equals(before[table].filter(held)), table
         assert after.filter(~held).height == before[table].filter(~held).height, table
-    assert summary.written == 2
-    assert summary.held == [date(2010, 10, 8)]
-    assert any("left 2010-10-08 as they were" in line for line in lines)
+    assert summary.written == 1
+    assert summary.held == [date(2010, 10, 7)]
+    assert any("left 2010-10-07 as they were" in line for line in lines)
 
 
 def test_a_live_run_still_writes_a_date_with_a_game_not_final(tmp_path: Path) -> None:

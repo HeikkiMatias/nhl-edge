@@ -196,7 +196,11 @@ class Ingest:
             # as final. Rewriting their date would delete them, so a replay leaves it alone (#109).
             if api.offline:
                 held |= {day for day, _ in not_final}
-            games = parse_games(listed, response.raw_key)
+            # A held date's games are not read at all, so a missing feed there cannot stop the
+            # replay of the window's other dates.
+            games = parse_games(listed, response.raw_key).filter(
+                ~pl.col("game_date").is_in(sorted(held))
+            )
             frames.append(games)
             if self.feeds:
                 for game in games.iter_rows(named=True):
