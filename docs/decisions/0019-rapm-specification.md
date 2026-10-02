@@ -1,6 +1,6 @@
 # 0019. RAPM: ridge ratings per strength state, refit every game day, with an arena term
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-02
 
 ## Context
