@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 import rapm_fixtures as fx
 
+from nhl_edge.audit import rapm as report
 from nhl_edge.ratings import priors as pr
 from nhl_edge.ratings import rapm
 
@@ -250,3 +251,20 @@ def test_ratings_with_priors_still_find_the_true_ones() -> None:
     )
     true = np.array([fx.truth()[p]["ev_off"] for p in last["player_id"]])
     assert np.corrcoef(last["mean"].to_numpy(), true)[0, 1] > 0.95
+
+
+def test_the_report_shows_priors_only_for_seasons_that_read_shown_seasons() -> None:
+    players = pl.DataFrame({"player_id": [100], "name": ["A Forward"]})
+    settings = LOOSE
+    shown_all = report.markdown_report(
+        RATINGS, TERMS, players, list(fx.SEASONS), "rapm-20261002-abc1234", settings, FITS
+    )
+    assert f"| {fx.SEASONS[1]} | ev_off |" in shown_all
+    # With the first season hidden, the second reads it through the decay and its own stints'
+    # fit: it shows only its counts, and none of its priors.
+    hidden_first = report.markdown_report(
+        RATINGS, TERMS, players, [fx.SEASONS[1]], "rapm-20261002-abc1234", settings, FITS
+    )
+    (row,) = [line for line in hidden_first.splitlines() if line.startswith(f"| {fx.SEASONS[1]} |")]
+    assert "held out" in row
+    assert "## Priors" not in hidden_first

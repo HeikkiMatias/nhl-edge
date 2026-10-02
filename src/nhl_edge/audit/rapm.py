@@ -7,7 +7,8 @@ Per season, the game dates, fits and candidate ratings. For a shown season also:
   season term, the rate of skaters rated 0), and the terms that only remove bias;
 - the five highest and lowest 5v5 net ratings (offense plus defense), each player's at his last
   game of the season, among those with at least LEADER_HOURS hours, a face-validity check.
-The development and held-out seasons show only their counts until gate 2.
+The development and held-out seasons show only their counts until gate 2, and so does any
+season after one of them, since its ratings read every earlier season's stints.
 
 The priors (#102, ADR 0020) follow for each shown season: its NHLe factors, each component's
 trait effects from the season-start fit, and its age curves as the expected change in a rating
@@ -19,7 +20,16 @@ from collections.abc import Collection, Sequence
 import polars as pl
 
 from nhl_edge.ratings import priors
-from nhl_edge.ratings.rapm import DEFENSEMEN, EV, PP, SCORES, SIGMA, ZONES, Settings
+from nhl_edge.ratings.rapm import (
+    DEFENSEMEN,
+    EV,
+    FIRST_SEASON,
+    PP,
+    SCORES,
+    SIGMA,
+    ZONES,
+    Settings,
+)
 
 LEADER_HOURS = 10.0
 LEADERS = 5
@@ -112,15 +122,18 @@ def markdown_report(
         "| --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     counts = season_counts(ratings)
+    # A season's ratings read every earlier season's stints: its figures show only when every
+    # season they read is shown.
+    whole = {s for s in counts["season"].to_list() if _reads_only(s, shown)}
     for row in counts.iter_rows(named=True):
-        if row["season"] in shown:
+        if row["season"] in whole:
             hours = row["median_hours"]
             cells = f"{row['with_data']:.1%} | {'' if hours is None else f'{hours:.1f}'}"
         else:
             cells = "held out | "
         counted = f"{row['dates']} | {row['fits']} | {row['candidates']:,}"
         lines.append(f"| {row['season']} | {counted} | {cells} |")
-    seasons = [s for s in counts["season"].to_list() if s in shown]
+    seasons = [s for s in counts["season"].to_list() if s in whole]
     lines += [
         "",
         "## Terms of each season's last fit",
@@ -166,8 +179,13 @@ def markdown_report(
                 f"| {row['role']} | {row['mean_ev_off']:+.3f} | {row['mean_ev_def']:+.3f} "
                 f"| {row['net']:+.3f} | {row['hours_ev_off']:.1f} |"
             )
-    lines += _prior_lines([f for f in fits if f.season in shown])
+    lines += _prior_lines([f for f in fits if f.season in whole])
     return "\n".join(lines) + "\n"
+
+
+def _reads_only(season: int, shown: Collection[int]) -> bool:
+    """Whether the season and every season from FIRST_SEASON before it are shown."""
+    return all(s in shown for s in range(FIRST_SEASON, season + 1, 10_001))
 
 
 def _prior_lines(fits: Sequence[priors.PriorFit]) -> list[str]:

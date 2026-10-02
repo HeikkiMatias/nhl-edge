@@ -55,14 +55,14 @@ def truth(seed: int = 3) -> dict[int, dict[str, float]]:
     return out  # type: ignore[return-value]
 
 
-def league(seed: int = 7) -> dict[str, pl.DataFrame]:
+def league(seed: int = 7, seasons: tuple[int, ...] = SEASONS) -> dict[str, pl.DataFrame]:
     """games, stints (Stints' columns), roles (actual_lineups), venues and lineups."""
     rng = np.random.default_rng(seed)
     true = truth()
     rosters = {team: _players(t) for t, team in enumerate(TEAMS)}
     games, stints, roles, lineups = [], [], [], []
-    for season in SEASONS:
-        if season == SEASONS[1]:
+    for season in seasons:
+        if season == seasons[1]:
             rosters["BUF"]["F"][-1] = LATE_PLAYER
         day = date(season // 10000, 10, 6)
         number = 0
@@ -73,7 +73,7 @@ def league(seed: int = 7) -> dict[str, pl.DataFrame]:
                 number += 1
                 game_id = season // 10000 * 1_000_000 + 20_000 + number
                 home, away = str(home), str(away)
-                neutral = season == SEASONS[0] and night == 0
+                neutral = season == seasons[0] and night == 0
                 games.append(
                     {
                         "game_id": game_id,
@@ -189,9 +189,9 @@ def _sum(true: dict[int, dict[str, float]], players: list[int], component: str) 
     return sum(true[p][component] for p in players)
 
 
-def seasons_of(stints: pl.DataFrame) -> list[pl.DataFrame]:
+def seasons_of(stints: pl.DataFrame, seasons: tuple[int, ...] = SEASONS) -> list[pl.DataFrame]:
     """The stints a season at a time, in order, as the lake gives them."""
-    return [stints.filter(pl.col("season") == s) for s in SEASONS]
+    return [stints.filter(pl.col("season") == s) for s in seasons]
 
 
 # The priors' inputs (#102): a player's draft pick follows his true 5v5 offense, best first, and

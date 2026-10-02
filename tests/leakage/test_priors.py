@@ -7,6 +7,7 @@ from datetime import date, timedelta
 
 import numpy as np
 import polars as pl
+import pytest
 import rapm_fixtures as fx
 
 from nhl_edge.lineup import goalie_start as gs
@@ -117,3 +118,60 @@ def test_earlier_stints_do_move_them() -> None:
     )
     _, fit = run(stints=doubled)
     assert fit.effects != BASE_FIT.effects
+
+
+# Three seasons, so the third has age curves from the first two's season ends.
+THREE = (*fx.SEASONS, 20132014)
+LONG = fx.league(seasons=THREE)
+
+
+def _curves(stints: pl.DataFrame) -> dict[str, pr.AgeCurve]:
+    wanted = rapm.targets(LONG["lineups"], LONG["games"], [THREE[2]])
+    opening = wanted.filter(pl.col("game_date") == wanted["game_date"].min())
+    _, _, fits = rapm.rate(
+        fx.seasons_of(stints, THREE),
+        LONG["games"],
+        LONG["roles"],
+        LONG["venues"],
+        opening,
+        SETTINGS,
+        "rapm-20261002-abc1234",
+        players=fx.players(),
+        league_seasons=fx.league_seasons(),
+    )
+    return dict(fits[-1].curves)
+
+
+def test_a_season_s_age_curves_read_only_seasons_that_ended_before_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fixture's players have a few hours a season; let them all count.
+    monkeypatch.setattr(pr, "AGE_HOURS", 0.5)
+    monkeypatch.setattr(pr, "AGE_PP_HOURS", 0.1)
+    base = _curves(LONG["stints"])
+    assert base and all(c.pairs > 0 for c in base.values())
+    season = THREE[2]
+    own = LONG["stints"].with_columns(
+        pl.when(pl.col("season") >= season).then(pl.col(c) * 2).otherwise(pl.col(c)).alias(c)
+        for c in ("home_xg", "away_xg")
+    )
+    assert _curves(own) == base
+    earlier = LONG["stints"].with_columns(
+        pl.when(pl.col("season") == THREE[1]).then(pl.col(c) * 2).otherwise(pl.col(c)).alias(c)
+        for c in ("home_xg", "away_xg")
+    )
+    assert _curves(earlier) != base
+
+
+def test_the_season_start_fit_refuses_stints_public_after_the_season_starts() -> None:
+    # The first season's last night, stamped public after the second season starts.
+    first = STINTS.filter(pl.col("season") == fx.SEASONS[0])["game_date"].max()
+    last_night = (pl.col("season") == fx.SEASONS[0]) & (pl.col("game_date") == first)
+    late = STINTS.with_columns(
+        observed_utc=pl.when(last_night)
+        .then(pl.lit(CUTOFF + timedelta(days=1), dtype=pl.Datetime("us", "UTC")))
+        .otherwise(pl.col("observed_utc"))
+    )
+    assert (late.filter(last_night)["observed_utc"] > CUTOFF).all()
+    with pytest.raises(ValueError, match="after"):
+        run(stints=late)

@@ -608,6 +608,8 @@ def rate(
             x = designs[m].matrix(rows, season_traits)
             models[m] = _Model(designs[m], normals[m], rows, x, days)
         # The season's priors, from the stints, lines and ratings public before it starts.
+        if known is not None and known >= cutoff:
+            raise ValueError(f"stints public at {known}, after {season} starts at {cutoff}")
         curves = priors.age_curves(_concat(season_ends), season)
         effects: dict[str, dict[str, float]] = {}
         for model in models.values():
