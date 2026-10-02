@@ -366,17 +366,20 @@ def score(
     seasons: Iterable[int],
     artifact_version: str,
     lines: Mapping[str, str] | None = None,
+    rows: pl.DataFrame | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, list[AvailabilityModel]]:
     """The skaters' rows of the lineups table for every team-game of the seasons, the candidate
-    rows they came from with p_available (for the report), and the model fitted for each season.
-    lineups and games hold the seasons and every earlier one."""
+    rows they came from with p_available (for the report and the ice time), and the model fitted
+    for each season. lineups and games hold the seasons and every earlier one. rows, when given,
+    are candidates() of those games, so a caller that needs them too computes them once."""
     wanted = sorted(set(seasons))
     early = [season for season in wanted if season < FIRST_SEASON]
     if early:
         raise ValueError(f"{early} have no earlier season to fit the lineup model on")
     if not wanted:
         raise ValueError("no seasons to score")
-    rows = candidates(games.filter(pl.col("season") <= wanted[-1]), lineups, lines)
+    if rows is None:
+        rows = candidates(games.filter(pl.col("season") <= wanted[-1]), lineups, lines)
     frames, scored, models = [], [], []
     for season in wanted:
         model = fit(rows, games, season, artifact_version)
@@ -403,9 +406,9 @@ def score(
 
 
 def with_goalies(skaters: pl.DataFrame, goalie_starts: pl.DataFrame) -> pl.DataFrame:
-    """The lineups table: the skaters' rows and, for the same team-games, each candidate goalie's
-    p_start copied from goalie_starts with its own train_cutoff and artifact_version. Refuses
-    when a team-game with skaters has no goalie row."""
+    """The lineups table: the skaters' rows, with their minutes (minutes.with_minutes), and, for
+    the same team-games, each candidate goalie's p_start copied from goalie_starts with its own
+    train_cutoff and artifact_version. Refuses when a team-game with skaters has no goalie row."""
     team_games = skaters.select("game_id", "team").unique()
     missing = team_games.join(goalie_starts, on=["game_id", "team"], how="anti")
     if missing.height:
@@ -422,6 +425,11 @@ def with_goalies(skaters: pl.DataFrame, goalie_starts: pl.DataFrame) -> pl.DataF
         role=pl.lit("G"),
         p_available=pl.lit(None, dtype=pl.Float64),
         p_start="p_start",
+        # Goalies have no projected minutes (#100): they enter B3 through their conversion.
+        exp_5v5=pl.lit(None, dtype=pl.Float64),
+        exp_pp=pl.lit(None, dtype=pl.Float64),
+        exp_pk=pl.lit(None, dtype=pl.Float64),
+        pp_unit=pl.lit(None, dtype=pl.Boolean),
         train_cutoff="train_cutoff",
         artifact_version="artifact_version",
         observed_utc="observed_utc",

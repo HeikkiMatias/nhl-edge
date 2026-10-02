@@ -969,12 +969,16 @@ def lineups(
         ),
     ] = None,
     out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_LINEUPS_OUT,
-    r2: Annotated[bool, typer.Option("--r2", help="Mirror the lineups table to R2.")] = False,
+    r2: Annotated[
+        bool, typer.Option("--r2", help="Mirror lineups and lineup_replacements to R2.")
+    ] = False,
 ) -> None:
-    """Fit the lineup model per season on earlier seasons' boxscores (#99, ADR 0017), write each
-    candidate skater's probability of dressing, and each candidate goalie's start probability
-    from goalie_starts, to the lake's lineups, and the report to <out>/<version>.md: figures for
-    the training seasons, while the development and held-out seasons wait for gate 2."""
+    """Fit the lineup model per season on earlier seasons' boxscores (#99, ADR 0017), project each
+    candidate skater's minutes from earlier games' stints (#100, ADR 0018), and write his
+    probability of dressing, expected minutes and power-play unit, and each candidate goalie's
+    start probability from goalie_starts, to the lake's lineups; the replacement skaters to
+    lineup_replacements; and the report to <out>/<version>.md: figures for the training seasons,
+    while the development and held-out seasons wait for gate 2."""
     from datetime import UTC
 
     import polars as pl
@@ -982,9 +986,11 @@ def lineups(
     from nhl_edge.audit import projection as report
     from nhl_edge.backtest import reports
     from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, OPEN_SEASONS
+    from nhl_edge.features import team_strength
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.lake.tables import Lake
+    from nhl_edge.lineup import minutes as mins
     from nhl_edge.lineup import projection as proj
     from nhl_edge.settings import load_env
 
@@ -1004,27 +1010,54 @@ def lineups(
         raise typer.Exit(code=1)
     try:
         version = reports.version(proj.COMPONENT, datetime.now(UTC))
-        skaters, scored, models = proj.score(boxscores, games, wanted, version)
+        lines = team_strength.team_lines()
+        rows = proj.candidates(games.filter(pl.col("season") <= max(wanted)), boxscores, lines)
+        skaters, scored, models = proj.score(boxscores, games, wanted, version, lines, rows)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    played = mins.lake_minutes(lake, boxscores, max(wanted))
+    # Stints built for part of a season would measure its figures on part of it.
+    problems = mins.input_problems(lake.read("shift_coverage"), played, max(wanted))
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl stints for those seasons", err=True)
+        raise typer.Exit(code=1)
+    try:
+        constants = {
+            season: mins.season_constants(played, rows, season, games) for season in wanted
+        }
+        projected, replacements = mins.project(scored, played, constants, games, lines)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        typer.echo("run nhl stints for those seasons", err=True)
+        raise typer.Exit(code=1) from None
+    skaters = mins.with_minutes(skaters, projected, constants)
     try:
         table = proj.with_goalies(skaters, lake.read("goalie_starts"))
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         typer.echo("run nhl goalie-start for those seasons", err=True)
         raise typer.Exit(code=1) from None
+    replacement_rows = mins.replacement_table(replacements, skaters)
     days = games.filter(pl.col("season").is_in(wanted))["game_date"].unique().to_list()
     lake.replace_dates("lineups", table, days)
+    lake.replace_dates("lineup_replacements", replacement_rows, days)
     # The development seasons stay unseen until gate 2 (phase 3 plan).
     shown = [season for season in OPEN_SEASONS if season not in DEVELOPMENT_SEASONS]
     scores = report.team_game_scores(scored, boxscores)
+    ice_time = report.ice_time_scores(projected, played, games)
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{version}.md"
-    path.write_text(report.markdown_report(scores, models, shown, version))
+    path.write_text(
+        report.markdown_report(
+            scores, models, shown, version, ice_time, [constants[s] for s in wanted]
+        )
+    )
     goalies = table.filter(pl.col("role") == "G").height
     typer.echo(
         f"{path}: {table.height - goalies:,} skater and {goalies:,} goalie rows "
-        f"in {len(models)} seasons"
+        f"in {len(models)} seasons, {replacement_rows.height:,} replacement rows"
     )
     # A fit's team-games and newcomers would describe a held-out season: shown, as in the
     # report, only when every season it read is.
@@ -1595,6 +1628,7 @@ def _status_against_r2(local: "list[TableState]") -> None:
         "goalie_effects": "nhl goalie-effect",
         "schedule_terms": "nhl schedule-terms",
         "lineups": "nhl lineups",
+        "lineup_replacements": "nhl lineups",
     }
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
