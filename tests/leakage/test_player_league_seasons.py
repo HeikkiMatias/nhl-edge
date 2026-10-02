@@ -1,8 +1,9 @@
 """Point-in-time rules for player_league_seasons (#98). A season's lines count as public on July 1
 (00:00 UTC) after it, when nearly every league's season and the NHL playoffs are over, so known_at
-shows none of them before then. The late leagues (the Australian league and the World Cup of
-Hockey) wait until October 1, and the 2019-20 and 2020-21 seasons, whose NHL playoffs ran past
-July 1, until their end. The landing pages were fetched in 2026, and a line whose season was still
+shows none of them before then. The late leagues (the Australian league, the World Cup of Hockey
+and the Brick Invitational) wait until October 1, the 2019-20 and 2020-21 seasons, whose NHL
+playoffs ran past July 1, until their end, and the 2021-22 World Juniors, replayed in August 2022,
+until October 1, 2022. The landing pages were fetched in 2026, and a line whose season was still
 under way at the fetch is a partial season that never enters the table. The column set is locked:
 a new column, such as a later stat or the page's fetch time, needs a look at when it became public
 first."""
@@ -101,11 +102,20 @@ def hidden_until(frame: pl.DataFrame, public: datetime) -> None:
     assert known_at(frame, public + timedelta(seconds=1)).height == frame.height
 
 
-@pytest.mark.parametrize("abbrev", ["AIHL", "Australia", "WCup", "W-Cup"])
+@pytest.mark.parametrize("abbrev", ["AIHL", "Australia", "WCup", "W-Cup", "Brick Invitational"])
 def test_a_late_league_season_stays_hidden_past_july_1(abbrev: str) -> None:
     # The Australian league plays from April to September, so its 2017-18 line could hold games up
-    # to September 2018. The World Cup of Hockey is played in August and September.
+    # to September 2018. The World Cup of Hockey is played in August and September, and the Brick
+    # Invitational in early July, labelled with the season before.
     hidden_until(one_line(20172018, abbrev), datetime(2018, 10, 1, tzinfo=UTC))
+
+
+@pytest.mark.parametrize("abbrev", ["WJC-20", "WJC-20 D1A"])
+def test_the_2022_world_juniors_stay_hidden_until_after_the_august_replay(abbrev: str) -> None:
+    # Stopped in December 2021 and replayed from August 9 to 20, 2022, under the 2021-22 label.
+    frame = one_line(20212022, abbrev)
+    assert known_at(frame, datetime(2022, 8, 21, tzinfo=UTC)).is_empty()
+    hidden_until(frame, datetime(2022, 10, 1, tzinfo=UTC))
 
 
 def test_the_2020_playoffs_stay_hidden_until_the_bubble_is_over() -> None:

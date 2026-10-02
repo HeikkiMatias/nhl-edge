@@ -8,9 +8,11 @@ page fetched again.
 
 Point in time: a season's lines count as public on July 1 (00:00 UTC) after it, when nearly every
 league's season and the NHL playoffs are over (lake/schemas.py, SEASON_LINES_PUBLIC). The
-exceptions come later: the Australian league (April to September) and the World Cup of Hockey
-(August and September) on October 1 (LATE_LEAGUES), and every line of 2019-20 and 2020-21, whose
-NHL playoffs ran past July 1, from their end (LATE_SEASONS). The pages' fetch time
+exceptions come later: the Australian league (April to September), the World Cup of Hockey (August
+and September) and the Brick Invitational (July) on October 1 (LATE_LEAGUES); every line of
+2019-20 and 2020-21, whose NHL playoffs ran past July 1, from their end (LATE_SEASONS); and the
+2021-22 World Juniors, replayed in August 2022, from October 1, 2022 (LATE_LEAGUE_SEASONS). The
+pages' fetch time
 would hide all history from the backtest, since the backfill fetched them in 2026. A line whose
 season had not reached that day when its page was fetched is a partial season and is dropped. A
 page fetched long after a season may carry later corrections, as ADR 0004 accepts for the
@@ -27,6 +29,7 @@ import polars as pl
 from nhl_edge.ingest.nhl_api import parse_utc
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.schemas import (
+    LATE_LEAGUE_SEASONS,
     LATE_LEAGUES,
     LATE_LINES_PUBLIC,
     LATE_SEASONS,
@@ -103,11 +106,15 @@ LEAGUE_VARIANTS: dict[str, str] = {
 def season_lines_public(season: int, league_abbrev: str) -> datetime:
     """When the lines of a season given as 20152016 count as public, as season_lines_public_utc in
     lake/schemas.py: July 1 (00:00 UTC) of its second year, October 1 for a late league, and never
-    before a late season's end."""
-    late = league_name_of(league_abbrev) in LATE_LEAGUES
-    month, day = LATE_LINES_PUBLIC if late else SEASON_LINES_PUBLIC
+    before the end of a late season or league-season."""
+    league = league_name_of(league_abbrev)
+    month, day = LATE_LINES_PUBLIC if league in LATE_LEAGUES else SEASON_LINES_PUBLIC
     public = datetime(season % 10_000, month, day, tzinfo=UTC)
-    return max(public, LATE_SEASONS.get(season, public))
+    return max(
+        public,
+        LATE_SEASONS.get(season, public),
+        LATE_LEAGUE_SEASONS.get((season, league), public),
+    )
 
 
 def league_name_of(abbrev: str) -> str:

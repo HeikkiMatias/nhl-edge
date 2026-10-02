@@ -421,13 +421,15 @@ class Players(pa.DataFrameModel):
 PLAYER_LEAGUE_SEASONS_KEY = ("player_id", "season", "league_abbrev", "game_type")
 # The game types a season line is kept for: regular season (2) and playoffs (3).
 SEASON_LINE_GAME_TYPES = (2, 3)
-# A season's lines in every league count as public on this day (month, day), at 00:00 UTC, after
-# the season: every league's season and the NHL playoffs are over by then (#98).
+# A season's lines count as public on this day (month, day), at 00:00 UTC, after the season:
+# nearly every league's season and the NHL playoffs are over by then (#98). The exceptions below
+# come later.
 SEASON_LINES_PUBLIC = (7, 1)
 # Leagues whose season, as the NHL labels it, can end after July 1: the Australian league, played
-# from April to September in a calendar year the label does not give, and the World Cup of Hockey,
-# played in August and September. Their lines count as public on October 1 instead.
-LATE_LEAGUES = ("AIHL", "AUSTRALIA", "WCUP")
+# from April to September in a calendar year the label does not give; the World Cup of Hockey,
+# played in August and September; and the Brick Invitational, a tournament for 10-year-olds played
+# in early July and labelled with the season before. Their lines count as public on October 1.
+LATE_LEAGUES = ("AIHL", "AUSTRALIA", "WCUP", "BRICK INVITATIONAL")
 LATE_LINES_PUBLIC = (10, 1)
 # Seasons whose NHL playoffs ended after July 1: the 2020 bubble (Cup Final on September 28) and
 # 2020-21 (July 7). None of their lines counts as public before the day given.
@@ -435,12 +437,19 @@ LATE_SEASONS = {
     20192020: datetime(2020, 10, 1, tzinfo=UTC),
     20202021: datetime(2021, 7, 9, tzinfo=UTC),
 }
+# One league's season that ended after July 1, by (season, league): the 2022 World Juniors,
+# stopped in December 2021 and replayed in August 2022 under the 2021-22 label, and the Division I
+# A line of that season, whose dates are not known, with it.
+LATE_LEAGUE_SEASONS = {
+    (20212022, "WJC-20"): datetime(2022, 10, 1, tzinfo=UTC),
+    (20212022, "WJC-20 D1A"): datetime(2022, 10, 1, tzinfo=UTC),
+}
 
 
 def season_lines_public_utc(season: pl.Expr, league: pl.Expr) -> pl.Expr:
     """When the lines of a season given as 20152016 count as public: July 1 of its second year,
-    October 1 for a late league (LATE_LEAGUES), and never before a late season's end
-    (LATE_SEASONS)."""
+    October 1 for a late league (LATE_LEAGUES), and never before the end of a late season
+    (LATE_SEASONS) or a late league-season (LATE_LEAGUE_SEASONS)."""
     year = season % 10_000
     by_league = (
         pl.when(league.is_in(LATE_LEAGUES))
@@ -452,7 +461,11 @@ def season_lines_public_utc(season: pl.Expr, league: pl.Expr) -> pl.Expr:
     season_end = season.replace_strict(
         LATE_SEASONS, default=None, return_dtype=pl.Datetime("us", "UTC")
     )
-    return pl.max_horizontal(by_league, season_end)
+    league_season_end = [
+        pl.when((season == late_season) & (league == late_league)).then(pl.lit(end))
+        for (late_season, late_league), end in LATE_LEAGUE_SEASONS.items()
+    ]
+    return pl.max_horizontal(by_league, season_end, *league_season_end)
 
 
 class PlayerLeagueSeasons(pa.DataFrameModel):
@@ -470,9 +483,10 @@ class PlayerLeagueSeasons(pa.DataFrameModel):
     the player's age in whole years on September 15 of the season's first year, the NHL draft
     cutoff, from players.birth_date.
 
-    observed_utc is July 1 (00:00 UTC) after the season; October 1 for the Australian league and
-    the World Cup of Hockey, which can end later (LATE_LEAGUES); and never before the end of the
-    2020 and 2021 NHL playoffs, which ran past July 1 (LATE_SEASONS). The pages were fetched in
+    observed_utc is July 1 (00:00 UTC) after the season; October 1 for the leagues that can end
+    later (LATE_LEAGUES), such as the Australian league and the World Cup of Hockey; and never
+    before the end of the 2020 and 2021 NHL playoffs, which ran past July 1 (LATE_SEASONS), or of
+    the 2022 World Juniors, replayed in August 2022 (LATE_LEAGUE_SEASONS). The pages were fetched in
     2026, so their fetch time would hide all history from the backtest. A line whose season was not
     yet public when the page was fetched is a partial season and is not kept. A page fetched long
     after a season may carry later corrections, as ADR 0004 accepts for the per-game feeds.
