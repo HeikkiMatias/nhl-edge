@@ -8,6 +8,7 @@ import pytest
 import rapm_fixtures as fx
 import scipy.sparse as sp
 
+from nhl_edge.audit import rapm as report
 from nhl_edge.lake.schemas import PlayerRatings, RapmTerms, dtypes
 from nhl_edge.ratings import rapm
 
@@ -273,3 +274,25 @@ def test_an_arena_without_a_column_is_refused() -> None:
     rows = rapm.model_rows(STINTS.head(200), GAMES, ROLES, VENUES, rapm.EV)
     with pytest.raises(ValueError, match="no column"):
         design.matrix(rows)
+
+
+def test_the_leaders_take_each_player_at_his_last_game() -> None:
+    # BOS skips the season's last night: its players still rank, at their last game.
+    rows = RATINGS.filter(~((pl.col("game_date") == LAST_DAY) & (pl.col("team") == "BOS")))
+    players = pl.DataFrame({"player_id": [100], "name": ["A Forward"]})
+    table = report.leaders(rows, players, fx.SEASONS[1])
+    assert "BOS" in table["team"].to_list()
+    assert table["player_id"].is_unique().all()
+    assert (table["hours_ev_off"] >= report.LEADER_HOURS).all()
+    nets = table["net"].to_list()
+    assert nets == sorted(nets, reverse=True)
+
+
+def test_the_report_shows_only_counts_for_a_held_out_season() -> None:
+    players = pl.DataFrame({"player_id": [100], "name": ["A Forward"]})
+    text = report.markdown_report(RATINGS, TERMS, players, [fx.SEASONS[0]], VERSION, LOOSE)
+    (held,) = [line for line in text.splitlines() if line.startswith(f"| {fx.SEASONS[1]} |")]
+    assert "held out" in held
+    after = text.split("## Terms of each season's last fit")[1]
+    assert f"| {fx.SEASONS[1]} |" not in after
+    assert f"| {fx.SEASONS[0]} |" in after

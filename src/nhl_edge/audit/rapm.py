@@ -5,8 +5,8 @@ Per season, the game dates, fits and candidate ratings. For a shown season also:
 - the share of candidates with 5v5 data and their median decayed hours;
 - the terms of the season's last fit: each model's rate for the season (its intercept plus its
   season term, the rate of skaters rated 0), and the terms that only remove bias;
-- the five highest and lowest 5v5 net ratings (offense plus defense) on the season's last date,
-  among candidates with at least LEADER_HOURS hours, a face-validity check.
+- the five highest and lowest 5v5 net ratings (offense plus defense), each player's at his last
+  game of the season, among those with at least LEADER_HOURS hours, a face-validity check.
 The development and held-out seasons show only their counts until gate 2.
 """
 
@@ -63,12 +63,13 @@ def last_terms(terms: pl.DataFrame, season: int) -> dict[tuple[str, str], float]
 
 
 def leaders(ratings: pl.DataFrame, players: pl.DataFrame, season: int) -> pl.DataFrame:
-    """The season's last date's candidates with LEADER_HOURS hours of 5v5 data or more, by net
-    5v5 rating, best first."""
+    """Each player's 5v5 ratings at his last game of the season, with LEADER_HOURS hours of 5v5
+    data or more, by net 5v5 rating, best first."""
     season_rows = ratings.filter(pl.col("season") == season)
     if season_rows.is_empty():
         return pl.DataFrame()
-    last = season_rows.filter(pl.col("game_date") == season_rows["game_date"].max())
+    latest = pl.col("as_of_utc") == pl.col("as_of_utc").max().over("player_id")
+    last = season_rows.filter(latest)
     wide = (
         last.filter(pl.col("component").is_in(["ev_off", "ev_def"]))
         .pivot(on="component", index=["player_id", "team", "role"], values=["mean", "hours"])
@@ -92,10 +93,10 @@ def markdown_report(
     lines = [
         f"# RAPM: {version}",
         "",
-        f"Provisional settings until #103: {settings.label} (ADR 0019). Ratings are xG per hour",
-        "of ice time, refit every game day from the stints public before each game. Nothing is",
-        "scored here. Held-out seasons, the development seasons among them until gate 2, show",
-        "only their counts.",
+        f"Provisional settings until #103 (ADR 0019): {settings.label}.",
+        "Ratings are xG per hour of ice time, refit every game day from the stints public before",
+        "each game. Nothing is scored here. Held-out seasons, the development seasons among them",
+        "until gate 2, show only their counts.",
         "",
         "## Per season",
         "",
@@ -116,9 +117,10 @@ def markdown_report(
         "",
         "## Terms of each season's last fit",
         "",
-        "The rate is xG per hour of skaters rated 0: the intercept plus the season's term. The",
-        "other terms only remove bias. Score is the attacking team's lead and zone the faceoff",
-        "that opens the stint, from its side; sigma is the residual sd per square-root hour.",
+        "The rate is xG per hour of skaters rated 0: the intercept plus the season's term. On the",
+        "power play that is five forwards, each defenseman adding the defensemen term. The other",
+        "terms only remove bias. Score is the attacking team's lead and zone the faceoff that",
+        "opens the stint, from its side; sigma is the residual sd per square-root hour.",
         "",
     ]
     for model, title in ((EV, "5v5"), (PP, "Power play")):
@@ -135,10 +137,10 @@ def markdown_report(
             lines.append(f"| {season} | " + " | ".join(cells) + " |")
         lines.append("")
     lines += [
-        "## 5v5 leaders on each season's last date",
+        "## 5v5 leaders at each player's last game of the season",
         "",
-        f"Candidates with at least {LEADER_HOURS:g} decayed hours of 5v5 data, by offense plus",
-        "defense. A face-validity check, not a score.",
+        f"Players with at least {LEADER_HOURS:g} decayed hours of 5v5 data, by offense plus",
+        "defense, with the team of that game. A face-validity check, not a score.",
         "",
         "| Season | Rank | Player | Team | Role | Offense | Defense | Net | Hours |",
         "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: |",
