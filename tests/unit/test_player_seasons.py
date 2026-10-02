@@ -23,11 +23,12 @@ from nhl_edge.ingest.player_seasons import (
     build,
     landing_lines,
     league_name,
+    league_name_of,
     player_league_seasons,
     season_lines_public,
 )
 from nhl_edge.lake.raw import RawStore
-from nhl_edge.lake.schemas import PlayerLeagueSeasons
+from nhl_edge.lake.schemas import LATE_LEAGUE_SEASONS, LATE_LEAGUES, PlayerLeagueSeasons
 
 COUNTS = ["teams", "games_played", "goals", "assists"]
 
@@ -153,6 +154,12 @@ def test_a_season_counts_as_public_on_july_1_after_it() -> None:
         for season, abbrev in frame.select("season", "league_abbrev").rows()
     ]
     assert frame["observed_utc"].to_list() == expected
+
+
+def test_the_late_league_names_are_league_names() -> None:
+    # A name not trimmed and in upper case, or a variant LEAGUE_VARIANTS maps, would never match.
+    for league in (*LATE_LEAGUES, *(league for _, league in LATE_LEAGUE_SEASONS)):
+        assert league_name_of(league) == league
 
 
 def test_the_late_leagues_count_as_public_on_october_1() -> None:
