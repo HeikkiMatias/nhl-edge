@@ -6,7 +6,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-02, and how 
 
 1. **Read** CLAUDE.md, this file and `docs/model-card.md`.
 2. **Finish any waiting item whose time has come** (next section). The SessionStart hook lists the open issues of the earliest milestone, P1 (#9, #42). They wait on the calendar, not on work, so don't start them early.
-3. **Then phase 3** (#12), already under way: its plan is approved and pasted in every phase 3 PR (copy it from PR #116). The next task is **#99**, which waits on four questions to the owner (below). Gate 1 is a checkpoint, not a stop (ADR 0002).
+3. **Then phase 3** (#12), already under way: its plan is approved and pasted in every phase 3 PR (copy it from PR #116). The next task is **#100**, ice time and power-play units (below). Gate 1 is a checkpoint, not a stop (ADR 0002).
 
 ## Waiting items: when and how
 
@@ -36,22 +36,16 @@ The phase plan was approved on 2026-10-01. It is pasted in full in every phase 3
   - Never before the player's first NHL boxscore (`first_boxscore_utc`), and a player without one has no rows.
   - ADR 0016 accepts later corrections in the 2026 copies' goals and assists.
   - `docs/data-sources.md` "Player league seasons" has the details.
+- **Task 5, `lineups` (#99, PR #119, ADR 0017).**
+  - Each team-game's candidate skaters, from its last 10 public boxscores, get a probability of dressing (`p_available`). It comes from a logistic regression fitted per season on earlier seasons, with nothing tuned.
+  - Each team-game's probabilities are shifted to add up to 18 less the expected newcomers: about 0.28 in ordinary games, 5.0 in a season's first.
+  - Goalies' `p_start` is copied from `goalie_starts`.
+  - It beats "dressed last game" in every shown season. The first run is `lineup-20261002-5abb69d`, with its report in `reports/lineups/`.
+  - On R2 for 2011-12 to 2025-26. The live season waits for `goalie_starts` (phase 5).
 
-**Next: #99, who dresses** (task 5, `lineup/projection.py`, table `lineups`). Its ADR must come before any fit is scored. Four questions went to the owner on 2026-10-02 and are **not yet answered**; ask them again:
-1. **Sum to 18?** Each team-game's probabilities are shifted by one common amount so they add up to the 18 skaters who dress. It is a constraint, not tuning. Recommended.
-2. **"Left last game early."** Under half his average ice time in his other games among the last 10, fixed. Recommended.
-3. **A new input: the team's first game of a new season.** It is not in the plan's list, so it needs the owner. Recommended.
-4. **The rest as ADR 0012.** Caps of 10 games on "games since he last dressed" and "games in a row"; each season fitted on all earlier seasons; scored against "dressed last game", plus the share of dressed skaters who were not candidates. Recommended.
+**Next: #100, ice time and power-play units** (task 6). It reads `lineups` through `known_at` at the prediction time, as B2 reads `goalie_starts`. Its ADR goes to the owner before any fit is scored.
 
-Counts behind them, training seasons 2010-11 to 2017-18 only, no model fitted:
-- Candidates per team-game: about 22.6. 18 skaters dress in all but 20 of 18,711 team-games.
-- Of those who dressed in the team's last game, 93.8% dress again; 17.8% of the others do.
-- Of those who left their last game early, 42% dress again, against 94%.
-- In a team's first game of a season, 28% of dressed skaters were not candidates (1.5% otherwise). Last season's regulars dress only 62.5% then.
-
-Follow the goalie-start model (`lineup/goalie_start.py`, ADR 0012) for its structure.
-
-**Then, in order:** #100 (ice time and power-play units), #101 (RAPM), #102 (priors), #103 (RAPM tuning), #104 (penalty rates), #105 (finishing and goalie conversion), #106 (B3 in the walk-forward), #107 (gate 2). Each modeling task stops for its ADR with the owner.
+**Then, in order:** #101 (RAPM), #102 (priors), #103 (RAPM tuning), #104 (penalty rates), #105 (finishing and goalie conversion), #106 (B3 in the walk-forward), #107 (gate 2). Each modeling task stops for its ADR with the owner.
 
 **For #102,** see the two comments on it:
 - The table already enforces the first-game rule, but the priors still need a leakage test.
@@ -60,11 +54,13 @@ Follow the goalie-start model (`lineup/goalie_start.py`, ADR 0012) for its struc
 **Open follow-ups:**
 - **#114 (P3):** `nhl status` should compare the stored time-on-ice reports with R2.
 - **#117 (P3):** refetch the landing pages once a season. It first matters for the 2027-28 priors, and it measures ADR 0016's corrections.
+- **#120 (P3):** the lineup model's two misses. Skaters after an early exit are given 0.52 and dress 0.39 of the time. In a season's first game, last season's regulars are given 0.67 and dress 0.63, and the other candidates are given 0.35 and dress 0.44. First measure whether they move #100 or B3; any change needs a new ADR.
+- **#121 (P5):** evaluate Yahoo or Daily Faceoff injury statuses as a live-only lineup source. Check the terms first, then log them and measure them against who dressed.
 
 **Gate 2:** B3 beats B2 on future games, overall and after trades, injuries and lineup changes. That includes the one-time 2025-26 test, which needs the owner's explicit go-ahead. B2 is B3's reference (hard rule 3).
 
 **Loose ends from 2026-10-02:**
-- The merged branch `phase-3/player-league-seasons` is still on GitHub: deleting it through git failed with "remote end hung up". Delete it from the PR page.
+- Merged branches can't be deleted from the cloud container: git fails with "remote end hung up". `phase-3/player-league-seasons` and `phase-3/handover-2026-10-02` are still on GitHub. Delete them from their PR pages.
 - A stray backup, `/schemas.bak`, sits at the cloud container's root. It is harmless, and a new container won't have it.
 - The local lake on the old container had the 2026-10-01 games only partly pulled. `nhl status` prints what to replay.
 - The derived tables (`shot_xg`, `stints`, `team_strength` and the others) stop at 2026-09-30 on R2 too. Nothing needs them for live games before phase 5.
@@ -82,6 +78,7 @@ Follow the goalie-start model (`lineup/goalie_start.py`, ADR 0012) for its struc
 - **Stints (ADR 0015):** drop only impossible on-ice counts.
 - **Time-on-ice reports (#68):** fetched once, for the 57 games only, and never again.
 - **Season totals (ADR 0016):** the 2026 copies' goals and assists count as public at the season's end, corrections included. Per-game scoring credits still need their own decision (ADR 0004).
+- **Lineup availability (ADR 0017):** the specification is fixed, with nothing tuned. A change to its inputs, window or total needs a new ADR (#120).
 
 ## State
 
