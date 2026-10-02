@@ -80,6 +80,8 @@ class Summary:
     listed: int = 0
     written: int = 0
     not_final: list[tuple[int, str]] = field(default_factory=list)
+    # Dates a replay leaves as they are, since its cached schedule lists a game there not final.
+    held: list[date] = field(default_factory=list)
     players_seen: int = 0
     players_parsed: int = 0
     players_missing: list[int] = field(default_factory=list)
@@ -181,15 +183,19 @@ class Ingest:
         frames = [pl.DataFrame(schema=dtypes(Games))]
         feed_frames = {table: [TABLES[table].empty()] for table in FEED_TABLES}
         boxscore_ids: set[int] = set()
+        held: set[date] = set()
         week = start
         while week <= end:
             days = {week + timedelta(days=i) for i in range(min(7, (end - week).days + 1))}
             response = api.schedule_week(week, settled_on(days))
             listed = listed_games(response.body, days)
             summary.listed += len(listed)
-            summary.not_final += [
-                (game["id"], game["gameState"]) for _, game in listed if game["gameState"] != FINAL
-            ]
+            not_final = [(day, game) for day, game in listed if game["gameState"] != FINAL]
+            summary.not_final += [(game["id"], game["gameState"]) for _, game in not_final]
+            # A replay's schedule copy can predate the end of games an earlier run already wrote
+            # as final. Rewriting their date would delete them, so a replay leaves it alone (#109).
+            if api.offline:
+                held |= {day for day, _ in not_final}
             games = parse_games(listed, response.raw_key)
             frames.append(games)
             if self.feeds:
@@ -201,16 +207,23 @@ class Ingest:
             )
             week += WEEK
 
-        games = pl.concat(frames)
+        kept = ~pl.col("game_date").is_in(sorted(held))
+        games = pl.concat(frames).filter(kept)
         summary.written = games.height
+        summary.held = sorted(held)
         # The window's final games are the whole content of its dates, so a replay or parser fix
-        # that drops a game also drops its stale partition.
-        window_days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+        # that drops a game also drops its stale partition. A held date is neither written nor
+        # cleared.
+        window_days = [
+            day
+            for day in (start + timedelta(days=i) for i in range((end - start).days + 1))
+            if day not in held
+        ]
         self.lake.replace_dates("games", games, window_days)
         self.lake.replace_dates("schedule", schedule_of(games), window_days)
         if self.feeds:
             # Written only when the feeds were read, so --no-feeds leaves these tables alone.
-            parsed = {table: pl.concat(parts) for table, parts in feed_frames.items()}
+            parsed = {table: pl.concat(parts).filter(kept) for table, parts in feed_frames.items()}
             for table, frame in parsed.items():
                 self.lake.replace_dates(table, frame, window_days)
             summary.shots, summary.shifts = parsed["shots"].height, parsed["shifts"].height
@@ -288,6 +301,14 @@ def _report(summary: Summary, window: Window, echo: Echo, *, feeds: bool) -> Non
     if summary.not_final:
         states = ", ".join(f"{game_id} {state}" for game_id, state in summary.not_final)
         warn(echo, f"{summary.label}: {len(summary.not_final)} games not final, skipped: {states}")
+    if summary.held:
+        days = ", ".join(day.isoformat() for day in summary.held)
+        warn(
+            echo,
+            f"{summary.label}: left {days} as they were: the cached schedule lists games there "
+            "that are not final, so a replay would delete what an earlier run wrote for them. "
+            "Replay a window whose schedule copy was fetched after they ended (#109).",
+        )
     if summary.players_missing:
         warn(
             echo,

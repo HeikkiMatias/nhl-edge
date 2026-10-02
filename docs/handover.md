@@ -5,7 +5,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 ## Start here (a fresh session)
 
 1. **Read** CLAUDE.md, this file and `docs/model-card.md`.
-2. **Finish any waiting item whose time has come** (next section). The SessionStart hook lists the open issues of the earliest milestone, P1 (#9, #42, and the tooling issues #109 and #110). #9 and #42 wait on the calendar, not on work, so don't start them early.
+2. **Finish any waiting item whose time has come** (next section). The SessionStart hook lists the open issues of the earliest milestone, P1 (#9, #42, and the tooling issue #110). #9 and #42 wait on the calendar, not on work, so don't start them early.
 3. **Then phase 3** (#12), starting in plan mode (below). The owner asked on 2026-10-01 for a fresh session to start it alongside the waiting items. Gate 1 is a checkpoint, not a stop (ADR 0002).
 
 ## Waiting items: when and how
@@ -102,7 +102,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 - **Closed in P1:** #4, #5, #6, #7, #8, #10 (the phase 1 gate, 2026-10-02: all five odds slots of 2026-10-01 landed on the timer), #20, #24, #25, #26, #27, #29, #43, #48, #50, #52, #56, #64, #65, #83.
 - **Closed in P2:** #28, #72, #73, #74, #75, #76, #77, #78, #91.
 - **Open, waiting:** #9, #42 (P1); #30, #79, #11 (P2).
-- **Open, to do:** #109 and #110 (P1, lake tooling found while building #97).
+- **Open, to do:** #110 (P1, lake tooling found while building #97).
 - **Later milestones:** #66 (P4, the owner decides on 2022-23 when phase 4 starts), #67 and #21 (P5), #68 (P3).
 
 ## Keep an eye on
@@ -111,7 +111,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 - **In-sample training seasons:** xG of 2012-13 to 2017-18 is in-sample for its rebound term (ADR 0010), and the tuned tables there for their settings (ADR 0011). They may train later models, but no result may present them as out-of-sample.
 - **xG's known misses (ADR 0010):** 3v3 overtime is under-predicted by about 1.6 goals per 100 shots, and shots from 0 to 10 feet are over-predicted by about 0.6.
 - **Closing keywords:** a closing keyword followed by another issue's number, anywhere in a PR description, closes that issue on merge. That includes pasted plans; it is how #30 closed by mistake.
-- **Replaying live dates (#109):** a `--replay --r2` over a live date whose cached schedule predates its games' end deletes those games, here and in R2. Until #109 is fixed, replay live dates only with the nightly's own window, and check the per-table game counts after.
+- **Replaying live dates (#109):** a replay leaves a date alone, with a warning, when its cached schedule lists a game there that is not final; on 2026-10-01 such a replay deleted the 2026-09-30 games. To rebuild such a date, replay the nightly's own window, whose schedule copy was fetched after the games ended.
 - **Writing feature tables to R2:** run each command with `--r2` from a clean checkout of main, so the rows' `artifact_version` names the merged commit and doesn't end in `-dirty`. Their order is:
   1. `nhl xg`
   2. `nhl stints`

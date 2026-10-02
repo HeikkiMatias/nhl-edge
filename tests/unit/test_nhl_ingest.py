@@ -230,6 +230,45 @@ def test_games_not_final_are_skipped_with_a_warning(tmp_path: Path) -> None:
     )
 
 
+def test_a_replay_leaves_a_date_alone_when_its_schedule_copy_has_a_game_not_final(
+    tmp_path: Path,
+) -> None:
+    store, lake = RawStore(tmp_path / "raw"), Lake(tmp_path / "lake")
+    ingest(make_api(store, FakeNhl()), lake, []).run([OPENING])
+    tables = ("games", "schedule", *FEED_TABLES)
+    before = {table: lake.read(table) for table in tables}
+    # A later copy of the week, fetched while 2010-10-08's game was still being played (#109).
+    week = json.loads(OPENING_WEEK)
+    for day in week["gameWeek"]:
+        for game in day["games"]:
+            if day["date"] == "2010-10-08":
+                game["gameState"] = "LIVE"
+    meta = {"fetched_utc": "2026-09-29T00:00:00+00:00", "status": 200}
+    store.put("nhl", "schedule/2010-10-07/20260929T000000Z", json.dumps(week).encode(), meta)
+    lines: list[str] = []
+    [summary] = ingest(make_api(store, fail, offline=True), lake, lines).run([OPENING])
+    # 2010-10-08 keeps exactly what the first run wrote; 2010-10-07 is rebuilt from the new copy.
+    held = pl.col("game_date") == date(2010, 10, 8)
+    for table in tables:
+        after = lake.read(table)
+        assert after.filter(held).height > 0, table
+        assert after.filter(held).equals(before[table].filter(held)), table
+        assert after.filter(~held).height == before[table].filter(~held).height, table
+    assert summary.written == 2
+    assert summary.held == [date(2010, 10, 8)]
+    assert any("left 2010-10-08 as they were" in line for line in lines)
+
+
+def test_a_live_run_still_writes_a_date_with_a_game_not_final(tmp_path: Path) -> None:
+    lines: list[str] = []
+    window = DateRange(date(2026, 9, 29), date(2026, 9, 29))
+    [summary] = ingest(make_api(RawStore(tmp_path / "raw"), FakeNhl()), Lake(tmp_path), lines).run(
+        [window]
+    )
+    assert summary.held == []
+    assert not any("as they were" in line for line in lines)
+
+
 def test_season_window_uses_the_probe_bounds_and_checks_the_count(tmp_path: Path) -> None:
     fake, lines = FakeNhl(), []
     api = make_api(RawStore(tmp_path / "raw"), fake)
