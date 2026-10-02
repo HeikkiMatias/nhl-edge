@@ -55,14 +55,14 @@ def truth(seed: int = 3) -> dict[int, dict[str, float]]:
     return out  # type: ignore[return-value]
 
 
-def league(seed: int = 7) -> dict[str, pl.DataFrame]:
+def league(seed: int = 7, seasons: tuple[int, ...] = SEASONS) -> dict[str, pl.DataFrame]:
     """games, stints (Stints' columns), roles (actual_lineups), venues and lineups."""
     rng = np.random.default_rng(seed)
     true = truth()
     rosters = {team: _players(t) for t, team in enumerate(TEAMS)}
     games, stints, roles, lineups = [], [], [], []
-    for season in SEASONS:
-        if season == SEASONS[1]:
+    for season in seasons:
+        if season == seasons[1]:
             rosters["BUF"]["F"][-1] = LATE_PLAYER
         day = date(season // 10000, 10, 6)
         number = 0
@@ -73,7 +73,7 @@ def league(seed: int = 7) -> dict[str, pl.DataFrame]:
                 number += 1
                 game_id = season // 10000 * 1_000_000 + 20_000 + number
                 home, away = str(home), str(away)
-                neutral = season == SEASONS[0] and night == 0
+                neutral = season == seasons[0] and night == 0
                 games.append(
                     {
                         "game_id": game_id,
@@ -189,6 +189,62 @@ def _sum(true: dict[int, dict[str, float]], players: list[int], component: str) 
     return sum(true[p][component] for p in players)
 
 
-def seasons_of(stints: pl.DataFrame) -> list[pl.DataFrame]:
+def seasons_of(stints: pl.DataFrame, seasons: tuple[int, ...] = SEASONS) -> list[pl.DataFrame]:
     """The stints a season at a time, in order, as the lake gives them."""
-    return [stints.filter(pl.col("season") == s) for s in SEASONS]
+    return [stints.filter(pl.col("season") == s) for s in seasons]
+
+
+# The priors' inputs (#102): a player's draft pick follows his true 5v5 offense, best first, and
+# every seventh player is undrafted.
+HISTORY_PLAYERS = 40
+AHL_FACTOR = 0.5
+
+
+def players(seed: int = 5) -> pl.DataFrame:
+    """Birth dates and draft picks for every player of truth()."""
+    rng = np.random.default_rng(seed)
+    true = truth()
+    ranked = sorted(true, key=lambda p: -true[p]["ev_off"])
+    rows = []
+    for rank, player in enumerate(ranked):
+        born = date(1984, 1, 1) + timedelta(days=int(rng.integers(0, 12 * 365)))
+        pick = None if rank % 7 == 6 else 1 + 4 * rank
+        if player == LATE_PLAYER:
+            born, pick = date(1993, 6, 1), 1
+        rows.append({"player_id": player, "birth_date": born, "draft_overall": pick})
+    return pl.DataFrame(
+        rows, schema={"player_id": pl.Int64, "birth_date": pl.Date, "draft_overall": pl.Int16}
+    )
+
+
+def league_seasons() -> pl.DataFrame:
+    """Career lines: HISTORY_PLAYERS moves from an AHL season straight into an NHL season, the
+    NHL scoring AHL_FACTOR as many points per game, and the late player's AHL season before he
+    joins, public on July 1 after each season."""
+    rows = []
+
+    def line(player: int, season: int, league: str, games: int, points: int) -> None:
+        rows.append(
+            {
+                "player_id": player,
+                "season": season,
+                "league_abbrev": league,
+                "league": league,
+                "game_type": 2,
+                "games_played": games,
+                "goals": points // 2,
+                "assists": points - points // 2,
+                "observed_utc": public_after(date(season // 10000 + 1, 6, 30)),
+            }
+        )
+
+    for k in range(HISTORY_PLAYERS):
+        player = 5000 + k
+        line(player, 20092010, "AHL", 60, 60)
+        line(player, 20102011, "NHL", 40, int(40 * AHL_FACTOR))
+    line(LATE_PLAYER, 20112012, "AHL", 70, 105)
+    return pl.DataFrame(rows).with_columns(
+        pl.col("season").cast(pl.Int32),
+        pl.col("game_type").cast(pl.Int8),
+        pl.col("games_played", "goals", "assists").cast(pl.Int16),
+    )

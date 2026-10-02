@@ -18,7 +18,9 @@ VERSION = "rapm-20261002-abc1234"
 # A small pull, so the ratings come close to the truth.
 LOOSE = rapm.Settings(half_life_days=180.0, pull_hours=0.5)
 WANTED = rapm.targets(LEAGUE["lineups"], GAMES, fx.SEASONS)
-RATINGS, TERMS = rapm.rate(fx.seasons_of(STINTS), GAMES, ROLES, VENUES, WANTED, LOOSE, VERSION)
+RATINGS, TERMS, FITS = rapm.rate(
+    fx.seasons_of(STINTS), GAMES, ROLES, VENUES, WANTED, LOOSE, VERSION
+)
 LAST_DAY = RATINGS["game_date"].max()
 TRUTH = fx.truth()
 
@@ -220,7 +222,7 @@ def test_a_night_without_power_plays_still_decays_the_power_play() -> None:
     before, night = nights[9], nights[10]
     quiet = STINTS.filter(~((pl.col("game_date") == before) & (pl.col("strength") != "5v5")))
     wanted = WANTED.filter(pl.col("game_date").is_in([before, night]))
-    ratings, _ = rapm.rate(fx.seasons_of(quiet), GAMES, ROLES, VENUES, wanted, LOOSE, VERSION)
+    ratings, _, _ = rapm.rate(fx.seasons_of(quiet), GAMES, ROLES, VENUES, wanted, LOOSE, VERSION)
     pp = ratings.filter(pl.col("component") == "pp").pivot(
         on="game_date", index="player_id", values="hours"
     )
@@ -239,7 +241,9 @@ def test_a_defenseman_without_power_play_data_gets_the_term_and_its_spread() -> 
         .then(pl.lit("D"))
         .otherwise(pl.col("role"))
     )
-    ratings, terms = rapm.rate(fx.seasons_of(STINTS), GAMES, ROLES, VENUES, wanted, LOOSE, VERSION)
+    ratings, terms, _ = rapm.rate(
+        fx.seasons_of(STINTS), GAMES, ROLES, VENUES, wanted, LOOSE, VERSION
+    )
     mine = {
         c: r
         for c, r in zip(

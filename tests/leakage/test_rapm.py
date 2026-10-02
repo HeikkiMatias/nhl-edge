@@ -27,6 +27,7 @@ RATING_COLUMNS = [
     "role",
     "component",
     "mean",
+    "prior",
     "sd",
     "hours",
     "known_utc",
@@ -40,7 +41,7 @@ RATING_COLUMNS = [
 
 
 def tonight(stints: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
-    ratings, terms = rapm.rate(
+    ratings, terms, _ = rapm.rate(
         fx.seasons_of(stints), GAMES, ROLES, VENUES, WANTED, SETTINGS, VERSION
     )
     return ratings.sort("game_id", "player_id", "component"), terms.sort("model", "term")
@@ -81,7 +82,7 @@ def test_tonights_and_later_roles_never_move_tonights_ratings() -> None:
     roles = ROLES.with_columns(
         role=pl.when(pl.col("game_id").is_in(later)).then(swapped).otherwise(pl.col("role"))
     )
-    ratings, terms = rapm.rate(
+    ratings, terms, _ = rapm.rate(
         fx.seasons_of(STINTS), GAMES, roles, VENUES, WANTED, SETTINGS, VERSION
     )
     same(ratings.sort("game_id", "player_id", "component"), BASE, OUTPUTS)
@@ -93,7 +94,9 @@ def test_earlier_roles_do_move_them() -> None:
     roles = ROLES.with_columns(
         role=pl.when(pl.col("game_id").is_in(earlier)).then(pl.lit("F")).otherwise(pl.col("role"))
     )
-    ratings, _ = rapm.rate(fx.seasons_of(STINTS), GAMES, roles, VENUES, WANTED, SETTINGS, VERSION)
+    ratings, _, _ = rapm.rate(
+        fx.seasons_of(STINTS), GAMES, roles, VENUES, WANTED, SETTINGS, VERSION
+    )
     pp = pl.col("component") == "pp"
     moved = ratings.sort("game_id", "player_id", "component").filter(pp)["mean"].to_numpy()
     assert not np.allclose(moved, BASE.filter(pp)["mean"].to_numpy())
