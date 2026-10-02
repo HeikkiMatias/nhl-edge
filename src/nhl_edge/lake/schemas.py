@@ -1165,8 +1165,10 @@ class PlayerRatings(pa.DataFrameModel):
     relative to the average forward, a defenseman's adding his role's average there. sd is the
     ridge's posterior spread, the prior's for a player without data, and null before any data; a
     defenseman's power-play sd includes the role term's variance and covariance with his own.
-    hours is the decayed ice time behind the rating, 0 without data. half_life_days and
-    pull_hours are the settings.
+    hours is the decayed ice time behind the rating, 0 without data. prior is the mean the rating
+    is pulled toward (#102, ADR 0020): the player's traits times the season's effects, on the same
+    footing as mean; a player without data is at it. half_life_days and pull_hours are the
+    settings.
 
     train_cutoff is the last result the specification's figures read, as for team strength; and
     observed_utc, when the rating could be known, is the later of as_of_utc and train_cutoff."""
@@ -1179,6 +1181,7 @@ class PlayerRatings(pa.DataFrameModel):
     role: pl.String = pa.Field(isin=["F", "D"])
     component: pl.String = pa.Field(isin=list(RATING_COMPONENTS))
     mean: pl.Float64
+    prior: pl.Float64
     sd: pl.Float64 = pa.Field(ge=0, nullable=True)
     hours: pl.Float64 = pa.Field(ge=0)
     known_utc: UtcDatetime = pa.Field(nullable=True)
@@ -1213,10 +1216,12 @@ class PlayerRatings(pa.DataFrameModel):
 class RapmTerms(pa.DataFrameModel):
     """The terms of each RAPM fit behind PlayerRatings (#101, ADR 0019), once per game date and
     fit: the intercept, the season, arena, home, score and zone terms that only remove bias, the
-    power play's situation and defensemen terms, and sigma, the residual sd per square-root hour.
+    power play's situation and defensemen terms, the priors' trait effects in force
+    (prior:<component>:<trait>, fitted at the season's start, ADR 0020), and sigma, the residual
+    sd per square-root hour.
     B3 reads its xG rates from the intercept and season terms, since ratings are relative to a
     skater rated 0. hours is the decayed ice time of the rows with the term, null for the
-    defensemen term, a count, and sigma.
+    defensemen term, a count, the trait effects and sigma.
 
     known_utc is the latest stint time the fit read, and as_of_utc the earliest as-of time of the
     date's games it serves; train_cutoff and observed_utc as in PlayerRatings."""

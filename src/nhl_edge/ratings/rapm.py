@@ -44,8 +44,8 @@ sums. A defenseman's power-play sd adds the defensemen term's variance and its c
 his own column. `hours` is the decayed ice time behind the rating.
 """
 
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, cast
 
@@ -58,6 +58,8 @@ from numpy.typing import NDArray
 from nhl_edge.features import team_strength as ts
 from nhl_edge.features import xg
 from nhl_edge.lake.schemas import PlayerRatings, RapmTerms, dtypes
+from nhl_edge.lineup import goalie_start as gs
+from nhl_edge.ratings import priors
 
 COMPONENT = "rapm"
 # The first season with xG, and so with ratings.
@@ -82,6 +84,8 @@ INTERCEPT = "intercept"
 SIGMA = "sigma"
 # The power play's defensemen term: a defenseman's average there, against a forward's.
 DEFENSEMEN = "defensemen"
+# The prefix of the priors' trait columns.
+PRIOR = "prior"
 
 
 @dataclass(frozen=True)
@@ -236,6 +240,14 @@ class Design:
         else:
             terms += [f"situation:{s}" for s in PP_STRENGTHS if s != BASE_SITUATION]
             terms.append(DEFENSEMEN)
+        # The priors' trait columns (#102, ADR 0020): fitted only at a season's start, and fixed
+        # at 0 in the daily fits, where the players' prior means carry them.
+        self.components = COMPONENTS[model]
+        self.trait_columns: dict[str, NDArray[np.int64]] = {}
+        for component in self.components:
+            names = priors.TRAITS[component]
+            self.trait_columns[component] = np.arange(len(terms), len(terms) + len(names))
+            terms += [f"{PRIOR}:{component}:{t}" for t in names]
         self.terms = tuple(terms)
         self.index = {term: i for i, term in enumerate(terms)}
         self.players: dict[int, int] = {}
@@ -250,9 +262,17 @@ class Design:
     def defend(self, k: NDArray[np.int64]) -> NDArray[np.int64]:
         return len(self.terms) + 2 * k + 1
 
+    def traits(self) -> NDArray[np.bool_]:
+        """Which columns are the priors' trait columns."""
+        mask = np.zeros(self.size, dtype=bool)
+        for columns in self.trait_columns.values():
+            mask[columns] = True
+        return mask
+
     def penalty(self, settings: Settings) -> NDArray[np.float64]:
-        """Each column's pull in hours: none for the intercept, home, score, zone, situation and
-        defensemen terms; BIAS_PULL_HOURS for season and arena; the setting's for players."""
+        """Each column's pull in hours: none for the intercept, home, score, zone, situation,
+        defensemen and trait terms; BIAS_PULL_HOURS for season and arena; the setting's for
+        players."""
         light = [
             BIAS_PULL_HOURS if t.startswith(("season:", "arena:")) else 0.0 for t in self.terms
         ]
@@ -268,8 +288,11 @@ class Design:
         lookup = np.array([self.players.get(int(p), -1) for p in unique], dtype=np.int64)
         return lookup[np.searchsorted(unique, ids)] if ids.size else ids.astype(np.int64)
 
-    def matrix(self, rows: pl.DataFrame) -> sp.csr_matrix:
-        """The rows' design matrix, its players added to the design."""
+    def matrix(self, rows: pl.DataFrame, traits: pl.DataFrame | None = None) -> sp.csr_matrix:
+        """The rows' design matrix, its players added to the design. traits (priors.traits() of
+        the rows' season) fill the trait columns: the attacking skaters' summed for the attacking
+        component, the defending skaters' summed and negated for the defending one; a player
+        without traits counts as the reference skater, 0."""
         n = rows.height
         parts: list[tuple[NDArray[np.int64], NDArray[np.int64], NDArray[np.float64]]] = []
 
@@ -299,15 +322,23 @@ class Design:
                     put(situation == s, self.index[f"situation:{s}"])
             attack_d = rows["attack_d"].to_numpy()
             put(attack_d > 0, self.index[DEFENSEMEN], attack_d)
-        for column, sign, place in (
-            ("attackers", 1.0, self.attack),
-            ("defenders", -1.0, self.defend),
+        lookup = _trait_lookup(traits)
+        for column, sign, place, component in (
+            ("attackers", 1.0, self.attack, self.components[0]),
+            ("defenders", -1.0, self.defend, self.components[1]),
         ):
             lengths = rows[column].list.len().to_numpy()
             row = np.repeat(np.arange(n, dtype=np.int64), lengths)
             ids = rows[column].explode(empty_as_null=False).to_numpy().astype(np.int64)
             k = self.positions(ids, add=True)
             parts.append((row, place(k), np.full(row.size, sign)))
+            if lookup is not None:
+                names = priors.TRAITS[component]
+                values = lookup(ids, names)
+                sums = np.zeros((n, len(names)))
+                np.add.at(sums, row, values)
+                for j, trait_column in enumerate(self.trait_columns[component]):
+                    put(sums[:, j] != 0, int(trait_column), sign * sums[:, j])
         r, c, v = (np.concatenate(p) for p in zip(*parts, strict=True))
         return sp.csr_matrix((v, (r, c)), shape=(n, self.size))
 
@@ -315,6 +346,24 @@ class Design:
         if term not in self.index:
             raise ValueError(f"{self.model} RAPM has no column for {term}")
         return self.index[term]
+
+
+def _trait_lookup(
+    traits: pl.DataFrame | None,
+) -> Callable[[NDArray[np.int64], Sequence[str]], NDArray[np.float64]] | None:
+    """A function giving each player id's traits (0 for an id without them), or None."""
+    if traits is None or traits.is_empty():
+        return None
+    order = np.argsort(traits["player_id"].to_numpy())
+    known = traits["player_id"].to_numpy()[order]
+
+    def lookup(ids: NDArray[np.int64], names: Sequence[str]) -> NDArray[np.float64]:
+        table = traits.select(names).to_numpy()[order]
+        at = np.clip(np.searchsorted(known, ids), 0, known.size - 1)
+        found = known[at] == ids
+        return np.where(found[:, None], table[at], 0.0)
+
+    return lookup
 
 
 @dataclass(frozen=True)
@@ -392,10 +441,14 @@ class Normal:
         wanted: NDArray[np.int64],
         reference: float | None = None,
         shift: int | None = None,
+        prior: NDArray[np.float64] | None = None,
+        exclude: NDArray[np.bool_] | None = None,
     ) -> Solution:
         """The ridge fit with the decay counted to the league day reference (by default the
         latest day added), the posterior sd of the wanted columns, and with shift, their sd once
-        that column is added to each. A column without data keeps its prior, 0."""
+        that column is added to each. Each column is pulled toward its prior mean (0 without
+        prior); the excluded columns are held at 0. A column without data, or excluded, gets 0
+        in beta."""
         size = penalty.size
         self.grow(size)
         nan = np.full(size, np.nan)
@@ -407,7 +460,10 @@ class Normal:
             raise ValueError("the decay's reference day is before the latest day added")
         factor = np.exp2(-(reference - self.t0) / self.half_life)
         hours = np.diag(self.a)[:size] * factor
-        active = np.flatnonzero(hours > 0)
+        usable = hours > 0
+        if exclude is not None:
+            usable &= ~exclude[:size]
+        active = np.flatnonzero(usable)
         asked = np.zeros(size, dtype=bool)
         asked[wanted] = True
         if shift is not None:
@@ -419,11 +475,12 @@ class Normal:
         m = self.a[np.ix_(order, order)] * factor
         pull = penalty[order] + FLOOR
         m[np.diag_indices_from(m)] += pull
-        rhs = self.b[order] * factor
+        data = self.b[order] * factor
+        means = np.zeros(order.size) if prior is None else prior[order]
         chol, lower = sl.cho_factor(m, lower=True, overwrite_a=True, check_finite=False)
-        fitted = sl.cho_solve((chol, lower), rhs, check_finite=False)
-        # y'Wy - 2 b'β + β'Aβ, with (A + P)β = b.
-        rss = self.yy * factor - fitted @ rhs - pull @ (fitted * fitted)
+        fitted = sl.cho_solve((chol, lower), data + pull * means, check_finite=False)
+        # y'Wy - 2 b'β + β'Aβ, with (A + P)β = b + Pμ.
+        rss = self.yy * factor - fitted @ data + fitted @ (pull * (means - fitted))
         variance = max(rss, 0.0) / (self.n * factor)
         beta = np.zeros(size)
         beta[order] = fitted
@@ -473,6 +530,9 @@ class _Model:
     rows: pl.DataFrame
     x: sp.csr_matrix
     days: NDArray[np.float64]
+    # The season's prior means per column, and its trait effects per component (#102).
+    prior: NDArray[np.float64] | None = None
+    effects: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
     done: int = 0
 
     def add_until(self, known: datetime | None) -> None:
@@ -499,12 +559,20 @@ def rate(
     wanted: pl.DataFrame,
     settings: Settings,
     version: str,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """player_ratings and rapm_terms for the wanted candidates (targets()). stint_seasons yields
-    each season's stints in order, from FIRST_SEASON to the last wanted season at least: a
-    season's ratings read every earlier season's."""
+    players: pl.DataFrame | None = None,
+    league_seasons: pl.DataFrame | None = None,
+) -> tuple[pl.DataFrame, pl.DataFrame, list[priors.PriorFit]]:
+    """player_ratings and rapm_terms for the wanted candidates (targets()), and each season's
+    priors (#102, ADR 0020). stint_seasons yields each season's stints in order, from
+    FIRST_SEASON to the last wanted season at least: a season's ratings read every earlier
+    season's. Without players every prior mean is 0; without league_seasons nobody has an
+    NHLe."""
     if wanted.is_empty():
-        return pl.DataFrame(schema=dtypes(PlayerRatings)), pl.DataFrame(schema=dtypes(RapmTerms))
+        return (
+            pl.DataFrame(schema=dtypes(PlayerRatings)),
+            pl.DataFrame(schema=dtypes(RapmTerms)),
+            [],
+        )
     if wanted["as_of_utc"].is_null().any():
         raise ValueError("a candidate's game is not in games")
     last = int(wanted["season"].max())  # type: ignore[arg-type]
@@ -515,6 +583,8 @@ def rate(
     normals = {m: Normal(settings.half_life_days) for m in MODELS}
     ratings: list[pl.DataFrame] = []
     terms: list[pl.DataFrame] = []
+    fits: list[priors.PriorFit] = []
+    season_ends: list[pl.DataFrame] = []
     known: datetime | None = None
     # The decay counts to the latest league game day read, whether or not a model kept a row
     # from it.
@@ -529,11 +599,24 @@ def rate(
         if seen and season <= max(seen):
             raise ValueError(f"stints of {season} after those of {max(seen)}")
         seen.add(season)
+        cutoff = gs.season_cutoff(games, season)
+        season_traits, factors = _season_traits(players, league_seasons, season, cutoff)
         models = {}
         for m in MODELS:
             rows = model_rows(stints, games, roles, venues, m)
             days = np.array([numbers[d] for d in rows["game_date"].to_list()], dtype=np.float64)
-            models[m] = _Model(designs[m], normals[m], rows, designs[m].matrix(rows), days)
+            x = designs[m].matrix(rows, season_traits)
+            models[m] = _Model(designs[m], normals[m], rows, x, days)
+        # The season's priors, from the stints, lines and ratings public before it starts.
+        curves = priors.age_curves(_concat(season_ends), season)
+        effects: dict[str, dict[str, float]] = {}
+        for model in models.values():
+            effects |= _season_effects(model, settings, reference)
+        means = None if season_traits is None else priors.prior_means(season_traits, effects)
+        for model in models.values():
+            model.effects = effects
+            model.prior = _prior_vector(model.design, means)
+        fits.append(priors.PriorFit(season, cutoff, factors, effects, curves))
         batches = (
             stints.group_by("observed_utc")
             .agg(pl.col("game_date").max())
@@ -552,7 +635,7 @@ def rate(
                 reference = float(batches["day"][int(count) - 1])
             for model in models.values():
                 model.add_until(known)
-                rated, solution = _ratings(group, model, settings, known, reference)
+                rated, solution = _ratings(group, model, settings, known, reference, means)
                 ratings.append(rated)
                 if known is not None and solution.sigma is not None:
                     terms.append(_terms(group, model, solution, known))
@@ -560,6 +643,7 @@ def rate(
             model.add_until(times[-1] if times.len() else None)
         if times.len():
             known, reference = times[-1], float(batches["day"][-1])
+        season_ends.append(_season_end(models, settings, reference, season, season_traits))
     missing = set(wanted["season"].unique().to_list()) - seen
     if missing:
         raise ValueError(f"no stints for {sorted(missing)}")
@@ -568,7 +652,134 @@ def rate(
         _stamp(pl.concat(terms), RapmTerms, settings, version)
         if terms
         else pl.DataFrame(schema=dtypes(RapmTerms)),
+        fits,
     )
+
+
+def _concat(frames: Sequence[pl.DataFrame]) -> pl.DataFrame:
+    if frames:
+        return pl.concat(frames)
+    return pl.DataFrame(
+        schema={
+            "season": pl.Int32,
+            "player_id": pl.Int64,
+            "component": pl.String,
+            "mean": pl.Float64,
+            "hours": pl.Float64,
+            "age": pl.Float64,
+        }
+    )
+
+
+def _season_traits(
+    players: pl.DataFrame | None,
+    league_seasons: pl.DataFrame | None,
+    season: int,
+    cutoff: datetime,
+) -> tuple[pl.DataFrame | None, pl.DataFrame]:
+    """Every player's traits for the season and its NHLe factors, from the lines public before
+    cutoff, the season's first as-of time."""
+    factors = pl.DataFrame(schema={"league": pl.String, "moves": pl.UInt32, "factor": pl.Float64})
+    nhle = pl.DataFrame(schema={"player_id": pl.Int64, "nhle_ppg": pl.Float64})
+    if league_seasons is not None:
+        lines = priors.league_lines(league_seasons, cutoff)
+        factors = priors.nhle_factors(lines, season)
+        nhle = priors.nhle_inputs(lines, factors, season)
+    if players is None:
+        return None, factors
+    return priors.traits(players, nhle, season), factors
+
+
+def _season_effects(
+    model: _Model, settings: Settings, reference: float | None
+) -> dict[str, dict[str, float]]:
+    """The trait effects of the model's components, from one fit of the stints read so far with
+    the trait columns in: the season-start fit. None before any data."""
+    design = model.design
+    solution = model.normal.solve(design.penalty(settings), np.empty(0, np.int64), reference)
+    if solution.sigma is None:
+        return {}
+    return {
+        component: {
+            name: float(solution.beta[column])
+            for name, column in zip(
+                priors.TRAITS[component], design.trait_columns[component], strict=True
+            )
+        }
+        for component in design.components
+    }
+
+
+def _prior_vector(design: Design, means: pl.DataFrame | None) -> NDArray[np.float64]:
+    """Each column's prior mean: a player's attacking and defending columns get his prior means
+    for the model's two components; every other column 0."""
+    vector = np.zeros(design.size)
+    if means is None or not design.players:
+        return vector
+    ids = np.fromiter(design.players.keys(), dtype=np.int64)
+    k = np.fromiter(design.players.values(), dtype=np.int64)
+    lookup = _trait_lookup(means)
+    assert lookup is not None
+    values = lookup(ids, list(design.components))
+    vector[design.attack(k)] = values[:, 0]
+    vector[design.defend(k)] = values[:, 1]
+    return vector
+
+
+def _season_end(
+    models: Mapping[str, _Model],
+    settings: Settings,
+    reference: float | None,
+    season: int,
+    season_traits: pl.DataFrame | None,
+) -> pl.DataFrame:
+    """Each player of the season's rows, his ratings and hours after its last game, with his age
+    less 27: what the age curves read."""
+    frames = []
+    for model in models.values():
+        design = model.design
+        players = np.unique(
+            np.concatenate(
+                [
+                    model.rows[column].explode(empty_as_null=False).to_numpy().astype(np.int64)
+                    for column in ("attackers", "defenders")
+                ]
+            )
+        )
+        if not players.size:
+            continue
+        solution = model.normal.solve(
+            design.penalty(settings),
+            np.empty(0, np.int64),
+            reference,
+            prior=model.prior,
+            exclude=design.traits(),
+        )
+        if solution.sigma is None:
+            continue
+        k = design.positions(players, add=False)
+        for component, columns in zip(
+            design.components, (design.attack(k), design.defend(k)), strict=True
+        ):
+            frames.append(
+                pl.DataFrame(
+                    {
+                        "season": pl.Series([season] * players.size, dtype=pl.Int32),
+                        "player_id": players,
+                        "component": [component] * players.size,
+                        "mean": solution.beta[columns],
+                        "hours": solution.hours[columns],
+                    }
+                )
+            )
+    if not frames:
+        return _concat([])
+    ages = (
+        season_traits.select("player_id", age=pl.col("age"))
+        if season_traits is not None
+        else pl.DataFrame(schema={"player_id": pl.Int64, "age": pl.Float64})
+    )
+    return pl.concat(frames).join(ages, on="player_id", how="left").fill_null(0.0)
 
 
 def _ratings(
@@ -577,30 +788,44 @@ def _ratings(
     settings: Settings,
     known: datetime | None,
     reference: float | None,
+    means: pl.DataFrame | None,
 ) -> tuple[pl.DataFrame, Solution]:
-    """The group's candidates' two components of the model, from one refit."""
+    """The group's candidates' two components of the model, from one refit pulled toward the
+    season's prior means."""
     design = model.design
-    k = design.positions(group["player_id"].to_numpy().astype(np.int64), add=False)
+    ids = group["player_id"].to_numpy().astype(np.int64)
+    k = design.positions(ids, add=False)
     has = k >= 0
     attack = np.where(has, design.attack(np.maximum(k, 0)), -1)
     defend = np.where(has, design.defend(np.maximum(k, 0)), -1)
     wanted = np.concatenate([attack[has], defend[has]])
     shift = design.index[DEFENSEMEN] if design.model == PP else None
-    solution = model.normal.solve(design.penalty(settings), wanted, reference, shift)
+    solution = model.normal.solve(
+        design.penalty(settings),
+        wanted,
+        reference,
+        shift,
+        prior=model.prior,
+        exclude=design.traits(),
+    )
+    lookup = _trait_lookup(means)
+    priors_of = np.zeros((ids.size, 2)) if lookup is None else lookup(ids, list(design.components))
     prior_sd = np.nan if solution.sigma is None else solution.sigma / np.sqrt(settings.pull_hours)
     # A defenseman's power-play rating adds the defensemen term, his role's average there, and
     # its sd the term's variance and covariance with his own.
     defense = (group["role"] == DEFENSE).to_numpy()
     frames = []
-    for name, columns, shifted in zip(
-        COMPONENTS[design.model], (attack, defend), (shift is not None, False), strict=True
+    for j, (name, columns, shifted) in enumerate(
+        zip(COMPONENTS[design.model], (attack, defend), (shift is not None, False), strict=True)
     ):
         rated = has & (solution.hours[columns] > 0)
-        mean = np.where(rated, solution.beta[columns], 0.0)
+        prior = priors_of[:, j]
+        mean = np.where(rated, solution.beta[columns], prior)
         sd = np.where(rated, solution.sd[columns], prior_sd)
         if shifted and shift is not None and solution.hours[shift] > 0:
             own = defense & rated
             mean = mean + defense * solution.beta[shift]
+            prior = prior + defense * solution.beta[shift]
             sd = np.where(own, solution.shifted_sd[columns], sd)
             sd = np.where(defense & ~rated, np.hypot(prior_sd, solution.sd[shift]), sd)
         hours = np.where(rated, solution.hours[columns], 0.0)
@@ -610,6 +835,7 @@ def _ratings(
             ).with_columns(
                 component=pl.lit(name),
                 mean=pl.Series(mean),
+                prior=pl.Series(prior),
                 sd=pl.Series(sd).fill_nan(None),
                 hours=pl.Series(hours),
                 known_utc=pl.lit(known, dtype=pl.Datetime("us", "UTC")),
@@ -622,6 +848,7 @@ def _terms(group: pl.DataFrame, model: _Model, solution: Solution, known: dateti
     """The fit's bias terms and residual sd, once per game date in the group."""
     assert solution.sigma is not None
     design = model.design
+    traits = design.traits()
     rows = [
         {
             "term": term,
@@ -629,7 +856,13 @@ def _terms(group: pl.DataFrame, model: _Model, solution: Solution, known: dateti
             "hours": None if term == DEFENSEMEN else float(solution.hours[i]),
         }
         for i, term in enumerate(design.terms)
-        if solution.hours[i] > 0
+        if solution.hours[i] > 0 and not traits[i]
+    ]
+    # The trait effects in force: the season-start fit's, held fixed in the daily fits.
+    rows += [
+        {"term": f"{PRIOR}:{component}:{name}", "value": value, "hours": None}
+        for component in design.components
+        for name, value in model.effects.get(component, {}).items()
     ]
     rows.append({"term": SIGMA, "value": solution.sigma, "hours": None})
     fit = pl.DataFrame(rows, schema={"term": pl.String, "value": pl.Float64, "hours": pl.Float64})

@@ -8,16 +8,23 @@ Per season, the game dates, fits and candidate ratings. For a shown season also:
 - the five highest and lowest 5v5 net ratings (offense plus defense), each player's at his last
   game of the season, among those with at least LEADER_HOURS hours, a face-validity check.
 The development and held-out seasons show only their counts until gate 2.
+
+The priors (#102, ADR 0020) follow for each shown season: its NHLe factors, each component's
+trait effects from the season-start fit, and its age curves as the expected change in a rating
+over a season at a few ages. A season's priors read only data public before it starts.
 """
 
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 
 import polars as pl
 
+from nhl_edge.ratings import priors
 from nhl_edge.ratings.rapm import DEFENSEMEN, EV, PP, SCORES, SIGMA, ZONES, Settings
 
 LEADER_HOURS = 10.0
 LEADERS = 5
+# The ages the age curves are shown at.
+CURVE_AGES = (21, 24, 27, 30, 33)
 # The terms shown per model, besides its rate and, at 5v5, the arenas' spread.
 SHOWN_TERMS = {
     EV: ("home", *(f"score:{s:+d}" for s in SCORES), *(f"zone:{z}" for z in ZONES), SIGMA),
@@ -89,6 +96,7 @@ def markdown_report(
     shown: Collection[int],
     version: str,
     settings: Settings,
+    fits: Sequence[priors.PriorFit] = (),
 ) -> str:
     lines = [
         f"# RAPM: {version}",
@@ -158,4 +166,63 @@ def markdown_report(
                 f"| {row['role']} | {row['mean_ev_off']:+.3f} | {row['mean_ev_def']:+.3f} "
                 f"| {row['net']:+.3f} | {row['hours_ev_off']:.1f} |"
             )
+    lines += _prior_lines([f for f in fits if f.season in shown])
     return "\n".join(lines) + "\n"
+
+
+def _prior_lines(fits: Sequence[priors.PriorFit]) -> list[str]:
+    if not fits:
+        return []
+    lines = [
+        "",
+        "## Priors",
+        "",
+        "Each season's priors, fitted before it starts from data public by then (ADR 0020).",
+        "",
+        "### NHLe factors",
+        "",
+        "NHL points per game over the league's, for moves from a league season straight into",
+        "the next NHL season (moves in brackets); leagues with fewer moves share the pooled one.",
+        "",
+        "| Season | Factors |",
+        "| --- | --- |",
+    ]
+    for fit in fits:
+        cells = ", ".join(
+            f"{row['league']} {row['factor']:.2f} ({row['moves']})"
+            for row in priors.leagues_shown(fit.factors)
+        )
+        lines.append(f"| {fit.season} | {cells or 'none'} |")
+    lines += [
+        "",
+        "### Trait effects",
+        "",
+        "Each trait's effect on a rating, in xG per hour, from the season-start fit. A trait is",
+        "centred on a 27-year-old drafted 60th with no recent minor-league season: age less 27",
+        "and its square, log(pick / 60), undrafted, NHLe points per game less 0.3, and having one.",
+        "",
+    ]
+    names = priors.OFFENSE_TRAITS
+    lines += ["| Season | Component | " + " | ".join(names) + " |"]
+    lines += ["| --- | --- |" + " ---: |" * len(names)]
+    for fit in fits:
+        for component, effects in fit.effects.items():
+            cells = [f"{effects[n]:+.4f}" if n in effects else "" for n in names]
+            lines.append(f"| {fit.season} | {component} | " + " | ".join(cells) + " |")
+    lines += [
+        "",
+        "### Age curves",
+        "",
+        "The expected change in a rating over one season by the player's age, from the changes",
+        "between consecutive season ends (pairs of seasons in the last column).",
+        "",
+        "| Season | Component | " + " | ".join(str(a) for a in CURVE_AGES) + " | Pairs |",
+        "| --- | --- |" + " ---: |" * (len(CURVE_AGES) + 1),
+    ]
+    for fit in fits:
+        for component, curve in fit.curves.items():
+            cells = [f"{curve.change(a):+.4f}" for a in CURVE_AGES]
+            lines.append(
+                f"| {fit.season} | {component} | " + " | ".join(cells) + f" | {curve.pairs:,} |"
+            )
+    return lines

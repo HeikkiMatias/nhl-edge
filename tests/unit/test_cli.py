@@ -1021,7 +1021,8 @@ def rapm_lake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     frames["shift_coverage"] = (
         frames["stints"].select("game_id", "season").unique().with_columns(complete=pl.lit(True))
     )
-    frames["players"] = pl.DataFrame({"player_id": [101], "name": ["A Forward"]})
+    frames["players"] = fx.players().with_columns(name=pl.lit("A Skater"))
+    frames["player_league_seasons"] = fx.league_seasons()
     venues = frames.pop("venues")
     monkeypatch.setattr(reference, "load_venues", lambda: venues)
 
@@ -1046,6 +1047,7 @@ def test_rapm_writes_the_tables_and_the_report(
     (path,) = (tmp_path / "reports" / "ratings").glob("rapm-*.md")
     text = path.read_text()
     assert "## Per season" in text and "### Power play" in text and "## 5v5 leaders" in text
+    assert "## Priors" in text and "### NHLe factors" in text and "AHL 0.50 (40)" in text
 
 
 def test_rapm_ignores_charts_before_its_first_season(
