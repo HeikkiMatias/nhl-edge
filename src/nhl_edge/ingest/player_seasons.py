@@ -1,0 +1,219 @@
+"""Player league seasons (#98): each player's season lines in every league, from the seasonTotals
+array of the player landing pages in the raw cache, for the NHLe offensive priors (#102).
+
+nhl ingest fetches a player's landing page once, when he first shows up on a roster or in a
+boxscore, and reuses it from then on (NhlApi.player_landing). So this reads the newest cached page
+of every player in players and makes no request; a season played after a page's fetch needs that
+page fetched again.
+
+Point in time: a season's lines count as public on July 1 (00:00 UTC) after it, when every league's
+season and the NHL playoffs are over (lake/schemas.py, SEASON_LINES_PUBLIC). The pages' fetch time
+would hide all history from the backtest, since the backfill fetched them in 2026. A line whose
+season had not reached that day when its page was fetched is a partial season and is dropped. A
+page fetched long after a season may carry later corrections, as ADR 0004 accepts for the
+per-game feeds.
+"""
+
+import json
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any
+
+import polars as pl
+
+from nhl_edge.ingest.nhl_api import parse_utc
+from nhl_edge.lake.raw import RawStore
+from nhl_edge.lake.schemas import (
+    PLAYER_LEAGUE_SEASONS_KEY,
+    SEASON_LINE_GAME_TYPES,
+    SEASON_LINES_PUBLIC,
+    PlayerLeagueSeasons,
+    dtypes,
+    season_lines_public_utc,
+)
+
+LANDING_PREFIX = "nhl/player-landing"
+# The NHL draft's age cutoff (month, day): eligibility turns on a player's age on September 15.
+AGE_CUTOFF = (9, 15)
+COUNTS = ("games_played", "goals", "assists")
+# One per-team line of a landing page, before the lines of a league-season are summed.
+LINE_SCHEMA: dict[str, pl.DataType] = {
+    "player_id": pl.Int64(),
+    "season": pl.Int32(),
+    "league_abbrev": pl.String(),
+    "game_type": pl.Int8(),
+    "games_played": pl.Int16(),
+    "goals": pl.Int16(),
+    "assists": pl.Int16(),
+    "raw_key": pl.String(),
+}
+
+# Known variants of one league, after trimming and upper case, mapped to the name the cached pages
+# use for its latest seasons. The NHL API names many leagues one way up to about 2015-16 and
+# another way after, and the seasons in each comment are those the cache lists under the variant
+# (checked 2026-10-02). Predecessor leagues stay apart: Russia (the Superleague, to 2007-08) is
+# not the KHL, and Russia-2 (the Vysshaya Liga, before and after the VHL began in 2010) is not the
+# VHL. CHL (1998-99 to 2013-14) is the Central Hockey League, not the Champions HL. Upper case
+# alone merges MtJHL with MTJHL.
+LEAGUE_VARIANTS: dict[str, str] = {
+    "RUS-KHL": "KHL",  # 2008-09 to 2010-11, the KHL's first seasons
+    "SWEDEN": "SHL",  # to 2015-16: Elitserien, renamed SHL in 2013
+    "FINLAND": "LIIGA",  # to 2014-15: SM-liiga, renamed Liiga in 2013
+    "NLA": "NL",  # 2002-03 to 2016-17: Swiss National League A, renamed National League in 2017
+    "SWISS": "NL",  # to 2015-16: the same Swiss top league
+    "CZREP": "CZECHIA",  # 1993-94 to 2015-16: the Czech Extraliga
+    "CZECH": "CZECHIA",  # to 2017-18: the Czech Extraliga (Czechoslovak league before 1993-94)
+    "CZREP-2": "CZECHIA2",  # 1999-00 to 2015-16: the Czech second tier
+    "CZECH2": "CZECHIA2",  # to 2017-18: the Czech second tier
+    "GERMANY": "DEL",  # to 2015-16: the DEL (the Bundesliga before 1994-95)
+    "EBEL": "ICEHL",  # 2007-08 to 2019-20: Erste Bank Eishockey Liga, ICE Hockey League from 2020
+    "AUSTRIA": "ICEHL",  # 2003-04 to 2015-16: the Austrian top league, the EBEL
+    "ALLSVENSKAN": "HOCKEYALLSVENSKAN",  # to 2014-15: the Swedish second tier
+    "SWEDEN-2": "HOCKEYALLSVENSKAN",  # to 2015-16: the Swedish second tier
+    "FINLAND-2": "MESTIS",  # to 2015-16: the Finnish second tier
+    "RUSSIA-JR.": "MHL",  # 2009-10 to 2015-16: the MHL, Russia's junior league since 2009
+    "SWE-JR.": "J20 NATIONELL",  # to 2015-16: Sweden's top U20 league
+    "SUPERELIT": "J20 NATIONELL",  # 1996-97 to 2014-15: J20 SuperElit, Sweden's top U20 league
+    "J20 SUPERELIT": "J20 NATIONELL",  # 2015-16 to 2019-20: the same league
+    "FIN-JR.": "U20 SM-SARJA",  # to 2015-16: Finland's top U20 league
+    "FINLAND-JR.": "U20 SM-SARJA",  # one line of 2008-09, spelt FInland-Jr.
+    "JR. A SM-LIIGA": "U20 SM-SARJA",  # 2004-05 to 2014-15: the same league
+    "U20 SM-LIIGA": "U20 SM-SARJA",  # 2015-16 to 2019-20: the same league
+    "USDP": "NTDP",  # 2008-09 to 2017-18: the US National Team Development Program
+    "CCHA": "NCAA",  # to 2012-13: an NCAA Division I conference
+    "ECAC": "NCAA",  # to 2015-16: an NCAA Division I conference
+    "H-EAST": "NCAA",  # to 2015-16: Hockey East, an NCAA Division I conference
+    "WCHA": "NCAA",  # to 2014-15: an NCAA Division I conference
+    "NCHC": "NCAA",  # 2013-14 and 2014-15: an NCAA Division I conference
+    "BIG TEN": "NCAA",  # 2013-14 and 2014-15: an NCAA Division I conference
+    "WC-A": "WC",  # to 2015-16: the World Championship's top division
+    "WJC-A": "WJC-20",  # to 2015-16: the World Junior Championship's top division
+    "WJ18-A": "WJC-18",  # to 2015-16: the U18 World Championship's top division
+    "OLYMPICS": "OG",  # to 2013-14: the Olympic Games
+}
+
+
+def season_lines_public(season: int) -> datetime:
+    """When the lines of a season given as 20152016 count as public: July 1 (00:00 UTC) of its
+    second year, as season_lines_public_utc in lake/schemas.py."""
+    month, day = SEASON_LINES_PUBLIC
+    return datetime(season % 10_000, month, day, tzinfo=UTC)
+
+
+def league_name(abbrev: pl.Expr) -> pl.Expr:
+    """The league of a raw leagueAbbrev: trimmed, upper case, and a known variant of a league
+    mapped to its one name (LEAGUE_VARIANTS)."""
+    return abbrev.str.strip_chars().str.to_uppercase().replace(LEAGUE_VARIANTS)
+
+
+def age_at_season(season: pl.Expr, birth_date: pl.Expr) -> pl.Expr:
+    """Whole years of age on September 15 of the season's first year, the NHL draft cutoff, so
+    that age means what it does for the draft. Null without a birth date."""
+    month, day = AGE_CUTOFF
+    born_after = (birth_date.dt.month() > month) | (
+        (birth_date.dt.month() == month) & (birth_date.dt.day() > day)
+    )
+    return season // 10_000 - birth_date.dt.year() - born_after.cast(pl.Int32)
+
+
+@dataclass
+class PageLines:
+    """The per-team lines of one landing page that count, and how many were left out."""
+
+    player_id: int
+    rows: list[dict[str, Any]]
+    other_game_types: int = 0
+    partial: int = 0
+
+
+def landing_lines(body: bytes, fetched_utc: datetime, raw_key: str) -> PageLines:
+    """The regular-season and playoff lines, one per team, of the seasons whose July 1 had come
+    when the page was fetched. Other game types (the World Cup of Hockey's 6 and 7) and the lines
+    of a season still under way are counted and left out. A page without seasonTotals has none."""
+    data = json.loads(body)
+    page = PageLines(data["playerId"], [])
+    for line in data.get("seasonTotals") or []:
+        if line["gameTypeId"] not in SEASON_LINE_GAME_TYPES:
+            page.other_game_types += 1
+        elif season_lines_public(line["season"]) > fetched_utc:
+            page.partial += 1
+        else:
+            page.rows.append(
+                {
+                    "player_id": page.player_id,
+                    "season": line["season"],
+                    "league_abbrev": line["leagueAbbrev"],
+                    "game_type": line["gameTypeId"],
+                    "games_played": line.get("gamesPlayed"),
+                    "goals": line.get("goals"),
+                    "assists": line.get("assists"),
+                    "raw_key": raw_key,
+                }
+            )
+    return page
+
+
+def player_league_seasons(lines: pl.DataFrame, players: pl.DataFrame) -> pl.DataFrame:
+    """Sum each player's per-team lines (LINE_SCHEMA) into one row per season, league
+    abbreviation and game type, with teams counting the lines. A count is null when any line
+    summed lacks it, since a partial sum would read as a whole season. The age comes from
+    players.birth_date."""
+    summed = [
+        pl.when(pl.col(count).is_null().any())
+        .then(None)
+        .otherwise(pl.col(count).sum())
+        .alias(count)
+        for count in COUNTS
+    ]
+    frame = (
+        lines.group_by(list(PLAYER_LEAGUE_SEASONS_KEY))
+        .agg(pl.len().alias("teams"), *summed, pl.col("raw_key").first())
+        .join(players.select("player_id", "birth_date"), on="player_id", how="left")
+        .with_columns(
+            league=league_name(pl.col("league_abbrev")),
+            age_at_season=age_at_season(pl.col("season"), pl.col("birth_date")),
+            observed_utc=season_lines_public_utc(pl.col("season")),
+        )
+    )
+    schema = dtypes(PlayerLeagueSeasons)
+    frame = frame.select(list(schema)).cast(schema)  # type: ignore[arg-type]
+    return PlayerLeagueSeasons.validate(frame.sort(PLAYER_LEAGUE_SEASONS_KEY))
+
+
+@dataclass
+class Report:
+    """What one rebuild read and wrote, in counts."""
+
+    players: int = 0  # in the players table
+    pages: int = 0  # landing pages read
+    without_page: list[int] = field(default_factory=list)  # players with no cached page
+    lines: int = 0  # per-team lines kept
+    other_game_types: int = 0  # lines of game types other than 2 and 3
+    partial: int = 0  # lines of a season not over when the page was fetched
+    rows: int = 0  # rows of the table
+
+
+def build(store: RawStore, players: pl.DataFrame) -> tuple[pl.DataFrame, Report]:
+    """The whole table, from the newest cached landing page of every player in players, read
+    with its fetch time as the ingest reads it. A player without a cached page is counted in the
+    report, not an error: his lines stay out until his page is fetched. A page that belongs to
+    another player is an error."""
+    report = Report(players=players.height)
+    rows: list[dict[str, Any]] = []
+    for player_id in sorted(players["player_id"].to_list()):
+        raw_key = store.latest(f"{LANDING_PREFIX}/{player_id}")
+        if raw_key is None:
+            report.without_page.append(player_id)
+            continue
+        fetched_utc = parse_utc(store.meta(raw_key)["fetched_utc"])
+        page = landing_lines(store.get(raw_key), fetched_utc, raw_key)
+        if page.player_id != player_id:
+            raise ValueError(f"{raw_key} is the landing page of player {page.player_id}")
+        report.pages += 1
+        report.other_game_types += page.other_game_types
+        report.partial += page.partial
+        rows += page.rows
+    report.lines = len(rows)
+    frame = player_league_seasons(pl.DataFrame(rows, schema=LINE_SCHEMA), players)
+    report.rows = frame.height
+    return frame, report

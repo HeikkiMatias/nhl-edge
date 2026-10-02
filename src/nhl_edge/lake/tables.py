@@ -25,6 +25,7 @@ from nhl_edge.lake.r2 import ObjectStore, R2Config, list_etags, list_keys
 from nhl_edge.lake.schemas import (
     DAILYFACEOFF_GOALIES_KEY,
     ODDS_KEY,
+    PLAYER_LEAGUE_SEASONS_KEY,
     PREGAME_GOALIES_KEY,
     SBR_KEY,
     ActualLineups,
@@ -35,6 +36,7 @@ from nhl_edge.lake.schemas import (
     GoalieStarts,
     LakeOddsSnapshots,
     Penalties,
+    PlayerLeagueSeasons,
     Players,
     PregameGoalies,
     SbrOdds,
@@ -92,6 +94,7 @@ TABLES: dict[str, Table] = {
     "sbr_odds": Table(SbrOdds, SBR_KEY, ("season",)),
     "pregame_goalies": Table(PregameGoalies, PREGAME_GOALIES_KEY, BY_DATE),
     "dailyfaceoff_goalies": Table(DailyFaceoffGoalies, DAILYFACEOFF_GOALIES_KEY, BY_DATE),
+    "player_league_seasons": Table(PlayerLeagueSeasons, PLAYER_LEAGUE_SEASONS_KEY, ("season",)),
 }
 # Partition columns replace_dates can replace a date at a time.
 DATE_PARTITIONS = ("game_date", "snapshot_date")
@@ -177,6 +180,15 @@ class Lake:
         for key in self._file_keys(table) - set(written):
             if key.split("/")[-2] in days:
                 self._delete(key)
+        return written
+
+    def replace(self, table: str, frame: pl.DataFrame) -> list[str]:
+        """Make the frame the whole content of a table rebuilt in one go: write its partitions,
+        then delete every other file of the table, locally and in R2, so a partition the rebuild
+        no longer has leaves nothing stale. Returns the keys written."""
+        written = self.write(table, frame) if frame.height else []
+        for key in self._file_keys(table) - set(written):
+            self._delete(key)
         return written
 
     def read(self, table: str, seasons: Collection[int] | None = None) -> pl.DataFrame:

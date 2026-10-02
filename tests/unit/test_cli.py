@@ -32,6 +32,7 @@ COMMANDS = [
     "audit",
     "status",
     "toi-reports",
+    "player-seasons",
 ]
 STUBS = [
     ["rate"],
@@ -239,6 +240,112 @@ def test_toi_reports_refuses_a_game_the_owner_did_not_allow(
     assert result.exit_code == 1
     assert "outside the owner's decision" in plain(result.output)
     assert not (tmp_path / "data" / "raw").exists()
+
+
+def test_player_seasons_rebuilds_the_table_from_the_cached_pages(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    import polars as pl
+    from player_season_fixtures import GOALIE, NO_PAGE, SKATER, players, store_pages, table
+
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    no_requests(monkeypatch)
+    Lake().write("players", players(SKATER, GOALIE, NO_PAGE))
+    # A season an earlier build wrote and this one no longer has.
+    stale = (
+        table()
+        .head(1)
+        .with_columns(
+            season=pl.lit(19801981, pl.Int32), observed_utc=pl.lit(datetime(1981, 7, 1, tzinfo=UTC))
+        )
+    )
+    Lake().write("player_league_seasons", stale)
+    store_pages(RawStore(Path("data") / "raw"), SKATER, GOALIE)
+    result = runner.invoke(app, ["player-seasons"])
+    assert result.exit_code == 0, result.output
+    assert (
+        "3 players, 2 landing pages read, 1 without a page; 50 team lines kept, 1 of other game "
+        "types and 0 of seasons under way at the fetch left out; 47 rows written"
+    ) in plain(result.output)
+    assert f"no landing page for 1 players: {NO_PAGE}" in plain(result.output)
+    assert Lake().read("player_league_seasons").equals(table())
+    stale_file = "data/lake/player_league_seasons/season=19801981/part-0.parquet"
+    assert not (tmp_path / stale_file).exists()
+
+
+def test_player_seasons_needs_players_and_their_pages(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from player_season_fixtures import SKATER, players, table
+
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    no_requests(monkeypatch)
+    empty = runner.invoke(app, ["player-seasons"])
+    assert empty.exit_code == 1
+    assert "no players in the lake" in empty.output
+    Lake().write("players", players(SKATER))
+    Lake().write("player_league_seasons", table())
+    # Without the raw cache a rebuild would empty the table, so it is left as it was.
+    bare = runner.invoke(app, ["player-seasons"])
+    assert bare.exit_code == 1
+    assert "no landing pages in the raw cache" in plain(bare.output)
+    assert Lake().read("player_league_seasons").equals(table())
+
+
+def test_player_seasons_restores_the_pages_from_r2_and_mirrors_the_table(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fakes import MemoryBucket
+    from player_season_fixtures import GOALIE, SKATER, players, store_pages, table
+
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    # The pages and players another machine stored, which this one lacks.
+    store_pages(RawStore(tmp_path / "runner" / "raw", "test", bucket), SKATER, GOALIE)
+    Lake(tmp_path / "runner" / "lake", "test", bucket).write("players", players(SKATER, GOALIE))
+    monkeypatch.chdir(tmp_path)
+    no_requests(monkeypatch)
+    result = runner.invoke(app, ["player-seasons", "--r2"])
+    assert result.exit_code == 0, result.output
+    assert "restored 2 raw landing pages from R2" in result.output
+    assert "2 players, 2 landing pages read, 0 without a page" in plain(result.output)
+    assert Lake().read("player_league_seasons").equals(table())
+    assert "lake/player_league_seasons/season=20002001/part-0.parquet" in bucket.objects
+
+
+def test_status_sends_player_seasons_drift_to_its_rebuild(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fakes import MemoryBucket
+    from player_season_fixtures import table
+
+    from nhl_edge.lake.tables import Lake
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    Lake(tmp_path / "runner", "test", bucket).write("player_league_seasons", table())
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["status"])
+    against = result.output.split("Against R2:")[1]
+    assert "player_league_seasons is behind R2: nhl player-seasons --r2 restores" in against
+    assert "nhl ingest" not in against
 
 
 def test_audit_reference_needs_games_in_the_lake(

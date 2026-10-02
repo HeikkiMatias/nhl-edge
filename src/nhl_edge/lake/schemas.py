@@ -418,6 +418,76 @@ class Players(pa.DataFrameModel):
         )
 
 
+PLAYER_LEAGUE_SEASONS_KEY = ("player_id", "season", "league_abbrev", "game_type")
+# The game types a season line is kept for: regular season (2) and playoffs (3).
+SEASON_LINE_GAME_TYPES = (2, 3)
+# A season's lines in every league count as public on this day (month, day), at 00:00 UTC, after
+# the season: every league's season and the NHL playoffs are over by then (#98).
+SEASON_LINES_PUBLIC = (7, 1)
+
+
+def season_lines_public_utc(season: pl.Expr) -> pl.Expr:
+    """When the lines of a season given as 20152016 count as public: July 1 of its second year."""
+    month, day = SEASON_LINES_PUBLIC
+    return pl.datetime(season % 10_000, month, day, time_zone="UTC")
+
+
+class PlayerLeagueSeasons(pa.DataFrameModel):
+    """A player's season in one league and game type (#98), from the seasonTotals array of his
+    landing page, the NHL's career stats in every league: the input of the NHLe offensive priors
+    (#102).
+
+    A player with several teams in a league-season has one line per team; they are summed, and
+    teams counts them. league_abbrev is the page's leagueAbbrev as it is and part of the key.
+    league is the same name trimmed and in upper case, with the known variants of one league
+    mapped to one name (Sweden to SHL, Swiss and NLA to NL; LEAGUE_VARIANTS in
+    ingest/player_seasons.py), so one league can sit under two keys in a player's season.
+    game_type is 2 (regular season) or 3 (playoffs). games_played, goals and assists are null
+    when a line summed lacks them, as most goalie lines lack goals and assists. age_at_season is
+    the player's age in whole years on September 15 of the season's first year, the NHL draft
+    cutoff, from players.birth_date.
+
+    observed_utc is July 1 (00:00 UTC) after the season. The pages were fetched in 2026, so their
+    fetch time would hide all history from the backtest. A line whose season had not reached its
+    July 1 when the page was fetched is a partial season and is not kept. A page fetched long
+    after a season may carry later corrections, as ADR 0004 accepts for the per-game feeds.
+    """
+
+    player_id: pl.Int64
+    season: pl.Int32
+    league_abbrev: pl.String = pa.Field(str_length={"min_value": 1})
+    league: pl.String = pa.Field(str_length={"min_value": 1})
+    game_type: pl.Int8 = pa.Field(isin=SEASON_LINE_GAME_TYPES)
+    teams: pl.Int16 = pa.Field(ge=1)
+    games_played: pl.Int16 = pa.Field(ge=0, nullable=True)
+    goals: pl.Int16 = pa.Field(ge=0, nullable=True)
+    assists: pl.Int16 = pa.Field(ge=0, nullable=True)
+    age_at_season: pl.Int16 = pa.Field(ge=0, nullable=True)
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(PLAYER_LEAGUE_SEASONS_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def season_spans_two_years(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        season = pl.col("season")
+        return data.lazyframe.select(season % 10_000 == season // 10_000 + 1)
+
+    @pa.dataframe_check
+    def league_trimmed_upper_case(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        league = pl.col("league")
+        return data.lazyframe.select(league == league.str.strip_chars().str.to_uppercase())
+
+    @pa.dataframe_check
+    def observed_july_1_after_the_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("observed_utc") == season_lines_public_utc(pl.col("season"))
+        )
+
+
 # Regular-season periods: three of 20 minutes, then one 5-minute overtime. The shootout (period 5)
 # is not play and has no rows in the per-game tables.
 PERIOD_S = 1200

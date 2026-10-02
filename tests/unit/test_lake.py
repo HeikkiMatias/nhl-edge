@@ -77,6 +77,23 @@ def test_replacing_dates_leaves_other_dates_alone(tmp_path: Path) -> None:
         lake.replace_dates("players", players(1), {date(2010, 10, 8)})
 
 
+def test_replacing_a_table_drops_every_file_the_frame_no_longer_has(tmp_path: Path) -> None:
+    bucket = MemoryBucket()
+    laptop = Lake(tmp_path / "laptop", "b", bucket)
+    laptop.write("games", GAMES)
+    # A rebuild on a fresh machine no longer has 2010-10-08: it goes here and in R2.
+    runner = Lake(tmp_path / "runner", "b", bucket)
+    kept = GAMES.filter(pl.col("game_date") == date(2010, 10, 7))
+    assert runner.replace("games", kept) == [OCT_7]
+    assert sorted(bucket.objects) == [f"lake/{OCT_7}"]
+    laptop.replace("games", kept)
+    assert not (tmp_path / "laptop" / OCT_8).exists()
+    # An empty rebuild empties the table.
+    assert laptop.replace("games", GAMES.head(0)) == []
+    assert laptop.read("games").is_empty()
+    assert bucket.objects == {}
+
+
 def test_write_validates(tmp_path: Path) -> None:
     with pytest.raises(pandera.errors.SchemaError):
         Lake(tmp_path).write("games", GAMES.with_columns(pl.col("home_score").alias("away_score")))

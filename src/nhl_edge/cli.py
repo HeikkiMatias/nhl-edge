@@ -223,6 +223,62 @@ def toi_reports(
         raise typer.Exit(code=1)
 
 
+@app.command("player-seasons")
+def player_seasons(
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="Restore the landing pages and players from R2 first, and mirror the table.",
+        ),
+    ] = False,
+) -> None:
+    """Rebuild the lake's player_league_seasons (#98) from the player landing pages in the raw
+    cache: each player's season lines in every league, for the NHLe priors. Never makes a
+    request. A player in players without a cached page is counted and left out."""
+    from nhl_edge.ingest.player_seasons import LANDING_PREFIX, build
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    load_env()
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    if r2:
+        restored = store.restore_from_r2(f"{LANDING_PREFIX}/").copied
+        typer.echo(f"restored {restored} raw landing pages from R2")
+    lake = Lake.from_env(mirror=r2)
+    if r2:
+        lake.pull("players")
+    players = lake.read("players")
+    if players.is_empty():
+        typer.echo("no players in the lake: run nhl ingest", err=True)
+        raise typer.Exit(code=1)
+    try:
+        frame, report = build(store, players)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    if not report.pages:
+        # Without a single page the rebuild would empty the table: the cache is not here.
+        typer.echo(
+            "no landing pages in the raw cache: run nhl lake restore-raw or pass --r2", err=True
+        )
+        raise typer.Exit(code=1)
+    lake.replace("player_league_seasons", frame)
+    typer.echo(
+        f"player_league_seasons: {report.players:,} players, {report.pages:,} landing pages read, "
+        f"{len(report.without_page):,} without a page; {report.lines:,} team lines kept, "
+        f"{report.other_game_types:,} of other game types and {report.partial:,} of seasons "
+        f"under way at the fetch left out; {report.rows:,} rows written"
+    )
+    if report.without_page:
+        typer.echo(
+            f"warning: no landing page for {len(report.without_page)} players: "
+            f"{', '.join(map(str, report.without_page))}",
+            err=True,
+        )
+
+
 @app.command()
 def rate() -> None:
     """Refresh team, goalie and player ratings."""
@@ -1433,6 +1489,7 @@ def _status_against_r2(local: "list[TableState]") -> None:
         "pregame_goalies": "nhl goalies replay --r2",
         "dailyfaceoff_goalies": "nhl goalies replay --r2",
         "sbr_odds": "nhl odds sbr --replay --r2",
+        "player_league_seasons": "nhl player-seasons --r2",
     }
     # Tables fitted from the others, rebuilt by their own command in this order (#110).
     FITTED = {
