@@ -425,11 +425,39 @@ SEASON_LINE_GAME_TYPES = (2, 3)
 # nearly every league's season and the NHL playoffs are over by then (#98). The exceptions below
 # come later.
 SEASON_LINES_PUBLIC = (7, 1)
-# Leagues whose season, as the NHL labels it, can end after July 1: the Australian league, played
-# from April to September in a calendar year the label does not give; the World Cup of Hockey,
-# played in August and September; and the Brick Invitational, a tournament for 10-year-olds played
-# in early July and labelled with the season before. Their lines count as public on October 1.
-LATE_LEAGUES = ("AIHL", "AUSTRALIA", "WCUP", "BRICK INVITATIONAL")
+# Leagues whose season, as the NHL labels it, can end after July 1. Their lines count as public on
+# October 1 instead, before any NHL season but 2026-27 starts, and none of them matters to an NHL
+# player's prior then.
+LATE_LEAGUES = (
+    # The Australian league, played from April to September in a calendar year the label does not
+    # give.
+    "AIHL",
+    "AUSTRALIA",
+    # The World Cup of Hockey, played in August and September (2004's labelled 2003-04).
+    "WCUP",
+    # The Brick Invitational, a tournament for 10-year-olds played in early July and labelled with
+    # the season before.
+    "BRICK INVITATIONAL",
+    # The Olympic qualification: the August 2025 final round is labelled 2024-25, while the August
+    # 2021 one is labelled 2021-22.
+    "OGQ",
+    # JPL-Pro, a summer pro-am league whose label is not known.
+    "JPL-PRO",
+    # Small events whose dates or labels are not known, as a precaution: exhibitions, camps, an
+    # early Olympic qualification and youth tournaments whose players' ages fit either a spring
+    # event or a summer one labelled with the season before.
+    "EXHIB.",
+    "IIHF DEV. CAMP",
+    "OLY-Q",
+    "OGC-16",
+    "QGC-16",
+    "WCCC-16",
+    "WSI U12",
+    "WSI U13",
+    "WSI U14",
+    "WSI U15",
+    "WSI U16",
+)
 LATE_LINES_PUBLIC = (10, 1)
 # Seasons whose NHL playoffs ended after July 1: the 2020 bubble (Cup Final on September 28) and
 # 2020-21 (July 7). None of their lines counts as public before the day given.
@@ -438,12 +466,8 @@ LATE_SEASONS = {
     20202021: datetime(2021, 7, 9, tzinfo=UTC),
 }
 # One league's season that ended after July 1, by (season, league): the 2022 World Juniors,
-# stopped in December 2021 and replayed in August 2022 under the 2021-22 label, and the Division I
-# A line of that season, whose dates are not known, with it.
-LATE_LEAGUE_SEASONS = {
-    (20212022, "WJC-20"): datetime(2022, 10, 1, tzinfo=UTC),
-    (20212022, "WJC-20 D1A"): datetime(2022, 10, 1, tzinfo=UTC),
-}
+# stopped in December 2021 and replayed in August 2022 under the 2021-22 label.
+LATE_LEAGUE_SEASONS = {(20212022, "WJC-20"): datetime(2022, 10, 1, tzinfo=UTC)}
 
 
 def season_lines_public_utc(season: pl.Expr, league: pl.Expr) -> pl.Expr:
@@ -484,7 +508,8 @@ class PlayerLeagueSeasons(pa.DataFrameModel):
     cutoff, from players.birth_date.
 
     observed_utc is July 1 (00:00 UTC) after the season; October 1 for the leagues that can end
-    later (LATE_LEAGUES), such as the Australian league and the World Cup of Hockey; and never
+    later or whose dates are not known (LATE_LEAGUES), such as the Australian league, the World
+    Cup of Hockey and the Olympic qualification; and never
     before the end of the 2020 and 2021 NHL playoffs, which ran past July 1 (LATE_SEASONS), or of
     the 2022 World Juniors, replayed in August 2022 (LATE_LEAGUE_SEASONS). The pages were fetched in
     2026, so their fetch time would hide all history from the backtest. A line whose season was not

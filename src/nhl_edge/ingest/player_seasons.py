@@ -9,7 +9,8 @@ page fetched again.
 Point in time: a season's lines count as public on July 1 (00:00 UTC) after it, when nearly every
 league's season and the NHL playoffs are over (lake/schemas.py, SEASON_LINES_PUBLIC). The
 exceptions come later: the Australian league (April to September), the World Cup of Hockey (August
-and September) and the Brick Invitational (July) on October 1 (LATE_LEAGUES); every line of
+and September), the Brick Invitational (July), the Olympic qualification and a few events whose
+dates are not known on October 1 (LATE_LEAGUES); every line of
 2019-20 and 2020-21, whose NHL playoffs ran past July 1, from their end (LATE_SEASONS); and the
 2021-22 World Juniors, replayed in August 2022, from October 1, 2022 (LATE_LEAGUE_SEASONS). The
 pages' fetch time

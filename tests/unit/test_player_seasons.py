@@ -158,7 +158,7 @@ def test_a_season_counts_as_public_on_july_1_after_it() -> None:
 def test_the_late_leagues_count_as_public_on_october_1() -> None:
     # The Australian league plays from April to September, whichever calendar year the NHL's label
     # gives it, the World Cup of Hockey in August and September, and the Brick Invitational in July.
-    for abbrev in ("AIHL", "Australia", " aihl ", "WCup", "W-Cup", "Brick Invitational"):
+    for abbrev in ("AIHL", "Australia", " aihl ", "WCup", "W-Cup", "Brick Invitational", "OGQ"):
         assert season_lines_public(20172018, abbrev) == datetime(2018, 10, 1, tzinfo=UTC)
     assert season_lines_public(20172018, "Austria") == datetime(2018, 7, 1, tzinfo=UTC)
 
@@ -173,9 +173,11 @@ def test_the_late_nhl_seasons_count_as_public_from_their_end() -> None:
 
 
 def test_the_2022_world_juniors_count_as_public_after_their_august_replay() -> None:
-    for abbrev in ("WJC-20", "WJC-20 D1A", " wjc-20 "):
+    for abbrev in ("WJC-20", " wjc-20 "):
         assert season_lines_public(20212022, abbrev) == datetime(2022, 10, 1, tzinfo=UTC)
-    assert season_lines_public(20212022, "WJC-18") == datetime(2022, 7, 1, tzinfo=UTC)
+    # The Division I A games were played in December 2021.
+    for abbrev in ("WJC-20 D1A", "WJC-18"):
+        assert season_lines_public(20212022, abbrev) == datetime(2022, 7, 1, tzinfo=UTC)
     assert season_lines_public(20222023, "WJC-20") == datetime(2023, 7, 1, tzinfo=UTC)
 
 
