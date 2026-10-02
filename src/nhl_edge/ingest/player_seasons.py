@@ -15,7 +15,7 @@ playoffs ran past July 1, from their end (LATE_SEASONS); and the 2021-22 World J
 in August 2022, from October 1, 2022 (LATE_LEAGUE_SEASONS). The pages' fetch time would hide all
 history from the backtest, since the backfill fetched them in 2026. A line whose season had not
 reached that day when its page was fetched is a partial season and is dropped. A page fetched long
-after a season may carry later corrections, as ADR 0004 accepts for the per-game feeds.
+after a season may carry later corrections to its goals and assists, which ADR 0016 accepts.
 
 Every player here reached the NHL, so that he has rows is hindsight before his first NHL game.
 His rows count as public only once his first boxscore in the lake has (first_boxscore_utc, from

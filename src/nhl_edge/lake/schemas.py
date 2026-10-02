@@ -514,7 +514,7 @@ class PlayerLeagueSeasons(pa.DataFrameModel):
     in August 2022 (LATE_LEAGUE_SEASONS). The pages were fetched in 2026, so their fetch time would
     hide all history from the backtest. A line whose season was not yet public when the page was
     fetched is a partial season and is not kept. A page fetched long after a season may carry
-    later corrections, as ADR 0004 accepts for the per-game feeds.
+    later corrections to its goals and assists, which ADR 0016 accepts.
 
     The table holds only players who reached the NHL, so that a player has rows is hindsight
     before his first NHL game. first_boxscore_utc is when his first boxscore in the lake became
