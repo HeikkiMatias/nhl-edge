@@ -31,6 +31,7 @@ from typing import Any
 import polars as pl
 
 from nhl_edge.backtest.metrics import Estimate, bootstrap
+from nhl_edge.features.team_strength import as_of
 from nhl_edge.lake.schemas import PP_UNIT
 from nhl_edge.lineup.minutes import STATES, SeasonConstants
 from nhl_edge.lineup.projection import FEATURES, SKATER_ROLES, AvailabilityModel, team_skater_games
@@ -124,11 +125,14 @@ def _power_play_tops(minutes: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def ice_time_scores(projected: pl.DataFrame, minutes: pl.DataFrame) -> pl.DataFrame:
-    """One row per team-game of the projected seasons with stints: its 5v5 minutes MAE and the
-    reference's (null without a dressed candidate with an earlier game), and its power-play unit
-    accuracy and the reference's (null without five skaters on the power play, or for the
-    reference without such an earlier game)."""
+def ice_time_scores(
+    projected: pl.DataFrame, minutes: pl.DataFrame, games: pl.DataFrame
+) -> pl.DataFrame:
+    """One row per team-game of the projected seasons with stints, a team without candidates
+    (a new team's first game) among them: its 5v5 minutes MAE and the reference's (null without a
+    dressed candidate with an earlier game), and its power-play unit accuracy and the reference's
+    (null without five skaters on the power play, without a projected unit, or for the reference
+    without such an earlier game). games gives each team-game's as-of time."""
     keys = ["game_id", "team", "player_id"]
     actual = minutes.select(*keys, actual_5v5="5v5")
     mae = (
@@ -141,10 +145,23 @@ def ice_time_scores(projected: pl.DataFrame, minutes: pl.DataFrame) -> pl.DataFr
         )
     )
     tops = _power_play_tops(minutes)
-    targets = projected.select(
-        "game_id", "season", "game_date", "team", "line", "as_of_utc"
-    ).unique(subset=["game_id", "team"])
-    played = minutes.select("game_id", "team").unique()
+    seasons = projected["season"].unique().implode()
+    times = pl.concat(
+        [
+            games.select(
+                "game_id",
+                team=pl.col(side),
+                as_of_utc=as_of(pl.col("game_date"), pl.col("start_utc")),
+            )
+            for side in ("home", "away")
+        ]
+    )
+    targets = (
+        minutes.filter(pl.col("season").is_in(seasons))
+        .select("game_id", "season", "game_date", "team", "line")
+        .unique(subset=["game_id", "team"])
+        .join(times, on=["game_id", "team"], how="inner")
+    )
     named = (
         projected.filter(pl.col("pp_unit"))
         .group_by("game_id", "team")
@@ -165,8 +182,7 @@ def ice_time_scores(projected: pl.DataFrame, minutes: pl.DataFrame) -> pl.DataFr
     )
     share = pl.col("top").list.set_intersection
     return (
-        targets.join(played, on=["game_id", "team"], how="semi")
-        .join(mae, on=["game_id", "team"], how="left")
+        targets.join(mae, on=["game_id", "team"], how="left")
         .join(tops.select("game_id", "team", "top"), on=["game_id", "team"], how="left")
         .join(named, on=["game_id", "team"], how="left")
         .join(earlier, on=["game_id", "team"], how="left")

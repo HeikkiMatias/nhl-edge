@@ -133,7 +133,7 @@ def test_the_report_hides_a_held_out_season_s_figures_and_those_taken_from_it() 
     _, scored, _ = pr.score(LINEUPS, GAMES, [20112012, SEASON], VERSION, {}, ROWS)
     constants = {s: mins.season_constants(MINUTES, ROWS, s, GAMES) for s in (20112012, SEASON)}
     rows, _ = mins.project(scored, MINUTES, constants, GAMES, {})
-    ice = report.ice_time_scores(rows, MINUTES)
+    ice = report.ice_time_scores(rows, MINUTES, GAMES)
     scores = report.team_game_scores(scored, LINEUPS)
     # Only 2012-13 is shown: 2011-12's ice time and 2012-13's figures from it stay hidden.
     text = report.markdown_report(

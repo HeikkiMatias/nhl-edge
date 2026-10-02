@@ -41,7 +41,7 @@ The owner chose among these on 2026-10-02:
 **Expected minutes.** e = p × m × k, with p his probability of dressing (ADR 0017). For each team-game, role r and state s:
 - **The total** L is the league's average skater-minutes of role r in state s per team-game, the season before.
 - **Replacement skaters:** the expected count of role r is max(0, slots − Σ p over the role's candidates), with 12 slots for forwards and 6 for defensemen. Each gets the average minutes of a newcomer of role r in state s, the season before: one average for a team's first game of a season, one for its other games. Their minutes are R.
-- **The scale:** k = (L − R) / Σ p·m over the role's candidates, or 0 when either part is 0 or less. So the candidates and the replacements add up to L.
+- **The scale:** k = (L − R) / Σ p·m over the role's candidates, or 0 when either part is 0 or less. Then the replacements take all of L, as in a new team's first game, which has no candidates. So the candidates and the replacements always add up to L.
 
 **Power-play unit 1.** The five candidates with the most expected power-play minutes; a tie goes to the lower player id.
 

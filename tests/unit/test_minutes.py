@@ -239,7 +239,7 @@ def test_the_schemas_refuse_goalie_minutes_and_a_unit_of_six() -> None:
 
 
 def test_ice_time_scores_compare_with_last_game_s_minutes() -> None:
-    scores = report.ice_time_scores(PROJECTED, MINUTES)
+    scores = report.ice_time_scores(PROJECTED, MINUTES, LEAGUE["games"])
     assert set(scores["season"].unique()) == set(SEASONS)
     row = scores.drop_nulls("mae").row(0, named=True)
     keys = ["game_id", "team", "player_id"]
@@ -270,7 +270,7 @@ def test_the_report_has_the_ice_time_sections() -> None:
         pr.score(LEAGUE["lineups"], LEAGUE["games"], SEASONS, VERSION, {}, ROWS)[1],
         LEAGUE["lineups"],
     )
-    ice = report.ice_time_scores(PROJECTED, MINUTES)
+    ice = report.ice_time_scores(PROJECTED, MINUTES, LEAGUE["games"])
     c = constants()
     text = report.markdown_report(scores, [], SEASONS, VERSION, ice, [c[s] for s in SEASONS])
     assert "## Ice time" in text and "## Ice-time figures from the season before" in text
@@ -298,9 +298,20 @@ def test_a_new_team_s_first_game_is_all_replacements() -> None:
         ("VGK", "D", 6.0),
         ("VGK", "F", 12.0),
     ]
+    # With no candidates to scale, the replacements take the whole of the role's total.
     for row in rows.iter_rows(named=True):
-        each = c[20122013].newcomer[row["role"], True, "5v5"]
-        assert row["exp_5v5"] == pytest.approx(row["count"] * each)
+        for state, column in mins.EXPECTED.items():
+            assert row[column] == pytest.approx(c[20122013].total[row["role"], state])
+
+
+def test_a_played_team_game_without_candidates_is_scored_as_empty() -> None:
+    first = PROJECTED.select("game_id", "team").row(0)
+    without = PROJECTED.filter((pl.col("game_id") != first[0]) | (pl.col("team") != first[1]))
+    scores = report.ice_time_scores(without, MINUTES, LEAGUE["games"])
+    row = scores.filter(pl.col("game_id") == first[0], pl.col("team") == first[1])
+    assert row.height == 1
+    assert row["mae"].item() is None and row["pp_unit"].item() is None
+    assert scores.height == report.ice_time_scores(PROJECTED, MINUTES, LEAGUE["games"]).height
 
 
 def test_input_problems_name_a_complete_chart_without_stints() -> None:

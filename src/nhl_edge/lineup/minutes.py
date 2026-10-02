@@ -293,6 +293,16 @@ def project(
                 for state in STATES
             }
         )
+        # When the candidates take none of the total (a team-game without candidates, or
+        # replacements that alone reach it), the replacements take all of it.
+        .with_columns(
+            **{
+                EXPECTED[state]: pl.when(pl.col(f"scale_{state}") == 0)
+                .then(pl.col(f"total_{state}"))
+                .otherwise(pl.col(EXPECTED[state]))
+                for state in STATES
+            }
+        )
     )
     scales = replacements.select("game_id", "team", "role", *(f"scale_{s}" for s in STATES))
     rows = (

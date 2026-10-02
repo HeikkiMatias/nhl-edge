@@ -1046,7 +1046,7 @@ def lineups(
     # The development seasons stay unseen until gate 2 (phase 3 plan).
     shown = [season for season in OPEN_SEASONS if season not in DEVELOPMENT_SEASONS]
     scores = report.team_game_scores(scored, boxscores)
-    ice_time = report.ice_time_scores(projected, played)
+    ice_time = report.ice_time_scores(projected, played, games)
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{version}.md"
     path.write_text(
