@@ -507,17 +507,21 @@ class PlayerLeagueSeasons(pa.DataFrameModel):
     the player's age in whole years on September 15 of the season's first year, the NHL draft
     cutoff, from players.birth_date.
 
-    observed_utc is July 1 (00:00 UTC) after the season; October 1 for the leagues that can end
-    later or whose dates are not known (LATE_LEAGUES), such as the Australian league, the World
-    Cup of Hockey and the Olympic qualification; and never
-    before the end of the 2020 and 2021 NHL playoffs, which ran past July 1 (LATE_SEASONS), or of
-    the 2022 World Juniors, replayed in August 2022 (LATE_LEAGUE_SEASONS). The pages were fetched in
-    2026, so their fetch time would hide all history from the backtest. A line whose season was not
-    yet public when the page was fetched is a partial season and is not kept. A page fetched long
-    after a season may carry later corrections, as ADR 0004 accepts for the per-game feeds.
-    The table holds only players in players, who all reached the NHL from 2010-11 on, so that a
-    player has rows here is hindsight before his first NHL game: a prior fitted for a fold picks
-    its players as of the fold start.
+    A season's lines are public on July 1 (00:00 UTC) after it; October 1 for the leagues that
+    can end later or whose dates are not known (LATE_LEAGUES), such as the Australian league, the
+    World Cup of Hockey and the Olympic qualification; and never before the end of the 2020 and
+    2021 NHL playoffs, which ran past July 1 (LATE_SEASONS), or of the 2022 World Juniors, replayed
+    in August 2022 (LATE_LEAGUE_SEASONS). The pages were fetched in 2026, so their fetch time would
+    hide all history from the backtest. A line whose season was not yet public when the page was
+    fetched is a partial season and is not kept. A page fetched long after a season may carry
+    later corrections, as ADR 0004 accepts for the per-game feeds.
+
+    The table holds only players who reached the NHL, so that a player has rows is hindsight
+    before his first NHL game. first_boxscore_utc is when his first boxscore in the lake became
+    public (actual_lineups), and observed_utc is the later of it and his season's public date. So
+    known_at shows a player's lines only once he has played, and a player without a boxscore has
+    no rows. The lake starts in 2010-11, so a player who debuted earlier counts from his first
+    game in it.
     """
 
     player_id: pl.Int64
@@ -530,6 +534,7 @@ class PlayerLeagueSeasons(pa.DataFrameModel):
     goals: pl.Int16 = pa.Field(ge=0, nullable=True)
     assists: pl.Int16 = pa.Field(ge=0, nullable=True)
     age_at_season: pl.Int16 = pa.Field(ge=0, nullable=True)
+    first_boxscore_utc: UtcDatetime
     observed_utc: UtcDatetime
     raw_key: pl.String
 
@@ -549,9 +554,12 @@ class PlayerLeagueSeasons(pa.DataFrameModel):
         return data.lazyframe.select(league == league.str.strip_chars().str.to_uppercase())
 
     @pa.dataframe_check
-    def observed_when_the_season_is_over(cls, data: pa.PolarsData) -> pl.LazyFrame:
+    def observed_when_the_season_is_over_and_he_has_played(
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        public = season_lines_public_utc(pl.col("season"), pl.col("league"))
         return data.lazyframe.select(
-            pl.col("observed_utc") == season_lines_public_utc(pl.col("season"), pl.col("league"))
+            pl.col("observed_utc") == pl.max_horizontal(public, pl.col("first_boxscore_utc"))
         )
 
 

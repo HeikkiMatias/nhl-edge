@@ -3,17 +3,18 @@
 shows none of them before then. The late leagues (such as the Australian league, the World Cup of
 Hockey, the Brick Invitational and the Olympic qualification) wait until October 1, the 2019-20
 and 2020-21 seasons, whose NHL playoffs ran past July 1, until their end, and the 2021-22 World
-Juniors, replayed in August 2022, until October 1, 2022. The landing pages were fetched in 2026,
-and a line whose season was still under way at the fetch is a partial season that never enters the
-table. The column set is locked: a new column, such as a later stat or the page's fetch time, needs
-a look at when it became public first."""
+Juniors, replayed in August 2022, until October 1, 2022. Every player here reached the NHL, so a
+player's lines also wait until his first boxscore is public, and a player without one has none.
+The landing pages were fetched in 2026, and a line whose season was still under way at the fetch is
+a partial season that never enters the table. The column set is locked: a new column, such as a
+later stat or the page's fetch time, needs a look at when it became public first."""
 
 from datetime import UTC, datetime, timedelta
 
 import pandera.errors
 import polars as pl
 import pytest
-from player_season_fixtures import SKATER, table
+from player_season_fixtures import GOALIE, SKATER, debuts, first_boxscore_utc, table
 
 from nhl_edge.ingest.player_seasons import LINE_SCHEMA, player_league_seasons, season_lines_public
 from nhl_edge.lake.schemas import PlayerLeagueSeasons, dtypes
@@ -30,6 +31,7 @@ COLUMNS = [
     "goals",
     "assists",
     "age_at_season",
+    "first_boxscore_utc",
     "observed_utc",
     "raw_key",
 ]
@@ -37,13 +39,42 @@ COLUMNS = [
 
 def test_a_season_is_unknown_before_july_1_after_it_and_known_right_after() -> None:
     frame = table()
-    for season, abbrev in frame.select("season", "league_abbrev").unique().rows():
-        public = season_lines_public(season, abbrev)
-        line = (pl.col("season") == season) & (pl.col("league_abbrev") == abbrev)
+    keys = frame.select("player_id", "season", "league_abbrev").unique().rows()
+    for player_id, season, abbrev in keys:
+        # The later of the season's public date and the player's first boxscore.
+        public = max(season_lines_public(season, abbrev), first_boxscore_utc(player_id))
+        line = (
+            (pl.col("player_id") == player_id)
+            & (pl.col("season") == season)
+            & (pl.col("league_abbrev") == abbrev)
+        )
         assert known_at(frame.filter(line), public).is_empty()
-        assert known_at(frame, public).filter(pl.col("season") > season).is_empty()
+        later = (pl.col("player_id") == player_id) & (pl.col("season") > season)
+        assert known_at(frame, public).filter(later).is_empty()
         after = known_at(frame.filter(line), public + timedelta(seconds=1))
         assert after.height == frame.filter(line).height
+
+
+def test_a_player_s_lines_stay_hidden_until_his_first_boxscore_is_public() -> None:
+    # Having lines here tells that a player reaches the NHL. The goalie's first game is on
+    # 2012-02-04, so his junior and minor-league lines, public for years, wait for its boxscore.
+    goalie = table().filter(pl.col("player_id") == GOALIE)
+    debut = first_boxscore_utc(GOALIE)
+    assert debut == datetime(2012, 2, 5, 10, tzinfo=UTC)
+    before = goalie.filter(pl.col("season") < 20112012)
+    assert before.height > 0
+    assert known_at(before, debut).is_empty()
+    assert known_at(before, debut + timedelta(seconds=1)).height == before.height
+
+
+def test_a_player_without_a_boxscore_has_no_rows() -> None:
+    lines = pl.DataFrame(
+        [(SKATER, 20082009, "OHL", 2, 10, 1, 1, "k")], schema=LINE_SCHEMA, orient="row"
+    )
+    players = pl.DataFrame(
+        {"player_id": [SKATER], "birth_date": [None]}, schema_overrides={"birth_date": pl.Date}
+    )
+    assert player_league_seasons(lines, players, debuts(SKATER).clear()).is_empty()
 
 
 def test_the_nhl_playoffs_of_a_season_stay_hidden_until_july_1() -> None:
@@ -91,7 +122,7 @@ def one_line(season: int, abbrev: str, game_type: int = 2) -> pl.DataFrame:
     players = pl.DataFrame(
         {"player_id": [SKATER], "birth_date": [None]}, schema_overrides={"birth_date": pl.Date}
     )
-    return player_league_seasons(lines, players)
+    return player_league_seasons(lines, players, debuts(SKATER))
 
 
 def hidden_until(frame: pl.DataFrame, public: datetime) -> None:

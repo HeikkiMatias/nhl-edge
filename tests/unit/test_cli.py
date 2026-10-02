@@ -249,7 +249,15 @@ def test_player_seasons_rebuilds_the_table_from_the_cached_pages(
     from pathlib import Path
 
     import polars as pl
-    from player_season_fixtures import GOALIE, NO_PAGE, SKATER, players, store_pages, table
+    from player_season_fixtures import (
+        GOALIE,
+        NO_PAGE,
+        SKATER,
+        boxscores,
+        players,
+        store_pages,
+        table,
+    )
 
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.tables import Lake
@@ -257,21 +265,23 @@ def test_player_seasons_rebuilds_the_table_from_the_cached_pages(
     monkeypatch.chdir(tmp_path)
     no_requests(monkeypatch)
     Lake().write("players", players(SKATER, GOALIE, NO_PAGE))
-    # A season an earlier build wrote and this one no longer has.
+    Lake().write("actual_lineups", boxscores(SKATER, GOALIE, NO_PAGE))
+    # A season an earlier build wrote and this one no longer has: before the skater's first game,
+    # so it is observed at his first boxscore.
     stale = (
         table()
         .head(1)
-        .with_columns(
-            season=pl.lit(19801981, pl.Int32), observed_utc=pl.lit(datetime(1981, 7, 1, tzinfo=UTC))
-        )
+        .with_columns(season=pl.lit(19801981, pl.Int32), observed_utc="first_boxscore_utc")
     )
+    assert stale["observed_utc"].item() == datetime(1991, 10, 6, 10, tzinfo=UTC)
     Lake().write("player_league_seasons", stale)
     store_pages(RawStore(Path("data") / "raw"), SKATER, GOALIE)
     result = runner.invoke(app, ["player-seasons"])
     assert result.exit_code == 0, result.output
     assert (
-        "3 players, 2 landing pages read, 1 without a page; 50 team lines kept, 1 of other game "
-        "types and 0 of seasons under way at the fetch left out; 47 rows written"
+        "3 players, 2 landing pages read, 1 without a page and 0 without a boxscore yet; 50 team "
+        "lines kept, 1 of other game types, 0 of seasons under way at the fetch and 0 of players "
+        "without a boxscore left out; 47 rows written"
     ) in plain(result.output)
     assert f"no landing page for 1 players: {NO_PAGE}" in plain(result.output)
     assert Lake().read("player_league_seasons").equals(table())
@@ -282,7 +292,7 @@ def test_player_seasons_rebuilds_the_table_from_the_cached_pages(
 def test_player_seasons_needs_players_and_their_pages(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from player_season_fixtures import SKATER, players, table
+    from player_season_fixtures import SKATER, boxscores, players, table
 
     from nhl_edge.lake.tables import Lake
 
@@ -290,9 +300,14 @@ def test_player_seasons_needs_players_and_their_pages(
     no_requests(monkeypatch)
     empty = runner.invoke(app, ["player-seasons"])
     assert empty.exit_code == 1
-    assert "no players in the lake" in empty.output
+    assert "no players or no boxscores in the lake" in plain(empty.output)
     Lake().write("players", players(SKATER))
     Lake().write("player_league_seasons", table())
+    # Without boxscores every player would look unplayed, so it is left as it was.
+    unplayed = runner.invoke(app, ["player-seasons"])
+    assert unplayed.exit_code == 1
+    assert "no players or no boxscores in the lake" in plain(unplayed.output)
+    Lake().write("actual_lineups", boxscores(SKATER))
     # Without the raw cache a rebuild would empty the table, so it is left as it was.
     bare = runner.invoke(app, ["player-seasons"])
     assert bare.exit_code == 1
@@ -304,7 +319,7 @@ def test_player_seasons_restores_the_pages_from_r2_and_mirrors_the_table(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from fakes import MemoryBucket
-    from player_season_fixtures import GOALIE, SKATER, players, store_pages, table
+    from player_season_fixtures import GOALIE, SKATER, boxscores, players, store_pages, table
 
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.tables import Lake
@@ -316,13 +331,17 @@ def test_player_seasons_restores_the_pages_from_r2_and_mirrors_the_table(
     monkeypatch.setattr(R2Config, "client", lambda self: bucket)
     # The pages and players another machine stored, which this one lacks.
     store_pages(RawStore(tmp_path / "runner" / "raw", "test", bucket), SKATER, GOALIE)
-    Lake(tmp_path / "runner" / "lake", "test", bucket).write("players", players(SKATER, GOALIE))
+    runner_lake = Lake(tmp_path / "runner" / "lake", "test", bucket)
+    runner_lake.write("players", players(SKATER, GOALIE))
+    runner_lake.write("actual_lineups", boxscores(SKATER, GOALIE))
     monkeypatch.chdir(tmp_path)
     no_requests(monkeypatch)
     result = runner.invoke(app, ["player-seasons", "--r2"])
     assert result.exit_code == 0, result.output
     assert "restored 2 raw landing pages from R2" in result.output
-    assert "2 players, 2 landing pages read, 0 without a page" in plain(result.output)
+    assert "2 players, 2 landing pages read, 0 without a page and 0 without a boxscore" in plain(
+        result.output
+    )
     assert Lake().read("player_league_seasons").equals(table())
     assert "lake/player_league_seasons/season=20002001/part-0.parquet" in bucket.objects
 

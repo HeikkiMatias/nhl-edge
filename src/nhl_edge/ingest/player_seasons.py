@@ -10,14 +10,16 @@ Point in time: a season's lines count as public on July 1 (00:00 UTC) after it, 
 league's season and the NHL playoffs are over (lake/schemas.py, SEASON_LINES_PUBLIC). The
 exceptions come later: the Australian league (April to September), the World Cup of Hockey (August
 and September), the Brick Invitational (July), the Olympic qualification and a few events whose
-dates are not known on October 1 (LATE_LEAGUES); every line of
-2019-20 and 2020-21, whose NHL playoffs ran past July 1, from their end (LATE_SEASONS); and the
-2021-22 World Juniors, replayed in August 2022, from October 1, 2022 (LATE_LEAGUE_SEASONS). The
-pages' fetch time
-would hide all history from the backtest, since the backfill fetched them in 2026. A line whose
-season had not reached that day when its page was fetched is a partial season and is dropped. A
-page fetched long after a season may carry later corrections, as ADR 0004 accepts for the
-per-game feeds.
+dates are not known on October 1 (LATE_LEAGUES); every line of 2019-20 and 2020-21, whose NHL
+playoffs ran past July 1, from their end (LATE_SEASONS); and the 2021-22 World Juniors, replayed
+in August 2022, from October 1, 2022 (LATE_LEAGUE_SEASONS). The pages' fetch time would hide all
+history from the backtest, since the backfill fetched them in 2026. A line whose season had not
+reached that day when its page was fetched is a partial season and is dropped. A page fetched long
+after a season may carry later corrections, as ADR 0004 accepts for the per-game feeds.
+
+Every player here reached the NHL, so that he has rows is hindsight before his first NHL game.
+His rows count as public only once his first boxscore in the lake has (first_boxscore_utc, from
+actual_lineups), and a player without a boxscore has none until he plays.
 """
 
 import json
@@ -177,11 +179,21 @@ def landing_lines(body: bytes, fetched_utc: datetime, raw_key: str) -> PageLines
     return page
 
 
-def player_league_seasons(lines: pl.DataFrame, players: pl.DataFrame) -> pl.DataFrame:
+def first_boxscores(lineups: pl.DataFrame) -> pl.DataFrame:
+    """Each player's first_boxscore_utc: when his first boxscore in actual_lineups became
+    public."""
+    return lineups.group_by("player_id").agg(first_boxscore_utc=pl.col("observed_utc").min())
+
+
+def player_league_seasons(
+    lines: pl.DataFrame, players: pl.DataFrame, debuts: pl.DataFrame
+) -> pl.DataFrame:
     """Sum each player's per-team lines (LINE_SCHEMA) into one row per season, league
     abbreviation and game type, with teams counting the lines. A count is null when any line
     summed lacks it, since a partial sum would read as a whole season. The age comes from
-    players.birth_date."""
+    players.birth_date. debuts (first_boxscores) gives when each player's first boxscore became
+    public: his rows are observed no earlier, and a player without one has none, since his lines
+    would tell that he will reach the NHL."""
     summed = [
         pl.when(pl.col(count).is_null().any())
         .then(None)
@@ -193,10 +205,14 @@ def player_league_seasons(lines: pl.DataFrame, players: pl.DataFrame) -> pl.Data
         lines.group_by(list(PLAYER_LEAGUE_SEASONS_KEY))
         .agg(pl.len().alias("teams"), *summed, pl.col("raw_key").first())
         .join(players.select("player_id", "birth_date"), on="player_id", how="left")
+        .join(debuts.select("player_id", "first_boxscore_utc"), on="player_id", how="inner")
         .with_columns(league=league_name(pl.col("league_abbrev")))
         .with_columns(
             age_at_season=age_at_season(pl.col("season"), pl.col("birth_date")),
-            observed_utc=season_lines_public_utc(pl.col("season"), pl.col("league")),
+            observed_utc=pl.max_horizontal(
+                season_lines_public_utc(pl.col("season"), pl.col("league")),
+                pl.col("first_boxscore_utc"),
+            ),
         )
     )
     schema = dtypes(PlayerLeagueSeasons)
@@ -211,18 +227,26 @@ class Report:
     players: int = 0  # in the players table
     pages: int = 0  # landing pages read
     without_page: list[int] = field(default_factory=list)  # players with no cached page
+    # Players with a page but no boxscore yet, and their lines left out.
+    without_boxscore: list[int] = field(default_factory=list)
+    unplayed_lines: int = 0
     lines: int = 0  # per-team lines kept
     other_game_types: int = 0  # lines of game types other than 2 and 3
     partial: int = 0  # lines of a season not over when the page was fetched
     rows: int = 0  # rows of the table
 
 
-def build(store: RawStore, players: pl.DataFrame) -> tuple[pl.DataFrame, Report]:
+def build(
+    store: RawStore, players: pl.DataFrame, lineups: pl.DataFrame
+) -> tuple[pl.DataFrame, Report]:
     """The whole table, from the newest cached landing page of every player in players, read
-    with its fetch time as the ingest reads it. A player without a cached page is counted in the
-    report, not an error: his lines stay out until his page is fetched. A page that belongs to
-    another player is an error."""
+    with its fetch time as the ingest reads it, and his first boxscore in lineups
+    (actual_lineups). A player without a cached page, or without a boxscore, is counted in the
+    report, not an error: his lines stay out until his page is fetched and he has played. A page
+    that belongs to another player is an error."""
     report = Report(players=players.height)
+    debuts = first_boxscores(lineups)
+    played = set(debuts["player_id"].to_list())
     rows: list[dict[str, Any]] = []
     for player_id in sorted(players["player_id"].to_list()):
         raw_key = store.latest(f"{LANDING_PREFIX}/{player_id}")
@@ -236,8 +260,12 @@ def build(store: RawStore, players: pl.DataFrame) -> tuple[pl.DataFrame, Report]
         report.pages += 1
         report.other_game_types += page.other_game_types
         report.partial += page.partial
+        if player_id not in played:
+            report.without_boxscore.append(player_id)
+            report.unplayed_lines += len(page.rows)
+            continue
         rows += page.rows
     report.lines = len(rows)
-    frame = player_league_seasons(pl.DataFrame(rows, schema=LINE_SCHEMA), players)
+    frame = player_league_seasons(pl.DataFrame(rows, schema=LINE_SCHEMA), players, debuts)
     report.rows = frame.height
     return frame, report

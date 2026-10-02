@@ -235,7 +235,8 @@ def player_seasons(
 ) -> None:
     """Rebuild the lake's player_league_seasons (#98) from the player landing pages in the raw
     cache: each player's season lines in every league, for the NHLe priors. Never makes a
-    request. A player in players without a cached page is counted and left out."""
+    request. A player in players without a cached page, or without a boxscore in
+    actual_lineups yet, is counted and left out."""
     from nhl_edge.ingest.player_seasons import LANDING_PREFIX, build
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.tables import Lake
@@ -249,12 +250,14 @@ def player_seasons(
     lake = Lake.from_env(mirror=r2)
     if r2:
         lake.pull("players")
-    players = lake.read("players")
-    if players.is_empty():
-        typer.echo("no players in the lake: run nhl ingest", err=True)
+        lake.pull("actual_lineups")
+    players, lineups = lake.read("players"), lake.read("actual_lineups")
+    if players.is_empty() or lineups.is_empty():
+        # Without boxscores every player would look unplayed and the rebuild would empty the table.
+        typer.echo("no players or no boxscores in the lake: run nhl ingest", err=True)
         raise typer.Exit(code=1)
     try:
-        frame, report = build(store, players)
+        frame, report = build(store, players, lineups)
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
@@ -267,9 +270,11 @@ def player_seasons(
     lake.replace("player_league_seasons", frame)
     typer.echo(
         f"player_league_seasons: {report.players:,} players, {report.pages:,} landing pages read, "
-        f"{len(report.without_page):,} without a page; {report.lines:,} team lines kept, "
-        f"{report.other_game_types:,} of other game types and {report.partial:,} of seasons "
-        f"under way at the fetch left out; {report.rows:,} rows written"
+        f"{len(report.without_page):,} without a page and {len(report.without_boxscore):,} "
+        f"without a boxscore yet; {report.lines:,} team lines kept, "
+        f"{report.other_game_types:,} of other game types, {report.partial:,} of seasons under "
+        f"way at the fetch and {report.unplayed_lines:,} of players without a boxscore left out; "
+        f"{report.rows:,} rows written"
     )
     if report.without_page:
         typer.echo(

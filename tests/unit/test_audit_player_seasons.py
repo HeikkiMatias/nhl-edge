@@ -2,7 +2,15 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from player_season_fixtures import GOALIE, NO_PAGE, SKATER, players, store_pages, table
+from player_season_fixtures import (
+    GOALIE,
+    NO_PAGE,
+    SKATER,
+    debuts,
+    players,
+    store_pages,
+    table,
+)
 from test_reference import OPENING
 from typer.testing import CliRunner
 
@@ -71,11 +79,17 @@ def test_audit_report_has_the_player_seasons_section(
     store_pages(RawStore(), SKATER, GOALIE)
     result = runner.invoke(app, ["audit", "report", "--as-of", "2010-10-08"])
     assert result.exit_code == 0, result.output
-    text = (tmp_path / "reports" / "audit" / "2010-10-08.md").read_text()
+    early = (tmp_path / "reports" / "audit" / "2010-10-08.md").read_text()
+    # The goalie's lines wait for his first boxscore, in February 2012.
+    assert "| 20092010 | 1 | 1 | 1 | 0 |" in early
+    result = runner.invoke(app, ["audit", "report", "--as-of", "2012-07-02"])
+    assert result.exit_code == 0, result.output
+    text = (tmp_path / "reports" / "audit" / "2012-07-02.md").read_text()
     section = text.split("\n## Player league seasons\n")[1].split("\n## ")[0]
-    # Seasons public by the audit date only: 2009-10 is the last, from July 1, 2010.
+    # Seasons public by the audit date only: 2011-12 is the last, from July 1, 2012.
     assert "| 20092010 | 2 | 2 | 1 | 1 |" in section
-    assert "| 20102011 |" not in section
+    assert "| 20112012 | 2 | 3 | 2 | 1 |" in section
+    assert "| 20122013 |" not in section
     assert "0 player-season-game types have lines of one league under two" in section
     assert f"have no landing page in the raw cache, e.g. {NO_PAGE}" in section
     # The table holds counts only: players, lines and lines per league.
@@ -102,7 +116,7 @@ def test_the_section_leaves_out_the_one_time_test_season_and_the_live_seasons(
     lake.write("players", players(SKATER, GOALIE))
     lake.write(
         "player_league_seasons",
-        pl.concat([table(), player_league_seasons(later, players(SKATER))]),
+        pl.concat([table(), player_league_seasons(later, players(SKATER), debuts(SKATER))]),
     )
     store_pages(RawStore(), SKATER, GOALIE)
     result = runner.invoke(app, ["audit", "report", "--as-of", "2027-07-02"])

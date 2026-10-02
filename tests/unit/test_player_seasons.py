@@ -9,6 +9,9 @@ from player_season_fixtures import (
     GOALIE,
     NO_PAGE,
     SKATER,
+    boxscores,
+    debuts,
+    first_boxscore_utc,
     page,
     players,
     raw_key,
@@ -75,7 +78,7 @@ def test_a_count_one_team_line_lacks_leaves_the_sum_null() -> None:
         schema=LINE_SCHEMA,
         orient="row",
     )
-    frame = player_league_seasons(lines, players(SKATER))
+    frame = player_league_seasons(lines, players(SKATER), debuts(SKATER))
     assert counts(frame, SKATER, 20002001, "AHL") == (2, 15, None, 6)
 
 
@@ -141,7 +144,9 @@ def test_age_comes_from_players_and_is_null_without_a_birth_date() -> None:
     # Born 1973-09-02, so 27 on 2000-09-15.
     assert row(table(), SKATER, 20002001, "NHL")["age_at_season"] == 27
     lines = landing_lines(page(SKATER), FETCHED, raw_key(SKATER)).rows
-    unknown = player_league_seasons(pl.DataFrame(lines, schema=LINE_SCHEMA), players(GOALIE))
+    unknown = player_league_seasons(
+        pl.DataFrame(lines, schema=LINE_SCHEMA), players(GOALIE), debuts(GOALIE)
+    )
     assert unknown["age_at_season"].null_count() == unknown.height
 
 
@@ -149,11 +154,15 @@ def test_a_season_counts_as_public_on_july_1_after_it() -> None:
     frame = table()
     assert row(frame, SKATER, 20002001, "NHL")["observed_utc"] == datetime(2001, 7, 1, tzinfo=UTC)
     assert season_lines_public(20152016, "NHL") == datetime(2016, 7, 1, tzinfo=UTC)
+    # Or the player's first boxscore, if later: the goalie's lines before 2011-12 wait for it.
     expected = [
-        season_lines_public(season, abbrev)
-        for season, abbrev in frame.select("season", "league_abbrev").rows()
+        max(season_lines_public(season, abbrev), first_boxscore_utc(player_id))
+        for player_id, season, abbrev in frame.select("player_id", "season", "league_abbrev").rows()
     ]
     assert frame["observed_utc"].to_list() == expected
+    assert frame["first_boxscore_utc"].to_list() == [
+        first_boxscore_utc(player_id) for player_id in frame["player_id"]
+    ]
 
 
 def test_the_late_league_names_are_league_names() -> None:
@@ -213,11 +222,24 @@ def test_a_page_without_season_totals_has_no_lines() -> None:
 def test_build_reads_the_newest_page_and_reports_a_player_without_one(tmp_path: Path) -> None:
     store = RawStore(tmp_path)
     store_pages(store, SKATER, GOALIE)
-    frame, report = build(store, players(SKATER, GOALIE, NO_PAGE))
+    frame, report = build(
+        store, players(SKATER, GOALIE, NO_PAGE), boxscores(SKATER, GOALIE, NO_PAGE)
+    )
     assert frame.equals(table())
     assert (report.players, report.pages, report.without_page) == (3, 2, [NO_PAGE])
+    assert (report.without_boxscore, report.unplayed_lines) == ([], 0)
     assert (report.lines, report.other_game_types, report.partial, report.rows) == (50, 1, 0, 47)
     assert set(frame["raw_key"].to_list()) == {raw_key(SKATER), raw_key(GOALIE)}
+
+
+def test_build_leaves_out_a_player_without_a_boxscore(tmp_path: Path) -> None:
+    # The goalie's page is cached, but he has not played: his lines would tell that he will.
+    store = RawStore(tmp_path)
+    store_pages(store, SKATER, GOALIE)
+    frame, report = build(store, players(SKATER, GOALIE), boxscores(SKATER))
+    assert frame.equals(table(FETCHED, SKATER))
+    assert (report.pages, report.without_boxscore, report.unplayed_lines) == (2, [GOALIE], 12)
+    assert report.lines == 38
 
 
 def test_build_refuses_a_page_of_another_player(tmp_path: Path) -> None:
@@ -225,7 +247,7 @@ def test_build_refuses_a_page_of_another_player(tmp_path: Path) -> None:
     meta = {"fetched_utc": FETCHED.isoformat()}
     store.put("nhl", f"player-landing/{GOALIE}/20260928T133000Z", page(SKATER), meta)
     with pytest.raises(ValueError, match=f"landing page of player {SKATER}"):
-        build(store, players(GOALIE))
+        build(store, players(GOALIE), boxscores(GOALIE))
 
 
 def test_schema_rejects_a_wrong_time_league_or_game_type() -> None:
@@ -233,6 +255,7 @@ def test_schema_rejects_a_wrong_time_league_or_game_type() -> None:
     PlayerLeagueSeasons.validate(frame)
     for change in (
         pl.col("observed_utc") - pl.duration(days=1),
+        pl.col("first_boxscore_utc") + pl.duration(days=7_000),
         pl.col("league").str.to_lowercase(),
         pl.lit(1, pl.Int8).alias("game_type"),
         pl.lit(20002002, pl.Int32).alias("season"),
