@@ -169,6 +169,93 @@ def test_the_running_sums_give_the_direct_fit(half_life: float) -> None:
     assert np.isnan(solution.sd[:2]).all()
 
 
+def _problem(seed: int = 2) -> tuple[np.ndarray, ...]:
+    rng = np.random.default_rng(seed)
+    n, p = 300, 5
+    x = rng.normal(size=(n, p))
+    hours = rng.uniform(0.01, 0.03, n)
+    y = x @ rng.normal(size=p) + rng.normal(0, 0.1, n)
+    days = np.repeat(np.arange(6.0), n // 6)
+    return x, hours, y, days, np.array([0.0, 0.5, 0.5, 0.5, 0.5])
+
+
+def _filled(half_life: float) -> rapm.Normal:
+    x, hours, y, days, _ = _problem()
+    normal = rapm.Normal(half_life)
+    normal.add(sp.csr_matrix(x), hours, y, days)
+    return normal
+
+
+def test_the_decay_counts_to_the_reference_day() -> None:
+    # A league day without rows still decays the evidence (Codex on #124).
+    x, hours, y, days, pull = _problem()
+    later = days.max() + 2
+    solution = _filled(4.0).solve(pull, np.arange(1, 5), reference=later)
+    w = hours * 0.5 ** ((later - days) / 4.0)
+    m = x.T @ (w[:, None] * x) + np.diag(pull + rapm.FLOOR)
+    np.testing.assert_allclose(solution.beta, np.linalg.solve(m, x.T @ (w * y)), rtol=1e-6)
+    latest = _filled(4.0).solve(pull, np.arange(1, 5))
+    np.testing.assert_allclose(solution.hours, latest.hours * 0.5 ** (2 / 4.0), rtol=1e-9)
+    with pytest.raises(ValueError, match="reference"):
+        _filled(4.0).solve(pull, np.arange(1, 5), reference=days.max() - 1)
+
+
+def test_a_shifted_sd_counts_the_shift_s_variance_and_covariance() -> None:
+    x, hours, _y, days, pull = _problem()
+    solution = _filled(4.0).solve(pull, np.array([1, 2]), shift=4)
+    w = hours * 0.5 ** ((days.max() - days) / 4.0)
+    m = x.T @ (w[:, None] * x) + np.diag(pull + rapm.FLOOR)
+    inverse = np.linalg.inv(m)
+    assert solution.sigma is not None
+    for column in (1, 2):
+        e = np.zeros(5)
+        e[[column, 4]] = 1
+        expected = solution.sigma * np.sqrt(e @ inverse @ e)
+        assert solution.shifted_sd[column] == pytest.approx(expected, rel=1e-6)
+    assert solution.sd[4] == pytest.approx(solution.sigma * np.sqrt(inverse[4, 4]), rel=1e-6)
+
+
+def test_a_night_without_power_plays_still_decays_the_power_play() -> None:
+    nights = GAMES.filter(pl.col("season") == fx.SEASONS[1])["game_date"].unique().sort()
+    before, night = nights[9], nights[10]
+    quiet = STINTS.filter(~((pl.col("game_date") == before) & (pl.col("strength") != "5v5")))
+    wanted = WANTED.filter(pl.col("game_date").is_in([before, night]))
+    ratings, _ = rapm.rate(fx.seasons_of(quiet), GAMES, ROLES, VENUES, wanted, LOOSE, VERSION)
+    pp = ratings.filter(pl.col("component") == "pp").pivot(
+        on="game_date", index="player_id", values="hours"
+    )
+    ratio = (pp[str(night)] / pp[str(before)]).drop_nans().drop_nulls()
+    assert ratio.len() > 0
+    np.testing.assert_allclose(ratio.to_numpy(), 0.5 ** (1 / LOOSE.half_life_days), rtol=1e-9)
+
+
+def test_a_defenseman_without_power_play_data_gets_the_term_and_its_spread() -> None:
+    # The late player has no data on his first night; called a defenseman, his power-play rating
+    # is the defensemen term and its spread adds the term's to the prior's.
+    late = WANTED.filter(pl.col("player_id") == fx.LATE_PLAYER)
+    first = late.filter(pl.col("game_date") == late["game_date"].min())
+    wanted = WANTED.filter(pl.col("game_date") == first["game_date"][0]).with_columns(
+        role=pl.when(pl.col("player_id") == fx.LATE_PLAYER)
+        .then(pl.lit("D"))
+        .otherwise(pl.col("role"))
+    )
+    ratings, terms = rapm.rate(fx.seasons_of(STINTS), GAMES, ROLES, VENUES, wanted, LOOSE, VERSION)
+    mine = {
+        c: r
+        for c, r in zip(
+            ratings.filter(pl.col("player_id") == fx.LATE_PLAYER)["component"],
+            ratings.filter(pl.col("player_id") == fx.LATE_PLAYER).iter_rows(named=True),
+            strict=True,
+        )
+    }
+    pp_terms = terms.filter(pl.col("model") == rapm.PP)
+    value = dict(zip(pp_terms["term"], pp_terms["value"], strict=True))
+    prior = value[rapm.SIGMA] / np.sqrt(LOOSE.pull_hours)
+    assert mine["pp"]["hours"] == 0 and mine["pp"]["mean"] == pytest.approx(value[rapm.DEFENSEMEN])
+    assert mine["pp"]["sd"] > prior
+    assert mine["pk"]["sd"] == pytest.approx(prior) and mine["pk"]["mean"] == 0
+
+
 def test_a_fit_without_data_keeps_the_prior() -> None:
     solution = rapm.Normal(10.0).solve(np.ones(4), np.arange(4))
     assert (solution.beta == 0).all() and solution.sigma is None

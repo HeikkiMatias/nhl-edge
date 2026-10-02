@@ -30,8 +30,9 @@ there every skater is pulled toward the average skater.
 his role, by `pull_hours` hours of ice time (the position average until the priors task, #102),
 and the season and arena terms by BIAS_PULL_HOURS, which only keeps the fit solvable. A stint's
 decay is 0.5 ** (k / half_life_days), k the league game days from its date to the latest date
-read. The weighted sums behind the fit are kept from day to day, so each refit costs one solve.
-Goalies are not columns: they enter B3 only through its goalie conversion (plan §5).
+read, whether or not a model kept a row from that date. The weighted sums behind the fit are
+kept from day to day, so each refit costs one solve. Goalies are not columns: they enter B3 only
+through its goalie conversion (plan §5).
 
 A game's ratings read only stints public before its as-of time (team strength's: 10:00 US Eastern
 on the game date, or an hour before the start if that is earlier), which with ADR 0004 means every
@@ -39,7 +40,8 @@ game up to the day before.
 
 Ratings are per hour of ice time, in xG. Each `sd` is the ridge's posterior spread: the residual
 variance per hour of the decayed fit times the diagonal of the inverse of the penalized weighted
-sums. `hours` is the decayed ice time behind the rating.
+sums. A defenseman's power-play sd adds the defensemen term's variance and its covariance with
+his own column. `hours` is the decayed ice time behind the rating.
 """
 
 from collections.abc import Iterable, Sequence
@@ -318,12 +320,14 @@ class Design:
 @dataclass(frozen=True)
 class Solution:
     """One refit: every column's estimate, posterior sd (NaN where not asked or without data),
-    decayed hours, and the residual sd per square-root hour (None before any data)."""
+    decayed hours, and the residual sd per square-root hour (None before any data). shifted_sd
+    is each asked column's sd once the shift column is added to it, covariance included."""
 
     beta: NDArray[np.float64]
     sd: NDArray[np.float64]
     hours: NDArray[np.float64]
     sigma: float | None
+    shifted_sd: NDArray[np.float64]
 
 
 class Normal:
@@ -382,19 +386,32 @@ class Normal:
         self.n *= factor
         self.t0 = day
 
-    def solve(self, penalty: NDArray[np.float64], wanted: NDArray[np.int64]) -> Solution:
-        """The ridge fit as of the latest day added, with the posterior sd of the wanted columns.
-        A column without data keeps its prior, 0."""
+    def solve(
+        self,
+        penalty: NDArray[np.float64],
+        wanted: NDArray[np.int64],
+        reference: float | None = None,
+        shift: int | None = None,
+    ) -> Solution:
+        """The ridge fit with the decay counted to the league day reference (by default the
+        latest day added), the posterior sd of the wanted columns, and with shift, their sd once
+        that column is added to each. A column without data keeps its prior, 0."""
         size = penalty.size
         self.grow(size)
+        nan = np.full(size, np.nan)
         if self.t0 is None or self.latest is None:
             nothing = np.zeros(size)
-            return Solution(nothing, np.full(size, np.nan), nothing, None)
-        factor = np.exp2(-(self.latest - self.t0) / self.half_life)
+            return Solution(nothing, nan, nothing, None, nan.copy())
+        reference = self.latest if reference is None else reference
+        if reference < self.latest:
+            raise ValueError("the decay's reference day is before the latest day added")
+        factor = np.exp2(-(reference - self.t0) / self.half_life)
         hours = np.diag(self.a)[:size] * factor
         active = np.flatnonzero(hours > 0)
         asked = np.zeros(size, dtype=bool)
         asked[wanted] = True
+        if shift is not None:
+            asked[shift] = True
         # The asked columns last: the inverse's diagonal for them needs only the trailing block
         # of the Cholesky factor.
         order = np.concatenate([active[~asked[active]], active[asked[active]]])
@@ -410,12 +427,20 @@ class Normal:
         variance = max(rss, 0.0) / (self.n * factor)
         beta = np.zeros(size)
         beta[order] = fitted
-        sd = np.full(size, np.nan)
+        sd, shifted_sd = nan.copy(), nan.copy()
         if last:
+            # With the asked columns last, the inverse's block for them is Z'Z, Z the inverse of
+            # the factor's trailing block: a column's variance is its column of Z squared, and
+            # the variance of a sum of columns is their sum's.
             tail = chol[-last:, -last:]
-            inverse = sl.solve_triangular(tail, np.eye(last), lower=True, check_finite=False)
-            sd[order[-last:]] = np.sqrt(variance * (inverse * inverse).sum(axis=0))
-        return Solution(beta, sd, hours, float(np.sqrt(variance)))
+            z = sl.solve_triangular(tail, np.eye(last), lower=True, check_finite=False)
+            columns = order[-last:]
+            sd[columns] = np.sqrt(variance * (z * z).sum(axis=0))
+            if shift is not None and asked[shift] and hours[shift] > 0:
+                (k,) = np.flatnonzero(columns == shift)
+                summed = z + z[:, [k]]
+                shifted_sd[columns] = np.sqrt(variance * (summed * summed).sum(axis=0))
+        return Solution(beta, sd, hours, float(np.sqrt(variance)), shifted_sd)
 
 
 def league_days(games: pl.DataFrame) -> dict[date, int]:
@@ -491,6 +516,9 @@ def rate(
     ratings: list[pl.DataFrame] = []
     terms: list[pl.DataFrame] = []
     known: datetime | None = None
+    # The decay counts to the latest league game day read, whether or not a model kept a row
+    # from it.
+    reference: float | None = None
     seen: set[int] = set()
     for stints in stint_seasons:
         if stints.is_empty():
@@ -506,23 +534,32 @@ def rate(
             rows = model_rows(stints, games, roles, venues, m)
             days = np.array([numbers[d] for d in rows["game_date"].to_list()], dtype=np.float64)
             models[m] = _Model(designs[m], normals[m], rows, designs[m].matrix(rows), days)
-        times = stints["observed_utc"].unique().sort()
+        batches = (
+            stints.group_by("observed_utc")
+            .agg(pl.col("game_date").max())
+            .sort("observed_utc")
+            .with_columns(
+                day=pl.col("game_date").replace_strict(numbers, return_dtype=pl.Float64).cum_max()
+            )
+        )
+        times = batches["observed_utc"]
         season_wanted = wanted.filter(pl.col("season") == season).sort("as_of_utc")
         for (count,), group in season_wanted.with_columns(
             count=times.search_sorted(season_wanted["as_of_utc"], side="left")
         ).group_by("count", maintain_order=True):
             if count:
                 known = times[int(count) - 1]
+                reference = float(batches["day"][int(count) - 1])
             for model in models.values():
                 model.add_until(known)
-                rated, solution = _ratings(group, model, settings, known)
+                rated, solution = _ratings(group, model, settings, known, reference)
                 ratings.append(rated)
                 if known is not None and solution.sigma is not None:
                     terms.append(_terms(group, model, solution, known))
         for model in models.values():
             model.add_until(times[-1] if times.len() else None)
         if times.len():
-            known = times[-1]
+            known, reference = times[-1], float(batches["day"][-1])
     missing = set(wanted["season"].unique().to_list()) - seen
     if missing:
         raise ValueError(f"no stints for {sorted(missing)}")
@@ -535,7 +572,11 @@ def rate(
 
 
 def _ratings(
-    group: pl.DataFrame, model: _Model, settings: Settings, known: datetime | None
+    group: pl.DataFrame,
+    model: _Model,
+    settings: Settings,
+    known: datetime | None,
+    reference: float | None,
 ) -> tuple[pl.DataFrame, Solution]:
     """The group's candidates' two components of the model, from one refit."""
     design = model.design
@@ -544,22 +585,24 @@ def _ratings(
     attack = np.where(has, design.attack(np.maximum(k, 0)), -1)
     defend = np.where(has, design.defend(np.maximum(k, 0)), -1)
     wanted = np.concatenate([attack[has], defend[has]])
-    solution = model.normal.solve(design.penalty(settings), wanted)
+    shift = design.index[DEFENSEMEN] if design.model == PP else None
+    solution = model.normal.solve(design.penalty(settings), wanted, reference, shift)
     prior_sd = np.nan if solution.sigma is None else solution.sigma / np.sqrt(settings.pull_hours)
-    # A defenseman's power-play rating adds the defensemen term, his role's average there.
+    # A defenseman's power-play rating adds the defensemen term, his role's average there, and
+    # its sd the term's variance and covariance with his own.
     defense = (group["role"] == DEFENSE).to_numpy()
-    shifts = (
-        (defense * solution.beta[design.index[DEFENSEMEN]], 0.0)
-        if design.model == PP
-        else (0.0, 0.0)
-    )
     frames = []
-    for name, columns, shift in zip(
-        COMPONENTS[design.model], (attack, defend), shifts, strict=True
+    for name, columns, shifted in zip(
+        COMPONENTS[design.model], (attack, defend), (shift is not None, False), strict=True
     ):
         rated = has & (solution.hours[columns] > 0)
-        mean = np.where(rated, solution.beta[columns], 0.0) + shift
+        mean = np.where(rated, solution.beta[columns], 0.0)
         sd = np.where(rated, solution.sd[columns], prior_sd)
+        if shifted and shift is not None and solution.hours[shift] > 0:
+            own = defense & rated
+            mean = mean + defense * solution.beta[shift]
+            sd = np.where(own, solution.shifted_sd[columns], sd)
+            sd = np.where(defense & ~rated, np.hypot(prior_sd, solution.sd[shift]), sd)
         hours = np.where(rated, solution.hours[columns], 0.0)
         frames.append(
             group.select(

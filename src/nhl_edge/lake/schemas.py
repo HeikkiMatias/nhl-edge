@@ -1163,7 +1163,8 @@ class PlayerRatings(pa.DataFrameModel):
 
     mean is relative to the average skater at 5v5 and on the penalty kill. On the power play it is
     relative to the average forward, a defenseman's adding his role's average there. sd is the
-    ridge's posterior spread, the prior's for a player without data, and null before any data.
+    ridge's posterior spread, the prior's for a player without data, and null before any data; a
+    defenseman's power-play sd includes the role term's variance and covariance with his own.
     hours is the decayed ice time behind the rating, 0 without data. half_life_days and
     pull_hours are the settings.
 
