@@ -1015,12 +1015,19 @@ def lineups(
         skaters, scored, models = proj.score(boxscores, games, wanted, version, lines, rows)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    played = mins.lake_minutes(lake, boxscores, max(wanted))
+    # Stints built for part of a season would measure its figures on part of it.
+    problems = mins.input_problems(lake.read("shift_coverage"), played, max(wanted))
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl stints for those seasons", err=True)
+        raise typer.Exit(code=1)
     try:
-        played = mins.lake_minutes(lake, boxscores, max(wanted))
         constants = {
             season: mins.season_constants(played, rows, season, games) for season in wanted
         }
-        projected, replacements = mins.project(scored, played, constants, lines)
+        projected, replacements = mins.project(scored, played, constants, games, lines)
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         typer.echo("run nhl stints for those seasons", err=True)

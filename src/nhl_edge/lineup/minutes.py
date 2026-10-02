@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from nhl_edge.features.stints import player_seconds
-from nhl_edge.features.team_strength import team_lines
+from nhl_edge.features.team_strength import as_of, team_lines
 from nhl_edge.lake.schemas import PP_UNIT, SKATER_SLOTS, LineupReplacements, Lineups, dtypes
 from nhl_edge.lineup.goalie_start import season_cutoff
 from nhl_edge.lineup.projection import SKATER_ROLES
@@ -189,12 +189,15 @@ def project(
     scored: pl.DataFrame,
     minutes: pl.DataFrame,
     constants: Mapping[int, SeasonConstants],
+    games: pl.DataFrame,
     lines: Mapping[str, str] | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """The candidates of scored (with p_available) with their minutes if they dress (min_<state>,
     scaled), expected minutes (exp_<state>), pp_unit, and the reference's last_<state>; and the
     replacement skaters per team-game and role: their expected count and minutes (exp_<state>,
-    in all). Each season's constants come from constants."""
+    in all). Each season's constants come from constants. Every team-game of games in the scored
+    seasons gets replacements: one without candidates, such as a new team's first game, is all
+    replacements, as a team's first game of a season."""
     lines = team_lines() if lines is None else lines
     seasons = sorted(scored["season"].unique().to_list())
     missing = [season for season in seasons if season not in constants]
@@ -230,9 +233,31 @@ def project(
         {"role": list(SKATER_SLOTS), "slots": list(SKATER_SLOTS.values())},
         schema={"role": pl.String, "slots": pl.Float64},
     )
-    team_games = rows.select(
+    with_candidates = rows.select(
         "game_id", "season", "game_date", "team", "opener", "as_of_utc"
     ).unique(subset=["game_id", "team"])
+    scheduled = pl.concat(
+        [
+            games.filter(pl.col("season").is_in(seasons)).select(
+                "game_id",
+                "season",
+                "game_date",
+                team=pl.col(side),
+                opener=pl.lit(True),
+                as_of_utc=as_of(pl.col("game_date"), pl.col("start_utc")),
+            )
+            for side in ("home", "away")
+        ]
+    )
+    team_games = pl.concat(
+        [
+            with_candidates,
+            scheduled.join(with_candidates, on=["game_id", "team"], how="anti").select(
+                with_candidates.columns
+            ),
+        ],
+        how="vertical_relaxed",
+    )
     sums = rows.group_by("game_id", "team", "role").agg(
         dressing=pl.col("p_available").sum(),
         **{
@@ -333,6 +358,21 @@ def _newcomers(constants: Mapping[int, SeasonConstants], seasons: list[int]) -> 
     )
 
 
+def input_problems(coverage: pl.DataFrame, minutes: pl.DataFrame, last: int) -> list[str]:
+    """Why the lake's stints cannot give the minutes up to the season last: a game whose shift
+    chart is complete (shift_coverage) with no stints, which would leave its season's averages,
+    pulls and totals, and its players' histories, measured on part of the season."""
+    complete = coverage.filter(pl.col("complete"), pl.col("season") <= last)
+    missing = complete.join(minutes.select("game_id").unique(), on="game_id", how="anti")
+    problems = []
+    for (season,), frame in missing.sort("game_id").group_by("season", maintain_order=True):
+        examples = ", ".join(map(str, frame["game_id"].head(3).to_list()))
+        problems.append(
+            f"{season}: {frame.height:,} games with a complete chart and no stints, e.g. {examples}"
+        )
+    return problems
+
+
 def lake_minutes(lake: "Lake", boxscores: pl.DataFrame, last: int) -> pl.DataFrame:
     """player_minutes of every season up to last, read a season at a time: the stints of every
     season at once would not fit in memory."""
@@ -376,11 +416,12 @@ def with_minutes(
 
 def replacement_table(replacements: pl.DataFrame, skaters: pl.DataFrame) -> pl.DataFrame:
     """The LineupReplacements rows: project's replacements with the train_cutoff and
-    artifact_version of their team-game's skaters (with_minutes)."""
-    stamps = skaters.group_by("game_id", "team").agg(
-        pl.col("train_cutoff").first(), pl.col("artifact_version").first()
+    artifact_version of their season's skaters (with_minutes), the same for every team-game of a
+    season, so a team-game without candidates gets them too."""
+    stamps = skaters.group_by("season").agg(
+        pl.col("train_cutoff").max(), pl.col("artifact_version").first()
     )
-    table = replacements.join(stamps, on=["game_id", "team"], how="inner").select(
+    table = replacements.join(stamps, on="season", how="inner").select(
         list(dtypes(LineupReplacements))
     )
     return LineupReplacements.validate(

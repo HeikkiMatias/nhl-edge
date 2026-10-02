@@ -37,7 +37,7 @@ def constants() -> dict[int, mins.SeasonConstants]:
 
 def projected() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     skaters, scored, _ = pr.score(LEAGUE["lineups"], LEAGUE["games"], SEASONS, VERSION, {}, ROWS)
-    rows, replacements = mins.project(scored, MINUTES, constants(), {})
+    rows, replacements = mins.project(scored, MINUTES, constants(), LEAGUE["games"], {})
     return skaters, rows, replacements
 
 
@@ -140,7 +140,9 @@ def test_a_candidate_without_an_earlier_game_gets_the_role_average() -> None:
     player = PROJECTED["player_id"][0]
     _, scored, _ = pr.score(LEAGUE["lineups"], LEAGUE["games"], SEASONS, VERSION, {}, ROWS)
     c = constants()
-    rows, _ = mins.project(scored, MINUTES.filter(pl.col("player_id") != player), c, {})
+    rows, _ = mins.project(
+        scored, MINUTES.filter(pl.col("player_id") != player), c, LEAGUE["games"], {}
+    )
     fresh = rows.filter(pl.col("player_id") == player)
     assert fresh.height > 0 and fresh["w"].null_count() == fresh.height
     for row in fresh.iter_rows(named=True):
@@ -181,7 +183,7 @@ def test_power_play_unit_one_is_the_top_five_by_expected_minutes() -> None:
 def test_project_refuses_a_season_without_constants() -> None:
     _, scored, _ = pr.score(LEAGUE["lineups"], LEAGUE["games"], SEASONS, VERSION, {}, ROWS)
     with pytest.raises(ValueError, match="no ice-time constants"):
-        mins.project(scored, MINUTES, {20112012: constants()[20112012]}, {})
+        mins.project(scored, MINUTES, {20112012: constants()[20112012]}, LEAGUE["games"], {})
 
 
 # The tables
@@ -276,3 +278,38 @@ def test_the_report_has_the_ice_time_sections() -> None:
     # 2011-12 is not shown, so neither are its figures nor those 2012-13 took from it.
     section = held.split("## Ice time")[1]
     assert "| 20112012 | " in section and "held out" in section
+
+
+def test_a_new_team_s_first_game_is_all_replacements() -> None:
+    # SEA's first game ever: no earlier game, so no candidates, and a full lineup of replacements
+    # at a newcomer's minutes in a team's first game of a season.
+    _, scored, _ = pr.score(LEAGUE["lineups"], LEAGUE["games"], SEASONS, VERSION, {}, ROWS)
+    first = LEAGUE["games"].filter(pl.col("season") == 20122013).row(0, named=True)
+    debut = pl.DataFrame(
+        [{**first, "game_id": 2012029999, "home": "SEA", "away": "VGK"}],
+        schema=LEAGUE["games"].schema,
+    )
+    c = constants()
+    _, replacements = mins.project(scored, MINUTES, c, pl.concat([LEAGUE["games"], debut]), {})
+    rows = replacements.filter(pl.col("game_id") == 2012029999).sort("team", "role")
+    assert rows.select("team", "role", "count").rows() == [
+        ("SEA", "D", 6.0),
+        ("SEA", "F", 12.0),
+        ("VGK", "D", 6.0),
+        ("VGK", "F", 12.0),
+    ]
+    for row in rows.iter_rows(named=True):
+        each = c[20122013].newcomer[row["role"], True, "5v5"]
+        assert row["exp_5v5"] == pytest.approx(row["count"] * each)
+
+
+def test_input_problems_name_a_complete_chart_without_stints() -> None:
+    coverage = MINUTES.select("game_id", "season").unique().with_columns(complete=pl.lit(True))
+    assert mins.input_problems(coverage, MINUTES, 20122013) == []
+    dropped = MINUTES["game_id"].max()
+    problems = mins.input_problems(coverage, MINUTES.filter(pl.col("game_id") != dropped), 20122013)
+    assert problems == [f"20122013: 1 games with a complete chart and no stints, e.g. {dropped}"]
+    # A later season than the last one rated is not checked.
+    assert (
+        mins.input_problems(coverage, MINUTES.filter(pl.col("game_id") != dropped), 20112012) == []
+    )

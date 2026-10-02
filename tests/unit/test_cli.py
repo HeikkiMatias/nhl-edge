@@ -930,6 +930,12 @@ def lineup_lake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "lake_minutes",
         lambda lake, boxscores, last: minutes_frame(boxscores.filter(pl.col("season") <= last)),
     )
+    frames["shift_coverage"] = (
+        minutes_frame(frames["actual_lineups"])
+        .select("game_id", "season")
+        .unique()
+        .with_columns(complete=pl.lit(True))
+    )
     monkeypatch.setattr(Lake, "read", lambda self, table: frames[table])
     return frames
 
@@ -951,6 +957,22 @@ def test_lineups_writes_the_table_and_the_report(
     (path,) = (tmp_path / "reports" / "lineups").glob("lineup-*.md")
     text = path.read_text()
     assert "## Per season" in text and "## Ice time" in text
+
+
+def test_lineups_refuses_a_complete_chart_without_stints(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polars as pl
+
+    frames = lineup_lake(monkeypatch)
+    extra = frames["shift_coverage"].head(1).with_columns(game_id=pl.lit(2011029999, pl.Int64))
+    frames["shift_coverage"] = pl.concat([frames["shift_coverage"], extra])
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["lineups"])
+    assert result.exit_code == 1
+    assert "1 games with a complete chart and no stints, e.g. 2011029999" in plain(result.output)
+    assert "run nhl stints" in plain(result.output)
+    assert not (tmp_path / "data").exists()
 
 
 def test_lineups_refuses_a_team_game_without_goalie_starts(

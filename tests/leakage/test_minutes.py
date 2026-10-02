@@ -44,7 +44,7 @@ REPLACEMENT_COLUMNS = [
 
 
 def tonight(minutes: pl.DataFrame) -> pl.DataFrame:
-    rows, _ = mins.project(SCORED, minutes, CONSTANTS, {})
+    rows, _ = mins.project(SCORED, minutes, CONSTANTS, GAMES, {})
     return rows.filter(pl.col("game_id").is_in(TONIGHT.implode())).sort(
         "game_id", "team", "player_id"
     )
@@ -104,7 +104,7 @@ def test_a_season_s_constants_read_only_the_season_before() -> None:
 
 def test_every_replacement_row_is_known_after_its_figures() -> None:
     skaters, scored, _ = pr.score(LINEUPS, GAMES, [SEASON], VERSION, {}, ROWS)
-    rows, replacements = mins.project(scored, MINUTES, CONSTANTS, {})
+    rows, replacements = mins.project(scored, MINUTES, CONSTANTS, GAMES, {})
     table = mins.replacement_table(replacements, mins.with_minutes(skaters, rows, CONSTANTS))
     assert (table["train_cutoff"] < table["observed_utc"]).all()
     assert (table["train_cutoff"] >= CONSTANTS[SEASON].cutoff).all()
@@ -132,7 +132,7 @@ def test_constants_refuse_a_game_of_the_season_before_public_too_late() -> None:
 def test_the_report_hides_a_held_out_season_s_figures_and_those_taken_from_it() -> None:
     _, scored, _ = pr.score(LINEUPS, GAMES, [20112012, SEASON], VERSION, {}, ROWS)
     constants = {s: mins.season_constants(MINUTES, ROWS, s, GAMES) for s in (20112012, SEASON)}
-    rows, _ = mins.project(scored, MINUTES, constants, {})
+    rows, _ = mins.project(scored, MINUTES, constants, GAMES, {})
     ice = report.ice_time_scores(rows, MINUTES)
     scores = report.team_game_scores(scored, LINEUPS)
     # Only 2012-13 is shown: 2011-12's ice time and 2012-13's figures from it stay hidden.
