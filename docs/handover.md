@@ -37,7 +37,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
   - Double-counting rules: home ice lives only in h_s; the goalie enters only through γ; the team residual and coaching are phase 6.
 - **Gate 2:** B3 beats B2 on future games, overall and after trades, injuries and lineup changes. That includes the one-time 2025-26 test, which needs the owner's explicit go-ahead. B2 is B3's reference (hard rule 3).
 - **What already exists:**
-  - `shifts` and `shift_coverage` (complete charts; ADR 0009). The 57 empty charts of 2024-25 are #68, in P3.
+  - `shifts` and `shift_coverage` (complete charts; ADR 0009). The 57 empty charts of 2024-25 (#68) are rebuilt from the NHL's time-on-ice reports, fetched once with the owner's leave (2026-10-02, docs/data-sources.md); `nhl ingest` reads them from the raw cache.
   - `strength_time`, `actual_lineups`, `shot_xg`, `goalie_starts` and `goalie_effects`.
   - `players`, with birth date, shooting hand and draft year and slot.
   - `game/b2.py`, whose fit, mixture and walk-forward hooks B3 can follow.
@@ -102,7 +102,7 @@ Where the build stands after the cloud sessions of 2026-09-29 to 10-01, and how 
 - **Closed in P1:** #4, #5, #6, #7, #8, #10 (the phase 1 gate, 2026-10-02: all five odds slots of 2026-10-01 landed on the timer), #20, #24, #25, #26, #27, #29, #43, #48, #50, #52, #56, #64, #65, #83, #109 (replays leave a date with an unfinished game alone), #110 (`nhl status` hints for fitted tables).
 - **Closed in P2:** #28, #72, #73, #74, #75, #76, #77, #78, #91.
 - **Open, waiting:** #9, #42 (P1); #30, #79, #11 (P2).
-- **Later milestones:** #66 (P4, the owner decides on 2022-23 when phase 4 starts), #67 and #21 (P5), #68 (P3).
+- **Later milestones:** #66 (P4, the owner decides on 2022-23 when phase 4 starts), #67 and #21 (P5).
 
 ## Keep an eye on
 

@@ -26,14 +26,14 @@ NHL API (api-web.nhle.com)
   GET /v1/gamecenter/{gameId}/boxscore
   GET /v1/gamecenter/{gameId}/landing     # pre-game goalie poll only
   GET /v1/gamecenter/{gameId}/right-rail  # pre-game goalie poll only
-
-Daily Faceoff (www.dailyfaceoff.com), HTML page, never /api/
-  GET /starting-goalies/{YYYY-MM-DD}      # US Eastern date
   GET /v1/roster/{team}/{season}          # season as 20252026
   GET /v1/player/{playerId}/landing       # bio + career stats by league
   GET /v1/player/{playerId}/game-log/{season}/{gameType}
   GET /v1/draft/picks/{season}/all
   GET /v1/prospects/{team}
+
+Daily Faceoff (www.dailyfaceoff.com), HTML page, never /api/
+  GET /starting-goalies/{YYYY-MM-DD}      # US Eastern date
 
 NHL stats API (api.nhle.com/stats/rest)
   GET /en/shiftcharts?cayenneExp=gameId={gameId}
@@ -167,7 +167,7 @@ Shift chart rows the parser leaves out, counted in `shift_coverage`:
 | `foreign_rows` | teams not in the game | 2021020513 (WSH at NYI) lists every shift twice and STL and MIN shifts besides |
 | `bad_rows` | malformed times, shifts outside their period, a shift number repeated with other times | |
 
-The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (2025-04-08 to 2025-04-15). A live request on 2026-09-29 still gave none. No other game from 2010-11 on has an empty chart. Those copies were fetched long after their games, so they count as settled and are not fetched again. Their shifts come from the NHL's time-on-ice reports instead (#68, below).
+The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (2025-04-08 to 2025-04-15). A live request on 2026-09-29 still gave none. One other game from 2010-11 on gives no shifts, 2013020971, whose chart holds a goal marker and nothing else; it stays without shifts (#68 covers only the 57). Those copies were fetched long after their games, so they count as settled and are not fetched again. Their shifts come from the NHL's time-on-ice reports instead (#68, below).
 
 A game's chart is `complete` when it has no bad rows and every dressed player's shifts add up to his boxscore time on ice within 60 seconds (a missing boxscore time counts as not adding up). At every unblocked shot except penalty shots, the players on the ice by the chart are also compared with `situationCode`, and `skater_mismatches` and `goalie_mismatches` count where they differ. RAPM drops the stints that contradict the strength state. `nhl audit shifts` prints the per-season summary, which is reviewed before RAPM depends on the charts.
 
