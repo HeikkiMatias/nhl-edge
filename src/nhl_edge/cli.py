@@ -1415,6 +1415,11 @@ def finishing_command(
     minutes = mins.lake_minutes(lake, boxscores, last)
     # Stints built for part of a season would rate its players on part of it.
     problems = mins.input_problems(lake.read("shift_coverage"), minutes, last)
+    read = [s for s in known if s <= last]
+    shots = lake.read("shots", seasons=read)
+    shot_xg = lake.read("shot_xg", seasons=read)
+    # A game without xG would drop out of its shooters' histories unnoticed.
+    problems += fn.input_problems(games, shots, shot_xg, last)
     lineups = lake.read("lineups", seasons=wanted).filter(pl.col("role").is_in(["F", "D"]))
     effects = lake.read("goalie_effects", seasons=wanted)
     for name, frame in (("lineups", lineups), ("goalie effects", effects)):
@@ -1427,14 +1432,14 @@ def finishing_command(
     if problems:
         for problem in problems:
             typer.echo(problem, err=True)
-        typer.echo("run nhl stints, nhl lineups and nhl goalie-effect for those seasons", err=True)
+        typer.echo(
+            "run nhl xg, nhl stints, nhl lineups and nhl goalie-effect for those seasons",
+            err=True,
+        )
         raise typer.Exit(code=1)
     as_of = ts.as_of(pl.col("game_date"), pl.col("start_utc"))
     times = games.filter(pl.col("season").is_in(wanted)).select("season", as_of_utc=as_of)
     candidates = lineups.join(games.select("game_id", as_of_utc=as_of), on="game_id", how="left")
-    read = [s for s in known if s <= last]
-    shots = lake.read("shots", seasons=read)
-    shot_xg = lake.read("shot_xg", seasons=read)
     version = reports.version(fn.COMPONENT, datetime.now(UTC))
     try:
         rows = fn.shooter_games(minutes, shots, shot_xg, games)
@@ -1463,7 +1468,11 @@ def finishing_command(
     days = games.filter(pl.col("season").is_in(wanted))["game_date"].unique().to_list()
     lake.replace_dates("finishing", finishing_table, days)
     lake.replace_dates("goal_multipliers", multipliers_table, days)
-    scores = report.scored(multipliers_table, report.team_goals(shots, shot_xg), boxscores)
+    scores = report.scored(
+        multipliers_table,
+        report.team_goals(shots, shot_xg),
+        lake.read("goalie_starts", seasons=wanted),
+    )
     # The development seasons stay unseen until gate 2 (phase 3 plan).
     shown = [season for season in OPEN_SEASONS if season not in DEVELOPMENT_SEASONS]
     out.mkdir(parents=True, exist_ok=True)

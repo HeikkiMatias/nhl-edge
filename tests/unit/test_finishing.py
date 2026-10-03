@@ -269,7 +269,8 @@ def test_a_team_s_phi_weights_its_shooters_by_their_expected_xg_and_gamma_follow
     phi = 0.5 * 1.2 + 0.25 * 0.9 + 0.25 * 1.0
     assert bos["phi"].to_list() == pytest.approx([phi, phi])
     assert bos["gamma"].to_list() == pytest.approx([1 - 0.006 / 0.06, 1 + 0.003 / 0.06])
-    assert bos["multiplier"].to_list() == pytest.approx([phi * 0.9, phi * 1.05])
+    # The league finishes at 1.02 times its xG: B3's factor carries it.
+    assert bos["multiplier"].to_list() == pytest.approx([1.02 * phi * 0.9, 1.02 * phi * 1.05])
     assert bos["known_utc"][0] == as_of - timedelta(hours=4)
     assert bos["effect_cutoff"].to_list() == [cutoff, cutoff + timedelta(days=1)]
     # TOR faces no candidate goalie of BOS here, so it has no rows.
@@ -320,7 +321,7 @@ def test_the_moments_pull_takes_the_noise_out() -> None:
     assert np.isinf(decayed.moments_pull(np.full(4, 10.0), exposure))
 
 
-def test_scoring_reads_the_opposing_starter_and_the_team_s_goals() -> None:
+def test_scoring_mixes_the_opposing_goalies_by_their_start_probabilities() -> None:
     multipliers = pl.DataFrame(
         {
             "game_id": [1, 1, 1],
@@ -338,20 +339,30 @@ def test_scoring_reads_the_opposing_starter_and_the_team_s_goals() -> None:
     goals = pl.DataFrame(
         {"game_id": [1, 1], "team": ["BOS", "TOR"], "xg": [3.0, 2.0], "goals": [3.0, 1.0]}
     )
-    boxscores = pl.DataFrame(
+    starts = pl.DataFrame(
         {
             "game_id": [1, 1, 1],
             "team": ["TOR", "TOR", "BOS"],
-            "player_id": [1, 2, 3],
-            "starting_goalie": [False, True, True],
+            "goalie_id": [1, 2, 3],
+            "p_start": [0.75, 0.25, 1.0],
         }
     )
-    frame = report.scored(multipliers, goals, boxscores)
+    frame = report.scored(multipliers, goals, starts)
     bos = frame.filter(pl.col("team") == "BOS").row(0, named=True)
-    assert bos["goalie_id"] == 2
+    gamma = 0.75 * 0.9 + 0.25 * 1.1
+    assert bos["gamma"] == pytest.approx(gamma)
     assert bos["error"] == pytest.approx(0.0)
-    assert bos["difference_both"] == pytest.approx((3.0 * 1.1 * 1.1 - 3.0) ** 2)
+    assert bos["difference_both"] == pytest.approx((3.0 * 1.1 * gamma - 3.0) ** 2)
     assert frame.height == 2
+
+
+def test_the_inputs_must_cover_every_game_with_shots_and_xg() -> None:
+    games = games_of([date(2012, 10, 8), date(2012, 10, 9)])
+    shots = pl.DataFrame({"game_id": games["game_id"].to_list()})
+    shot_xg = pl.DataFrame({"game_id": games["game_id"].head(1).to_list()})
+    (problem,) = fn.input_problems(games, shots, shot_xg, 20122013)
+    assert problem.startswith("20122013: 1 games without xG")
+    assert fn.input_problems(games, shots, shots, 20122013) == []
 
 
 def fixture_lake(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:

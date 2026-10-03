@@ -5,8 +5,9 @@ Per season, the team-games and candidates. For a shown season also:
 - the pulls per role, and the league's finishing and xG per shot at the season's last game;
 - the spread of the teams' φ and the goalies' gamma;
 - the squared error of each team-game's goals on shots with xG, from its actual xG times the
-  league's finishing (the reference), times the team's φ, times the opposing starter's gamma, and
-  times both, each against the reference with its weekly block bootstrap interval;
+  league's finishing (the reference), times the team's φ, times the opposing goalie's gamma mixed
+  over his team's candidates by their pregame start probabilities, as B3 will, and times both,
+  each against the reference with its weekly block bootstrap interval;
 - the forwards finishing furthest above and below the league, at each one's last game, a
   face-validity check.
 The development and held-out seasons show only their counts until gate 2, and so does any season
@@ -38,17 +39,27 @@ def team_goals(shots: pl.DataFrame, shot_xg: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def scored(multipliers: pl.DataFrame, goals: pl.DataFrame, boxscores: pl.DataFrame) -> pl.DataFrame:
-    """Each team-game whose opposing starter (boxscores' starting_goalie) was a candidate: its
-    goals, the reference's prediction (xG times league_finishing) and each variant's, and each
-    variant's squared error less the reference's (difference_<variant>). The game's own xG and
-    starter are read only to score."""
-    starters = boxscores.filter(pl.col("starting_goalie")).select(
-        "game_id", opponent="team", goalie_id="player_id"
+def scored(multipliers: pl.DataFrame, goals: pl.DataFrame, starts: pl.DataFrame) -> pl.DataFrame:
+    """Each team-game with goal multipliers and start probabilities (goalie_starts) for the
+    opposing goalies: its goals, the reference's prediction (xG times league_finishing), the
+    opposing goalie's gamma mixed over his team's candidates by their pregame p_start, as B3 will
+    mix them, each variant's prediction, and each variant's squared error less the reference's
+    (difference_<variant>). The game's own xG is read only to score; its starter is never read."""
+    keys = ["game_id", "team"]
+    mixed = (
+        multipliers.join(
+            starts.select("game_id", opponent="team", goalie_id="goalie_id", p_start="p_start"),
+            on=["game_id", "opponent", "goalie_id"],
+            how="inner",
+        )
+        .group_by(keys)
+        .agg(
+            pl.col("season", "game_date", "phi", "league_finishing").first(),
+            gamma=(pl.col("p_start") * pl.col("gamma")).sum() / pl.col("p_start").sum(),
+        )
     )
     frame = (
-        multipliers.join(starters, on=["game_id", "opponent", "goalie_id"], how="inner")
-        .join(goals, on=["game_id", "team"], how="inner")
+        mixed.join(goals, on=keys, how="inner")
         .filter(pl.col("league_finishing").is_not_null())
         .with_columns(reference=pl.col("xg") * pl.col("league_finishing"))
         .with_columns(error=(pl.col("reference") - pl.col("goals")) ** 2)
@@ -143,11 +154,12 @@ def markdown_report(
         "",
         "Mean squared error of each team-game's goals on shots with xG. The reference predicts",
         "its actual xG times the league's finishing; each variant multiplies that by the team's",
-        "φ, the opposing starter's gamma, or both. Differences are the variant's error less the",
-        "reference's, paired by team-game, with 95% weekly block bootstrap intervals: below 0 is",
-        "better. Only team-games whose starter was a candidate goalie count. The training seasons",
-        "are in-sample for RAPM's memory and the goalie effect's settings, tuned on them (ADR",
-        "0011): this compares the multipliers, and is not out-of-sample evidence.",
+        "φ, the opposing goalie's gamma mixed over his team's candidates by their pregame start",
+        "probabilities (as B3 will; the starter is never read), or both. Differences are the",
+        "variant's error less the reference's, paired by team-game, with 95% weekly block",
+        "bootstrap intervals: below 0 is better. The training seasons are in-sample for RAPM's",
+        "memory and the goalie effect's settings, tuned on them (ADR 0011): this compares the",
+        "multipliers, and is not out-of-sample evidence.",
         "",
         "| Season | Team-games | Reference | " + " | ".join(TITLES.values()) + " |",
         "| --- | ---: | ---: |" + " --- |" * len(TITLES),

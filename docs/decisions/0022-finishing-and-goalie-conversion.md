@@ -45,10 +45,10 @@ The owner chose among these on 2026-10-03:
 
 **What is stored** (`nhl finishing`):
 - **`finishing`:** each candidate's φ (mean, prior 1, sd), his weighted goals and expected goals, his xG rate with its prior and pull, his share of the team's xG, hours, the pulls, known_utc, the half-life and the stamps.
-- **`goal_multipliers`:** per game, attacking team and opposing candidate goalie: the team's φ, the goalie's γ, their product (B3's factor on the team's xG), x̄ and κ, known_utc and the stamps.
+- **`goal_multipliers`:** per game, attacking team and opposing candidate goalie: the team's φ, the goalie's γ, κ·φ·γ (B3's factor on the team's xG, κ taken as 1 before any is public), x̄ and κ, known_utc and the stamps.
 - **The cutoff:** the latest of RAPM's tuning cutoff (the memory), the goalie effect's (its settings, ADR 0011, 2018-04-09 10:00 UTC for both), the season's pulls', the game's lineups' (whose expected minutes set the shares) and, for `goal_multipliers`, the goalie effect's own. observed_utc is the later of as_of_utc and the cutoff.
 
-**Scored** per season by the command's report, on each team-game's goals from shots with xG: the squared error of its actual xG × κ (the reference), against that times the team's φ, times the opposing starter's γ, and times both. The game's own xG and starter are read only to score. The training seasons are in-sample for RAPM's memory and the goalie effect's settings, so this compares the multipliers and is not out-of-sample evidence. The development and held-out seasons show only their counts until gate 2.
+**Scored** per season by the command's report, on each team-game's goals from shots with xG: the squared error of its actual xG × κ (the reference), against that times the team's φ, times the opposing goalie's γ mixed over his team's candidates by their pregame start probabilities (`goalie_starts`, as B3 will mix them), and times both. The game's own xG is read only to score, and its starter never. The training seasons are in-sample for RAPM's memory and the goalie effect's settings, so this compares the multipliers and is not out-of-sample evidence. The development and held-out seasons show only their counts until gate 2.
 
 ## Backtest evidence
 
@@ -56,7 +56,7 @@ None yet. B3's walk-forward (#106) and gate 2 (#107) score φ and γ through B3 
 
 ## Consequences
 
-- **B3 (#106)** multiplies each team's expected goals by `goal_multipliers`' product for each opposing goalie scenario, weighted as B2 weights them.
+- **B3 (#106)** multiplies each team's xG by `goal_multipliers`' factor for each opposing goalie scenario, weighted as B2 weights them.
 - **2011-12** has φ = 1 and shares by minutes and role, since no earlier season has xG to measure the pulls on.
 - **Defensemen** will mostly sit at φ = 1, as their finishing showed no spread beyond noise; their 4% edge over xG is the xG model's, the same for every team with the same share of defense shots, and the league κ covers it on average.
 - **γ and ΔG** come from the same goalie effect: B3 takes it only through γ (no double counting, plan §5).

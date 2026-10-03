@@ -1437,9 +1437,9 @@ class GoalMultipliers(pa.DataFrameModel):
     ADR 0022): phi, its projected shooters' finishing weighted by their shares of its expected
     xG (Finishing), gamma, the goalie's conversion, 1 less his goals saved above expected per
     unblocked shot (goalie_effects) over the league's xG per such shot (xg_per_shot, null before
-    any is public, when gamma is 1), and multiplier, their product, B3's factor on the team's
-    expected goals with that goalie in net. league_finishing is the league's goals over xG;
-    known_utc the latest game read.
+    any is public, when gamma is 1), and multiplier, their product times league_finishing, the
+    league's goals over xG (1 before any is public), B3's factor on the team's xG with that
+    goalie in net. known_utc is the latest game read.
 
     train_cutoff is the latest of Finishing's, the game's lineups' and the goalie effect's;
     observed_utc the later of as_of_utc and train_cutoff."""

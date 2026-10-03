@@ -31,7 +31,8 @@ def goalies(team: str) -> tuple[int, int]:
 
 def league(seed: int = 13) -> dict[str, pl.DataFrame]:
     """games, stints, actual_lineups (with goalies), lineups (with expected minutes),
-    lineup_replacements, shift_coverage, shots, shot_xg, goalie_effects and players."""
+    lineup_replacements, shift_coverage, shots, shot_xg, goalie_effects, goalie_starts and
+    players."""
     base = rfx.league(seasons=SEASONS)
     rng = np.random.default_rng(seed)
     games, lineups = base["games"], base["lineups"]
@@ -157,5 +158,9 @@ def league(seed: int = 13) -> dict[str, pl.DataFrame]:
         "goalie_effects": pl.DataFrame(effects).with_columns(
             pl.col("season").cast(pl.Int32), pl.col("train_cutoff").cast(UTC)
         ),
+        # The goalie-start model's guess: either goalie, as likely.
+        "goalie_starts": pl.DataFrame(effects)
+        .select("game_id", "season", "game_date", "team", "goalie_id")
+        .with_columns(pl.col("season").cast(pl.Int32), p_start=pl.lit(0.5)),
         "players": lineups.select("player_id").unique().with_columns(name=pl.lit("A Skater")),
     }

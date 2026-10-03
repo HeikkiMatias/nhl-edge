@@ -57,6 +57,21 @@ TRAIN_CUTOFF = max(rapm.TRAIN_CUTOFF, ge.TUNED_CUTOFF)
 VALUES = {"goals": "goals", "xg": "xg", "hours": "hours"}
 
 
+def input_problems(
+    games: pl.DataFrame, shots: pl.DataFrame, shot_xg: pl.DataFrame, last: int
+) -> list[str]:
+    """Why the lake cannot rate finishing up to the season last: a game of 2011-12 on without
+    shots or xG would drop out of its shooters' histories and the pulls unnoticed."""
+    needed = games.filter(pl.col("season").is_between(rapm.FIRST_SEASON, last))
+    problems = []
+    for label, table in (("shots", shots), ("xG", shot_xg)):
+        missing = needed.join(table.select("game_id").unique(), on="game_id", how="anti")
+        for (season,), frame in missing.sort("game_id").group_by("season", maintain_order=True):
+            examples = ", ".join(str(g) for g in frame["game_id"].head(3).to_list())
+            problems.append(f"{season}: {frame.height:,} games without {label}, e.g. {examples}")
+    return sorted(problems)
+
+
 def shooter_games(
     minutes: pl.DataFrame, shots: pl.DataFrame, shot_xg: pl.DataFrame, games: pl.DataFrame
 ) -> pl.DataFrame:
@@ -303,7 +318,8 @@ def multipliers(
     lineups' cutoff (lineup_cutoff, for stamp), and the goal
     multipliers (GoalMultipliers' columns but the stamps, with lineup_cutoff and effect_cutoff
     for stamp): per game, attacking team and the opposing team's candidate goalie (effects,
-    goalie_effects rows), the team's φ, the goalie's gamma and their product. candidates are the
+    goalie_effects rows), the team's φ, the goalie's gamma and their product times the league's
+    finishing (1 before any is public), B3's factor on the team's xG. candidates are the
     lineups rows of the skaters, replacements the lineup_replacements rows, roles is
     league_rates() at the games' as-of times and figures shot_figures(). A team-game without
     candidates is all replacements, at φ = 1."""
@@ -421,7 +437,7 @@ def multipliers(
             "goalie_id",
             "phi",
             "gamma",
-            multiplier=pl.col("phi") * pl.col("gamma"),
+            multiplier=pl.col("league_finishing").fill_null(1.0) * pl.col("phi") * pl.col("gamma"),
             xg_per_shot="xg_per_shot",
             league_finishing="league_finishing",
             known_utc=decayed.later(pl.col("shots_utc"), pl.col("rates_utc")),
