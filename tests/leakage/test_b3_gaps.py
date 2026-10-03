@@ -31,3 +31,16 @@ def test_the_gap_games_results_never_move_the_screen() -> None:
     )
     after = b3_gaps.screen(b3.Tables(**{**LEAGUE.__dict__, "games": flipped}), gaps, {TEST: START})
     assert_frame_equal(before, after)
+
+
+def test_a_result_in_the_gaps_file_never_reaches_the_screen() -> None:
+    games = LEAGUE.games.filter(pl.col("season") == TEST).sort("game_id").head(5)
+    moments = games.select("game_id", prediction_utc="start_utc")
+    predicted, _ = b3.predictions(LEAGUE, moments, TEST, START)
+    gaps = (
+        games.select("season", "game_id", "game_date", "home", "away", "home_score")
+        .join(predicted.select("game_id", p_b3="p_home"), on="game_id")
+        .with_columns(p_b1=pl.col("p_b3") - 0.1, gap=pl.lit(0.1), home_win=pl.lit(1))
+    )
+    screened = b3_gaps.screen(LEAGUE, gaps, {TEST: START})
+    assert not {"home_win", "home_score"} & set(screened.columns)

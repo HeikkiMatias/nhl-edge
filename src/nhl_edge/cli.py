@@ -380,7 +380,7 @@ def backtest(
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.ingest.sbr import SEASON_PAGES
-    from nhl_edge.lake.tables import Lake
+    from nhl_edge.lake.tables import LAKE_DIR, Lake
     from nhl_edge.lineup import minutes as mins
 
     # The hockey-only mode also scores the hockey validation seasons, opened at gate 2 (#107),
@@ -393,10 +393,10 @@ def backtest(
             raise typer.BadParameter(
                 f"the one-time test scores {list(ONE_TIME_SEASONS)} alone", param_hint="--seasons"
             )
-        earlier = _one_time_runs({out / "runs.csv", DEFAULT_BACKTEST_OUT / "runs.csv"})
-        if earlier:
+        record = walk_forward.one_time_record(walk_forward.one_time_ledger(LAKE_DIR))
+        if record:
             raise typer.BadParameter(
-                f"the one-time test already ran: {', '.join(earlier)} (docs/plan.md section 5)",
+                f"the one-time test already ran: {record} (docs/plan.md section 5)",
                 param_hint="--one-time-test",
             )
         roles = roles | {SeasonRole.ONE_TIME_TEST}
@@ -549,23 +549,6 @@ def _b3_tables(lake: "Lake", tables: "b2.Tables") -> "b3.Tables":
     )
 
 
-def _one_time_runs(logs: set[Path]) -> list[str]:
-    """The versions of every logged run that scored the one-time test season."""
-    import csv
-
-    from nhl_edge.backtest.seasons import ONE_TIME_SEASONS
-
-    found: set[str] = set()
-    for log in logs:
-        if not log.exists():
-            continue
-        with log.open(newline="") as handle:
-            for row in csv.DictReader(handle):
-                if any(str(s) in (row.get("seasons") or "").split() for s in ONE_TIME_SEASONS):
-                    found.add(row["version"])
-    return sorted(found)
-
-
 def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path, one_time: bool = False) -> None:
     """B2 and B3 at the as-of time on outcomes alone (ADR 0023), to <out>/hockey-<version>.json,
     with every run logged in <out>/runs.csv."""
@@ -600,23 +583,25 @@ def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path, one_time: bool 
         raise typer.Exit(code=1)
     b2_fits: dict[str, dict[int, b2.B2Model]] = {}
     b3_fits: dict[str, dict[int, b3.B3Model]] = {}
+    now = datetime.now(UTC)
+    run_version = reports.version("backtest-hockey", now)
     try:
         predictions, coverage = walk_forward.hockey_only(
-            games, wanted, tables, b3_tables, b2_fits=b2_fits, b3_fits=b3_fits, one_time=one_time
+            games,
+            wanted,
+            tables,
+            b3_tables,
+            b2_fits=b2_fits,
+            b3_fits=b3_fits,
+            # The one-time test is claimed in its ledger beside the lake before it scores.
+            one_time=walk_forward.one_time_ledger(lake.base_dir) if one_time else None,
+            run_version=run_version,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
     flags = subsets.flags(games, tables.actual_lineups, b3_tables.lineups, wanted)
-    now = datetime.now(UTC)
     report = b3_report.hockey(
-        predictions,
-        coverage,
-        b3_fits,
-        flags,
-        wanted,
-        reports.version("backtest-hockey", now),
-        now,
-        b2_fits=b2_fits,
+        predictions, coverage, b3_fits, flags, wanted, run_version, now, b2_fits=b2_fits
     )
     # One file per run, and every run logged: held-out seasons must not be rerun unseen.
     out.mkdir(parents=True, exist_ok=True)

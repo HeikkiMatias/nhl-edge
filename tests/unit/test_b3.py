@@ -572,6 +572,28 @@ def test_hockey_only_refuses_held_out_seasons() -> None:
             hockey_only(LEAGUE.games, [season], feature_tables(LEAGUE.games, 4), LEAGUE)
 
 
+def test_the_one_time_test_is_claimed_before_it_scores_and_runs_once(tmp_path: Path) -> None:
+    later = league((20232024, 20242025, 20252026), games=40)
+    b2_tables = feature_tables(later.games, 4)
+    ledger = tmp_path / "data" / "one_time_test.txt"
+    # 2025-26 alone, or nothing is claimed.
+    with pytest.raises(ValueError, match="alone"):
+        hockey_only(
+            later.games, [20242025, 20252026], b2_tables, later, one_time=ledger, run_version="v0"
+        )
+    assert not ledger.exists()
+    predictions, _ = hockey_only(
+        later.games, [20252026], b2_tables, later, one_time=ledger, run_version="v1"
+    )
+    assert set(predictions["season"]) == {20252026}
+    assert ledger.read_text().startswith("v1 ")
+    with pytest.raises(ValueError, match="already ran: v1"):
+        hockey_only(later.games, [20252026], b2_tables, later, one_time=ledger, run_version="v2")
+    # Without the ledger, 2025-26 stays held out.
+    with pytest.raises(ValueError, match="held out"):
+        hockey_only(later.games, [20252026], b2_tables, later)
+
+
 def test_hockey_only_scores_the_hockey_validation_seasons() -> None:
     # Gate 2 opens 2023-24 and 2024-25 for B2 against B3 on outcomes (#107).
     later = league((20222023, 20232024), games=60)

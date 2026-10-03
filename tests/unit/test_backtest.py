@@ -342,18 +342,15 @@ def test_the_one_time_test_runs_once(tmp_path: Path, monkeypatch: pytest.MonkeyP
     for message, args in refused.items():
         result = runner.invoke(app, args)
         assert result.exit_code == 2 and message in result.output, result.output
-    # Not yet run: past the gate, to the empty lake's input check.
+    # Not yet run: past the gate, to the empty lake's input check, which stops it before it
+    # claims the ledger beside the lake.
+    ledger = tmp_path / "data" / "one_time_test.txt"
     first = runner.invoke(app, once)
     assert "held out" not in first.output and "already ran" not in first.output
-    assert "run the feature commands" in first.output
-    # Once logged, never again, whichever report directory a run used.
-    log = tmp_path / "reports" / "backtest" / "runs.csv"
-    log.parent.mkdir(parents=True)
-    log.write_text(
-        "run_utc,version,seasons,experiment,model,method,games,log_loss,low,high,train_cutoff\n"
-        "2026-10-03T00:00:00+00:00,backtest-hockey-20261003-abc,20252026,hockey,B3,none,"
-        "1312,0.66,0.65,0.67,\n"
-    )
+    assert "run the feature commands" in first.output and not ledger.exists()
+    # Once claimed, never again, whatever the report directory.
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text("backtest-hockey-20261003-abc 2026-10-03T00:00:00+00:00\n")
     again = runner.invoke(app, [*once, "--out", "elsewhere"])
     flat = " ".join(again.output.replace("│", " ").split())  # the error box wraps lines
     assert again.exit_code == 2 and "already ran: backtest-hockey-20261003-abc" in flat

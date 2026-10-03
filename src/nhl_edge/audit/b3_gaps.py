@@ -83,10 +83,12 @@ def explained(model: b3.B3Model, usable: pl.DataFrame, pairs: pl.DataFrame) -> p
     )
 
 
-def team_flags(tables: b3.Tables, games: pl.Series) -> pl.DataFrame:
-    """Per team-game of games: its expected goals in parts and multiplier, how far its expected
-    goals moved since its previous game (jump), and its lineup flags. Reads the game's own
-    boxscore only for who dressed and who started."""
+def team_flags(tables: b3.Tables, games: pl.Series, goalies: pl.DataFrame) -> pl.DataFrame:
+    """Per team-game of games: its expected goals in parts and multiplier, how far its own
+    strength moved since its previous game (jump), and its lineup flags. goalies are the
+    candidate goalies B3 read for each game (game_id, team, goalie_id, p_start), those known
+    before its prediction. Reads the game's own boxscore only for who dressed and who
+    started."""
     wanted = pl.col("game_id").is_in(games.implode())
     lines = ts.team_lines()
     base, _ = b3.multipliers(tables)
@@ -121,8 +123,8 @@ def team_flags(tables: b3.Tables, games: pl.Series) -> pl.DataFrame:
         .unique()
         .with_columns(has_candidates=pl.lit(True))
     )
-    goalies = (
-        tables.goalie_starts.filter(wanted)
+    candidate_goalies = (
+        goalies.filter(wanted)
         .select("game_id", "team")
         .unique()
         .with_columns(has_goalies=pl.lit(True))
@@ -131,7 +133,7 @@ def team_flags(tables: b3.Tables, games: pl.Series) -> pl.DataFrame:
         team_goalie_games(tables.actual_lineups.filter(wanted))
         .select("game_id", "team", goalie_id="starter")
         .join(
-            tables.goalie_starts.select("game_id", "team", "goalie_id", "p_start"),
+            goalies.select("game_id", "team", "goalie_id", "p_start"),
             on=["game_id", "team", "goalie_id"],
             how="left",
         )
@@ -141,7 +143,7 @@ def team_flags(tables: b3.Tables, games: pl.Series) -> pl.DataFrame:
     return (
         goals.join(missed, on=keys, how="left")
         .join(candidates, on=keys, how="left")
-        .join(goalies, on=keys, how="left")
+        .join(candidate_goalies, on=keys, how="left")
         .join(starters, on=keys, how="left")
         .with_columns(
             pl.col("missed").fill_null(0),
@@ -161,6 +163,8 @@ def screen(tables: b3.Tables, gaps: pl.DataFrame, starts: Mapping[int, datetime]
     each season as the backtest's E1 fold starting at starts[season] and predicting at each
     game's start. Raises if the refit's probability differs from p_b3: the screen would then not
     explain the backtest's gaps."""
+    # The gaps file's own columns only: nothing else it might carry reaches the report.
+    gaps = gaps.select("season", "game_id", "game_date", "home", "away", "p_b3", "p_b1", "gap")
     frames = []
     for season, start in sorted(starts.items()):
         season_gaps = gaps.filter(pl.col("season") == season)
@@ -199,7 +203,7 @@ def screen(tables: b3.Tables, gaps: pl.DataFrame, starts: Mapping[int, datetime]
             raise ValueError(
                 f"B3 refit for {season} differs from the gaps file by {drift}: rerun nhl backtest"
             )
-        teams = team_flags(through, frame["game_id"])
+        teams = team_flags(through, frame["game_id"], ready)
         for side in ("home", "away"):
             renamed = teams.rename({c: f"{side}_{c}" for c in teams.columns if c != "game_id"})
             frame = frame.join(
