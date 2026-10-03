@@ -343,7 +343,8 @@ def backtest(
     calibration, its gaps to B1 above 8 points and its lineup quality, and B3 against B2 overall
     and on gate 2's subsets. E2 refuses implausible openers (ADR 0007), and E2 on every opener is
     reported beside it, as is the diagnostic of SBR's change of closing book (#65). With
-    --hockey-only, B2 and B3 alone, at the as-of time on outcomes, to <out>/hockey.json."""
+    --hockey-only, B2 and B3 alone, at the as-of time on outcomes, to
+    <out>/hockey-<version>.json, logged in <out>/runs.csv."""
     from datetime import UTC
 
     import polars as pl
@@ -517,7 +518,8 @@ def _b3_tables(lake: "Lake", tables: "b2.Tables") -> "b3.Tables":
 
 
 def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path) -> None:
-    """B2 and B3 at the as-of time on outcomes alone (ADR 0023), to <out>/hockey.json."""
+    """B2 and B3 at the as-of time on outcomes alone (ADR 0023), to <out>/hockey-<version>.json,
+    with every run logged in <out>/runs.csv."""
     import json
     from datetime import UTC
 
@@ -547,10 +549,11 @@ def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path) -> None:
             typer.echo(problem, err=True)
         typer.echo("run the feature commands for those seasons", err=True)
         raise typer.Exit(code=1)
+    b2_fits: dict[str, dict[int, b2.B2Model]] = {}
     b3_fits: dict[str, dict[int, b3.B3Model]] = {}
     try:
         predictions, coverage = walk_forward.hockey_only(
-            games, wanted, tables, b3_tables, b3_fits=b3_fits
+            games, wanted, tables, b3_tables, b2_fits=b2_fits, b3_fits=b3_fits
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
@@ -564,10 +567,13 @@ def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path) -> None:
         wanted,
         reports.version("backtest-hockey", now),
         now,
+        b2_fits=b2_fits,
     )
+    # One file per run, and every run logged: held-out seasons must not be rerun unseen.
     out.mkdir(parents=True, exist_ok=True)
-    path = out / b3_report.HOCKEY_FILE
+    path = out / b3_report.hockey_file(report)
     path.write_text(json.dumps(report, indent=2) + "\n")
+    reports.log_runs(b3_report.hockey_runs(report), out)
     typer.echo(f"{path}: {report['version']}")
     for model, body in report["models"].items():
         pooled = body["log_loss"]["pooled"]

@@ -218,9 +218,7 @@ def summary(
 
 
 def write(report: dict[str, Any], out: Path) -> Path:
-    """Write summary.json and append the pooled log losses to runs.csv. When runs.csv's columns
-    change, its earlier rows are carried over onto the new columns, and the file is replaced only
-    once the new one is written."""
+    """Write summary.json and append the pooled log losses to runs.csv (log_runs)."""
     out.mkdir(parents=True, exist_ok=True)
     path = out / "summary.json"
     path.write_text(json.dumps(report, indent=2) + "\n")
@@ -245,6 +243,15 @@ def write(report: dict[str, Any], out: Path) -> Path:
                         "train_cutoff": cutoffs,
                     }
                 )
+    log_runs(rows, out)
+    return path
+
+
+def log_runs(rows: list[dict[str, Any]], out: Path) -> None:
+    """Append rows (RUNS_FIELDS) to out/runs.csv, the log of every backtest run (plan section 7).
+    When runs.csv's columns change, its earlier rows are carried over onto the new columns, and
+    the file is replaced only once the new one is written."""
+    out.mkdir(parents=True, exist_ok=True)
     runs = out / "runs.csv"
     stale = False
     if runs.exists():
@@ -257,11 +264,10 @@ def write(report: dict[str, Any], out: Path) -> Path:
     if runs.exists() and not stale:
         with runs.open("a", newline="") as handle:
             csv.DictWriter(handle, fieldnames=RUNS_FIELDS).writerows(rows)
-        return path
+        return
     rewritten = runs.with_suffix(".csv.tmp")
     with rewritten.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=RUNS_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
     rewritten.replace(runs)
-    return path

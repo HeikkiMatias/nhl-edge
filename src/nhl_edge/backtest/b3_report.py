@@ -25,6 +25,7 @@ import polars as pl
 from nhl_edge.backtest import b2_report
 from nhl_edge.backtest.metrics import DRAWS, LEVEL, SEED, bootstrap, week_of
 from nhl_edge.backtest.subsets import SUBSETS
+from nhl_edge.game.b2 import B2Model
 from nhl_edge.game.b3 import INPUTS, B3Model
 from nhl_edge.lake.schemas import PP_UNIT
 
@@ -33,7 +34,7 @@ REFERENCE = "B2"
 BASELINE = "B1"
 GAP = b2_report.GAP
 GAPS_FILE = "gaps_b3.csv"
-HOCKEY_FILE = "hockey.json"
+HOCKEY = "hockey"
 
 
 def fit_rows(fits: dict[int, B3Model]) -> dict[str, Any]:
@@ -233,15 +234,18 @@ def hockey(
     seasons: list[int],
     run_version: str,
     now: datetime,
+    b2_fits: dict[str, dict[int, B2Model]] | None = None,
 ) -> dict[str, Any]:
-    """The hockey-only mode's report: each model's log loss, B3 against B2 overall and on the
-    subsets, and each model's calibration."""
+    """The hockey-only mode's report: each model's log loss, fits and calibration, and B3
+    against B2 overall and on the subsets."""
     models = {}
     for (model,), rows in predictions.sort("model").group_by("model", maintain_order=True):
         models[str(model)] = {
             "log_loss": _estimates(rows, "log_loss"),
             "calibration": b2_report.calibrated(rows),
         }
+    if b2_fits and REFERENCE in models:
+        models[REFERENCE]["fits"] = b2_report.fit_rows(next(iter(b2_fits.values()), {}))
     if MODEL in models:
         models[MODEL]["fits"] = fit_rows(next(iter(b3_fits.values()), {}))
         models[MODEL][f"paired_against_{REFERENCE}"] = _estimates(
@@ -264,3 +268,34 @@ def hockey(
         },
         "models": models,
     }
+
+
+def hockey_file(report: dict[str, Any]) -> str:
+    """The hockey-only report's file name, one per run: hockey-<version>.json."""
+    return f"{report['version']}.json".replace("backtest-hockey-", f"{HOCKEY}-", 1)
+
+
+def hockey_runs(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """The hockey-only report's rows for runs.csv (reports.RUNS_FIELDS): each model's pooled log
+    loss, so every run on a season is logged (plan section 7)."""
+    rows = []
+    for model, body in report["models"].items():
+        pooled = body["log_loss"]["pooled"]
+        bounds = {k: "" if pooled[k] is None else f"{pooled[k]:.5f}" for k in ("low", "high")}
+        rows.append(
+            {
+                "run_utc": report["run_utc"],
+                "version": report["version"],
+                "seasons": " ".join(map(str, report["seasons"])),
+                "experiment": HOCKEY,
+                "model": model,
+                "method": "none",
+                "games": pooled["games"],
+                "log_loss": f"{pooled['mean']:.5f}",
+                **bounds,
+                "train_cutoff": " ".join(
+                    fit["train_cutoff"] for fit in body.get("fits", {}).values()
+                ),
+            }
+        )
+    return rows

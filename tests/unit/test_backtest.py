@@ -419,9 +419,22 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
         app, ["backtest", "--seasons", "20212022", "--hockey-only", "--out", "hockey"]
     )
     assert hockey.exit_code == 0, hockey.output
-    written = json.loads((tmp_path / "hockey" / "hockey.json").read_text())
+    (written_path,) = (tmp_path / "hockey").glob("hockey-*.json")
+    written = json.loads(written_path.read_text())
+    assert written_path.name == f"{written['version'].replace('backtest-hockey', 'hockey')}.json"
     assert set(written["models"]) == {"B2", "B3"}
     assert written["coverage"]["20212022"]["b3_scored"] == 4
+    assert (
+        set(written["models"]["B2"]["fits"]) == set(written["models"]["B3"]["fits"]) == {"20212022"}
+    )
+    # Every hockey-only run is logged, one row per model.
+    with (tmp_path / "hockey" / "runs.csv").open(newline="") as handle:
+        logged = list(csv.DictReader(handle))
+    assert [(r["experiment"], r["model"], r["games"]) for r in logged] == [
+        ("hockey", "B2", "4"),
+        ("hockey", "B3", "4"),
+    ]
+    assert all(r["version"] == written["version"] and r["train_cutoff"] for r in logged)
 
 
 def test_a_market_below_100_percent_is_counted_and_left_out() -> None:
