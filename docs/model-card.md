@@ -4,12 +4,19 @@ Current production model, how it scored, and its known weaknesses. It is updated
 
 ## Current model
 
-None. The backtest has the two market baselines and phase 2's model:
+None. The backtest has the two market baselines, phase 2's model and phase 3's:
 - **B0** is the de-vigged SBR moneyline, with nothing fitted, under the default multiplicative method (ADR 0008).
 - **B1** is the recalibrated market, a logistic regression on B0's log-odds fitted per test season on the earlier seasons.
 - **B2** is the team and goalie model (ADR 0013). It is an L2 logistic regression on team strength, goalie effects, rest and travel and empty seats, with the season home edge as a fixed term. Each fold fits it on earlier games with their actual starters. It predicts by averaging over the goalie-start model's pairs of starters, and reads no price. Gate 1 (#79) judges it against B1.
+- **B3** is the player layer (ADR 0023). It is B2's model with one input, Δĝ, in place of team strength and goalie effects. Δĝ is the home team's expected goals less the away team's, built from:
+  - the projected lineups and their minutes;
+  - RAPM ratings and league rates;
+  - expected power plays;
+  - finishing and the opposing goalie's conversion.
 
-The run is backtest `backtest-20261001-388bb85` on the development seasons 2018-19 and 2021-22. E2 refuses implausible SBR openers (ADR 0007). B0 and B1 are unchanged from `backtest-20260930-7301709`.
+  It keeps h_s, rest, travel, empty seats, B2's L2 of 100 and B2's mixture over goalie pairs. Each fold trains it on the projected skaters and the starters who played. It reads no price. Gate 2 (#107) judges it against B2.
+
+The run is backtest `backtest-20261003-b1a7b04` on the development seasons 2018-19 and 2021-22. E2 refuses implausible SBR openers (ADR 0007). B0, B1 and B2 are unchanged from `backtest-20261001-388bb85`.
 
 ## Metrics
 
@@ -17,24 +24,32 @@ Every metric is reported with a 95% weekly block bootstrap interval, pooled over
 
 | Metric | B0 | B1 | B2 | B3 | Blend |
 | --- | --- | --- | --- | --- | --- |
-| Log loss, E1 (close) | 0.6571 [0.6469, 0.6668] | 0.6567 [0.6456, 0.6670] | 0.6679 [0.6607, 0.6749] | | |
-| Log loss, E2 (opener) | 0.6603 [0.6505, 0.6698] | 0.6598 [0.6491, 0.6702] | 0.6677 [0.6605, 0.6748] | | |
-| Paired log-loss difference against B1, E1 | +0.0004 [-0.0005, +0.0013] | reference | +0.0112 [+0.0044, +0.0185] | | |
-| Paired log-loss difference against B1, E2 | +0.0005 [-0.0006, +0.0015] | reference | +0.0078 [+0.0013, +0.0146] | | |
-| Calibration intercept | | | E1 -0.098 [-0.211, +0.015]; E2 -0.099 [-0.209, +0.013] | | |
-| Calibration slope | | | E1 1.35 [1.09, 1.62]; E2 1.35 [1.10, 1.62] | | |
+| Log loss, E1 (close) | 0.6571 [0.6469, 0.6668] | 0.6567 [0.6456, 0.6670] | 0.6679 [0.6607, 0.6749] | 0.6600 [0.6521, 0.6678] | |
+| Log loss, E2 (opener) | 0.6603 [0.6505, 0.6698] | 0.6598 [0.6491, 0.6702] | 0.6677 [0.6605, 0.6748] | 0.6598 [0.6519, 0.6675] | |
+| Paired log-loss difference against B1, E1 | +0.0004 [-0.0005, +0.0013] | reference | +0.0112 [+0.0044, +0.0185] | +0.0033 [-0.0013, +0.0077] | |
+| Paired log-loss difference against B1, E2 | +0.0005 [-0.0006, +0.0015] | reference | +0.0078 [+0.0013, +0.0146] | -0.0000 [-0.0047, +0.0043] | |
+| Paired log-loss difference against B2, E1 | | | reference | -0.0079 [-0.0130, -0.0028] | |
+| Paired log-loss difference against B2, E2 | | | reference | -0.0078 [-0.0130, -0.0028] | |
+| Calibration intercept | | | E1 -0.098 [-0.211, +0.015]; E2 -0.099 [-0.209, +0.013] | E1 -0.088 [-0.194, +0.020]; E2 -0.089 [-0.194, +0.018] | |
+| Calibration slope | | | E1 1.35 [1.09, 1.62]; E2 1.35 [1.10, 1.62] | E1 1.34 [1.11, 1.58]; E2 1.34 [1.12, 1.58] | |
 | E3 CLV under the frozen policy | | | | | |
 
 ## Artifact versions
 
 | Component | Version | train_cutoff |
 | --- | --- | --- |
-| Backtest (B0, B1, B2; E2 refuses implausible openers, with every opener as a sensitivity) | backtest-20261001-388bb85 | per fold, below |
+| Backtest (B0 to B3; E2 refuses implausible openers, with every opener as a sensitivity) | backtest-20261003-b1a7b04 | per fold, below |
 | B0 | the de-vigged market (multiplicative, ADR 0008) | none: B0 fits nothing |
-| B1, 2018-19 fold (E1 and E2) | backtest-20261001-388bb85 | 2018-04-09 10:00 UTC |
-| B1, 2021-22 fold (E1 and E2) | backtest-20261001-388bb85 | 2021-05-20 10:00 UTC |
-| B2, 2018-19 fold (E1 and E2), L2 100 tuned by b2-20261001-fe11def | backtest-20261001-388bb85 | 2018-04-09 10:00 UTC |
-| B2, 2021-22 fold (E1 and E2) | backtest-20261001-388bb85 | 2021-05-20 10:00 UTC |
+| B1, 2018-19 fold (E1 and E2) | backtest-20261003-b1a7b04 | 2018-04-09 10:00 UTC |
+| B1, 2021-22 fold (E1 and E2) | backtest-20261003-b1a7b04 | 2021-05-20 10:00 UTC |
+| B2, 2018-19 fold (E1 and E2), L2 100 tuned by b2-20261001-fe11def | backtest-20261003-b1a7b04 | 2018-04-09 10:00 UTC |
+| B2, 2021-22 fold (E1 and E2) | backtest-20261003-b1a7b04 | 2021-05-20 10:00 UTC |
+| B3, 2018-19 fold (E1 and E2), B2's L2 100 | backtest-20261003-b1a7b04 | 2018-04-09 10:00 UTC |
+| B3, 2021-22 fold (E1 and E2) | backtest-20261003-b1a7b04 | 2021-05-20 10:00 UTC |
+| Lineup projection and minutes (ADR 0017, 0018) | lineup-20261002-6297f8c | per season, before its first game |
+| RAPM ratings and league rates (ADR 0019, 0020, 0011) | rapm-20261003-86a736f | 2018-04-09 10:00 UTC (tuning) |
+| Penalty rates and expected power plays (ADR 0021) | power-plays-20261003-86a736f | 2018-04-09 10:00 UTC (tuning), then per season |
+| Finishing and goal multipliers (ADR 0022) | finishing-20261003-f87acde | 2018-04-09 10:00 UTC (tuning), then per season |
 | Team strength ΔS (ADR 0011) | team-strength-20261001-1b2a5b8 | 2018-04-09 10:00 UTC (tuning) |
 | Goalie-start model (ADR 0012) | goalie-start-20261001-784c4fb | per season, before its first game |
 | Goalie effects ΔG (ADR 0011) | goalie-effect-20261001-c05c300 | 2018-04-09 10:00 UTC (tuning) |
@@ -73,6 +88,37 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
 - **Weights** (on standardized inputs, 2021-22 fold): ΔS 0.29, ΔG 0.06, home back-to-back -0.08, away back-to-back +0.09. Rest, travel, time zones and empty seats are all within 0.03.
 - **Lineup quality:** the goalie-start model's Brier score over the team-games of the games B2 scored is 0.415 [0.404, 0.426] on E1 and 0.415 [0.405, 0.427] on E2 (0.405 in 2018-19, 0.424 in 2021-22). 0.9% of starters were not among its candidates.
 - **Training on the starters who played** (ADR 0013): Codex read hard rule 9 as forbidding it (P0 on #90). The owner kept it, since the rule governs predictions, and no game's own lineup feeds its own prediction.
+
+**B3 (ADR 0023), from `backtest-20261003-b1a7b04`:**
+- **It beats B2.** B3 minus B2 is -0.0079 [-0.0130, -0.0028] on E1 and -0.0078 [-0.0130, -0.0028] on E2.
+  - Per season on E1: -0.0066 [-0.0137, +0.0000] in 2018-19 and -0.0091 [-0.0163, -0.0025] in 2021-22.
+  - Its own log loss per season is 0.6737 and 0.6467 on E1.
+- **It is level with the market at the opener, and short of it at the close.** B3 minus B1 is -0.0000 [-0.0047, +0.0043] on E2 and +0.0033 [-0.0013, +0.0077] on E1.
+  - Per season on E1: +0.0010 [-0.0067, +0.0089] and +0.0056 [+0.0004, +0.0106].
+  - Being level with B1 is not an edge: the blend (phase 4) is what must add information beyond the market.
+- **Gate 2's subsets** (B3 minus B2 on E1; a game is in a subset if either team qualifies):
+
+  | Subset | Games | B3 minus B2 |
+  | --- | --- | --- |
+  | Trade | 1,652 | -0.0093 [-0.0151, -0.0035] |
+  | Injury | 1,811 | -0.0101 [-0.0155, -0.0046] |
+  | Lineup change | 39 | -0.0394, no interval |
+  | Any | 2,229 | -0.0085 [-0.0134, -0.0035] |
+
+  E2 is within 0.0002 of E1 on each.
+  - **The subsets are broad, as defined.** A skater counts as traded for 10 of his games after any move, an offseason signing included. A regular counts as injured when he is missing for any reason.
+  - **Every lineup change falls in an opening week.** The projection reads only earlier boxscores, so in season it never drops 3 of the previous game's skaters. The 39 games fall in one week of each season, which a weekly block bootstrap cannot resample, so the report gives them no interval.
+  - Gate 2 (#107) weighs these definitions.
+- **It is under-confident, like B2.** The calibration slope is 1.34 [1.11, 1.58] on E1 (2018-19 1.22 [0.85, 1.58], 2021-22 1.42 [1.15, 1.73]), and the intercept is -0.088 [-0.194, +0.020].
+- **Gaps above 8 points against B1** (hard rule 8): 411 of 2,583 games on E1 (203 in 2018-19, 208 in 2021-22) and 359 of 2,573 on E2. That is half of B2's. 26 exceed 15 points and 2 exceed 20. They are listed in `reports/backtest/gaps_b3.csv` without results. Three of the five largest are New Jersey's games in February and March 2019, where B3 gives New Jersey about 20 points more than the market does. Their review is part of gate 2 (#107).
+- **Weights** (standardized inputs, 2021-22 fold): Δĝ 0.34, home back-to-back -0.07, away back-to-back +0.08. Rest, travel, time zones and empty seats are all within 0.03. The 2018-19 fold gives Δĝ 0.31.
+- **Training games:** 8,138 for the 2018-19 fold and 11,359 for the 2021-22 fold, from 2011-12. The three games of 2011-12's opening night have no RAPM league rate, since nothing was public before them, and drop out.
+- **Lineup quality on the scored games** (E1):
+  - the projection's 5v5 minutes are off by 1.81 [1.78, 1.83] minutes per dressed skater;
+  - its power-play unit names 76.1% [75.0%, 77.2%] of the actual top five;
+  - the goalie-start Brier score is 0.415 [0.404, 0.426].
+- **An expansion team's first game** has no candidate skaters, so it plays its replacements, rated 0. Seattle on 2021-10-12 is the one such game in these seasons.
+- **The training seasons are in-sample for B3's inputs.** RAPM's, the penalty model's and finishing's settings were tuned on 2010-11 to 2017-18 (ADR 0011). No B3 result on those seasons counts as out-of-sample.
 
 **Held-out seasons seen for data format only** (#96, PR #108):
 - **What was seen:** the first draft of the `penalties` and `faceoffs` tables surveyed every cached season, 2023-24, 2025-26 and the first 2026-27 games included. It recorded which penalty codes exist and which fields can be blank, and it checked the faceoff zones of 200 games of 2023-24.

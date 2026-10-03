@@ -12,6 +12,7 @@ from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, SEASON_ROLES
 if TYPE_CHECKING:
     import polars as pl
 
+    from nhl_edge.game import b2, b3
     from nhl_edge.lake.status import TableState
     from nhl_edge.lake.tables import Lake
 
@@ -325,23 +326,41 @@ def backtest(
         str, typer.Option(help="Comma-separated seasons as 20182019.")
     ] = DEFAULT_BACKTEST_SEASONS,
     out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_BACKTEST_OUT,
+    hockey_only: Annotated[
+        bool,
+        typer.Option(
+            "--hockey-only",
+            help="Score B2 and B3 at the as-of time on outcomes alone, for seasons without prices.",
+        ),
+    ] = False,
 ) -> None:
     """Run the walk-forward backtest on the SBR archive, for E1 (the close) and E2 (the opener):
-    B0 under each de-vig method, B1 fitted per season on the earlier seasons' prices, and B2, the
-    team and goalie model (ADR 0013), with its calibration, its gaps to B1 above 8 points and the
-    goalie-start model's Brier score. E2 refuses implausible openers (ADR 0007), and E2 on every
-    opener is reported beside it, as is the diagnostic of SBR's change of closing book (#65)."""
+    B0 under each de-vig method, B1 fitted per season on the earlier seasons' prices, B2, the
+    team and goalie model (ADR 0013), and B3, the player layer (ADR 0023), each with its
+    calibration, its gaps to B1 above 8 points and its lineup quality, and B3 against B2 overall
+    and on gate 2's subsets. E2 refuses implausible openers (ADR 0007), and E2 on every opener is
+    reported beside it, as is the diagnostic of SBR's change of closing book (#65). With
+    --hockey-only, B2 and B3 alone, at the as-of time on outcomes, to <out>/hockey.json."""
     from datetime import UTC
 
     import polars as pl
 
-    from nhl_edge.backtest import b2_report, book_era, reports, sensitivity, walk_forward
+    from nhl_edge.backtest import (
+        b2_report,
+        b3_report,
+        book_era,
+        reports,
+        sensitivity,
+        subsets,
+        walk_forward,
+    )
     from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
-    from nhl_edge.game import b2
+    from nhl_edge.game import b2, b3
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.ingest.sbr import SEASON_PAGES
     from nhl_edge.lake.tables import Lake
+    from nhl_edge.lineup import minutes as mins
 
     try:
         wanted = sorted(set(parse_seasons(seasons)))
@@ -354,6 +373,10 @@ def backtest(
             "until their phase (docs/plan.md section 5, #10)",
             param_hint="--seasons",
         )
+    lake = Lake()
+    if hockey_only:
+        _hockey_backtest(lake, wanted, out)
+        return
     # B1 is fitted on every open SBR season before the test season, so those need prices too.
     history = [s for s in SEASON_PAGES if s in OPEN_SEASONS]
     first = [season for season in wanted if season <= min(history)]
@@ -361,7 +384,6 @@ def backtest(
         raise typer.BadParameter(
             f"{first} have no earlier SBR season to fit B1 on", param_hint="--seasons"
         )
-    lake = Lake()
     needed = set(wanted) | {s for s in history if s < max(wanted)}
     sbr_odds = lake.read("sbr_odds").filter(pl.col("season").is_in(needed))
     missing = sorted(needed - set(sbr_odds["season"].unique().to_list()))
@@ -393,16 +415,26 @@ def backtest(
             )
         ),
     )
+    # B3 (ADR 0023) reads the player layer's tables, which cover every game from 2011-12.
+    b3_tables = _b3_tables(lake, tables)
     problems = b2.input_problems(tables, max(wanted), EXPECTED_GAMES)
+    problems += b3.input_problems(b3_tables, max(wanted))
     if problems:
         for problem in problems:
             typer.echo(problem, err=True)
         typer.echo("run the feature commands for those seasons", err=True)
         raise typer.Exit(code=1)
     b2_fits: dict[str, dict[int, b2.B2Model]] = {}
+    b3_fits: dict[str, dict[int, b3.B3Model]] = {}
     try:
         predictions, coverage, fits = walk_forward.run(
-            sbr_odds, games, wanted, b2_tables=tables, b2_fits=b2_fits
+            sbr_odds,
+            games,
+            wanted,
+            b2_tables=tables,
+            b2_fits=b2_fits,
+            b3_tables=b3_tables,
+            b3_fits=b3_fits,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
@@ -417,10 +449,25 @@ def backtest(
         tables.goalie_starts,
         tables.actual_lineups,
     )
+    # Gate 2's subsets, fixed from boxscores and the projection (ADR 0023).
+    flags = subsets.flags(games, tables.actual_lineups, b3_tables.lineups, wanted)
+    scored_boxscores = tables.actual_lineups.filter(pl.col("season").is_in(wanted))
+    report = b3_report.add(
+        report,
+        predictions,
+        b3_fits,
+        games,
+        tables.goalie_starts,
+        tables.actual_lineups,
+        b3_tables.lineups,
+        mins.lake_minutes(lake, scored_boxscores, max(wanted)),
+        flags,
+    )
     report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
     report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}
     path = reports.write(report, out)
     b2_report.write_gaps(predictions, games, out)
+    b3_report.write_gaps(predictions, games, out)
     typer.echo(f"{path}: {report['version']}")
     parts = [(name, body) for name, body in report["experiments"].items()]
     parts += [(f"E2 {name}", body["E2"]) for name, body in report["sensitivity"].items()]
@@ -439,6 +486,89 @@ def backtest(
             f"  {name}: B0 E2 minus E1 {cost['mean']:+.4f} [{cost['low']:+.4f}, "
             f"{cost['high']:+.4f}]; E1 B0 minus B1 {gain['mean']:+.4f} [{gain['low']:+.4f}, "
             f"{gain['high']:+.4f}] over {gain['games']:,} games"
+        )
+
+
+def _b3_tables(lake: "Lake", tables: "b2.Tables") -> "b3.Tables":
+    """B3's tables (ADR 0023), sharing B2's schedule terms, goalie starts and boxscores."""
+    from nhl_edge.game.b3 import Tables
+
+    return Tables(
+        games=tables.games,
+        schedule_terms=tables.schedule_terms,
+        goalie_starts=tables.goalie_starts,
+        actual_lineups=tables.actual_lineups,
+        lineups=lake.read("lineups"),
+        lineup_replacements=lake.read("lineup_replacements"),
+        player_ratings=lake.read("player_ratings"),
+        rapm_terms=lake.read("rapm_terms"),
+        expected_power_plays=lake.read("expected_power_plays"),
+        goal_multipliers=lake.read("goal_multipliers"),
+    )
+
+
+def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path) -> None:
+    """B2 and B3 at the as-of time on outcomes alone (ADR 0023), to <out>/hockey.json."""
+    import json
+    from datetime import UTC
+
+    from nhl_edge.backtest import b3_report, reports, subsets, walk_forward
+    from nhl_edge.game import b2, b3
+    from nhl_edge.ingest.games import EXPECTED_GAMES
+
+    games = lake.read("games")
+    tables = b2.Tables(
+        games,
+        *(
+            lake.read(name)
+            for name in (
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        ),
+    )
+    b3_tables = _b3_tables(lake, tables)
+    problems = b2.input_problems(tables, max(wanted), EXPECTED_GAMES)
+    problems += b3.input_problems(b3_tables, max(wanted))
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run the feature commands for those seasons", err=True)
+        raise typer.Exit(code=1)
+    b3_fits: dict[str, dict[int, b3.B3Model]] = {}
+    try:
+        predictions, coverage = walk_forward.hockey_only(
+            games, wanted, tables, b3_tables, b3_fits=b3_fits
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    flags = subsets.flags(games, tables.actual_lineups, b3_tables.lineups, wanted)
+    now = datetime.now(UTC)
+    report = b3_report.hockey(
+        predictions,
+        coverage,
+        b3_fits,
+        flags,
+        wanted,
+        reports.version("backtest-hockey", now),
+        now,
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / b3_report.HOCKEY_FILE
+    path.write_text(json.dumps(report, indent=2) + "\n")
+    typer.echo(f"{path}: {report['version']}")
+    for model, body in report["models"].items():
+        pooled = body["log_loss"]["pooled"]
+        spread = (
+            "no interval: one week a season"
+            if pooled["low"] is None
+            else f"[{pooled['low']:.4f}, {pooled['high']:.4f}]"
+        )
+        typer.echo(
+            f"  {model}: log loss {pooled['mean']:.4f} {spread} over {pooled['games']:,} games"
         )
 
 

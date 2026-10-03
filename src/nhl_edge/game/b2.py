@@ -80,21 +80,27 @@ class Tables:
     actual_lineups: pl.DataFrame
 
 
-def game_inputs(tables: Tables) -> pl.DataFrame:
-    """One row per game with ΔS, the schedule inputs and the h_s offset, its as-of time and when
-    its rows became known (observed_utc, the later of the two tables')."""
-    strength = tables.team_strength.select(
-        "game_id", "delta_s", s_as_of="as_of_utc", s_observed="observed_utc"
-    )
-    terms = tables.schedule_terms
+SCHEDULE_INPUTS = (
+    "home_back_to_back",
+    "away_back_to_back",
+    "rest_diff",
+    "travel_diff",
+    "home_tz",
+    "away_tz",
+    "empty_seats",
+)
+
+
+def schedule_inputs(terms: pl.DataFrame) -> pl.DataFrame:
+    """One row per game of schedule_terms with the schedule inputs (SCHEDULE_INPUTS), the h_s
+    offset, its as-of time and when it became known. B3 shares them (ADR 0023)."""
     neutral = pl.col("neutral_site")
-    return terms.join(strength, on="game_id").select(
+    return terms.select(
         "game_id",
         "season",
         "game_date",
         "home",
         "away",
-        "delta_s",
         home_back_to_back=pl.col("home_back_to_back").cast(pl.Float64),
         away_back_to_back=pl.col("away_back_to_back").cast(pl.Float64),
         rest_diff=(pl.col("home_rest_days") - pl.col("away_rest_days")).cast(pl.Float64),
@@ -103,8 +109,32 @@ def game_inputs(tables: Tables) -> pl.DataFrame:
         away_tz=pl.col("away_tz_shift").abs(),
         empty_seats=pl.when(neutral).then(0.0).otherwise(1 - pl.col("capacity_share")),
         offset=pl.when(neutral).then(0.0).otherwise(pl.col("h_s")),
-        as_of_utc=pl.max_horizontal("as_of_utc", "s_as_of"),
-        observed_utc=pl.max_horizontal("observed_utc", "s_observed"),
+        as_of_utc="as_of_utc",
+        observed_utc="observed_utc",
+    )
+
+
+def game_inputs(tables: Tables) -> pl.DataFrame:
+    """One row per game with ΔS, the schedule inputs and the h_s offset, its as-of time and when
+    its rows became known (observed_utc, the later of the two tables')."""
+    strength = tables.team_strength.select(
+        "game_id", "delta_s", s_as_of="as_of_utc", s_observed="observed_utc"
+    )
+    return (
+        schedule_inputs(tables.schedule_terms)
+        .join(strength, on="game_id")
+        .select(
+            "game_id",
+            "season",
+            "game_date",
+            "home",
+            "away",
+            "delta_s",
+            *SCHEDULE_INPUTS,
+            "offset",
+            as_of_utc=pl.max_horizontal("as_of_utc", "s_as_of"),
+            observed_utc=pl.max_horizontal("observed_utc", "s_observed"),
+        )
     )
 
 

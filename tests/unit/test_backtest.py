@@ -9,6 +9,7 @@ import market_history
 import polars as pl
 import pytest
 from b2_fixtures import feature_tables
+from b3_fixtures import player_tables
 from test_sbr import NEW, NEW_SCHEDULE, results_empty
 from typer.testing import CliRunner
 
@@ -16,7 +17,7 @@ from nhl_edge.backtest import reports
 from nhl_edge.backtest.metrics import bootstrap, log_loss
 from nhl_edge.backtest.walk_forward import Coverage, b0, outcomes, run
 from nhl_edge.cli import app
-from nhl_edge.game import b2
+from nhl_edge.game import b2, b3
 from nhl_edge.ingest.games import EXPECTED_GAMES
 from nhl_edge.ingest.sbr import match_season, parse_season
 from nhl_edge.lake.schemas import Games, SbrOdds, dtypes
@@ -357,10 +358,26 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         Lake,
         "read",
-        lambda self, name: (
+        lambda self, name, seasons=None: (
             getattr(tables, name)
             if name in b2.TABLES or name == "actual_lineups"
-            else stored(self, name)
+            else stored(self, name, seasons)
+        ),
+    )
+    # B3 needs the player layer's tables (ADR 0023).
+    no_players = runner.invoke(app, ["backtest", "--seasons", "20212022"])
+    assert no_players.exit_code == 1
+    assert "games without lineups" in no_players.output
+    players = player_tables(lake.read("games"), tables)
+    monkeypatch.setattr(
+        Lake,
+        "read",
+        lambda self, name, seasons=None: (
+            getattr(tables, name)
+            if name in b2.TABLES or name == "actual_lineups"
+            else getattr(players, name)
+            if name in b3.TABLES or name == "lineup_replacements"
+            else stored(self, name, seasons)
         ),
     )
     result = runner.invoke(app, ["backtest", "--seasons", "20212022", "--out", "out"])
@@ -382,6 +399,20 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert "gaps_over_8_points" in summary["experiments"]["E1"]["models"]["B2"]
     assert (tmp_path / "out" / "gaps.csv").exists()
     assert "goalie_starts" in summary["experiments"]["E2"]["models"]["B2"]["lineup_quality"]
+    # B3 beside B2, on the same games and training games, with its own gaps file.
+    assert "E1 B3 none: log loss" in result.output
+    assert e2["b3_scored"] == e2["scored"] and e2["b3_trained_on"] == e2["b2_trained_on"]
+    b3_model = summary["experiments"]["E2"]["models"]["B3"]
+    assert set(b3_model) >= {"paired_against_B2", "gate_2_subsets", "lineup_quality"}
+    assert (tmp_path / "out" / "gaps_b3.csv").exists()
+    # The hockey-only mode scores B2 and B3 on every game at the as-of time.
+    hockey = runner.invoke(
+        app, ["backtest", "--seasons", "20212022", "--hockey-only", "--out", "hockey"]
+    )
+    assert hockey.exit_code == 0, hockey.output
+    written = json.loads((tmp_path / "hockey" / "hockey.json").read_text())
+    assert set(written["models"]) == {"B2", "B3"}
+    assert written["coverage"]["20212022"]["b3_scored"] == 4
 
 
 def test_a_market_below_100_percent_is_counted_and_left_out() -> None:
