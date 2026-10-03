@@ -41,7 +41,7 @@ The owner chose among these on 2026-10-03:
 
 **A team's φ.** Each candidate's share is e·r over the team's Σ e·r, with e his expected minutes (`exp_5v5 + exp_pp + exp_pk`, his probability of dressing in) and r his xG rate; the replacement skaters (ADR 0018) take their minutes at their role's rate and φ = 1. The team's φ is the shares' weighted average of φ.
 
-**A goalie's γ.** For each candidate goalie in `goalie_effects`: γ = 1 − effect / x̄, with x̄ the league's xG per unblocked shot over the shots public before the as-of time, in the game's season and the one before (team strength's league window); γ = 1 before any shot with xG is public, when the effect is 0 anyway. The effect keeps its frozen settings, so γ adds nothing to tune.
+**A goalie's γ.** For each candidate goalie in `goalie_effects`: γ = 1 − effect / x̄, with x̄ the league's xG per unblocked shot over the shots public before the as-of time, in the game's season and the one before (team strength's league window); γ = 1 before any shot with xG is public, when the effect is 0 anyway, and for an opponent without candidate goalies (a new team's first game: Vegas's in 2017-18, Seattle's in 2021-22), which gets one row without a goalie, as B2 takes a missing goalie as average. The effect keeps its frozen settings, so γ adds nothing to tune.
 
 **What is stored** (`nhl finishing`):
 - **`finishing`:** each candidate's φ (mean, prior 1, sd), his weighted goals and expected goals, his xG rate with its prior and pull, his share of the team's xG, hours, the pulls, known_utc, the half-life and the stamps.

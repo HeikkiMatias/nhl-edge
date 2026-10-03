@@ -1439,7 +1439,9 @@ class GoalMultipliers(pa.DataFrameModel):
     unblocked shot (goalie_effects) over the league's xG per such shot (xg_per_shot, null before
     any is public, when gamma is 1), and multiplier, their product times league_finishing, the
     league's goals over xG (1 before any is public), B3's factor on the team's xG with that
-    goalie in net. known_utc is the latest game read.
+    goalie in net. An opponent without candidate goalies (a new team's first game) gets one row
+    with goalie_id null and gamma 1, as B2 takes a missing goalie as average. known_utc is the
+    latest game read.
 
     train_cutoff is the latest of Finishing's, the game's lineups' and the goalie effect's;
     observed_utc the later of as_of_utc and train_cutoff."""
@@ -1449,7 +1451,7 @@ class GoalMultipliers(pa.DataFrameModel):
     game_date: pl.Date
     team: pl.String = pa.Field(str_matches=TRI_CODE)
     opponent: pl.String = pa.Field(str_matches=TRI_CODE)
-    goalie_id: pl.Int64
+    goalie_id: pl.Int64 = pa.Field(nullable=True)
     phi: pl.Float64 = pa.Field(gt=0)
     gamma: pl.Float64 = pa.Field(gt=0)
     multiplier: pl.Float64 = pa.Field(gt=0)

@@ -322,7 +322,8 @@ def multipliers(
     finishing (1 before any is public), B3's factor on the team's xG. candidates are the
     lineups rows of the skaters, replacements the lineup_replacements rows, roles is
     league_rates() at the games' as-of times and figures shot_figures(). A team-game without
-    candidates is all replacements, at φ = 1."""
+    candidates is all replacements, at φ = 1; one whose opponent has no candidate goalie gets a
+    row without a goalie, at gamma = 1."""
     seasons = rated["season"].unique().implode()
     scheduled = games.filter(pl.col("season").is_in(seasons)).select(
         "game_id",
@@ -414,7 +415,9 @@ def multipliers(
     )
     rows = (
         teams.select("game_id", "season", "game_date", "as_of_utc", "team", "opponent", "phi")
-        .join(goalies, on=["game_id", "opponent"], how="inner")
+        # An opponent without candidate goalies (a new team's first game) gets one row without a
+        # goalie, at gamma = 1, as B2 takes a missing goalie as average.
+        .join(goalies, on=["game_id", "opponent"], how="left")
         .join(
             figures.select("season", "as_of_utc", "xg_per_shot", shots_utc="known_utc"),
             on=["season", "as_of_utc"],
@@ -424,7 +427,7 @@ def multipliers(
         .join(read, on="game_id", how="left")
         .join(fitted, on="game_id", how="left")
         .with_columns(
-            gamma=pl.when(pl.col("xg_per_shot").is_not_null())
+            gamma=pl.when(pl.col("xg_per_shot").is_not_null() & pl.col("effect").is_not_null())
             .then(1 - pl.col("effect") / pl.col("xg_per_shot"))
             .otherwise(1.0)
         )

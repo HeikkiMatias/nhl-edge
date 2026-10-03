@@ -40,28 +40,33 @@ def team_goals(shots: pl.DataFrame, shot_xg: pl.DataFrame) -> pl.DataFrame:
 
 
 def scored(multipliers: pl.DataFrame, goals: pl.DataFrame, starts: pl.DataFrame) -> pl.DataFrame:
-    """Each team-game with goal multipliers and start probabilities (goalie_starts) for the
-    opposing goalies: its goals, the reference's prediction (xG times league_finishing), the
-    opposing goalie's gamma mixed over his team's candidates by their pregame p_start, as B3 will
-    mix them, each variant's prediction, and each variant's squared error less the reference's
-    (difference_<variant>). The game's own xG is read only to score; its starter is never read."""
+    """Each team-game with goal multipliers: its goals, the reference's prediction (xG times
+    league_finishing, 1 before any is public), the opposing goalie's gamma mixed over his team's
+    candidates by their pregame p_start (starts, goalie_starts), as B3 will mix them, and each
+    variant's squared error less the reference's (difference_<variant>). The game's own xG is
+    read only to score; its starter is never read."""
     keys = ["game_id", "team"]
+    weight = pl.col("p_start").fill_null(0.0)
     mixed = (
         multipliers.join(
             starts.select("game_id", opponent="team", goalie_id="goalie_id", p_start="p_start"),
             on=["game_id", "opponent", "goalie_id"],
-            how="inner",
+            how="left",
         )
         .group_by(keys)
         .agg(
             pl.col("season", "game_date", "phi", "league_finishing").first(),
-            gamma=(pl.col("p_start") * pl.col("gamma")).sum() / pl.col("p_start").sum(),
+            # Without start probabilities, such as an opponent without candidate goalies (gamma
+            # 1), the candidates count alike.
+            gamma=pl.when(weight.sum() > 0)
+            .then((weight * pl.col("gamma")).sum() / weight.sum())
+            .otherwise(pl.col("gamma").mean()),
         )
     )
     frame = (
         mixed.join(goals, on=keys, how="inner")
-        .filter(pl.col("league_finishing").is_not_null())
-        .with_columns(reference=pl.col("xg") * pl.col("league_finishing"))
+        # The league's finishing is taken as 1 before any is public, as in the multiplier.
+        .with_columns(reference=pl.col("xg") * pl.col("league_finishing").fill_null(1.0))
         .with_columns(error=(pl.col("reference") - pl.col("goals")) ** 2)
     )
     return frame.with_columns(

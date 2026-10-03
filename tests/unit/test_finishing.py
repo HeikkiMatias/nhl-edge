@@ -273,8 +273,11 @@ def test_a_team_s_phi_weights_its_shooters_by_their_expected_xg_and_gamma_follow
     assert bos["multiplier"].to_list() == pytest.approx([1.02 * phi * 0.9, 1.02 * phi * 1.05])
     assert bos["known_utc"][0] == as_of - timedelta(hours=4)
     assert bos["effect_cutoff"].to_list() == [cutoff, cutoff + timedelta(days=1)]
-    # TOR faces no candidate goalie of BOS here, so it has no rows.
-    assert rows.filter(pl.col("team") == "TOR").is_empty()
+    # BOS has no candidate goalie here, as in a new team's first game: TOR gets one row without
+    # a goalie, at gamma 1.
+    (tor,) = rows.filter(pl.col("team") == "TOR").iter_rows(named=True)
+    assert tor["goalie_id"] is None and tor["gamma"] == 1.0
+    assert tor["multiplier"] == pytest.approx(1.02 * tor["phi"])
 
 
 def test_shot_figures_read_the_season_and_the_one_before_public_before_the_as_of_time() -> None:
@@ -354,6 +357,36 @@ def test_scoring_mixes_the_opposing_goalies_by_their_start_probabilities() -> No
     assert bos["error"] == pytest.approx(0.0)
     assert bos["difference_both"] == pytest.approx((3.0 * 1.1 * gamma - 3.0) ** 2)
     assert frame.height == 2
+
+
+def test_scoring_keeps_games_before_league_finishing_and_without_goalie_candidates() -> None:
+    multipliers = pl.DataFrame(
+        {
+            "game_id": [1, 1],
+            "season": [20112012] * 2,
+            "game_date": [date(2011, 10, 6)] * 2,
+            "team": ["BOS", "TOR"],
+            "opponent": ["TOR", "BOS"],
+            # TOR has no candidate goalie, and no league finishing is public yet.
+            "goalie_id": [None, 3],
+            "phi": [1.0, 1.0],
+            "gamma": [1.0, 0.95],
+            "league_finishing": [None, None],
+        },
+        schema_overrides={
+            "season": pl.Int32,
+            "goalie_id": pl.Int64,
+            "league_finishing": pl.Float64,
+        },
+    )
+    goals = pl.DataFrame(
+        {"game_id": [1, 1], "team": ["BOS", "TOR"], "xg": [2.0, 3.0], "goals": [2.0, 3.0]}
+    )
+    starts = pl.DataFrame({"game_id": [1], "team": ["BOS"], "goalie_id": [3], "p_start": [1.0]})
+    frame = report.scored(multipliers, goals, starts).sort("team")
+    assert frame["team"].to_list() == ["BOS", "TOR"]
+    assert frame["reference"].to_list() == [2.0, 3.0]
+    assert frame["gamma"].to_list() == pytest.approx([1.0, 0.95])
 
 
 def test_the_inputs_must_cover_every_game_with_shots_and_xg() -> None:
