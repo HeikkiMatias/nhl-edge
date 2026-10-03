@@ -84,6 +84,10 @@ def league(seed: int = 7, seasons: tuple[int, ...] = SEASONS) -> dict[str, pl.Da
                         "away": away,
                         "venue": f"{ARENAS[home]} hall",
                         "neutral_site": neutral,
+                        # A result for the tuning's win model, public the morning after.
+                        "home_score": int(rng.integers(0, 6)),
+                        "away_score": int(rng.integers(0, 6)),
+                        "observed_utc": public_after(day),
                     }
                 )
                 for team in (home, away):

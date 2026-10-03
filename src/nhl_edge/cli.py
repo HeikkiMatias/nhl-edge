@@ -10,7 +10,10 @@ from nhl_edge import __version__
 from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, SEASON_ROLES
 
 if TYPE_CHECKING:
+    import polars as pl
+
     from nhl_edge.lake.status import TableState
+    from nhl_edge.lake.tables import Lake
 
 app = typer.Typer(
     help="NHL moneyline model that must add information beyond a recalibrated market.",
@@ -1079,12 +1082,20 @@ def rapm_command(
     r2: Annotated[
         bool, typer.Option("--r2", help="Mirror player_ratings and rapm_terms to R2.")
     ] = False,
+    tune: Annotated[
+        bool,
+        typer.Option(
+            "--tune", help="Run the tuning grid on the training seasons and log it; write no table."
+        ),
+    ] = False,
 ) -> None:
     """Refit RAPM every game day from the stints public before it (#101, ADR 0019), with the
     provisional settings until #103 and each season's priors (#102, ADR 0020), and write each
     lineup candidate's ratings to the lake's player_ratings, each fit's terms to rapm_terms, and
     the report to <out>/<version>.md: counts for every season, and terms, leaders and priors
-    for the training seasons only."""
+    for the training seasons only. With --tune, score the 36 candidate settings on the training
+    seasons by the projected 5v5 expected-goal difference (#103, ADR 0011) and log them to
+    reports/tuning/."""
     from collections.abc import Iterator
     from datetime import UTC
 
@@ -1101,11 +1112,19 @@ def rapm_command(
     from nhl_edge.settings import load_env
 
     load_env()
+    if tune and (seasons or r2):
+        raise typer.BadParameter("--tune reads the training seasons and writes no table")
     lake = Lake.from_env(mirror=r2)
     games = lake.read("games")
     known = sorted(games["season"].unique().to_list())
     try:
-        wanted = parse_seasons(seasons) if seasons else [s for s in known if s >= rapm.FIRST_SEASON]
+        if tune:
+            last = max(rapm.TUNING_SEASONS)
+            wanted = [s for s in known if rapm.FIRST_SEASON <= s <= last]
+        elif seasons:
+            wanted = parse_seasons(seasons)
+        else:
+            wanted = [s for s in known if s >= rapm.FIRST_SEASON]
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
     if not wanted or min(wanted) < rapm.FIRST_SEASON:
@@ -1137,6 +1156,9 @@ def rapm_command(
 
     version = reports.version(rapm.COMPONENT, datetime.now(UTC))
     roles = lake.read("actual_lineups").select("game_id", "player_id", "role")
+    if tune:
+        _tune_rapm(lake, games, roles, candidates, read, version)
+        return
     try:
         ratings, terms, fits = rapm.rate(
             stint_seasons(),
@@ -1168,6 +1190,52 @@ def rapm_command(
         f"{path}: {ratings.height:,} ratings of {ratings['player_id'].n_unique():,} skaters "
         f"in {len(wanted)} seasons, {terms.height:,} terms"
     )
+
+
+def _tune_rapm(
+    lake: "Lake",
+    games: "pl.DataFrame",
+    roles: "pl.DataFrame",
+    candidates: "pl.DataFrame",
+    read: list[int],
+    version: str,
+) -> None:
+    """Score each of RAPM's grid settings (#103, ADR 0011): the 5v5 model only, its ratings
+    turned into each game's projected 5v5 expected-goal difference, and that feature scored on
+    the training seasons. Logs every candidate and the choice to reports/tuning/."""
+    from nhl_edge.backtest import tuning
+    from nhl_edge.ratings import rapm
+    from nhl_edge.reference import load_venues
+
+    stints = {season: lake.read("stints", seasons=[season]) for season in read}
+    lineups = lake.read("lineups", seasons=read)
+    players, lines = lake.read("players"), lake.read("player_league_seasons")
+    venues = load_venues()
+    scored = []
+    for settings in rapm.GRID:
+        ratings, _, _ = rapm.rate(
+            (stints[s] for s in read),
+            games,
+            roles,
+            venues,
+            candidates,
+            settings,
+            version,
+            players=players,
+            league_seasons=lines,
+            kinds=(rapm.EV,),
+            spread=False,
+        )
+        feature = rapm.expected_difference(ratings, lineups, games)
+        games_scored = tuning.scored_games(feature, games, rapm.TUNING_SEASONS)
+        scored.append(tuning.Candidate(settings, settings.label, games_scored))
+        loss = games_scored["log_loss"].mean()
+        typer.echo(f"  {settings.label}: log loss {loss:.5f}")
+    choice = tuning.choose(scored, rapm.steadiness)
+    DEFAULT_TUNING_OUT.mkdir(parents=True, exist_ok=True)
+    path = DEFAULT_TUNING_OUT / f"{version}.md"
+    path.write_text(tuning.markdown(choice, "RAPM", version, rapm.TUNING_SEASONS))
+    typer.echo(f"{path}: chosen {choice.chosen.label}")
 
 
 @app.command()

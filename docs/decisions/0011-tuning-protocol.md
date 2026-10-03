@@ -82,6 +82,18 @@ Option 1 for both, chosen by the owner on 2026-10-01.
   - **Chosen:** an L2 of 100, log loss 0.6780 [0.6741, 0.6821]. It was the leader and the steadiest of its ties.
   - **Not tied:** 1,000, at +0.0028 [+0.0013, +0.0043]. So the choice sits inside the grid.
 
+**RAPM's application (#103, ADR 0019, ADR 0020):**
+- **Grid,** fixed before the first run as the owner chose on 2026-10-03. That is 36 candidates:
+  - a pull toward the prior mean worth 10, 20, 40 or 80 hours of ice time;
+  - a memory, as a half-life of 90, 180 or 360 league game days (half a season, one or two);
+  - an aging weight of 0, 0.5 or 1.
+- **Steadiness order:** the larger pull first, then the longer memory, then the fuller aging.
+- **Aging,** as the owner chose: at each season's start, every player's earlier evidence moves by the aging weight times his age curve's expected change for his age (ADR 0020). RAPM's running sums allow this exactly: X'Wy gains X'WX times the shift.
+- **Feature:** each game's projected 5v5 expected-goal difference. It is each candidate's 5v5 offense plus defense (xG per hour) times his expected 5v5 minutes (ADR 0018), summed for the home team less the away team. Replacement skaters count as the reference skater, 0.
+- **Scored:** 2012-13 to 2017-18, with ratings refit every game day from 2011-12 as `nhl rapm` does. Only the 5v5 model is fitted, without the posterior spreads, which the feature does not read.
+- **Reuse:** the power-play model reuses the chosen settings, frozen (phase 3 plan).
+- **A timing run** before the grid scored two of its points, the provisional setting without aging and with full aging, to size the run (about 4 minutes per candidate).
+
 ## Backtest evidence
 
 The tuning runs' losses record each choice and are not walk-forward evidence. The training seasons are in-sample by design, and a later run reuses earlier settings chosen on the same seasons. The development seasons, scored once every choice was frozen, are the evidence.
