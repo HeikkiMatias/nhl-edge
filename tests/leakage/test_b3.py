@@ -5,7 +5,6 @@ starters. Each fold's fit reads only games whose results, boxscores and rows wer
 the fold starts, and a fold before the tuning cutoff is refused."""
 
 from datetime import date, timedelta
-from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -281,7 +280,7 @@ def test_a_later_seasons_rows_are_not_read() -> None:
     assert same(predict(tables), BEFORE)
 
 
-def test_hockey_only_opens_the_hockey_validation_seasons_alone(tmp_path: Path) -> None:
+def test_hockey_only_opens_the_hockey_validation_seasons_alone() -> None:
     # Gate 2 opens 2023-24 and 2024-25 for B2 against B3 on outcomes (#107). 2022-23 waits for
     # phase 4 (#66), 2025-26 for the owner's go-ahead, and live seasons for live.
     for season in (20222023, 20252026, 20262027):
@@ -291,16 +290,23 @@ def test_hockey_only_opens_the_hockey_validation_seasons_alone(tmp_path: Path) -
     assert not {season_role(s) for s in (20222023, 20252026, 20262027)} & HOCKEY_ROLES
     # The one-time test opens 2025-26 alone, and claims nothing for another season.
     assert ONE_TIME_SEASONS == (20252026,)
-    ledger = tmp_path / "one_time_test.txt"
+    claims: list[int] = []
     for season in (20222023, 20232024, 20262027):
         with pytest.raises(ValueError, match="alone"):
             hockey_only(
-                LEAGUE.games, [season], feature_tables(LEAGUE.games, 4), LEAGUE, one_time=ledger
+                LEAGUE.games,
+                [season],
+                feature_tables(LEAGUE.games, 4),
+                LEAGUE,
+                one_time=lambda: claims.append(1),
             )
-    assert not ledger.exists()
-    # A claimed ledger refuses a second run before anything is scored.
-    ledger.write_text("v1 2026-10-03T00:00:00+00:00\n")
+    assert claims == []
+
+    # A refused claim stops the run before anything is scored.
+    def refused() -> None:
+        raise ValueError("the one-time test already ran: v1")
+
     with pytest.raises(ValueError, match="already ran"):
         hockey_only(
-            LEAGUE.games, [20252026], feature_tables(LEAGUE.games, 4), LEAGUE, one_time=ledger
+            LEAGUE.games, [20252026], feature_tables(LEAGUE.games, 4), LEAGUE, one_time=refused
         )

@@ -327,7 +327,17 @@ def test_backtest_refuses_held_out_seasons(tmp_path: Path, monkeypatch: pytest.M
 
 
 def test_the_one_time_test_runs_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from test_one_time import ConditionalBucket
+
+    from nhl_edge.backtest import one_time
+
     monkeypatch.chdir(tmp_path)
+    bucket = ConditionalBucket()
+    monkeypatch.setattr(
+        one_time,
+        "places",
+        lambda lake_dir, report_dirs: one_time.Places(lake_dir, report_dirs, bucket, "b"),
+    )
     once = ["backtest", "--seasons", "20252026", "--hockey-only", "--one-time-test"]
     refused = {
         "needs --hockey-only": ["backtest", "--seasons", "20252026", "--one-time-test"],
@@ -342,18 +352,16 @@ def test_the_one_time_test_runs_once(tmp_path: Path, monkeypatch: pytest.MonkeyP
     for message, args in refused.items():
         result = runner.invoke(app, args)
         assert result.exit_code == 2 and message in result.output, result.output
-    # Not yet run: past the gate, to the empty lake's input check, which stops it before it
-    # claims the ledger beside the lake.
-    ledger = tmp_path / "data" / "one_time_test.txt"
+    # Not yet run: past the gate, to the empty lake's input check, which stops it before the
+    # claim.
     first = runner.invoke(app, once)
     assert "held out" not in first.output and "already ran" not in first.output
-    assert "run the feature commands" in first.output and not ledger.exists()
-    # Once claimed, never again, whatever the report directory.
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text("backtest-hockey-20261003-abc 2026-10-03T00:00:00+00:00\n")
+    assert "run the feature commands" in first.output and not bucket.objects
+    # Claimed on another machine: refused here, whatever the report directory.
+    bucket.put_object(Bucket="b", Key=one_time.R2_KEY, Body=b"backtest-hockey-abc then\n")
     again = runner.invoke(app, [*once, "--out", "elsewhere"])
     flat = " ".join(again.output.replace("│", " ").split())  # the error box wraps lines
-    assert again.exit_code == 2 and "already ran: backtest-hockey-20261003-abc" in flat
+    assert again.exit_code == 2 and "already ran" in flat and "backtest-hockey-abc" in flat
 
 
 def test_backtest_refuses_the_first_sbr_season(

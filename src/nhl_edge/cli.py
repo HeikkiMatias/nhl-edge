@@ -12,6 +12,7 @@ from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, SEASON_ROLES
 if TYPE_CHECKING:
     import polars as pl
 
+    from nhl_edge.backtest.one_time import Places
     from nhl_edge.game import b2, b3
     from nhl_edge.lake.status import TableState
     from nhl_edge.lake.tables import Lake
@@ -363,6 +364,7 @@ def backtest(
         b2_report,
         b3_report,
         book_era,
+        one_time,
         reports,
         sensitivity,
         subsets,
@@ -386,6 +388,7 @@ def backtest(
     # The hockey-only mode also scores the hockey validation seasons, opened at gate 2 (#107),
     # and, once, the one-time test season.
     roles = HOCKEY_ROLES if hockey_only else OPEN_ROLES
+    where = None
     if one_time_test:
         if not hockey_only:
             raise typer.BadParameter("needs --hockey-only", param_hint="--one-time-test")
@@ -393,10 +396,11 @@ def backtest(
             raise typer.BadParameter(
                 f"the one-time test scores {list(ONE_TIME_SEASONS)} alone", param_hint="--seasons"
             )
-        record = walk_forward.one_time_record(walk_forward.one_time_ledger(LAKE_DIR))
-        if record:
+        where = one_time.places(LAKE_DIR, (DEFAULT_BACKTEST_OUT, out))
+        earlier = one_time.records(where)
+        if earlier:
             raise typer.BadParameter(
-                f"the one-time test already ran: {record} (docs/plan.md section 5)",
+                f"the one-time test already ran: {'; '.join(earlier)} (docs/plan.md section 5)",
                 param_hint="--one-time-test",
             )
         roles = roles | {SeasonRole.ONE_TIME_TEST}
@@ -417,7 +421,7 @@ def backtest(
         )
     lake = Lake()
     if hockey_only:
-        _hockey_backtest(lake, wanted, out, one_time=one_time_test)
+        _hockey_backtest(lake, wanted, out, where)
         return
     # B1 is fitted on every open SBR season before the test season, so those need prices too.
     history = [s for s in SEASON_PAGES if s in OPEN_SEASONS]
@@ -549,13 +553,15 @@ def _b3_tables(lake: "Lake", tables: "b2.Tables") -> "b3.Tables":
     )
 
 
-def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path, one_time: bool = False) -> None:
+def _hockey_backtest(
+    lake: "Lake", wanted: list[int], out: Path, one_time_places: "Places | None" = None
+) -> None:
     """B2 and B3 at the as-of time on outcomes alone (ADR 0023), to <out>/hockey-<version>.json,
     with every run logged in <out>/runs.csv."""
     import json
     from datetime import UTC
 
-    from nhl_edge.backtest import b3_report, reports, subsets, walk_forward
+    from nhl_edge.backtest import b3_report, one_time, reports, subsets, walk_forward
     from nhl_edge.game import b2, b3
     from nhl_edge.ingest.games import EXPECTED_GAMES
 
@@ -593,9 +599,12 @@ def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path, one_time: bool 
             b3_tables,
             b2_fits=b2_fits,
             b3_fits=b3_fits,
-            # The one-time test is claimed in its ledger beside the lake before it scores.
-            one_time=walk_forward.one_time_ledger(lake.base_dir) if one_time else None,
-            run_version=run_version,
+            # The one-time test is claimed before it scores (one_time.claim).
+            one_time=(
+                None
+                if one_time_places is None
+                else lambda: one_time.claim(one_time_places, run_version)
+            ),
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None

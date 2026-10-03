@@ -13,9 +13,8 @@ Outcomes settle the moneyline on the full game, overtime and shootout included (
 are read to score a prediction and, for games before the fold, to fit B1.
 """
 
-from collections.abc import Iterable
-from datetime import UTC, datetime
-from pathlib import Path
+from collections.abc import Callable, Iterable
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -326,32 +325,6 @@ def run(
 
 
 HOCKEY = "hockey"
-ONE_TIME_LEDGER = "one_time_test.txt"
-
-
-def one_time_ledger(lake_dir: Path) -> Path:
-    """Where gate 2's one-time test is recorded: beside the lake's real directory, so every
-    checkout sharing the lake sees it, whatever report directory a run uses."""
-    return lake_dir.resolve().parent / ONE_TIME_LEDGER
-
-
-def one_time_record(ledger: Path) -> str | None:
-    """The one-time test's record, or None before it ran."""
-    return ledger.read_text().strip() if ledger.exists() else None
-
-
-def claim_one_time(ledger: Path, run_version: str) -> None:
-    """Record the one-time test in ledger before it scores anything, or refuse if it already
-    ran. The claim is never released, even if the run then fails: a rerun is the owner's call
-    (docs/plan.md section 5)."""
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with ledger.open("x") as handle:
-            handle.write(f"{run_version} {datetime.now(UTC).isoformat()}\n")
-    except FileExistsError:
-        raise ValueError(
-            f"the one-time test already ran: {one_time_record(ledger)} (docs/plan.md section 5)"
-        ) from None
 
 
 def hockey_only(
@@ -361,17 +334,17 @@ def hockey_only(
     b3_tables: "b3.Tables",
     b2_fits: B2Fits | None = None,
     b3_fits: B3Fits | None = None,
-    one_time: Path | None = None,
-    run_version: str = "",
+    one_time: Callable[[], None] | None = None,
 ) -> tuple[pl.DataFrame, Coverage]:
     """B2 and B3 scored at the as-of time on outcomes alone, for seasons without prices (ADR
     0023): every game of the season with a result, each model fitted on the games before the
     season's first start. A prediction runs PREDICTION_LAG after the as-of time, as E2's after
     10:00 ET, so it reads the rows that became known at the as-of time. It scores the open
     seasons and, from gate 2, the hockey validation seasons (HOCKEY_ROLES); the other held-out
-    seasons are refused, except the one-time test season alone with one_time, a ledger the run
-    is claimed in (claim_one_time) before anything is scored, once. The predictions carry the
-    experiment HOCKEY and no method; coverage counts each model's scored and training games."""
+    seasons are refused, except the one-time test season alone with one_time, which claims the
+    run (one_time.claim) before anything is scored and refuses a second one. The predictions
+    carry the experiment HOCKEY and no method; coverage counts each model's scored and training
+    games."""
     from nhl_edge.features import team_strength as ts
     from nhl_edge.game import b2, b3
 
@@ -380,7 +353,7 @@ def hockey_only(
     if one_time is not None:
         if seasons != list(ONE_TIME_SEASONS):
             raise ValueError(f"the one-time test scores {list(ONE_TIME_SEASONS)} alone")
-        claim_one_time(one_time, run_version)
+        one_time()
         roles = HOCKEY_ROLES | {SeasonRole.ONE_TIME_TEST}
     held_out = [season for season in seasons if season_role(season) not in roles]
     if held_out:
