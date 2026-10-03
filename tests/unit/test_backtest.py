@@ -1,6 +1,7 @@
 import csv
 import json
 import math
+import re
 import subprocess
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -349,18 +350,24 @@ def test_the_one_time_test_runs_once(tmp_path: Path, monkeypatch: pytest.MonkeyP
             "--one-time-test",
         ],
     }
+
+    def plain(output: str) -> str:
+        """The output without colour codes or the error box's borders and line breaks: CI's
+        terminal colours each part of an option name."""
+        return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", output).replace("│", " ").split())
+
     for message, args in refused.items():
         result = runner.invoke(app, args)
-        assert result.exit_code == 2 and message in result.output, result.output
+        assert result.exit_code == 2 and message in plain(result.output), result.output
     # Not yet run: past the gate, to the empty lake's input check, which stops it before the
     # claim.
-    first = runner.invoke(app, once)
-    assert "held out" not in first.output and "already ran" not in first.output
-    assert "run the feature commands" in first.output and not bucket.objects
+    first = plain(runner.invoke(app, once).output)
+    assert "held out" not in first and "already ran" not in first
+    assert "run the feature commands" in first and not bucket.objects
     # Claimed on another machine: refused here, whatever the report directory.
     bucket.put_object(Bucket="b", Key=one_time.R2_KEY, Body=b"backtest-hockey-abc then\n")
     again = runner.invoke(app, [*once, "--out", "elsewhere"])
-    flat = " ".join(again.output.replace("│", " ").split())  # the error box wraps lines
+    flat = plain(again.output)
     assert again.exit_code == 2 and "already ran" in flat and "backtest-hockey-abc" in flat
 
 
