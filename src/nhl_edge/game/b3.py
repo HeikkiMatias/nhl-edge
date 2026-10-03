@@ -118,9 +118,13 @@ def team_goals(tables: Tables) -> pl.DataFrame:
         **{f"spare_{s}": pl.col(f"exp_{s}").sum() for s in STATES},
         spare_utc=pl.col("observed_utc").max(),
     )
+    # A team without candidates, such as an expansion team's first game, has replacements only.
+    sums = [*(f"total_{s}" for s in STATES), "off", "defense", "power", "kill"]
     teams = (
-        candidates.join(spare, on=["game_id", "team"], how="left")
-        .with_columns(*(pl.col(f"spare_{s}").fill_null(0.0) for s in STATES))
+        candidates.join(spare, on=["game_id", "team"], how="full", coalesce=True)
+        .with_columns(
+            *(pl.col(f"spare_{s}").fill_null(0.0) for s in STATES), pl.col(*sums).fill_null(0.0)
+        )
         .with_columns(**{f"all_{s}": pl.col(f"total_{s}") + pl.col(f"spare_{s}") for s in STATES})
         .select(
             "game_id",

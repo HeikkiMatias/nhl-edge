@@ -562,9 +562,13 @@ def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path) -> None:
     typer.echo(f"{path}: {report['version']}")
     for model, body in report["models"].items():
         pooled = body["log_loss"]["pooled"]
+        spread = (
+            "no interval: one week a season"
+            if pooled["low"] is None
+            else f"[{pooled['low']:.4f}, {pooled['high']:.4f}]"
+        )
         typer.echo(
-            f"  {model}: log loss {pooled['mean']:.4f} [{pooled['low']:.4f}, "
-            f"{pooled['high']:.4f}] over {pooled['games']:,} games"
+            f"  {model}: log loss {pooled['mean']:.4f} {spread} over {pooled['games']:,} games"
         )
 
 

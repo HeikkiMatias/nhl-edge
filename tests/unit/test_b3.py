@@ -145,6 +145,31 @@ def test_a_teams_expected_goals_worked_by_hand() -> None:
     assert goals["observed_utc"].to_list() == [LATEST, LATEST]
 
 
+def test_a_team_without_candidates_plays_replacements() -> None:
+    # TOR's first game: no candidates, its minutes all replacements, rated 0.
+    tables = hand_tables()
+    spare = pl.concat(
+        [
+            tables.lineup_replacements,
+            tables.lineup_replacements.with_columns(
+                team=pl.lit("TOR"), exp_5v5=pl.lit(60.0), exp_pp=pl.lit(2.0), exp_pk=pl.lit(2.0)
+            ),
+        ]
+    )
+    expansion = b3.Tables(
+        **{
+            **tables.__dict__,
+            "lineups": tables.lineups.filter(pl.col("team") != "TOR"),
+            "lineup_replacements": spare,
+        }
+    )
+    goals = b3.team_goals(expansion).sort("team")
+    assert goals["xg_5v5"].to_list() == pytest.approx(
+        [12 / 60 * (2.5 + 0.5), 12 / 60 * (2.5 + 0.25)]
+    )
+    assert goals["xg_pp"].to_list() == pytest.approx([6 / 60 * (5.5 + 2.2), 4 / 60 * (5.5 - 1.28)])
+
+
 def test_two_rapm_fits_on_one_date_are_refused() -> None:
     terms = hand_tables().rapm_terms
     with pytest.raises(ValueError, match="more than one fit"):
@@ -421,6 +446,10 @@ def test_the_walk_forward_scores_b3_beside_b2() -> None:
     }
     assert subsets["lineup_change"]["pooled"] is None
     assert subsets["trade"]["pooled"]["games"] == 10
+    # The 40 games span two weeks and have an interval; the first ten, in one week, do not.
+    assert model["paired_against_B2"]["pooled"]["low"] is not None
+    assert subsets["trade"]["pooled"]["low"] is None
+    assert subsets["trade"]["per_season"][str(TEST)]["high"] is None
     gaps = model["gaps_over_8_points"]
     listed = b3_report.gap_rows(rows, games)
     assert gaps["games_compared"] == 40 and gaps["count"] == listed.height

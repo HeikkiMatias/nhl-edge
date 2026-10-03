@@ -2,7 +2,8 @@
 difference against B1, which reports.experiment gives every model:
 - its fits, one per experiment and season, with their weights and train_cutoff;
 - its paired difference against B2 (hard rule 3), pooled and per season, and on each of gate 2's
-  subsets (backtest.subsets) and their union;
+  subsets (backtest.subsets) and their union, without an interval where a season's games fall
+  in one week;
 - its calibration intercept and slope;
 - how many games differ from B1 by more than GAP (hard rule 8), and the games themselves in
   gaps_b3.csv for manual review, without their results;
@@ -22,7 +23,7 @@ from typing import Any
 import polars as pl
 
 from nhl_edge.backtest import b2_report
-from nhl_edge.backtest.metrics import DRAWS, LEVEL, SEED, bootstrap
+from nhl_edge.backtest.metrics import DRAWS, LEVEL, SEED, bootstrap, week_of
 from nhl_edge.backtest.subsets import SUBSETS
 from nhl_edge.game.b3 import INPUTS, B3Model
 from nhl_edge.lake.schemas import PP_UNIT
@@ -62,13 +63,23 @@ def against(rows: pl.DataFrame, reference: str = REFERENCE) -> pl.DataFrame:
     )
 
 
+def _estimate(frame: pl.DataFrame, value: str) -> dict[str, Any]:
+    """bootstrap's estimate, without an interval (low and high null) when a season's games fall
+    in a single week: resampling one week cannot measure the spread (hard rule 7)."""
+    found: dict[str, Any] = bootstrap(frame, value).to_dict()
+    weeks = frame.group_by("season").agg(weeks=week_of(pl.col("game_date")).n_unique())
+    if weeks["weeks"].min() < 2:  # type: ignore[operator]
+        found |= {"low": None, "high": None}
+    return found
+
+
 def _estimates(frame: pl.DataFrame, value: str) -> dict[str, Any]:
     if frame.is_empty():
         return {"pooled": None, "per_season": {}}
     return {
-        "pooled": bootstrap(frame, value).to_dict(),
+        "pooled": _estimate(frame, value),
         "per_season": {
-            str(season): bootstrap(by_season, value).to_dict()
+            str(season): _estimate(by_season, value)
             for (season,), by_season in frame.sort("season").group_by("season", maintain_order=True)
         },
     }
