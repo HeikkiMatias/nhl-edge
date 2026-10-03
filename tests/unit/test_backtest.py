@@ -326,6 +326,39 @@ def test_backtest_refuses_held_out_seasons(tmp_path: Path, monkeypatch: pytest.M
         assert "run the feature commands" in result.output  # past the gate, at the input check
 
 
+def test_the_one_time_test_runs_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    once = ["backtest", "--seasons", "20252026", "--hockey-only", "--one-time-test"]
+    refused = {
+        "needs --hockey-only": ["backtest", "--seasons", "20252026", "--one-time-test"],
+        "scores [20252026] alone": [
+            "backtest",
+            "--seasons",
+            "20232024,20252026",
+            "--hockey-only",
+            "--one-time-test",
+        ],
+    }
+    for message, args in refused.items():
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2 and message in result.output, result.output
+    # Not yet run: past the gate, to the empty lake's input check.
+    first = runner.invoke(app, once)
+    assert "held out" not in first.output and "already ran" not in first.output
+    assert "run the feature commands" in first.output
+    # Once logged, never again, whichever report directory a run used.
+    log = tmp_path / "reports" / "backtest" / "runs.csv"
+    log.parent.mkdir(parents=True)
+    log.write_text(
+        "run_utc,version,seasons,experiment,model,method,games,log_loss,low,high,train_cutoff\n"
+        "2026-10-03T00:00:00+00:00,backtest-hockey-20261003-abc,20252026,hockey,B3,none,"
+        "1312,0.66,0.65,0.67,\n"
+    )
+    again = runner.invoke(app, [*once, "--out", "elsewhere"])
+    flat = " ".join(again.output.replace("│", " ").split())  # the error box wraps lines
+    assert again.exit_code == 2 and "already ran: backtest-hockey-20261003-abc" in flat
+
+
 def test_backtest_refuses_the_first_sbr_season(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -336,6 +336,16 @@ def backtest(
             ),
         ),
     ] = False,
+    one_time_test: Annotated[
+        bool,
+        typer.Option(
+            "--one-time-test",
+            help=(
+                "With --hockey-only, gate 2's one-time test on 2025-26 (#107): it runs once, and a "
+                "second run is refused."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run the walk-forward backtest on the SBR archive, for E1 (the close) and E2 (the opener):
     B0 under each de-vig method, B1 fitted per season on the earlier seasons' prices, B2, the
@@ -358,7 +368,14 @@ def backtest(
         subsets,
         walk_forward,
     )
-    from nhl_edge.backtest.seasons import HOCKEY_ROLES, OPEN_ROLES, OPEN_SEASONS, season_role
+    from nhl_edge.backtest.seasons import (
+        HOCKEY_ROLES,
+        ONE_TIME_SEASONS,
+        OPEN_ROLES,
+        OPEN_SEASONS,
+        SeasonRole,
+        season_role,
+    )
     from nhl_edge.game import b2, b3
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
@@ -366,8 +383,23 @@ def backtest(
     from nhl_edge.lake.tables import Lake
     from nhl_edge.lineup import minutes as mins
 
-    # The hockey-only mode also scores the hockey validation seasons, opened at gate 2 (#107).
+    # The hockey-only mode also scores the hockey validation seasons, opened at gate 2 (#107),
+    # and, once, the one-time test season.
     roles = HOCKEY_ROLES if hockey_only else OPEN_ROLES
+    if one_time_test:
+        if not hockey_only:
+            raise typer.BadParameter("needs --hockey-only", param_hint="--one-time-test")
+        if sorted(set(parse_seasons(seasons))) != list(ONE_TIME_SEASONS):
+            raise typer.BadParameter(
+                f"the one-time test scores {list(ONE_TIME_SEASONS)} alone", param_hint="--seasons"
+            )
+        earlier = _one_time_runs({out / "runs.csv", DEFAULT_BACKTEST_OUT / "runs.csv"})
+        if earlier:
+            raise typer.BadParameter(
+                f"the one-time test already ran: {', '.join(earlier)} (docs/plan.md section 5)",
+                param_hint="--one-time-test",
+            )
+        roles = roles | {SeasonRole.ONE_TIME_TEST}
     try:
         wanted = sorted(set(parse_seasons(seasons)))
         held_out = [season for season in wanted if season_role(season) not in roles]
@@ -385,7 +417,7 @@ def backtest(
         )
     lake = Lake()
     if hockey_only:
-        _hockey_backtest(lake, wanted, out)
+        _hockey_backtest(lake, wanted, out, one_time=one_time_test)
         return
     # B1 is fitted on every open SBR season before the test season, so those need prices too.
     history = [s for s in SEASON_PAGES if s in OPEN_SEASONS]
@@ -517,7 +549,24 @@ def _b3_tables(lake: "Lake", tables: "b2.Tables") -> "b3.Tables":
     )
 
 
-def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path) -> None:
+def _one_time_runs(logs: set[Path]) -> list[str]:
+    """The versions of every logged run that scored the one-time test season."""
+    import csv
+
+    from nhl_edge.backtest.seasons import ONE_TIME_SEASONS
+
+    found: set[str] = set()
+    for log in logs:
+        if not log.exists():
+            continue
+        with log.open(newline="") as handle:
+            for row in csv.DictReader(handle):
+                if any(str(s) in (row.get("seasons") or "").split() for s in ONE_TIME_SEASONS):
+                    found.add(row["version"])
+    return sorted(found)
+
+
+def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path, one_time: bool = False) -> None:
     """B2 and B3 at the as-of time on outcomes alone (ADR 0023), to <out>/hockey-<version>.json,
     with every run logged in <out>/runs.csv."""
     import json
@@ -553,7 +602,7 @@ def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path) -> None:
     b3_fits: dict[str, dict[int, b3.B3Model]] = {}
     try:
         predictions, coverage = walk_forward.hockey_only(
-            games, wanted, tables, b3_tables, b2_fits=b2_fits, b3_fits=b3_fits
+            games, wanted, tables, b3_tables, b2_fits=b2_fits, b3_fits=b3_fits, one_time=one_time
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
