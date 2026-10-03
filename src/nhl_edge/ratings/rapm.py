@@ -794,7 +794,8 @@ def _aging_shift(
     weight: float,
 ) -> NDArray[np.float64]:
     """Each player column's aging shift for the season: the weight times his component's age
-    curve at his age that season; 0 for a component without a curve."""
+    curve at his age that season; 0 for a component without a curve. A player without a birth
+    date counts as 27, as in his prior (ADR 0020)."""
     shift = np.zeros(design.size)
     if not design.players:
         return shift

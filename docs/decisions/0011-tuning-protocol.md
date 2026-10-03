@@ -112,7 +112,7 @@ The tuning runs are above, each on its component's PR. B2, built from all four f
 - **Every tuned output records the run's cutoff,** the last result the run read: `train_cutoff` in `team_strength`, 2018-04-09 10:00 UTC. A tuned output counts as known no earlier than it, so `observed_utc` is the later of the output's own time and the cutoff. A fold that starts before the cutoff then cannot read the tuned seasons' outputs at all. Gate 1's folds start after it.
 - One choice per component, made once. A component tuned later does not reopen an earlier one's settings. It reuses them, frozen, even though they were chosen on the same seasons. The owner confirmed this on #88, when Codex raised it as a P0, and #78 applies it to B2.
 - B2's L2 strength (#78) uses the same protocol, with B2 itself as the scored model.
-- Every tuned table records the same cutoff, 2018-04-09 10:00 UTC: `team_strength`, `goalie_effects` and `schedule_terms`. B2's backtest refuses a fold that starts before the latest of them (ADR 0013).
+- Every tuned table records the same cutoff, 2018-04-09 10:00 UTC: `team_strength`, `goalie_effects`, `schedule_terms`, and RAPM's `player_ratings` and `rapm_terms`. B2's backtest refuses a fold that starts before the latest of them (ADR 0013), and B3's (#106) should do the same for the ratings.
 
 ## Revisit when
 
