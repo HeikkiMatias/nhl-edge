@@ -101,6 +101,7 @@ def feature_tables(games: pl.DataFrame, seed: int = 0) -> b2.Tables:
                         "player_id": goalie,
                         "role": "G",
                         "starting_goalie": which == started,
+                        "toi_s": 3600 if which == started else 0,
                         "observed_utc": boxscore,
                     }
                 )
@@ -122,7 +123,9 @@ def feature_tables(games: pl.DataFrame, seed: int = 0) -> b2.Tables:
             pl.col("as_of_utc", "observed_utc").cast(utc)
         ),
         actual_lineups=pl.DataFrame(lineups).with_columns(
-            pl.col("season").cast(pl.Int32), pl.col("observed_utc").cast(utc)
+            pl.col("season").cast(pl.Int32),
+            pl.col("toi_s").cast(pl.Int32),
+            pl.col("observed_utc").cast(utc),
         ),
     )
 

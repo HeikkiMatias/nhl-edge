@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 
-from nhl_edge.backtest.market import Experiment, market_prices
+from nhl_edge.backtest.market import PREDICTION_LAG, Experiment, market_prices
 from nhl_edge.backtest.metrics import log_loss
 from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
 from nhl_edge.market import recalibration
@@ -33,6 +33,7 @@ from nhl_edge.market.devig import (
 )
 
 if TYPE_CHECKING:
+    from nhl_edge.game import b3
     from nhl_edge.game.b2 import B2Model, Tables
 
 # B1 recalibrates the default de-vig method's probabilities (ADR 0008).
@@ -43,6 +44,7 @@ NO_METHOD = "none"
 Coverage = dict[str, dict[int, dict[str, int]]]
 Fits = dict[str, dict[int, recalibration.Recalibration]]
 B2Fits = dict[str, dict[int, "B2Model"]]
+B3Fits = dict[str, dict[int, "b3.B3Model"]]
 
 PREDICTION_SCHEMA = {
     "experiment": pl.String,
@@ -157,13 +159,15 @@ def b1(
 
 
 def _scored(
-    frame: pl.DataFrame, experiment: Experiment, model: str, method: Method | str
+    frame: pl.DataFrame, experiment: Experiment | str, model: str, method: Method | str
 ) -> pl.DataFrame:
     if "train_cutoff" not in frame.columns:
         frame = frame.with_columns(train_cutoff=pl.lit(None, PREDICTION_SCHEMA["train_cutoff"]))
     return (
         frame.with_columns(
-            experiment=pl.lit(experiment.value),
+            experiment=pl.lit(
+                experiment.value if isinstance(experiment, Experiment) else experiment
+            ),
             model=pl.lit(model),
             method=pl.lit(method.value if isinstance(method, Method) else method),
             log_loss=log_loss(pl.col("p_home"), pl.col("home_win")),
@@ -181,6 +185,8 @@ def run(
     refuse_implausible: bool = True,
     b2_tables: "Tables | None" = None,
     b2_fits: B2Fits | None = None,
+    b3_tables: "b3.Tables | None" = None,
+    b3_fits: B3Fits | None = None,
 ) -> tuple[pl.DataFrame, Coverage, Fits]:
     """Every prediction for the test seasons, scored, the coverage per experiment and season, and
     B1's fit per experiment and season. sbr_odds and games hold the test seasons and the earlier
@@ -197,7 +203,8 @@ def run(
 
     With b2_tables, B2 (ADR 0013) predicts the games B1 scores, at the experiment's prediction
     time, from a fit on the games before the fold, and b2_fits receives its fit per experiment and
-    season. Coverage then counts the games B2 scored and those it trained on."""
+    season. Coverage then counts the games B2 scored and those it trained on. b3_tables and
+    b3_fits do the same for B3, the player layer (ADR 0023)."""
     seasons = sorted(set(seasons))
     held_out = [season for season in seasons if season_role(season) not in OPEN_ROLES]
     if held_out:
@@ -274,6 +281,21 @@ def run(
                 if b2_fits is not None:
                     b2_fits.setdefault(experiment, {})[season] = b2_fit
                 b2_counts = {"b2_scored": scored_b2.height, "b2_trained_on": b2_fit.games}
+            if b3_tables is not None:
+                from nhl_edge.game import b3
+
+                moments = predicted.select("game_id", "prediction_utc")
+                b3_rows, b3_fit = b3.predictions(b3_tables, moments, season, folds[season])
+                scored_b3 = b3_rows.join(
+                    predicted.select(
+                        "game_id", "season", "game_date", "prediction_utc", "home_win"
+                    ),
+                    on="game_id",
+                )
+                frames.append(_scored(scored_b3, experiment, "B3", NO_METHOD))
+                if b3_fits is not None:
+                    b3_fits.setdefault(experiment, {})[season] = b3_fit
+                b2_counts |= {"b3_scored": scored_b3.height, "b3_trained_on": b3_fit.games}
             counts = {
                 "games": games.filter(in_season).height,
                 "priced": quoted.filter(in_season).height,
@@ -293,3 +315,63 @@ def run(
         for method in methods:
             frames.append(_scored(b0(prices, method), experiment, "B0", method))
     return pl.concat(frames), coverage, fits
+
+
+HOCKEY = "hockey"
+
+
+def hockey_only(
+    games: pl.DataFrame,
+    seasons: Iterable[int],
+    b2_tables: "Tables",
+    b3_tables: "b3.Tables",
+    b2_fits: B2Fits | None = None,
+    b3_fits: B3Fits | None = None,
+) -> tuple[pl.DataFrame, Coverage]:
+    """B2 and B3 scored at the as-of time on outcomes alone, for seasons without prices (ADR
+    0023): every game of the season with a result, each model fitted on the games before the
+    season's first start. A prediction runs PREDICTION_LAG after the as-of time, as E2's after
+    10:00 ET, so it reads the rows that became known at the as-of time. Held-out seasons are
+    refused until gate 2. The predictions carry the experiment HOCKEY and no method; coverage
+    counts each model's scored and training games."""
+    from nhl_edge.features import team_strength as ts
+    from nhl_edge.game import b2, b3
+
+    seasons = sorted(set(seasons))
+    held_out = [season for season in seasons if season_role(season) not in OPEN_ROLES]
+    if held_out:
+        raise ValueError(f"{held_out} are held out until gate 2 (#107)")
+    results = outcomes(games.filter(pl.col("season").is_in(seasons)))
+    calendar = games.select("season", "start_utc")
+    frames = [pl.DataFrame(schema=PREDICTION_SCHEMA)]
+    coverage: Coverage = {HOCKEY: {}}
+    for season in seasons:
+        start = fold_start(calendar, season)
+        moments = (
+            games.filter(pl.col("season") == season)
+            .select(
+                "game_id",
+                "season",
+                "game_date",
+                prediction_utc=ts.as_of(pl.col("game_date"), pl.col("start_utc")) + PREDICTION_LAG,
+            )
+            .join(results.select("game_id", "home_win"), on="game_id")
+        )
+        timing = moments.select("game_id", "prediction_utc")
+        counts = {"games": games.filter(pl.col("season") == season).height}
+        rows, fit2 = b2.predictions(b2_tables, timing, season, start, b2.TUNED)
+        frames.append(_scored(rows.join(moments, on="game_id"), HOCKEY, "B2", NO_METHOD))
+        rows3, fit3 = b3.predictions(b3_tables, timing, season, start)
+        frames.append(_scored(rows3.join(moments, on="game_id"), HOCKEY, "B3", NO_METHOD))
+        if b2_fits is not None:
+            b2_fits.setdefault(HOCKEY, {})[season] = fit2
+        if b3_fits is not None:
+            b3_fits.setdefault(HOCKEY, {})[season] = fit3
+        counts |= {
+            "b2_scored": rows.height,
+            "b2_trained_on": fit2.games,
+            "b3_scored": rows3.height,
+            "b3_trained_on": fit3.games,
+        }
+        coverage[HOCKEY][season] = counts
+    return pl.concat(frames), coverage
