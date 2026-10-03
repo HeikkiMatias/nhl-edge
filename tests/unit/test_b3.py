@@ -14,6 +14,7 @@ from nhl_edge.backtest.subsets import SUBSETS
 from nhl_edge.backtest.walk_forward import HOCKEY, fold_start, hockey_only, run
 from nhl_edge.features import team_strength as ts
 from nhl_edge.game import b2, b3
+from nhl_edge.ratings import rapm
 
 LEAGUE = league()
 TEST = 20182019
@@ -332,18 +333,31 @@ def test_input_problems() -> None:
     )
 
 
-def test_the_history_before_rapms_first_fit_is_not_a_problem(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # In the first season, the days before RAPM's first fit have no league rate by construction;
-    # a later day without one is still a problem.
-    monkeypatch.setattr(b3, "FIRST_SEASON", 20162017)
+def test_only_rapms_first_day_may_lack_a_league_rate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # RAPM's first day has no fit by construction; any later day without one is a problem,
+    # whatever the table's first remaining date.
+    monkeypatch.setattr(rapm, "FIRST_SEASON", 20162017)
     days = LEAGUE.rapm_terms["game_date"].unique().sort()
+    on_day = [LEAGUE.games.filter(pl.col("game_date") == d)["game_id"].sort() for d in days[:2]]
     opening = LEAGUE.rapm_terms.filter(pl.col("game_date") != days[0])
     assert b3.input_problems(b3.Tables(**{**LEAGUE.__dict__, "rapm_terms": opening}), TEST) == []
-    gap = opening.filter(pl.col("game_date") != days[5])
-    (problem,) = b3.input_problems(b3.Tables(**{**LEAGUE.__dict__, "rapm_terms": gap}), TEST)
-    assert problem.startswith("20162017: 4 games without rapm_terms")
+    span = opening.filter(pl.col("game_date") != days[1])
+    (problem,) = b3.input_problems(b3.Tables(**{**LEAGUE.__dict__, "rapm_terms": span}), TEST)
+    examples = ", ".join(str(g) for g in on_day[1].head(3))
+    assert problem == f"20162017: {on_day[1].len()} games without rapm_terms, e.g. {examples}"
+
+
+def test_a_game_without_replacement_rows_is_a_problem() -> None:
+    first = int(LEAGUE.games["game_id"].sort()[0])
+    gap = b3.Tables(
+        **{
+            **LEAGUE.__dict__,
+            "lineup_replacements": LEAGUE.lineup_replacements.filter(pl.col("game_id") != first),
+        }
+    )
+    assert b3.input_problems(gap, TEST) == [
+        f"20162017: 1 games without lineup_replacements, e.g. {first}"
+    ]
 
 
 def report_flags(games: pl.DataFrame) -> pl.DataFrame:

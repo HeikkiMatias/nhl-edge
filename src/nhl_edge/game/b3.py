@@ -482,6 +482,7 @@ TABLES = (
     "schedule_terms",
     "goalie_starts",
     "lineups",
+    "lineup_replacements",
     "player_ratings",
     "rapm_terms",
     "expected_power_plays",
@@ -491,22 +492,20 @@ TABLES = (
 
 def input_problems(tables: Tables, last: int) -> list[str]:
     """Why the lake cannot run B3 up to the season last: a game of FIRST_SEASON on missing from
-    one of its tables would drop out of the fits unnoticed. The games before RAPM's first fit,
-    on the history's first days, have no league rate by construction and are left out."""
+    one of its tables would drop out of the fits unnoticed. The games of RAPM's first day have no
+    league rate by construction and are left out."""
     needed = tables.games.filter(pl.col("season").is_between(FIRST_SEASON, last))
+    # RAPM's first fit needs stints public before it, and a day's stints are public only the
+    # morning after: the games of its first season's first day have no league rate, and no B3
+    # inputs. Every later date has a fit.
+    opening = tables.games.filter(pl.col("season") == rapm.FIRST_SEASON)["game_date"].min()
     problems = []
     for name in TABLES:
         table = getattr(tables, name)
         key = "game_date" if name == "rapm_terms" else "game_id"
         wanted = needed
-        if name == "rapm_terms":
-            # RAPM's first fit needs stints public before it: the history's first days have no
-            # league rate, and their games no B3 inputs.
-            first = table.filter(pl.col("season") == FIRST_SEASON)["game_date"].min()
-            if first is not None:
-                wanted = needed.filter(
-                    (pl.col("season") > FIRST_SEASON) | (pl.col("game_date") >= first)
-                )
+        if name == "rapm_terms" and opening is not None:
+            wanted = needed.filter(pl.col("game_date") != opening)
         missing = wanted.join(table.select(key).unique(), on=key, how="anti")
         for (season,), frame in missing.sort("game_id").group_by("season", maintain_order=True):
             examples = ", ".join(str(g) for g in frame["game_id"].head(3).to_list())
