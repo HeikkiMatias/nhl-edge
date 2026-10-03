@@ -71,7 +71,20 @@ All intervals are weekly block bootstrap (hard rule 7). A hockey-only mode, `nhl
 
 ## Backtest evidence
 
-None yet. #106's run of `nhl backtest` on the development seasons gives B3 against B2 for gate 2 (#107).
+`backtest-20261003-b1a7b04` on 2018-19 and 2021-22 (docs/model-card.md). Gate 2's verdict is #107's.
+
+| | E1 (close) | E2 (opener) |
+| --- | --- | --- |
+| B3 minus B2 | -0.0079 [-0.0130, -0.0028] | -0.0078 [-0.0130, -0.0028] |
+| B3 minus B1 | +0.0033 [-0.0013, +0.0077] | -0.0000 [-0.0047, +0.0043] |
+
+B3 minus B2 on E1, by subset:
+- trade: -0.0093 [-0.0151, -0.0035] over 1,652 games;
+- injury: -0.0101 [-0.0155, -0.0046] over 1,811;
+- lineup change: -0.0394 over 39, with no interval, since all 39 fall in the seasons' opening weeks;
+- any: -0.0085 [-0.0134, -0.0035] over 2,229.
+
+The calibration slope is 1.34 [1.11, 1.58]. 411 of 2,583 games differ from B1 by more than 8 points.
 
 ## Consequences
 
