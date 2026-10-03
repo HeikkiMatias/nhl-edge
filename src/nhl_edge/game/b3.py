@@ -37,6 +37,7 @@ from numpy.typing import NDArray
 from scipy.optimize import minimize
 from scipy.special import expit
 
+from nhl_edge.features import team_strength as ts
 from nhl_edge.game import b2
 from nhl_edge.lineup.goalie_start import team_goalie_games
 from nhl_edge.ratings import rapm
@@ -490,24 +491,72 @@ TABLES = (
 )
 
 
+# The tables with rows for each team of a game: every team, or every team with earlier games
+# (a candidate needs one), and their components each candidate is rated on.
+EVERY_TEAM = ("lineup_replacements", "expected_power_plays", "goal_multipliers")
+TEAMS_WITH_HISTORY = ("lineups", "goalie_starts")
+COMPONENTS = ("ev_off", "ev_def", "pp", "pk")
+
+
 def input_problems(tables: Tables, last: int) -> list[str]:
     """Why the lake cannot run B3 up to the season last: a game of FIRST_SEASON on missing from
-    one of its tables would drop out of the fits unnoticed. The games of RAPM's first day have no
-    league rate by construction and are left out."""
+    one of its tables, or from a team's rows of a per-team table, would drop out of the fits or
+    lose a side unnoticed, as would a candidate without his ratings. A team's first game, without
+    earlier games, has no candidates, and the games of RAPM's first day have no league rate, by
+    construction."""
     needed = tables.games.filter(pl.col("season").is_between(FIRST_SEASON, last))
     # RAPM's first fit needs stints public before it, and a day's stints are public only the
     # morning after: the games of its first season's first day have no league rate, and no B3
     # inputs. Every later date has a fit.
     opening = tables.games.filter(pl.col("season") == rapm.FIRST_SEASON)["game_date"].min()
+    lines = ts.team_lines()
+
+    def sides(games: pl.DataFrame) -> pl.DataFrame:
+        return pl.concat(
+            [
+                games.select("game_id", "season", "start_utc", team=pl.col(s))
+                for s in ("home", "away")
+            ]
+        ).with_columns(line=pl.col("team").replace(lines))
+
+    team_games = sides(needed)
+    # A line's first game: nobody has dressed for it before (an expansion team's first game).
+    firsts = (
+        sides(tables.games)
+        .sort("start_utc", "game_id")
+        .group_by("line")
+        .agg(pl.col("game_id").first())
+    )
+    with_history = team_games.join(firsts, on=["line", "game_id"], how="anti")
     problems = []
+
+    def report(missing: pl.DataFrame, what: str) -> None:
+        games = missing.select("game_id", "season").unique().sort("game_id")
+        for (season,), frame in games.group_by("season", maintain_order=True):
+            examples = ", ".join(str(g) for g in frame["game_id"].head(3).to_list())
+            problems.append(f"{season}: {frame.height:,} games without {what}, e.g. {examples}")
+
     for name in TABLES:
         table = getattr(tables, name)
-        key = "game_date" if name == "rapm_terms" else "game_id"
-        wanted = needed
-        if name == "rapm_terms" and opening is not None:
-            wanted = needed.filter(pl.col("game_date") != opening)
-        missing = wanted.join(table.select(key).unique(), on=key, how="anti")
-        for (season,), frame in missing.sort("game_id").group_by("season", maintain_order=True):
-            examples = ", ".join(str(g) for g in frame["game_id"].head(3).to_list())
-            problems.append(f"{season}: {frame.height:,} games without {name}, e.g. {examples}")
+        if name == "rapm_terms":
+            wanted = needed if opening is None else needed.filter(pl.col("game_date") != opening)
+            keys = ["game_date"]
+        elif name in EVERY_TEAM:
+            wanted, keys = team_games, ["game_id", "team"]
+        elif name in TEAMS_WITH_HISTORY:
+            wanted, keys = with_history, ["game_id", "team"]
+        else:
+            wanted, keys = needed, ["game_id"]
+        report(wanted.join(table.select(keys).unique(), on=keys, how="anti"), name)
+    # Every skater candidate is rated on each component.
+    rated = tables.player_ratings.group_by("game_id", "player_id").agg(
+        pl.col("component").is_in(list(COMPONENTS)).sum().alias("components")
+    )
+    unrated = (
+        tables.lineups.filter(pl.col("role").is_in(["F", "D"]))
+        .join(needed.select("game_id", "season"), on="game_id")
+        .join(rated, on=["game_id", "player_id"], how="left")
+        .filter(pl.col("components").fill_null(0) < len(COMPONENTS))
+    )
+    report(unrated, "every candidate's player_ratings")
     return sorted(problems)

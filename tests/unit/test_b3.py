@@ -315,22 +315,47 @@ def test_a_fold_before_the_tuning_cutoff_is_refused() -> None:
 
 def test_input_problems() -> None:
     assert b3.input_problems(LEAGUE, TEST) == []
-    first = int(LEAGUE.games["game_id"].sort()[0])
+    ordered = LEAGUE.games.sort("game_id")
+    first, later = int(ordered["game_id"][0]), ordered.row(50, named=True)
     day = LEAGUE.games.filter(pl.col("game_id") == first)["game_date"].item()
     on_day = LEAGUE.games.filter(pl.col("game_date") == day).height
+    away = (pl.col("game_id") == later["game_id"]) & (pl.col("team") == later["away"])
+    player = LEAGUE.lineups.filter(pl.col("game_id") == later["game_id"])["player_id"][0]
     gap = b3.Tables(
         **{
             **LEAGUE.__dict__,
-            "lineups": LEAGUE.lineups.filter(pl.col("game_id") != first),
+            # One team's projection and power plays missing from a later game, and one of its
+            # candidates' ratings.
+            "lineups": LEAGUE.lineups.filter(~away),
+            "expected_power_plays": LEAGUE.expected_power_plays.filter(~away),
+            "player_ratings": LEAGUE.player_ratings.filter(
+                (pl.col("game_id") != later["game_id"])
+                | (pl.col("player_id") != player)
+                | (pl.col("component") != "pk")
+            ),
             "rapm_terms": LEAGUE.rapm_terms.filter(pl.col("game_date") != day),
         }
     )
+    game = later["game_id"]
     assert b3.input_problems(gap, TEST) == sorted(
         [
-            f"20162017: 1 games without lineups, e.g. {first}",
+            f"20162017: 1 games without lineups, e.g. {game}",
+            f"20162017: 1 games without expected_power_plays, e.g. {game}",
+            f"20162017: 1 games without every candidate's player_ratings, e.g. {game}",
             f"20162017: {on_day} games without rapm_terms, e.g. {first}, {first + 1}, {first + 2}",
         ]
     )
+    # A team's first game has no candidates: no projection or goalie starts is no problem.
+    debut = LEAGUE.games.filter(pl.col("game_id") == first).row(0, named=True)
+    new_team = (pl.col("game_id") == first) & (pl.col("team") == debut["home"])
+    expansion = b3.Tables(
+        **{
+            **LEAGUE.__dict__,
+            "lineups": LEAGUE.lineups.filter(~new_team),
+            "goalie_starts": LEAGUE.goalie_starts.filter(~new_team),
+        }
+    )
+    assert b3.input_problems(expansion, TEST) == []
 
 
 def test_only_rapms_first_day_may_lack_a_league_rate(monkeypatch: pytest.MonkeyPatch) -> None:
