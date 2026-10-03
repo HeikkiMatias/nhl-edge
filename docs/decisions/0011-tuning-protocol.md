@@ -93,6 +93,12 @@ Option 1 for both, chosen by the owner on 2026-10-01.
 - **Scored:** 2012-13 to 2017-18, with ratings refit every game day from 2011-12 as `nhl rapm` does. Only the 5v5 model is fitted, without the posterior spreads, which the feature does not read.
 - **Reuse:** the power-play model reuses the chosen settings, frozen (phase 3 plan).
 - **A timing run** before the grid scored two of its points, the provisional setting without aging and with full aging, to size the run (about 4 minutes per candidate).
+- **The run** (`rapm-20261003-3545379`, committed under `reports/tuning/`) scored 2012-13 to 2017-18.
+  - **Leader:** a half-life of 360 days, a pull of 20 hours and no aging, log loss 0.6746 [0.6705, 0.6786]. Team strength's feature scored 0.6780 on the same seasons.
+  - **Ties:** 22 of the 36. Every pull and every memory has a tied candidate, all within 0.6746 to 0.6763.
+  - **Aging:** no candidate with full aging tied. At each pull and memory, no aging scored best and half aging next.
+  - **The rule's choice:** the steadiest tie, 360 days, 80 hours and half aging, at +0.0007 [−0.0004, +0.0018]. It sits on the grid's edge for pull and memory, and it took half aging only because the order ranks fuller aging as steadier.
+  - **Frozen, by the owner's decision on 2026-10-03:** the rule's pull and memory without aging, 360 days, 80 hours and aging 0, at +0.0004 [−0.0007, +0.0015], itself a tie. The owner kept the order for pull and memory, as for the other components on their grids' edges, and dropped aging, since it never helped.
 
 ## Backtest evidence
 
@@ -112,6 +118,7 @@ The tuning runs are above, each on its component's PR. B2, built from all four f
 
 - **A component's leader and its ties span the whole grid,** so the data cannot tell the settings apart. Then the steadiness order alone decides, and the grid or the objective needs a second look.
   - **It happened for the home edge,** where all six settings tied.
+  - **It nearly did for RAPM,** where 22 of 36 tied across every pull and memory, and only aging separated.
   - **It nearly did for the goalie effect,** where 13 of 16 tied.
   - **Team strength's leader sits on its grid's edge,** as do the goalie effect's and the home edge's choices.
   - In each case the owner kept the grid. A grid can grow under a new ADR if gate 1 or the player layer shows the setting matters.

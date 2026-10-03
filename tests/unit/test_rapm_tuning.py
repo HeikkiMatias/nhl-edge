@@ -156,3 +156,9 @@ def test_tune_refuses_seasons_or_r2(tmp_path: Any, monkeypatch: pytest.MonkeyPat
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(app, ["rapm", "--tune", "--seasons", "20112012"])
     assert result.exit_code == 2
+
+
+def test_the_frozen_settings_are_a_grid_point() -> None:
+    # The owner's choice on 2026-10-03 (ADR 0011): the rule's pull and memory without aging.
+    assert rapm.TUNED in rapm.GRID
+    assert rapm.Settings(half_life_days=360.0, pull_hours=80.0, aging=0.0) == rapm.TUNED

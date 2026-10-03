@@ -111,7 +111,7 @@ def markdown_report(
     lines = [
         f"# RAPM: {version}",
         "",
-        f"Provisional settings until #103 (ADR 0019): {settings.label}.",
+        f"Settings: {settings.label} (tuned in #103, ADR 0011).",
         "Ratings are xG per hour of ice time, refit every game day from the stints public before",
         "each game. Nothing is scored here. Held-out seasons, the development seasons among them",
         "until gate 2, show only their counts.",

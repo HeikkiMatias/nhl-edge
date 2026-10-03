@@ -130,6 +130,12 @@ def steadiness(settings: Settings) -> tuple[float, float, float]:
     return (settings.pull_hours, settings.half_life_days, settings.aging)
 
 
+# Frozen by the tuning run rapm-20261003-3545379 (#103, ADR 0011): the rule's pull and memory,
+# 80 hours and two seasons of league game days, without aging, as the owner chose on 2026-10-03.
+# No candidate with full aging tied the leader. The power-play model reuses them.
+TUNED = Settings(half_life_days=360.0, pull_hours=80.0, aging=0.0)
+
+
 def expected_difference(
     ratings: pl.DataFrame, lineups: pl.DataFrame, games: pl.DataFrame
 ) -> pl.DataFrame:

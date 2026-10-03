@@ -1090,7 +1090,7 @@ def rapm_command(
     ] = False,
 ) -> None:
     """Refit RAPM every game day from the stints public before it (#101, ADR 0019), with the
-    provisional settings until #103 and each season's priors (#102, ADR 0020), and write each
+    settings tuned in #103 (ADR 0011) and each season's priors (#102, ADR 0020), and write each
     lineup candidate's ratings to the lake's player_ratings, each fit's terms to rapm_terms, and
     the report to <out>/<version>.md: counts for every season, and terms, leaders and priors
     for the training seasons only. With --tune, score the 36 candidate settings on the training
@@ -1166,7 +1166,7 @@ def rapm_command(
             roles,
             load_venues(),
             candidates,
-            rapm.PROVISIONAL,
+            rapm.TUNED,
             version,
             players=lake.read("players"),
             league_seasons=lake.read("player_league_seasons"),
@@ -1183,7 +1183,7 @@ def rapm_command(
     path = out / f"{version}.md"
     path.write_text(
         report.markdown_report(
-            ratings, terms, lake.read("players"), shown, version, rapm.PROVISIONAL, fits
+            ratings, terms, lake.read("players"), shown, version, rapm.TUNED, fits
         )
     )
     typer.echo(
@@ -1235,7 +1235,8 @@ def _tune_rapm(
     DEFAULT_TUNING_OUT.mkdir(parents=True, exist_ok=True)
     path = DEFAULT_TUNING_OUT / f"{version}.md"
     path.write_text(tuning.markdown(choice, "RAPM", version, rapm.TUNING_SEASONS))
-    typer.echo(f"{path}: chosen {choice.chosen.label}")
+    frozen = "matches" if choice.chosen == rapm.TUNED else "differs from"
+    typer.echo(f"{path}: chosen {choice.chosen.label}, which {frozen} the frozen TUNED")
 
 
 @app.command()
