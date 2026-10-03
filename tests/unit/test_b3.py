@@ -307,6 +307,20 @@ def test_input_problems() -> None:
     )
 
 
+def test_the_history_before_rapms_first_fit_is_not_a_problem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # In the first season, the days before RAPM's first fit have no league rate by construction;
+    # a later day without one is still a problem.
+    monkeypatch.setattr(b3, "FIRST_SEASON", 20162017)
+    days = LEAGUE.rapm_terms["game_date"].unique().sort()
+    opening = LEAGUE.rapm_terms.filter(pl.col("game_date") != days[0])
+    assert b3.input_problems(b3.Tables(**{**LEAGUE.__dict__, "rapm_terms": opening}), TEST) == []
+    gap = opening.filter(pl.col("game_date") != days[5])
+    (problem,) = b3.input_problems(b3.Tables(**{**LEAGUE.__dict__, "rapm_terms": gap}), TEST)
+    assert problem.startswith("20162017: 4 games without rapm_terms")
+
+
 def report_flags(games: pl.DataFrame) -> pl.DataFrame:
     """The first ten games after a trade, the first twenty after an injury, none after a lineup
     change."""
