@@ -41,6 +41,7 @@ DEFAULT_GOALIE_START_OUT = Path("reports/goalie-start")
 DEFAULT_LINEUPS_OUT = Path("reports/lineups")
 DEFAULT_RATINGS_OUT = Path("reports/ratings")
 DEFAULT_POWER_PLAYS_OUT = Path("reports/power-plays")
+DEFAULT_FINISHING_OUT = Path("reports/finishing")
 
 
 def _not_implemented(command: str, phase: str) -> NoReturn:
@@ -1359,6 +1360,122 @@ def power_plays_command(
     typer.echo(
         f"{path}: {rates_table.height:,} rates of {rates_table['player_id'].n_unique():,} skaters "
         f"and {expected_table.height:,} team-games in {len(wanted)} seasons"
+    )
+
+
+@app.command(name="finishing")
+def finishing_command(
+    seasons: Annotated[
+        str | None,
+        typer.Option(
+            help="Seasons to rate, as 20232024, a comma list or a range. Default: 2011-12 on."
+        ),
+    ] = None,
+    out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_FINISHING_OUT,
+    r2: Annotated[
+        bool, typer.Option("--r2", help="Mirror finishing and goal_multipliers to R2.")
+    ] = False,
+) -> None:
+    """Rate every lineup candidate's finishing φ and xG share, and each team's goal multipliers
+    against each opposing candidate goalie: the team's φ times the goalie's conversion (#105, ADR
+    0022). Writes finishing and goal_multipliers to the lake and the report to
+    <out>/<version>.md: counts for every season, and pulls, league figures, the goals against
+    the league's finishing and the leaders for the training seasons only."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.audit import finishing as report
+    from nhl_edge.backtest import reports
+    from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, OPEN_SEASONS
+    from nhl_edge.features import team_strength as ts
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.lake.schemas import Finishing, GoalMultipliers
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.lineup import minutes as mins
+    from nhl_edge.ratings import finishing as fn
+    from nhl_edge.ratings import rapm
+    from nhl_edge.settings import load_env
+
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    games = lake.read("games")
+    known = sorted(games["season"].unique().to_list())
+    try:
+        wanted = parse_seasons(seasons) if seasons else [s for s in known if s >= rapm.FIRST_SEASON]
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    if not wanted or min(wanted) < rapm.FIRST_SEASON:
+        raise typer.BadParameter(
+            f"finishing starts in {rapm.FIRST_SEASON}, the first season with xG",
+            param_hint="--seasons",
+        )
+    last = max(wanted)
+    boxscores = lake.read("actual_lineups").filter(pl.col("season") <= last)
+    minutes = mins.lake_minutes(lake, boxscores, last)
+    # Stints built for part of a season would rate its players on part of it.
+    problems = mins.input_problems(lake.read("shift_coverage"), minutes, last)
+    lineups = lake.read("lineups", seasons=wanted).filter(pl.col("role").is_in(["F", "D"]))
+    effects = lake.read("goalie_effects", seasons=wanted)
+    for name, frame in (("lineups", lineups), ("goalie effects", effects)):
+        without = games.filter(pl.col("season").is_in(wanted)).join(
+            frame.select("game_id").unique(), on="game_id", how="anti"
+        )
+        if without.height:
+            examples = ", ".join(map(str, without["game_id"].sort().head(3).to_list()))
+            problems.append(f"{without.height:,} games without {name}, e.g. {examples}")
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl stints, nhl lineups and nhl goalie-effect for those seasons", err=True)
+        raise typer.Exit(code=1)
+    as_of = ts.as_of(pl.col("game_date"), pl.col("start_utc"))
+    times = games.filter(pl.col("season").is_in(wanted)).select("season", as_of_utc=as_of)
+    candidates = lineups.join(games.select("game_id", as_of_utc=as_of), on="game_id", how="left")
+    read = [s for s in known if s <= last]
+    shots = lake.read("shots", seasons=read)
+    shot_xg = lake.read("shot_xg", seasons=read)
+    version = reports.version(fn.COMPONENT, datetime.now(UTC))
+    try:
+        rows = fn.shooter_games(minutes, shots, shot_xg, games)
+        pulls = {season: fn.season_pulls(rows, season, games) for season in wanted}
+        rated = fn.rates(
+            candidates.select(
+                "game_id", "season", "game_date", "team", "player_id", "role", "as_of_utc"
+            ),
+            rows,
+            pulls,
+        )
+        shared, multipliers = fn.multipliers(
+            rated,
+            candidates,
+            lake.read("lineup_replacements", seasons=wanted),
+            fn.league_rates(rows, times),
+            effects,
+            fn.shot_figures(shots, shot_xg, times),
+            games,
+        )
+        finishing_table = fn.stamp(shared, Finishing, pulls, version)
+        multipliers_table = fn.stamp(multipliers, GoalMultipliers, pulls, version)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    days = games.filter(pl.col("season").is_in(wanted))["game_date"].unique().to_list()
+    lake.replace_dates("finishing", finishing_table, days)
+    lake.replace_dates("goal_multipliers", multipliers_table, days)
+    scores = report.scored(multipliers_table, report.team_goals(shots, shot_xg), boxscores)
+    # The development seasons stay unseen until gate 2 (phase 3 plan).
+    shown = [season for season in OPEN_SEASONS if season not in DEVELOPMENT_SEASONS]
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{version}.md"
+    path.write_text(
+        report.markdown_report(
+            finishing_table, multipliers_table, scores, lake.read("players"), pulls, shown, version
+        )
+    )
+    typer.echo(
+        f"{path}: {finishing_table.height:,} skaters' finishing and {multipliers_table.height:,} "
+        f"goal multipliers in {len(wanted)} seasons"
     )
 
 

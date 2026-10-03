@@ -42,7 +42,7 @@ from nhl_edge.lake.schemas import ExpectedPowerPlays, PenaltyRates, dtypes
 from nhl_edge.lineup.goalie_start import season_cutoff
 from nhl_edge.lineup.minutes import STATES
 from nhl_edge.lineup.projection import SKATER_ROLES
-from nhl_edge.ratings import rapm
+from nhl_edge.ratings import decayed, rapm
 
 COMPONENT = "power-plays"
 TAKEN, DRAWN = "pen_taken", "pen_drawn"
@@ -58,12 +58,6 @@ PULL_MIN_GAMES = 20
 # The memory was tuned on the training seasons (#103, ADR 0011).
 TRAIN_CUTOFF = rapm.TRAIN_CUTOFF
 MOMENT = ("game_id", "period", "seconds", "duration_min")
-
-
-def _later(a: pl.Expr, b: pl.Expr) -> pl.Expr:
-    """The later of two times, either of which may be null. when/then rather than
-    max_horizontal, which can fail to broadcast a column a one-row join left as a scalar."""
-    return pl.when(b.is_null() | (a >= b)).then(a).otherwise(b)
 
 
 def unoffset(penalties: pl.DataFrame) -> pl.DataFrame:
@@ -133,7 +127,7 @@ def player_games(
         taken=pl.col("taken").fill_null(0.0),
         drawn=pl.col("drawn").fill_null(0.0),
         day=pl.col("game_date").replace_strict(numbers, return_dtype=pl.Float64),
-        observed_utc=_later(pl.col("observed_utc"), pl.col("penalties_utc")),
+        observed_utc=decayed.later(pl.col("observed_utc"), pl.col("penalties_utc")),
     ).sort("observed_utc", "game_date", "game_id", "player_id")
 
 
@@ -158,32 +152,18 @@ def season_pulls(rows: pl.DataFrame, season: int, games: pl.DataFrame) -> Season
     played = rows.filter(pl.col("season") == source)
     if played.is_empty():
         raise ValueError(f"no games with stints in {source} to measure {season}'s pulls")
-    # Running sums in a fixed order rather than a group sum, which threads may add up in any
-    # order: a pull, a small difference of large sums, must not move in its last digits from
-    # one run to the next or with rows it never reads.
-    group = ["role", "player_id"]
-    players = (
-        played.sort(*group, "observed_utc", "game_id")
-        .select(
-            *group,
-            pl.col("hours", "taken", "drawn").cum_sum().over(group),
-            games=pl.int_range(1, pl.len() + 1).over(group),
-        )
-        .group_by(group, maintain_order=True)
-        .last()
-        .filter(pl.col("games") >= PULL_MIN_GAMES, pl.col("hours") > 0)
+    players = decayed.totals(played, ["role", "player_id"], ["hours", "taken", "drawn"]).filter(
+        pl.col("games") >= PULL_MIN_GAMES, pl.col("hours") > 0
     )
     pull = {}
     for role in SKATER_ROLES:
         own = players.filter(pl.col("role") == role)
         if own.height < 2:
             raise ValueError(f"too few {role} with {PULL_MIN_GAMES} games in {source}")
-        hours = own["hours"].to_numpy()
         for component, column in COUNTS.items():
-            counts = own[column].to_numpy()
-            mu = counts.sum() / hours.sum()
-            spread = (np.sum(hours * (counts / hours - mu) ** 2) - len(hours) * mu) / hours.sum()
-            pull[role, component] = float(mu / spread) if spread > 0 and mu > 0 else np.inf
+            pull[role, component] = decayed.moments_pull(
+                own[column].to_numpy(), own["hours"].to_numpy()
+            )
     cutoff = played["observed_utc"].max()
     assert isinstance(cutoff, datetime)
     first = season_cutoff(games, season)
@@ -194,64 +174,8 @@ def season_pulls(rows: pl.DataFrame, season: int, games: pl.DataFrame) -> Season
     return SeasonPulls(season, source, pull, cutoff)
 
 
-def _grow(day: pl.Expr) -> pl.Expr:
-    """A row's weight times 2 ** (latest day / half-life): sums of these, scaled back by the
-    latest day read, are the decayed sums. Fifteen seasons of league days keep it under 2 ** 8."""
-    return pl.lit(2.0).pow(day / HALF_LIFE_DAYS)
-
-
-def _batches(rows: pl.DataFrame) -> pl.DataFrame:
-    """Per publication time, the latest league day read up to then."""
-    return (
-        rows.group_by("observed_utc")
-        .agg(pl.col("day").max())
-        .sort("observed_utc")
-        .select("observed_utc", reference=pl.col("day").cum_max(), known_utc="observed_utc")
-    )
-
-
-def _player_history(rows: pl.DataFrame) -> pl.DataFrame:
-    """Each player's grown sums after each of his games, in publication order."""
-    grow = _grow(pl.col("day"))
-    by = pl.col("player_id")
-    return rows.select(
-        "player_id",
-        "observed_utc",
-        g_hours=(pl.col("hours") * grow).cum_sum().over(by),
-        **{f"g_{c}": (pl.col(COUNTS[c]) * grow).cum_sum().over(by) for c in COMPONENTS},
-    )
-
-
-def _role_history(rows: pl.DataFrame) -> pl.DataFrame:
-    """Each role's grown sums over all its skaters after each publication time."""
-    grow = _grow(pl.col("day"))
-    per_batch = (
-        rows.group_by("role", "observed_utc")
-        .agg(
-            r_hours=(pl.col("hours") * grow).sum(),
-            **{f"r_{c}": (pl.col(COUNTS[c]) * grow).sum() for c in COMPONENTS},
-        )
-        .sort("observed_utc")
-    )
-    sums = ["r_hours", *(f"r_{c}" for c in COMPONENTS)]
-    return per_batch.select(
-        "role", "observed_utc", *(pl.col(s).cum_sum().over("role") for s in sums)
-    )
-
-
-def _before(
-    left: pl.DataFrame, right: pl.DataFrame, by: str | Sequence[str] | None = None
-) -> pl.DataFrame:
-    """left with right's latest row public strictly before each as_of_utc."""
-    return left.sort("as_of_utc").join_asof(
-        right.sort("observed_utc"),
-        left_on="as_of_utc",
-        right_on="observed_utc",
-        by=by,
-        strategy="backward",
-        allow_exact_matches=False,
-        check_sortedness=False,
-    )
+# The values summed per player and role: hours and each component's count.
+VALUES = {"hours": "hours", **COUNTS}
 
 
 def role_rates(rows: pl.DataFrame, times: pl.DataFrame) -> pl.DataFrame:
@@ -262,7 +186,7 @@ def role_rates(rows: pl.DataFrame, times: pl.DataFrame) -> pl.DataFrame:
         .unique()
         .join(pl.DataFrame({"role": list(SKATER_ROLES)}), how="cross")
     )
-    joined = _before(targets, _role_history(rows), by="role")
+    joined = decayed.before(targets, decayed.role_history(rows, VALUES, HALF_LIFE_DAYS), by="role")
     return joined.select(
         "as_of_utc",
         "role",
@@ -293,12 +217,14 @@ def rates(
             "pull_hours": pl.Float64,
         },
     )
-    joined = _before(candidates, _player_history(rows), by="player_id")
-    joined = _before(joined.drop("observed_utc"), _batches(rows))
+    joined = decayed.before(
+        candidates, decayed.player_history(rows, VALUES, HALF_LIFE_DAYS), by="player_id"
+    )
+    joined = decayed.before(joined.drop("observed_utc"), decayed.batches(rows))
     joined = joined.drop("observed_utc").join(
         role_rates(rows, candidates), on=["as_of_utc", "role"], how="left"
     )
-    scale = pl.lit(2.0).pow(-pl.col("reference") / HALF_LIFE_DAYS)
+    scale = decayed.scale(HALF_LIFE_DAYS)
     long = pl.concat(
         [
             joined.select(
@@ -419,8 +345,8 @@ def team_games(
         "pk_minutes",
         "sh_xg",
         "has_xg",
-        observed_utc=_later(
-            _later(pl.col("time_utc"), pl.col("penalties_utc")), pl.col("shots_utc")
+        observed_utc=decayed.later(
+            decayed.later(pl.col("time_utc"), pl.col("penalties_utc")), pl.col("shots_utc")
         ),
     ).sort("observed_utc", "game_id", "team")
 
@@ -604,7 +530,7 @@ def expected(
             "league_opportunities",
             "pp_length",
             "sh_xg_per_pk_minute",
-            known_utc=_later(pl.col("league_utc"), pl.col("rates_utc")),
+            known_utc=decayed.later(pl.col("league_utc"), pl.col("rates_utc")),
             as_of_utc="as_of_utc",
             lineup_cutoff="lineup_cutoff",
         )
@@ -631,7 +557,7 @@ def stamp(
     stamped = frame.join(cutoffs, on="season", how="left")
     if "lineup_cutoff" in stamped.columns:
         stamped = stamped.with_columns(
-            train_cutoff=_later(pl.col("train_cutoff"), pl.col("lineup_cutoff"))
+            train_cutoff=decayed.later(pl.col("train_cutoff"), pl.col("lineup_cutoff"))
         )
     stamped = stamped.with_columns(
         artifact_version=pl.lit(version),
