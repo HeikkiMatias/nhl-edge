@@ -94,6 +94,7 @@ Option 1 for both, chosen by the owner on 2026-10-01.
 - **Reuse:** the power-play model reuses the chosen settings, frozen (phase 3 plan).
 - **A timing run** before the grid scored two of its points, the provisional setting without aging and with full aging, to size the run (about 4 minutes per candidate).
 - **The run** (`rapm-20261003-3545379`, committed under `reports/tuning/`) scored 2012-13 to 2017-18.
+  - **One game left out:** Vegas's first, on 2017-10-06, which had no projected Vegas skaters. The feature now counts such a team as replacement level, 0 (#127's review). One game in about 6,900 moves a candidate's pooled log loss by well under 0.0001, less than any margin that decided the choice, so the run was not repeated.
   - **Leader:** a half-life of 360 days, a pull of 20 hours and no aging, log loss 0.6746 [0.6705, 0.6786]. Team strength's feature scored 0.6780 on the same seasons.
   - **Ties:** 22 of the 36. Every pull and every memory has a tied candidate, all within 0.6746 to 0.6763.
   - **Aging:** no candidate with full aging tied. At each pull and memory, no aging scored best and half aging next.

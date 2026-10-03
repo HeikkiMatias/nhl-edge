@@ -142,7 +142,8 @@ def expected_difference(
     """The tuning's feature per game (#103): the home team's projected 5v5 expected goals less
     the away team's, from each candidate's 5v5 offense plus defense (xG per hour) times his
     expected 5v5 minutes (ADR 0018). Replacement skaters count as the reference skater, 0, and
-    the league rate cancels between the two teams."""
+    so does a team without projected skaters, such as an expansion team's first game; a game
+    without a lineup on either side is left out. The league rate cancels between the teams."""
     net = (
         ratings.filter(pl.col("component").is_in(["ev_off", "ev_def"]))
         .group_by("game_id", "player_id")
@@ -155,11 +156,15 @@ def expected_difference(
         .group_by("game_id", "team")
         .agg(xg=(pl.col("exp_5v5") / 60 * pl.col("net").fill_null(0.0)).sum())
     )
-    sides = games.select("game_id", "home", "away")
+    sides = games.select("game_id", "home", "away").join(
+        teams.select("game_id").unique(), on="game_id", how="semi"
+    )
+    home = teams.rename({"team": "home", "xg": "home_xg"})
+    away = teams.rename({"team": "away", "xg": "away_xg"})
     return (
-        sides.join(teams.rename({"team": "home", "xg": "home_xg"}), on=["game_id", "home"])
-        .join(teams.rename({"team": "away", "xg": "away_xg"}), on=["game_id", "away"])
-        .select("game_id", x=pl.col("home_xg") - pl.col("away_xg"))
+        sides.join(home, on=["game_id", "home"], how="left")
+        .join(away, on=["game_id", "away"], how="left")
+        .select("game_id", x=pl.col("home_xg").fill_null(0.0) - pl.col("away_xg").fill_null(0.0))
         .sort("game_id")
     )
 

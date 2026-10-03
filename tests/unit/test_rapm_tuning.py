@@ -70,6 +70,26 @@ def test_the_feature_is_the_home_margin_of_minutes_times_ratings() -> None:
     assert got["x"][0] == pytest.approx(home - away)
 
 
+def test_a_team_without_projected_skaters_counts_as_replacement_level() -> None:
+    # Game 2: the away team, an expansion team's first game, has no projected skaters. Game 3
+    # has no lineup on either side and is left out.
+    games = pl.DataFrame({"game_id": [2, 3], "home": ["DAL", "BOS"], "away": ["VGK", "TOR"]})
+    lineups = pl.DataFrame(
+        {"game_id": [2], "team": ["DAL"], "player_id": [10], "role": ["F"], "exp_5v5": [12.0]}
+    )
+    ratings = pl.DataFrame(
+        {
+            "game_id": [2, 2],
+            "player_id": [10, 10],
+            "component": ["ev_off", "ev_def"],
+            "mean": [0.3, 0.1],
+        }
+    )
+    got = rapm.expected_difference(ratings, lineups, games)
+    assert got["game_id"].to_list() == [2]
+    assert got["x"][0] == pytest.approx(12 / 60 * 0.4)
+
+
 THREE = (*fx.SEASONS, 20132014)
 LONG = fx.league(seasons=THREE)
 
