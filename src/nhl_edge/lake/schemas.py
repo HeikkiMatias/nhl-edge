@@ -1167,8 +1167,8 @@ class PlayerRatings(pa.DataFrameModel):
     defenseman's power-play sd includes the role term's variance and covariance with his own.
     hours is the decayed ice time behind the rating, 0 without data. prior is the mean the rating
     is pulled toward (#102, ADR 0020): the player's traits times the season's effects, on the same
-    footing as mean; a player without data is at it. half_life_days and pull_hours are the
-    settings.
+    footing as mean; a player without data is at it. half_life_days, pull_hours and aging are
+    the settings (aging, the share of the age curve that moves past evidence, #103).
 
     train_cutoff is the last result the specification's figures read, as for team strength; and
     observed_utc, when the rating could be known, is the later of as_of_utc and train_cutoff."""
@@ -1187,6 +1187,7 @@ class PlayerRatings(pa.DataFrameModel):
     known_utc: UtcDatetime = pa.Field(nullable=True)
     half_life_days: pl.Float64 = pa.Field(gt=0)
     pull_hours: pl.Float64 = pa.Field(gt=0)
+    aging: pl.Float64 = pa.Field(ge=0)
     as_of_utc: UtcDatetime
     train_cutoff: UtcDatetime
     artifact_version: pl.String = pa.Field(str_matches=r"^rapm-\d{8}-")
@@ -1235,6 +1236,7 @@ class RapmTerms(pa.DataFrameModel):
     known_utc: UtcDatetime
     half_life_days: pl.Float64 = pa.Field(gt=0)
     pull_hours: pl.Float64 = pa.Field(gt=0)
+    aging: pl.Float64 = pa.Field(ge=0)
     as_of_utc: UtcDatetime
     train_cutoff: UtcDatetime
     artifact_version: pl.String = pa.Field(str_matches=r"^rapm-\d{8}-")

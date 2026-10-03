@@ -978,12 +978,16 @@ def _terms(group: pl.DataFrame, model: _Model, solution: Solution, known: dateti
 
 def _stamp(frame: pl.DataFrame, schema: Any, settings: Settings, version: str) -> pl.DataFrame:
     cutoff = pl.lit(TRAIN_CUTOFF, dtype=pl.Datetime("us", "UTC"))
+    # when/then rather than max_horizontal: a frame from a one-row cross join can hold as_of_utc
+    # as a scalar column, which max_horizontal with a literal fails to broadcast.
+    later = pl.when(pl.col("as_of_utc") > cutoff).then(pl.col("as_of_utc")).otherwise(cutoff)
     stamped = frame.with_columns(
         half_life_days=pl.lit(settings.half_life_days),
         pull_hours=pl.lit(settings.pull_hours),
+        aging=pl.lit(settings.aging),
         train_cutoff=cutoff,
         artifact_version=pl.lit(version),
-        observed_utc=pl.max_horizontal(pl.col("as_of_utc"), cutoff),
+        observed_utc=later,
     )
     columns = dtypes(schema)
     return schema.validate(stamped.select(list(columns)).cast(columns))  # type: ignore[arg-type]
