@@ -46,6 +46,7 @@ Every metric is reported with a 95% weekly block bootstrap interval, pooled over
 | B2, 2021-22 fold (E1 and E2) | backtest-20261003-b1a7b04 | 2021-05-20 10:00 UTC |
 | B3, 2018-19 fold (E1 and E2), B2's L2 100 | backtest-20261003-b1a7b04 | 2018-04-09 10:00 UTC |
 | B3, 2021-22 fold (E1 and E2) | backtest-20261003-b1a7b04 | 2021-05-20 10:00 UTC |
+| B2 and B3, hockey validation folds 2023-24 and 2024-25 | backtest-hockey-20261003-93d0f92 | 2023-04-15 and 2024-04-19 10:00 UTC |
 | Lineup projection and minutes (ADR 0017, 0018) | lineup-20261002-6297f8c | per season, before its first game |
 | RAPM ratings and league rates (ADR 0019, 0020, 0011) | rapm-20261003-86a736f | 2018-04-09 10:00 UTC (tuning) |
 | Penalty rates and expected power plays (ADR 0021) | power-plays-20261003-86a736f | 2018-04-09 10:00 UTC (tuning), then per season |
@@ -119,6 +120,21 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - the goalie-start Brier score is 0.415 [0.404, 0.426].
 - **An expansion team's first game** has no candidate skaters, so it plays its replacements, rated 0. Seattle on 2021-10-12 is the one such game in these seasons.
 - **The training seasons are in-sample for B3's inputs.** RAPM's, the penalty model's and finishing's settings were tuned on 2010-11 to 2017-18 (ADR 0011). No B3 result on those seasons counts as out-of-sample.
+- **Gate 2's hockey validation** (#107; `backtest-hockey-20261003-93d0f92`, `reports/backtest/hockey-20261003-93d0f92.json`). This scores B2 and B3 on the held-out 2023-24 and 2024-25 seasons, on outcomes alone, a second after each game's as-of time. Each fold is trained on every earlier season from 2011-12, 2022-23's results included but none of its prices.
+
+  | | Games | B3 minus B2 |
+  | --- | --- | --- |
+  | Pooled | 2,624 | -0.0078 [-0.0130, -0.0027] |
+  | 2023-24 | 1,312 | -0.0099 [-0.0178, -0.0022] |
+  | 2024-25 | 1,312 | -0.0057 [-0.0124, +0.0007] |
+  | Trade | 1,723 | -0.0106 [-0.0179, -0.0032] |
+  | Injury | 1,650 | -0.0074 [-0.0139, -0.0003] |
+  | Lineup change | 37 | -0.0163, no interval (one week in 2023-24) |
+  | Any | 2,221 | -0.0084 [-0.0140, -0.0024] |
+
+  - **Log loss:** B3 0.6594 [0.6501, 0.6686] against B2's 0.6672 [0.6587, 0.6759].
+  - **B3 is better calibrated here than on the development seasons.** Its slope is 0.94 [0.80, 1.08] (B2's 0.83 [0.70, 0.96]). Its intercept is +0.089 [+0.015, +0.160], so it rates home teams slightly too low, most in 2024-25 (+0.118 [+0.031, +0.209]).
+  - **Fits:** Δĝ's weight is 0.39 and 0.40 on standardized inputs. The folds train on 13,983 and 15,295 games, with `train_cutoff` 2023-04-15 and 2024-04-19.
 
 **Held-out seasons seen for data format only** (#96, PR #108):
 - **What was seen:** the first draft of the `penalties` and `faceoffs` tables surveyed every cached season, 2023-24, 2025-26 and the first 2026-27 games included. It recorded which penalty codes exist and which fields can be blank, and it checked the faceoff zones of 200 games of 2023-24.
