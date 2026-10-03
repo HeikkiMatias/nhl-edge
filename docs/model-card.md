@@ -112,7 +112,7 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - Gate 2 (#107) weighs these definitions.
 - **It is under-confident, like B2.** The calibration slope is 1.34 [1.11, 1.58] on E1 (2018-19 1.22 [0.85, 1.58], 2021-22 1.42 [1.15, 1.73]), and the intercept is -0.088 [-0.194, +0.020].
 - **Gaps above 8 points against B1** (hard rule 8): 411 of 2,583 games on E1 (203 in 2018-19, 208 in 2021-22) and 359 of 2,573 on E2. That is half of B2's. 26 exceed 15 points and 2 exceed 20. They are listed in `reports/backtest/gaps_b3.csv` without results.
-  - **Reviewed at gate 2** (`reports/gaps/b3-gap-review.md`, screen `b3-gaps-20261003-a520271`): every flagged game (51), the gap above 20 points, and a seeded sample of 40, read without results. **No data error was found.**
+  - **Reviewed at gate 2** (`reports/gaps/b3-gap-review.md`, screen `b3-gaps-20261003-291302e`): every flagged game (51), the gap above 20 points, and a seeded sample of 40, read without results. **No data error was found.**
   - **What drives them:** B3 is closer to 50% than the market in 81% of them. Δĝ is the largest term in 313, and a back-to-back or time zone in 98.
   - **The flagged ones show news the boxscores carry late:**
     - summer moves in each season's first weeks (#120);

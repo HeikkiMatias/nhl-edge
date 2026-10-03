@@ -5,7 +5,7 @@
 This is the manual review of B3's gaps above 8 points against B1 at the close (E1). It covers 411 of 2,583 games in `backtest-20261003-b1a7b04`.
 
 The method is the one the owner chose on 2026-10-03, #79's proposal for B2:
-- an automated screen for bug signatures (`nhl audit gaps`, report `b3-gaps-20261003-a520271.md`);
+- an automated screen for bug signatures (`nhl audit gaps`, report `b3-gaps-20261003-291302e.md`);
 - a manual review of every flagged game, every gap above 20 points, and a seeded sample of 40 more, split by season.
 
 Each game was checked against the facts its own and later boxscores record: who dressed, who started in goal, where each player played before and after. No result was read, and B3 is not tuned to shrink a gap.
