@@ -1371,6 +1371,119 @@ class ExpectedPowerPlays(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("observed_utc") == later)
 
 
+class Finishing(pa.DataFrameModel):
+    """A candidate skater's finishing before a game (#105, ADR 0022): phi, his goals over the
+    expected goals of his unblocked shots with xG, the league's finishing being 1, pulled toward
+    1 by finishing_pull expected goals; phi_sd the gamma posterior's spread, 0 at an infinite
+    pull (no earlier season to measure it on, or no spread beyond noise). goals and
+    expected_goals are his decayed sums (xG times the league's finishing, league_finishing), and
+    hours his decayed ice time at 5v5, on the power play and on the penalty kill. xg_rate is his
+    xG per hour pulled toward his role's (xg_rate_prior) by rate_pull hours, null before any xG
+    is public, and share his share of his team's expected xG by his expected minutes, which
+    weighs his phi in the team's. half_life_days is RAPM's frozen memory (#103); known_utc the
+    latest skater-game read, null before any.
+
+    train_cutoff is the latest of RAPM's and the goalie effect's tuning cutoff (ADR 0011), the
+    season's pulls' and the game's lineups', whose expected minutes the share reads; observed_utc
+    the later of as_of_utc and train_cutoff."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    player_id: pl.Int64
+    role: pl.String = pa.Field(isin=["F", "D"])
+    phi: pl.Float64 = pa.Field(gt=0)
+    phi_sd: pl.Float64 = pa.Field(ge=0)
+    goals: pl.Float64 = pa.Field(ge=0)
+    expected_goals: pl.Float64 = pa.Field(ge=0)
+    xg_rate: pl.Float64 = pa.Field(ge=0, nullable=True)
+    xg_rate_prior: pl.Float64 = pa.Field(ge=0, nullable=True)
+    hours: pl.Float64 = pa.Field(ge=0)
+    share: pl.Float64 = pa.Field(ge=0, le=1)
+    finishing_pull: pl.Float64 = pa.Field(gt=0)
+    rate_pull: pl.Float64 = pa.Field(gt=0)
+    league_finishing: pl.Float64 = pa.Field(gt=0, nullable=True)
+    known_utc: UtcDatetime = pa.Field(nullable=True)
+    half_life_days: pl.Float64 = pa.Field(gt=0)
+    as_of_utc: UtcDatetime
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^finishing-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "player_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def reads_only_games_public_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("known_utc").is_null() | (pl.col("known_utc") < pl.col("as_of_utc"))
+        )
+
+    @pa.dataframe_check
+    def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        later = pl.max_horizontal("as_of_utc", "train_cutoff")
+        return data.lazyframe.select(pl.col("observed_utc") == later)
+
+
+class GoalMultipliers(pa.DataFrameModel):
+    """A team's goal multipliers in a game against one candidate goalie of the opponent (#105,
+    ADR 0022): phi, its projected shooters' finishing weighted by their shares of its expected
+    xG (Finishing), gamma, the goalie's conversion, 1 less his goals saved above expected per
+    unblocked shot (goalie_effects) over the league's xG per such shot (xg_per_shot, null before
+    any is public, when gamma is 1), and multiplier, their product times league_finishing, the
+    league's goals over xG (1 before any is public), B3's factor on the team's xG with that
+    goalie in net. An opponent without candidate goalies (a new team's first game) gets one row
+    with goalie_id null and gamma 1, as B2 takes a missing goalie as average. known_utc is the
+    latest game read.
+
+    train_cutoff is the latest of Finishing's, the game's lineups' and the goalie effect's;
+    observed_utc the later of as_of_utc and train_cutoff."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    opponent: pl.String = pa.Field(str_matches=TRI_CODE)
+    goalie_id: pl.Int64 = pa.Field(nullable=True)
+    phi: pl.Float64 = pa.Field(gt=0)
+    gamma: pl.Float64 = pa.Field(gt=0)
+    multiplier: pl.Float64 = pa.Field(gt=0)
+    xg_per_shot: pl.Float64 = pa.Field(gt=0, nullable=True)
+    league_finishing: pl.Float64 = pa.Field(gt=0, nullable=True)
+    known_utc: UtcDatetime = pa.Field(nullable=True)
+    as_of_utc: UtcDatetime
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^finishing-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "team", "goalie_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def reads_only_games_public_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("known_utc").is_null() | (pl.col("known_utc") < pl.col("as_of_utc"))
+        )
+
+    @pa.dataframe_check
+    def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        later = pl.max_horizontal("as_of_utc", "train_cutoff")
+        return data.lazyframe.select(pl.col("observed_utc") == later)
+
+
 class Shifts(pa.DataFrameModel):
     """One player shift from the shift chart (type 517 rows), periods 1 to 4.
 
