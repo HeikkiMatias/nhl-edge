@@ -71,6 +71,12 @@ def test_a_gaps_file_from_other_code_is_refused() -> None:
     drifted = gaps_for(LEAGUE).with_columns(pl.col("p_b3") + 0.01)
     with pytest.raises(ValueError, match="rerun nhl backtest"):
         b3_gaps.screen(LEAGUE, drifted, {TEST: START})
+    # A gap game the refit no longer predicts is not dropped from the screen.
+    gaps = gaps_for(LEAGUE)
+    first = gaps["game_id"][0]
+    late = LEAGUE.schedule_terms.filter(pl.col("game_id") != first)
+    with pytest.raises(ValueError, match="does not predict 1 gap games"):
+        b3_gaps.screen(replaced(schedule_terms=late), gaps, {TEST: START})
 
 
 def test_each_bug_signature_is_flagged() -> None:

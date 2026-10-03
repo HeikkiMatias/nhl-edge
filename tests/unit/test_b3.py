@@ -566,6 +566,14 @@ def test_hockey_only_scores_b2_and_b3_at_the_as_of_time() -> None:
     assert b3_model["paired_against_B2"]["pooled"]["mean"] < 0
 
 
+def test_each_hockey_run_has_its_own_report_file() -> None:
+    # Two runs of one commit on one day, a second apart, write two files.
+    first = {"version": "backtest-hockey-20261003-abc1234", "run_utc": "2026-10-03T15:48:46+00:00"}
+    second = first | {"run_utc": "2026-10-03T15:48:47+00:00"}
+    assert b3_report.hockey_file(first) == "hockey-20261003-abc1234-154846.json"
+    assert b3_report.hockey_file(second) != b3_report.hockey_file(first)
+
+
 def test_hockey_only_refuses_held_out_seasons() -> None:
     for season in (20222023, 20252026, 20262027):
         with pytest.raises(ValueError, match="held out"):

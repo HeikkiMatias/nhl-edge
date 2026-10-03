@@ -622,7 +622,8 @@ def _hockey_backtest(
     # One file per run, and every run logged: held-out seasons must not be rerun unseen.
     out.mkdir(parents=True, exist_ok=True)
     path = out / b3_report.hockey_file(report)
-    path.write_text(json.dumps(report, indent=2) + "\n")
+    with path.open("x") as handle:  # never over an earlier run's report
+        handle.write(json.dumps(report, indent=2) + "\n")
     reports.log_runs(b3_report.hockey_runs(report), out)
     typer.echo(f"{path}: {report['version']}")
     for model, body in report["models"].items():

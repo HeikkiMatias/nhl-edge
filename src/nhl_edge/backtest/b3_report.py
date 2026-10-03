@@ -271,8 +271,10 @@ def hockey(
 
 
 def hockey_file(report: dict[str, Any]) -> str:
-    """The hockey-only report's file name, one per run: hockey-<version>.json."""
-    return f"{report['version']}.json".replace("backtest-hockey-", f"{HOCKEY}-", 1)
+    """The hockey-only report's file name, one per run: hockey-<version>-<HHMMSS>.json, the
+    run's UTC time telling apart runs of one commit on one day."""
+    at = datetime.fromisoformat(report["run_utc"]).strftime("%H%M%S")
+    return f"{report['version']}-{at}.json".replace("backtest-hockey-", f"{HOCKEY}-", 1)
 
 
 def hockey_runs(report: dict[str, Any]) -> list[dict[str, Any]]:

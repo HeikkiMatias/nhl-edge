@@ -466,7 +466,8 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert hockey.exit_code == 0, hockey.output
     (written_path,) = (tmp_path / "hockey").glob("hockey-*.json")
     written = json.loads(written_path.read_text())
-    assert written_path.name == f"{written['version'].replace('backtest-hockey', 'hockey')}.json"
+    stem = written["version"].replace("backtest-hockey", "hockey")
+    assert re.fullmatch(rf"{re.escape(stem)}-\d{{6}}\.json", written_path.name)
     assert set(written["models"]) == {"B2", "B3"}
     assert written["coverage"]["20212022"]["b3_scored"] == 4
     assert (

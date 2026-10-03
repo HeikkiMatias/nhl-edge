@@ -161,8 +161,8 @@ def screen(tables: b3.Tables, gaps: pl.DataFrame, starts: Mapping[int, datetime]
     """Every gap game of gaps (one experiment's gaps_b3.csv rows: season, game_id, game_date,
     home, away, p_b3, p_b1, gap) with B3's terms, both teams' parts and the flags, B3 refit for
     each season as the backtest's E1 fold starting at starts[season] and predicting at each
-    game's start. Raises if the refit's probability differs from p_b3: the screen would then not
-    explain the backtest's gaps."""
+    game's start. Raises if the refit leaves out a gap game or its probability differs from p_b3:
+    the screen would then not explain the backtest's gaps."""
     # The gaps file's own columns only: nothing else it might carry reaches the report.
     gaps = gaps.select("season", "game_id", "game_date", "home", "away", "p_b3", "p_b1", "gap")
     frames = []
@@ -198,6 +198,13 @@ def screen(tables: b3.Tables, gaps: pl.DataFrame, starts: Mapping[int, datetime]
             .join(terms, on="game_id")
             .with_columns(out_of_range=outside)
         )
+        unexplained = season_gaps.join(frame.select("game_id"), on="game_id", how="anti")
+        if unexplained.height:
+            examples = ", ".join(str(g) for g in unexplained["game_id"].sort().head(3))
+            raise ValueError(
+                f"B3 refit for {season} does not predict {unexplained.height} gap games, e.g. "
+                f"{examples}: rerun nhl backtest"
+            )
         drift = frame.select((pl.col("p_home") - pl.col("p_b3")).abs().max()).item()
         if drift is None or drift > 1e-3:
             raise ValueError(
