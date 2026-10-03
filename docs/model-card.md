@@ -111,14 +111,23 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - **Every lineup change falls in an opening week.** The projection reads only earlier boxscores, so in season it never drops 3 of the previous game's skaters. The 39 games fall in one week of each season, which a weekly block bootstrap cannot resample, so the report gives them no interval.
   - Gate 2 (#107) weighs these definitions.
 - **It is under-confident, like B2.** The calibration slope is 1.34 [1.11, 1.58] on E1 (2018-19 1.22 [0.85, 1.58], 2021-22 1.42 [1.15, 1.73]), and the intercept is -0.088 [-0.194, +0.020].
-- **Gaps above 8 points against B1** (hard rule 8): 411 of 2,583 games on E1 (203 in 2018-19, 208 in 2021-22) and 359 of 2,573 on E2. That is half of B2's. 26 exceed 15 points and 2 exceed 20. They are listed in `reports/backtest/gaps_b3.csv` without results. Three of the five largest are New Jersey's games in February and March 2019, where B3 gives New Jersey about 20 points more than the market does. Their review is part of gate 2 (#107).
+- **Gaps above 8 points against B1** (hard rule 8): 411 of 2,583 games on E1 (203 in 2018-19, 208 in 2021-22) and 359 of 2,573 on E2. That is half of B2's. 26 exceed 15 points and 2 exceed 20. They are listed in `reports/backtest/gaps_b3.csv` without results.
+  - **Reviewed at gate 2** (`reports/gaps/b3-gap-review.md`, screen `b3-gaps-20261003-a520271`): every flagged game (51), the gap above 20 points, and a seeded sample of 40, read without results. **No data error was found.**
+  - **What drives them:** B3 is closer to 50% than the market in 81% of them. Δĝ is the largest term in 313, and a back-to-back or time zone in 98.
+  - **The flagged ones show news the boxscores carry late:**
+    - summer moves in each season's first weeks (#120);
+    - returns from injury and from 2021-22's COVID protocols;
+    - rested regulars at season's end;
+    - new, recalled or returning goalies.
+  - **The sample** is mostly weak teams B3 rates closer to average than the market does: Seattle and Arizona in 2021-22, New Jersey and Anaheim in 2018-19.
 - **Weights** (standardized inputs, 2021-22 fold): Δĝ 0.34, home back-to-back -0.07, away back-to-back +0.08. Rest, travel, time zones and empty seats are all within 0.03. The 2018-19 fold gives Δĝ 0.31.
 - **Training games:** 8,138 for the 2018-19 fold and 11,359 for the 2021-22 fold, from 2011-12. The three games of 2011-12's opening night have no RAPM league rate, since nothing was public before them, and drop out.
 - **Lineup quality on the scored games** (E1):
   - the projection's 5v5 minutes are off by 1.81 [1.78, 1.83] minutes per dressed skater;
   - its power-play unit names 76.1% [75.0%, 77.2%] of the actual top five;
   - the goalie-start Brier score is 0.415 [0.404, 0.426].
-- **An expansion team's first game** has no candidate skaters, so it plays its replacements, rated 0. Seattle on 2021-10-12 is the one such game in these seasons.
+- **An expansion team's first game** has no candidate skaters, so it plays its replacements, rated 0. Seattle on 2021-10-12 is the one such game in these seasons. 0 is RAPM's reference skater, not a replacement-level one, so such a team comes out about average (#134).
+- **B2's schedule terms, shared with B3, are large.** A home back-to-back costs 0.21 log-odds in the 2021-22 fold. The time-zone terms reach +0.35 in a game played in Europe, which rests on few overseas games in training (#13).
 - **The training seasons are in-sample for B3's inputs.** RAPM's, the penalty model's and finishing's settings were tuned on 2010-11 to 2017-18 (ADR 0011). No B3 result on those seasons counts as out-of-sample.
 - **Gate 2's hockey validation** (#107; `backtest-hockey-20261003-93d0f92`, `reports/backtest/hockey-20261003-93d0f92.json`). This scores B2 and B3 on the held-out 2023-24 and 2024-25 seasons, on outcomes alone, a second after each game's as-of time. Each fold is trained on every earlier season from 2011-12, 2022-23's results included but none of its prices.
 
