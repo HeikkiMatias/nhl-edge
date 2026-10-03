@@ -311,10 +311,19 @@ runner = CliRunner()
 
 def test_backtest_refuses_held_out_seasons(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    for season in ("20222023", "20252026", "20262027"):
+    for season in ("20222023", "20232024", "20242025", "20252026", "20262027"):
         result = runner.invoke(app, ["backtest", "--seasons", season])
         assert result.exit_code == 2, result.output
         assert "held out" in result.output
+    # The hockey-only mode opens the hockey validation seasons at gate 2, and only those.
+    for season in ("20222023", "20252026", "20262027"):
+        result = runner.invoke(app, ["backtest", "--seasons", season, "--hockey-only"])
+        assert result.exit_code == 2, result.output
+        assert "held out" in result.output
+    for season in ("20232024", "20242025"):
+        result = runner.invoke(app, ["backtest", "--seasons", season, "--hockey-only"])
+        assert "held out" not in result.output
+        assert "run the feature commands" in result.output  # past the gate, at the input check
 
 
 def test_backtest_refuses_the_first_sbr_season(

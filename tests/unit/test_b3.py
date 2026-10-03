@@ -567,5 +567,18 @@ def test_hockey_only_scores_b2_and_b3_at_the_as_of_time() -> None:
 
 
 def test_hockey_only_refuses_held_out_seasons() -> None:
-    with pytest.raises(ValueError, match="held out"):
-        hockey_only(LEAGUE.games, [20222023], feature_tables(LEAGUE.games, 4), LEAGUE)
+    for season in (20222023, 20252026, 20262027):
+        with pytest.raises(ValueError, match="held out"):
+            hockey_only(LEAGUE.games, [season], feature_tables(LEAGUE.games, 4), LEAGUE)
+
+
+def test_hockey_only_scores_the_hockey_validation_seasons() -> None:
+    # Gate 2 opens 2023-24 and 2024-25 for B2 against B3 on outcomes (#107).
+    later = league((20222023, 20232024), games=60)
+    fits3: dict[str, dict[int, b3.B3Model]] = {}
+    predictions, coverage = hockey_only(
+        later.games, [20232024], feature_tables(later.games, 4), later, b3_fits=fits3
+    )
+    assert set(predictions["season"]) == {20232024} and set(predictions["model"]) == {"B2", "B3"}
+    assert coverage[HOCKEY][20232024]["b3_scored"] == 60
+    assert fits3[HOCKEY][20232024].games == 60

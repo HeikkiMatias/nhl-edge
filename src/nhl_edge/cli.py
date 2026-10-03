@@ -330,7 +330,10 @@ def backtest(
         bool,
         typer.Option(
             "--hockey-only",
-            help="Score B2 and B3 at the as-of time on outcomes alone, for seasons without prices.",
+            help=(
+                "Score B2 and B3 at the as-of time on outcomes alone, for seasons without prices: "
+                "the open seasons and the hockey validation seasons 2023-24 and 2024-25."
+            ),
         ),
     ] = False,
 ) -> None:
@@ -354,7 +357,7 @@ def backtest(
         subsets,
         walk_forward,
     )
-    from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
+    from nhl_edge.backtest.seasons import HOCKEY_ROLES, OPEN_ROLES, OPEN_SEASONS, season_role
     from nhl_edge.game import b2, b3
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
@@ -362,15 +365,21 @@ def backtest(
     from nhl_edge.lake.tables import Lake
     from nhl_edge.lineup import minutes as mins
 
+    # The hockey-only mode also scores the hockey validation seasons, opened at gate 2 (#107).
+    roles = HOCKEY_ROLES if hockey_only else OPEN_ROLES
     try:
         wanted = sorted(set(parse_seasons(seasons)))
-        held_out = [season for season in wanted if season_role(season) not in OPEN_ROLES]
+        held_out = [season for season in wanted if season_role(season) not in roles]
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
     if held_out:
+        scope = (
+            "the hockey-only mode adds 2023-24 and 2024-25 (gate 2, #107)"
+            if hockey_only
+            else "a backtest runs on training and development seasons only"
+        )
         raise typer.BadParameter(
-            f"{held_out} are held out: a backtest runs on training and development seasons only "
-            "until their phase (docs/plan.md section 5, #10)",
+            f"{held_out} are held out: {scope} until their phase (docs/plan.md section 5, #10)",
             param_hint="--seasons",
         )
     lake = Lake()
