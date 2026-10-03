@@ -82,6 +82,25 @@ Option 1 for both, chosen by the owner on 2026-10-01.
   - **Chosen:** an L2 of 100, log loss 0.6780 [0.6741, 0.6821]. It was the leader and the steadiest of its ties.
   - **Not tied:** 1,000, at +0.0028 [+0.0013, +0.0043]. So the choice sits inside the grid.
 
+**RAPM's application (#103, ADR 0019, ADR 0020):**
+- **Grid,** fixed before the first run as the owner chose on 2026-10-03. That is 36 candidates:
+  - a pull toward the prior mean worth 10, 20, 40 or 80 hours of ice time;
+  - a memory, as a half-life of 90, 180 or 360 league game days (half a season, one or two);
+  - an aging weight of 0, 0.5 or 1.
+- **Steadiness order:** the larger pull first, then the longer memory, then the fuller aging.
+- **Aging,** as the owner chose: at each season's start, every player's earlier evidence moves by the aging weight times his age curve's expected change for his age (ADR 0020). RAPM's running sums allow this exactly: X'Wy gains X'WX times the shift.
+- **Feature:** each game's projected 5v5 expected-goal difference. It is each candidate's 5v5 offense plus defense (xG per hour) times his expected 5v5 minutes (ADR 0018), summed for the home team less the away team. Replacement skaters count as the reference skater, 0.
+- **Scored:** 2012-13 to 2017-18, with ratings refit every game day from 2011-12 as `nhl rapm` does. Only the 5v5 model is fitted, without the posterior spreads, which the feature does not read.
+- **Reuse:** the power-play model reuses the chosen settings, frozen (phase 3 plan).
+- **A timing run** before the grid scored two of its points, the provisional setting without aging and with full aging, to size the run (about 4 minutes per candidate).
+- **The run** (`rapm-20261003-3545379`, committed under `reports/tuning/`) scored 2012-13 to 2017-18.
+  - **One game left out:** Vegas's first, on 2017-10-06, which had no projected Vegas skaters. The feature now counts such a team as replacement level, 0 (#127's review). One game in about 6,900 moves a candidate's pooled log loss by well under 0.0001, less than any margin that decided the choice, so the run was not repeated.
+  - **Leader:** a half-life of 360 days, a pull of 20 hours and no aging, log loss 0.6746 [0.6705, 0.6786]. Team strength's feature scored 0.6780 on the same seasons.
+  - **Ties:** 22 of the 36. Every pull and every memory has a tied candidate, all within 0.6746 to 0.6763.
+  - **Aging:** no candidate with full aging tied. At each pull and memory, no aging scored best and half aging next.
+  - **The rule's choice:** the steadiest tie, 360 days, 80 hours and half aging, at +0.0007 [−0.0004, +0.0018]. It sits on the grid's edge for pull and memory, and it took half aging only because the order ranks fuller aging as steadier.
+  - **Frozen, by the owner's decision on 2026-10-03:** the rule's pull and memory without aging, 360 days, 80 hours and aging 0, at +0.0004 [−0.0007, +0.0015], itself a tie. The owner kept the order for pull and memory, as for the other components on their grids' edges, and dropped aging, since it never helped.
+
 ## Backtest evidence
 
 The tuning runs' losses record each choice and are not walk-forward evidence. The training seasons are in-sample by design, and a later run reuses earlier settings chosen on the same seasons. The development seasons, scored once every choice was frozen, are the evidence.
@@ -94,12 +113,13 @@ The tuning runs are above, each on its component's PR. B2, built from all four f
 - **Every tuned output records the run's cutoff,** the last result the run read: `train_cutoff` in `team_strength`, 2018-04-09 10:00 UTC. A tuned output counts as known no earlier than it, so `observed_utc` is the later of the output's own time and the cutoff. A fold that starts before the cutoff then cannot read the tuned seasons' outputs at all. Gate 1's folds start after it.
 - One choice per component, made once. A component tuned later does not reopen an earlier one's settings. It reuses them, frozen, even though they were chosen on the same seasons. The owner confirmed this on #88, when Codex raised it as a P0, and #78 applies it to B2.
 - B2's L2 strength (#78) uses the same protocol, with B2 itself as the scored model.
-- Every tuned table records the same cutoff, 2018-04-09 10:00 UTC: `team_strength`, `goalie_effects` and `schedule_terms`. B2's backtest refuses a fold that starts before the latest of them (ADR 0013).
+- Every tuned table records the same cutoff, 2018-04-09 10:00 UTC: `team_strength`, `goalie_effects`, `schedule_terms`, and RAPM's `player_ratings` and `rapm_terms`. B2's backtest refuses a fold that starts before the latest of them (ADR 0013), and B3's (#106) should do the same for the ratings.
 
 ## Revisit when
 
 - **A component's leader and its ties span the whole grid,** so the data cannot tell the settings apart. Then the steadiness order alone decides, and the grid or the objective needs a second look.
   - **It happened for the home edge,** where all six settings tied.
+  - **It nearly did for RAPM,** where 22 of 36 tied across every pull and memory, and only aging separated.
   - **It nearly did for the goalie effect,** where 13 of 16 tied.
   - **Team strength's leader sits on its grid's edge,** as do the goalie effect's and the home edge's choices.
   - In each case the owner kept the grid. A grid can grow under a new ADR if gate 1 or the player layer shows the setting matters.

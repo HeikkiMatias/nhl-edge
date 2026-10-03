@@ -90,20 +90,85 @@ PRIOR = "prior"
 
 @dataclass(frozen=True)
 class Settings:
-    """RAPM's two tuned settings (ADR 0011, #103): the memory, as a half-life in league game
-    days, and the pull toward the prior mean, in hours of ice time."""
+    """RAPM's three tuned settings (ADR 0011, #103): the memory, as a half-life in league game
+    days; the pull toward the prior mean, in hours of ice time; and the aging weight, the share
+    of the age curve's expected change (#102, ADR 0020) that shifts a player's past evidence at
+    each season's start."""
 
     half_life_days: float
     pull_hours: float
+    aging: float = 0.0
 
     @property
     def label(self) -> str:
-        return f"half-life {self.half_life_days:g} game days, pull {self.pull_hours:g} hours"
+        return (
+            f"half-life {self.half_life_days:g} game days, pull {self.pull_hours:g} hours, "
+            f"aging {self.aging:g}"
+        )
 
 
 # Provisional until the tuning task (#103), as the owner chose on 2026-10-02 (ADR 0019): one
 # season of league game days, and a pull worth 20 hours, about a regular forward's 5v5 season.
 PROVISIONAL = Settings(half_life_days=180.0, pull_hours=20.0)
+# The tuning's candidates (#103, ADR 0011), fixed before the first run as the owner chose on
+# 2026-10-03: a pull of 10, 20, 40 or 80 hours, a memory of half, one or two seasons of league
+# game days, and an aging weight of 0, 0.5 or 1. Tuned on 5v5; the power play reuses them.
+GRID = tuple(
+    Settings(half_life_days=half_life, pull_hours=pull, aging=aging)
+    for pull in (10.0, 20.0, 40.0, 80.0)
+    for half_life in (90.0, 180.0, 360.0)
+    for aging in (0.0, 0.5, 1.0)
+)
+# Every training season after the first with xG, each predicted by a model fitted on the earlier
+# ones (ADR 0011).
+TUNING_SEASONS = ts.TUNING_SEASONS
+
+
+def steadiness(settings: Settings) -> tuple[float, float, float]:
+    """The order among tied candidates, steadiest last: more pull, then a longer memory, then
+    fuller aging."""
+    return (settings.pull_hours, settings.half_life_days, settings.aging)
+
+
+# Frozen by the tuning run rapm-20261003-3545379 (#103, ADR 0011): the rule's pull and memory,
+# 80 hours and two seasons of league game days, without aging, as the owner chose on 2026-10-03.
+# No candidate with full aging tied the leader. The power-play model reuses them.
+TUNED = Settings(half_life_days=360.0, pull_hours=80.0, aging=0.0)
+
+
+def expected_difference(
+    ratings: pl.DataFrame, lineups: pl.DataFrame, games: pl.DataFrame
+) -> pl.DataFrame:
+    """The tuning's feature per game (#103): the home team's projected 5v5 expected goals less
+    the away team's, from each candidate's 5v5 offense plus defense (xG per hour) times his
+    expected 5v5 minutes (ADR 0018). Replacement skaters count as the reference skater, 0, and
+    so does a team without projected skaters, such as an expansion team's first game; a game
+    without a lineup on either side is left out. The league rate cancels between the teams."""
+    net = (
+        ratings.filter(pl.col("component").is_in(["ev_off", "ev_def"]))
+        .group_by("game_id", "player_id")
+        .agg(net=pl.col("mean").sum())
+    )
+    teams = (
+        lineups.filter(pl.col("role").is_in(SKATER_ROLES))
+        .select("game_id", "team", "player_id", "exp_5v5")
+        .join(net, on=["game_id", "player_id"], how="left")
+        .group_by("game_id", "team")
+        .agg(xg=(pl.col("exp_5v5") / 60 * pl.col("net").fill_null(0.0)).sum())
+    )
+    sides = games.select("game_id", "home", "away").join(
+        teams.select("game_id").unique(), on="game_id", how="semi"
+    )
+    home = teams.rename({"team": "home", "xg": "home_xg"})
+    away = teams.rename({"team": "away", "xg": "away_xg"})
+    return (
+        sides.join(home, on=["game_id", "home"], how="left")
+        .join(away, on=["game_id", "away"], how="left")
+        .select("game_id", x=pl.col("home_xg").fill_null(0.0) - pl.col("away_xg").fill_null(0.0))
+        .sort("game_id")
+    )
+
+
 # The season and arena terms' pull: only enough to keep the fit solvable.
 BIAS_PULL_HOURS = 1.0
 # Added to every diagonal entry, so a column without a pull never makes the fit singular.
@@ -426,6 +491,15 @@ class Normal:
         self.n += float(growth.sum())
         self.latest = float(days.max()) if self.latest is None else max(self.latest, days.max())
 
+    def age(self, shift: NDArray[np.float64]) -> None:
+        """Move every column's evidence by shift, as if each row's response had been y + X·shift:
+        X'Wy gains X'WX·shift, and y'Wy gains 2·shift'X'Wy + shift'X'WX·shift."""
+        size = shift.size
+        self.grow(size)
+        moved = self.a[:size, :size] @ shift
+        self.yy += float(2 * shift @ self.b[:size] + shift @ moved)
+        self.b[:size] += moved
+
     def _rebase(self, day: float) -> None:
         assert self.t0 is not None
         factor = np.exp2(-(day - self.t0) / self.half_life)
@@ -561,12 +635,15 @@ def rate(
     version: str,
     players: pl.DataFrame | None = None,
     league_seasons: pl.DataFrame | None = None,
+    kinds: Sequence[str] = MODELS,
+    spread: bool = True,
 ) -> tuple[pl.DataFrame, pl.DataFrame, list[priors.PriorFit]]:
     """player_ratings and rapm_terms for the wanted candidates (targets()), and each season's
     priors (#102, ADR 0020). stint_seasons yields each season's stints in order, from
     FIRST_SEASON to the last wanted season at least: a season's ratings read every earlier
     season's. Without players every prior mean is 0; without league_seasons nobody has an
-    NHLe."""
+    NHLe. The tuning (#103) fits only the 5v5 model (kinds) and skips the posterior spreads
+    (spread), leaving a rated player's sd null."""
     if wanted.is_empty():
         return (
             pl.DataFrame(schema=dtypes(PlayerRatings)),
@@ -579,8 +656,8 @@ def rate(
     seasons = sorted(s for s in games["season"].unique().to_list() if FIRST_SEASON <= s <= last)
     arenas = sorted(venues["arena_id"].unique().to_list())
     numbers = league_days(games)
-    designs = {m: Design(m, seasons, arenas) for m in MODELS}
-    normals = {m: Normal(settings.half_life_days) for m in MODELS}
+    designs = {m: Design(m, seasons, arenas) for m in kinds}
+    normals = {m: Normal(settings.half_life_days) for m in kinds}
     ratings: list[pl.DataFrame] = []
     terms: list[pl.DataFrame] = []
     fits: list[priors.PriorFit] = []
@@ -602,7 +679,7 @@ def rate(
         cutoff = gs.season_cutoff(games, season)
         season_traits, factors = _season_traits(players, league_seasons, season, cutoff)
         models = {}
-        for m in MODELS:
+        for m in kinds:
             rows = model_rows(stints, games, roles, venues, m)
             days = np.array([numbers[d] for d in rows["game_date"].to_list()], dtype=np.float64)
             x = designs[m].matrix(rows, season_traits)
@@ -611,6 +688,9 @@ def rate(
         if known is not None and known >= cutoff:
             raise ValueError(f"stints public at {known}, after {season} starts at {cutoff}")
         curves = priors.age_curves(_concat(season_ends), season)
+        if settings.aging and curves and season_traits is not None:
+            for model in models.values():
+                model.normal.age(_aging_shift(model.design, season_traits, curves, settings.aging))
         effects: dict[str, dict[str, float]] = {}
         for model in models.values():
             effects |= _season_effects(model, settings, reference)
@@ -637,7 +717,7 @@ def rate(
                 reference = float(batches["day"][int(count) - 1])
             for model in models.values():
                 model.add_until(known)
-                rated, solution = _ratings(group, model, settings, known, reference, means)
+                rated, solution = _ratings(group, model, settings, known, reference, means, spread)
                 ratings.append(rated)
                 if known is not None and solution.sigma is not None:
                     terms.append(_terms(group, model, solution, known))
@@ -710,6 +790,32 @@ def _season_effects(
         }
         for component in design.components
     }
+
+
+def _aging_shift(
+    design: Design,
+    season_traits: pl.DataFrame,
+    curves: Mapping[str, priors.AgeCurve],
+    weight: float,
+) -> NDArray[np.float64]:
+    """Each player column's aging shift for the season: the weight times his component's age
+    curve at his age that season; 0 for a component without a curve. A player without a birth
+    date counts as 27, as in his prior (ADR 0020)."""
+    shift = np.zeros(design.size)
+    if not design.players:
+        return shift
+    ids = np.fromiter(design.players.keys(), dtype=np.int64)
+    k = np.fromiter(design.players.values(), dtype=np.int64)
+    lookup = _trait_lookup(season_traits)
+    assert lookup is not None
+    ages = lookup(ids, ["age"])[:, 0] + priors.REFERENCE_AGE
+    for component, columns in zip(
+        design.components, (design.attack(k), design.defend(k)), strict=True
+    ):
+        curve = curves.get(component)
+        if curve is not None:
+            shift[columns] = weight * np.array([curve.change(a) for a in ages])
+    return shift
 
 
 def _prior_vector(design: Design, means: pl.DataFrame | None) -> NDArray[np.float64]:
@@ -791,22 +897,23 @@ def _ratings(
     known: datetime | None,
     reference: float | None,
     means: pl.DataFrame | None,
+    spread: bool = True,
 ) -> tuple[pl.DataFrame, Solution]:
     """The group's candidates' two components of the model, from one refit pulled toward the
-    season's prior means."""
+    season's prior means; with spread, their posterior sd too."""
     design = model.design
     ids = group["player_id"].to_numpy().astype(np.int64)
     k = design.positions(ids, add=False)
     has = k >= 0
     attack = np.where(has, design.attack(np.maximum(k, 0)), -1)
     defend = np.where(has, design.defend(np.maximum(k, 0)), -1)
-    wanted = np.concatenate([attack[has], defend[has]])
+    wanted = np.concatenate([attack[has], defend[has]]) if spread else np.empty(0, np.int64)
     shift = design.index[DEFENSEMEN] if design.model == PP else None
     solution = model.normal.solve(
         design.penalty(settings),
         wanted,
         reference,
-        shift,
+        shift if spread else None,
         prior=model.prior,
         exclude=design.traits(),
     )
@@ -828,8 +935,9 @@ def _ratings(
             own = defense & rated
             mean = mean + defense * solution.beta[shift]
             prior = prior + defense * solution.beta[shift]
-            sd = np.where(own, solution.shifted_sd[columns], sd)
-            sd = np.where(defense & ~rated, np.hypot(prior_sd, solution.sd[shift]), sd)
+            if spread:
+                sd = np.where(own, solution.shifted_sd[columns], sd)
+                sd = np.where(defense & ~rated, np.hypot(prior_sd, solution.sd[shift]), sd)
         hours = np.where(rated, solution.hours[columns], 0.0)
         frames.append(
             group.select(
@@ -876,12 +984,16 @@ def _terms(group: pl.DataFrame, model: _Model, solution: Solution, known: dateti
 
 def _stamp(frame: pl.DataFrame, schema: Any, settings: Settings, version: str) -> pl.DataFrame:
     cutoff = pl.lit(TRAIN_CUTOFF, dtype=pl.Datetime("us", "UTC"))
+    # when/then rather than max_horizontal: a frame from a one-row cross join can hold as_of_utc
+    # as a scalar column, which max_horizontal with a literal fails to broadcast.
+    later = pl.when(pl.col("as_of_utc") > cutoff).then(pl.col("as_of_utc")).otherwise(cutoff)
     stamped = frame.with_columns(
         half_life_days=pl.lit(settings.half_life_days),
         pull_hours=pl.lit(settings.pull_hours),
+        aging=pl.lit(settings.aging),
         train_cutoff=cutoff,
         artifact_version=pl.lit(version),
-        observed_utc=pl.max_horizontal(pl.col("as_of_utc"), cutoff),
+        observed_utc=later,
     )
     columns = dtypes(schema)
     return schema.validate(stamped.select(list(columns)).cast(columns))  # type: ignore[arg-type]

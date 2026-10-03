@@ -33,6 +33,7 @@ RATING_COLUMNS = [
     "known_utc",
     "half_life_days",
     "pull_hours",
+    "aging",
     "as_of_utc",
     "train_cutoff",
     "artifact_version",
