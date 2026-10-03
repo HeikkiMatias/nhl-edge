@@ -1257,6 +1257,120 @@ class RapmTerms(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("observed_utc") == later)
 
 
+# Penalty rates' components (#104, ADR 0021): penalties taken and drawn per hour.
+PENALTY_COMPONENTS = ("pen_taken", "pen_drawn")
+
+
+class PenaltyRates(pa.DataFrameModel):
+    """A candidate skater's penalty rates before a game (#104, ADR 0021), one row per component:
+    his unoffset penalties taken (pen_taken) or drawn (pen_drawn) per hour at 5v5, on the power
+    play and on the penalty kill, from his earlier games with stints public before as_of_utc,
+    team strength's as-of time. The candidates are those of Lineups, as in PlayerRatings.
+
+    mean is pulled toward prior, his role's rate over all skaters of the role with the same
+    weights, by pull_hours hours, measured per role and component on the season before
+    (infinite when players' rates did not differ beyond noise, which puts everyone at prior). sd
+    is the gamma posterior's spread, 0 at an infinite pull. hours is his decayed exposure, 0
+    without games, and half_life_days RAPM's frozen memory (#103). known_utc is the latest
+    player-game time read.
+
+    train_cutoff is the later of RAPM's tuning cutoff, since the memory was tuned (ADR 0011), and
+    the season's pulls' cutoff; observed_utc is the later of as_of_utc and train_cutoff."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    player_id: pl.Int64
+    role: pl.String = pa.Field(isin=["F", "D"])
+    component: pl.String = pa.Field(isin=list(PENALTY_COMPONENTS))
+    mean: pl.Float64 = pa.Field(ge=0)
+    prior: pl.Float64 = pa.Field(ge=0)
+    sd: pl.Float64 = pa.Field(ge=0)
+    hours: pl.Float64 = pa.Field(ge=0)
+    known_utc: UtcDatetime
+    half_life_days: pl.Float64 = pa.Field(gt=0)
+    pull_hours: pl.Float64 = pa.Field(gt=0)
+    as_of_utc: UtcDatetime
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^power-plays-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "player_id", "component"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def reads_only_games_public_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("known_utc") < pl.col("as_of_utc"))
+
+    @pa.dataframe_check
+    def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        later = pl.max_horizontal("as_of_utc", "train_cutoff")
+        return data.lazyframe.select(pl.col("observed_utc") == later)
+
+
+class ExpectedPowerPlays(pa.DataFrameModel):
+    """One team's expected power plays in a game (#104, ADR 0021), as of team strength's as-of
+    time. taken_index is the opponent's projected lineup's penalties taken over a league-average
+    lineup's for the same minutes, and drawn_index the team's own penalties drawn, likewise (1 is
+    average). opportunities is league_opportunities (the league's unoffset penalties per
+    team-game, the games public before as_of_utc in the season and the one before) times the
+    average of the two indexes; pp_minutes is opportunities times pp_length, the league's
+    power-play minutes per unoffset penalty; pk_minutes is the opponent's pp_minutes; and sh_xg
+    is pk_minutes times sh_xg_per_pk_minute, the league's shorthanded xG per penalty-kill minute,
+    null before any game with xG is public. known_utc is the latest player-game or team-game
+    read.
+
+    train_cutoff is the latest of RAPM's tuning cutoff, the season's pulls' and the train_cutoff
+    of the game's lineups and replacements, whose expected minutes it reads; observed_utc is the
+    later of as_of_utc and train_cutoff."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    opponent: pl.String = pa.Field(str_matches=TRI_CODE)
+    is_home: pl.Boolean
+    taken_index: pl.Float64 = pa.Field(gt=0)
+    drawn_index: pl.Float64 = pa.Field(gt=0)
+    opportunities: pl.Float64 = pa.Field(gt=0)
+    pp_minutes: pl.Float64 = pa.Field(gt=0)
+    pk_minutes: pl.Float64 = pa.Field(gt=0)
+    sh_xg: pl.Float64 = pa.Field(ge=0, nullable=True)
+    league_opportunities: pl.Float64 = pa.Field(gt=0)
+    pp_length: pl.Float64 = pa.Field(gt=0)
+    sh_xg_per_pk_minute: pl.Float64 = pa.Field(ge=0, nullable=True)
+    known_utc: UtcDatetime
+    as_of_utc: UtcDatetime
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^power-plays-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "team"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def reads_only_games_public_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("known_utc") < pl.col("as_of_utc"))
+
+    @pa.dataframe_check
+    def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        later = pl.max_horizontal("as_of_utc", "train_cutoff")
+        return data.lazyframe.select(pl.col("observed_utc") == later)
+
+
 class Shifts(pa.DataFrameModel):
     """One player shift from the shift chart (type 517 rows), periods 1 to 4.
 
