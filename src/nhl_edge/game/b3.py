@@ -401,6 +401,7 @@ def training_games(
 
 CUTOFF_TABLES = (
     "schedule_terms",
+    "goalie_starts",
     "lineups",
     "lineup_replacements",
     "player_ratings",
@@ -408,6 +409,16 @@ CUTOFF_TABLES = (
     "expected_power_plays",
     "goal_multipliers",
 )
+
+
+def through(tables: Tables, season: int) -> Tables:
+    """tables with the rows of seasons up to season only: all that the season's fold reads."""
+    kept = {
+        name: frame.filter(pl.col("season") <= season)
+        for name, frame in vars(tables).items()
+        if "season" in frame.columns
+    }
+    return replace(tables, **kept)
 
 
 def tuning_cutoff(tables: Tables, season: int) -> datetime:
@@ -437,9 +448,11 @@ def predictions(
     settings: b2.Settings = TUNED,
 ) -> tuple[pl.DataFrame, B3Model]:
     """B3's p_home for the season's games in moments (game_id, prediction_utc), from a fit on the
-    games before start, with its train_cutoff, and the fit. A fold starting before the tuning
-    cutoff is refused: its inputs were tuned on its own season's results (ADR 0011). Every row
-    is read only once known (observed_utc)."""
+    games before start, with its train_cutoff, and the fit. Only rows of seasons up to the
+    season are read. A fold starting before the tuning cutoff is refused: its inputs were tuned on
+    its own season's results (ADR 0011). Every row is read only once known (observed_utc), and
+    train_cutoff covers the fit and every table's cutoff."""
+    tables = through(tables, season)
     cutoff = tuning_cutoff(tables, season)
     if start <= cutoff:
         raise ValueError(
@@ -448,7 +461,7 @@ def predictions(
         )
     inputs = game_inputs(tables)
     model = fit(training_games(tables, inputs, season, start, "observed_utc"), settings, season)
-    model = replace(model, train_cutoff=max(model.train_cutoff, TUNED_CUTOFF))
+    model = replace(model, train_cutoff=max(model.train_cutoff, cutoff))
     pool = tables.goalie_starts.select("game_id", "team", "goalie_id", "p_start", "observed_utc")
     usable, ready = b2.known_before(
         inputs.filter(pl.col("season") == season), pool, moments, "observed_utc"

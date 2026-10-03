@@ -4,7 +4,7 @@ known, mixes over the goalie-start probabilities, and never reads its own result
 starters. Each fold's fit reads only games whose results, boxscores and rows were public before
 the fold starts, and a fold before the tuning cutoff is refused."""
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 import numpy as np
 import polars as pl
@@ -174,10 +174,15 @@ def test_an_earlier_row_published_after_the_fold_start_leaves_its_game_out(name:
 def test_a_fold_before_a_tuning_cutoff_is_refused() -> None:
     assert (BEFORE["train_cutoff"] < START).all()
     assert (BEFORE["train_cutoff"] >= b3.TUNED_CUTOFF).all()
-    # A table retuned on results after the fold start moves the cutoff past it.
-    for name in ("schedule_terms", "player_ratings", "expected_power_plays", "goal_multipliers"):
+    # A table whose own-season rows were retuned on results after the fold start moves the cutoff
+    # past it.
+    for name in b3.CUTOFF_TABLES:
         table = getattr(LEAGUE, name)
-        retuned = table.with_columns(train_cutoff=pl.lit(START + timedelta(days=1), UTC_TYPE))
+        retuned = table.with_columns(
+            train_cutoff=pl.when(pl.col("season") == TEST)
+            .then(pl.lit(START + timedelta(days=1), UTC_TYPE))
+            .otherwise(pl.lit(b3.TUNED_CUTOFF, UTC_TYPE))
+        )
         with pytest.raises(ValueError, match="before the tuning cutoff"):
             b3.predictions(replaced(**{name: retuned}), MOMENTS, TEST, START)
     early = league((20152016, 20162017), games=40)
@@ -248,3 +253,27 @@ def test_hockey_only_fits_on_results_public_before_its_first_prediction() -> Non
     left_out = hockey_fits(replaced(games=LEAGUE.games.filter(~IS_LAST)))
     for got, expected in zip(late, left_out, strict=True):
         np.testing.assert_allclose(got, expected, atol=1e-9)
+
+
+def test_the_predictions_cutoff_covers_every_tables_cutoff() -> None:
+    # The season's power plays refit a day before the fold start: later than the fit's last row.
+    moment = START - timedelta(days=1)
+    refit = LEAGUE.expected_power_plays.with_columns(
+        train_cutoff=pl.when(pl.col("season") == TEST)
+        .then(pl.lit(moment, UTC_TYPE))
+        .otherwise(pl.col("train_cutoff"))
+    )
+    predicted = predict(replaced(expected_power_plays=refit))
+    assert (predicted["train_cutoff"] == moment).all()
+
+
+def test_a_later_seasons_rows_are_not_read() -> None:
+    # Two RAPM fits on a date of a later season would be refused, but this fold never reads them.
+    day = LEAGUE.rapm_terms["game_date"].max()
+    assert isinstance(day, date)
+    later = LEAGUE.rapm_terms.filter(pl.col("game_date") == day).with_columns(
+        season=pl.lit(TEST + 10001, pl.Int32),
+        game_date=pl.lit(day + timedelta(days=365)),
+    )
+    tables = replaced(rapm_terms=pl.concat([LEAGUE.rapm_terms, later, later]))
+    assert same(predict(tables), BEFORE)
