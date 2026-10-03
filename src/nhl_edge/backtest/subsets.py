@@ -82,6 +82,17 @@ def _seen(history: pl.DataFrame, targets: pl.DataFrame, by: str, index: str) -> 
     )
 
 
+def _last(seen: pl.DataFrame, index: str) -> pl.DataFrame:
+    """seen (from _seen) with one row for each of its last WINDOW games public, by index."""
+    return (
+        seen.filter(pl.col("n") > 0)
+        .with_columns(
+            pl.int_ranges(pl.max_horizontal(pl.col("n") - WINDOW, 0), pl.col("n")).alias(index)
+        )
+        .explode(index, empty_as_null=False)
+    )
+
+
 def flags(
     games: pl.DataFrame,
     boxscores: pl.DataFrame,
@@ -114,8 +125,8 @@ def flags(
     # The team's last WINDOW games public before the as-of time, and its previous one.
     seen = _seen(history, targets, "line", "k")
     recent = (
-        seen.join(history.select("line", "k", "player_id", "role", "toi"), on="line")
-        .filter(pl.col("k") >= pl.col("n") - WINDOW, pl.col("k") < pl.col("n"))
+        _last(seen, "k")
+        .join(history.select("line", "k", "player_id", "role", "toi"), on=["line", "k"])
         .select(pl.col("game_id").alias("target"), "team", "player_id", "role", "toi", "k", "n")
     )
     regulars = (
@@ -157,12 +168,9 @@ def flags(
     )
     mine = _seen(history, skaters, "player_id", "j")
     elsewhere = (
-        mine.join(history.select("player_id", "j", other="line"), on="player_id")
-        .filter(
-            pl.col("j") >= pl.col("n") - WINDOW,
-            pl.col("j") < pl.col("n"),
-            pl.col("other") != pl.col("line"),
-        )
+        _last(mine, "j")
+        .join(history.select("player_id", "j", other="line"), on=["player_id", "j"])
+        .filter(pl.col("other") != pl.col("line"))
         .select("game_id", "team")
         .unique()
         .with_columns(trade=pl.lit(True))
