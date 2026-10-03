@@ -136,15 +136,24 @@ def league(seed: int = 11) -> dict[str, pl.DataFrame]:
         observed_utc=pl.col("game_date").map_elements(_public, return_dtype=UTC),
     )
     expected_minutes = pl.when(pl.col("role") == "D").then(18.0).otherwise(15.0)
-    projected = lineups.with_columns(
-        exp_5v5=expected_minutes, exp_pp=pl.lit(2.0), exp_pk=pl.lit(2.0)
+    # The lineup model's cutoff: the season before's last result, public before the season.
+    cutoff = pl.col("season").map_elements(
+        lambda season: public_after(date(season // 10000, 4, 30)), return_dtype=UTC
     )
+    projected = lineups.with_columns(
+        exp_5v5=expected_minutes, exp_pp=pl.lit(2.0), exp_pk=pl.lit(2.0), train_cutoff=cutoff
+    )
+
     replacements = (
         lineups.select("game_id", "season", "game_date", "team")
         .unique()
         .join(pl.DataFrame({"role": ["F", "D"]}), how="cross")
         .with_columns(
-            count=pl.lit(0.0), exp_5v5=pl.lit(0.0), exp_pp=pl.lit(0.0), exp_pk=pl.lit(0.0)
+            count=pl.lit(0.0),
+            exp_5v5=pl.lit(0.0),
+            exp_pp=pl.lit(0.0),
+            exp_pk=pl.lit(0.0),
+            train_cutoff=cutoff,
         )
     )
     return {

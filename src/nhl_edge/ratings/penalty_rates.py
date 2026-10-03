@@ -60,6 +60,12 @@ TRAIN_CUTOFF = rapm.TRAIN_CUTOFF
 MOMENT = ("game_id", "period", "seconds", "duration_min")
 
 
+def _later(a: pl.Expr, b: pl.Expr) -> pl.Expr:
+    """The later of two times, either of which may be null. when/then rather than
+    max_horizontal, which can fail to broadcast a column a one-row join left as a scalar."""
+    return pl.when(b.is_null() | (a >= b)).then(a).otherwise(b)
+
+
 def unoffset(penalties: pl.DataFrame) -> pl.DataFrame:
     """The counted penalties (Penalties rows) with weight, the share of each that leaves its team
     short-handed rather than offset by the other team's of the same length at the same moment."""
@@ -127,7 +133,7 @@ def player_games(
         taken=pl.col("taken").fill_null(0.0),
         drawn=pl.col("drawn").fill_null(0.0),
         day=pl.col("game_date").replace_strict(numbers, return_dtype=pl.Float64),
-        observed_utc=pl.max_horizontal("observed_utc", "penalties_utc"),
+        observed_utc=_later(pl.col("observed_utc"), pl.col("penalties_utc")),
     ).sort("observed_utc", "game_date", "game_id", "player_id")
 
 
@@ -413,7 +419,9 @@ def team_games(
         "pk_minutes",
         "sh_xg",
         "has_xg",
-        observed_utc=pl.max_horizontal("time_utc", "penalties_utc", "shots_utc"),
+        observed_utc=_later(
+            _later(pl.col("time_utc"), pl.col("penalties_utc")), pl.col("shots_utc")
+        ),
     ).sort("observed_utc", "game_id", "team")
 
 
@@ -424,7 +432,8 @@ def league_figures(history: pl.DataFrame, times: pl.DataFrame) -> pl.DataFrame:
     """For each (season, as_of_utc) of times, over the team_games public before as_of_utc in
     that season and the one before: L, unoffset penalties per team-game (league_opportunities);
     length, power-play minutes per unoffset penalty (pp_length); and s, shorthanded xG per
-    penalty-kill minute in the games with xG (sh_xg_per_pk_minute, null without any)."""
+    penalty-kill minute in the games with xG (sh_xg_per_pk_minute, null without any); and
+    known_utc, the latest team-game read."""
     rows = history.select(
         "season",
         "observed_utc",
@@ -444,8 +453,12 @@ def league_figures(history: pl.DataFrame, times: pl.DataFrame) -> pl.DataFrame:
         state = np.full((targets.height, len(LEAGUE_SUMS)), np.nan)
         has = seen > 0
         state[has] = totals[seen[has] - 1]
+        known = past["observed_utc"].gather(np.where(has, seen - 1, 0).tolist())
         out.append(
-            targets.with_columns(pl.Series(name, state[:, i]) for i, name in enumerate(LEAGUE_SUMS))
+            targets.with_columns(
+                *(pl.Series(name, state[:, i]) for i, name in enumerate(LEAGUE_SUMS)),
+                known_utc=pl.when(pl.Series(has)).then(known),
+            )
         )
     sums = pl.concat(out)
     return sums.select(
@@ -456,6 +469,7 @@ def league_figures(history: pl.DataFrame, times: pl.DataFrame) -> pl.DataFrame:
         sh_xg_per_pk_minute=pl.when(pl.col("xg_pk_minutes") > 0).then(
             pl.col("sh_xg") / pl.col("xg_pk_minutes")
         ),
+        known_utc="known_utc",
     ).with_columns(pl.col(pl.Float64).fill_nan(None))
 
 
@@ -467,11 +481,13 @@ def expected(
     league: pl.DataFrame,
     games: pl.DataFrame,
 ) -> pl.DataFrame:
-    """Each team-game's expected power plays (ExpectedPowerPlays' columns but the stamps).
+    """Each team-game's expected power plays (ExpectedPowerPlays' columns but the stamps, with
+    lineup_cutoff, the latest train_cutoff of the game's lineups and replacements, for stamp).
     rated is rates(); candidates the lineups rows of the skaters with their expected minutes;
     replacements the lineup_replacements rows; roles is role_rates() at the games' as-of times;
     league is league_figures(). Every team-game of games in rated's seasons gets a row: one
-    without candidates, such as a new team's first game, is all replacements."""
+    without candidates, such as a new team's first game, is all replacements. known_utc is the
+    latest player-game or team-game read."""
     seasons = rated["season"].unique().implode()
     scheduled = games.filter(pl.col("season").is_in(seasons)).select(
         "game_id",
@@ -544,10 +560,23 @@ def expected(
     )
     taken = index.select("game_id", opponent="team", taken_index=TAKEN)
     drawn = index.select("game_id", "team", drawn_index=DRAWN)
+    read = rated.group_by("game_id").agg(rates_utc=pl.col("known_utc").max())
+    fitted = (
+        pl.concat(
+            [
+                candidates.select("game_id", "train_cutoff"),
+                replacements.select("game_id", "train_cutoff"),
+            ]
+        )
+        .group_by("game_id")
+        .agg(lineup_cutoff=pl.col("train_cutoff").max())
+    )
     frame = (
         sides.join(drawn, on=["game_id", "team"], how="left")
         .join(taken, on=["game_id", "opponent"], how="left")
-        .join(league, on=["season", "as_of_utc"], how="left")
+        .join(league.rename({"known_utc": "league_utc"}), on=["season", "as_of_utc"], how="left")
+        .join(read, on="game_id", how="left")
+        .join(fitted, on="game_id", how="left")
         .with_columns(
             opportunities=pl.col("league_opportunities")
             * (pl.col("taken_index") + pl.col("drawn_index"))
@@ -575,7 +604,9 @@ def expected(
             "league_opportunities",
             "pp_length",
             "sh_xg_per_pk_minute",
-            "as_of_utc",
+            known_utc=_later(pl.col("league_utc"), pl.col("rates_utc")),
+            as_of_utc="as_of_utc",
+            lineup_cutoff="lineup_cutoff",
         )
         .sort("game_id", "team")
     )
@@ -587,8 +618,9 @@ def stamp(
     pulls: Mapping[int, SeasonPulls],
     version: str,
 ) -> pl.DataFrame:
-    """The rows with train_cutoff, the later of the memory's tuning cutoff and the season's pulls'
-    cutoff, artifact_version, and observed_utc, the later of as_of_utc and train_cutoff."""
+    """The rows with train_cutoff, the latest of the memory's tuning cutoff, the season's pulls'
+    cutoff and, for expected power plays, the game's lineups' (lineup_cutoff), artifact_version,
+    and observed_utc, the later of as_of_utc and train_cutoff."""
     cutoffs = pl.DataFrame(
         {
             "season": list(pulls),
@@ -596,7 +628,12 @@ def stamp(
         },
         schema={"season": pl.Int32, "train_cutoff": pl.Datetime("us", "UTC")},
     )
-    stamped = frame.join(cutoffs, on="season", how="left").with_columns(
+    stamped = frame.join(cutoffs, on="season", how="left")
+    if "lineup_cutoff" in stamped.columns:
+        stamped = stamped.with_columns(
+            train_cutoff=_later(pl.col("train_cutoff"), pl.col("lineup_cutoff"))
+        )
+    stamped = stamped.with_columns(
         artifact_version=pl.lit(version),
         observed_utc=pl.when(pl.col("as_of_utc") > pl.col("train_cutoff"))
         .then(pl.col("as_of_utc"))

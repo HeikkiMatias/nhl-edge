@@ -135,6 +135,8 @@ def markdown_report(
         "estimate is team strength's, with its frozen settings. The difference is ours less B2's,",
         "paired by team-game, with its 95% weekly block bootstrap interval: below 0 is better.",
         "Team-games before B2 has any game with xG to rate from (2011-12's first) are left out.",
+        "The training seasons are in-sample for RAPM's memory and B2's settings, tuned on them",
+        "(ADR 0011): this compares the two, and is not out-of-sample evidence.",
         "",
         "| Season | Team-games | Error | B2's error | Difference |",
         "| --- | ---: | ---: | ---: | --- |",

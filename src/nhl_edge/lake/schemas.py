@@ -1324,9 +1324,12 @@ class ExpectedPowerPlays(pa.DataFrameModel):
     average of the two indexes; pp_minutes is opportunities times pp_length, the league's
     power-play minutes per unoffset penalty; pk_minutes is the opponent's pp_minutes; and sh_xg
     is pk_minutes times sh_xg_per_pk_minute, the league's shorthanded xG per penalty-kill minute,
-    null before any game with xG is public.
+    null before any game with xG is public. known_utc is the latest player-game or team-game
+    read.
 
-    train_cutoff and observed_utc as in PenaltyRates."""
+    train_cutoff is the latest of RAPM's tuning cutoff, the season's pulls' and the train_cutoff
+    of the game's lineups and replacements, whose expected minutes it reads; observed_utc is the
+    later of as_of_utc and train_cutoff."""
 
     game_id: pl.Int64
     season: pl.Int32
@@ -1343,6 +1346,7 @@ class ExpectedPowerPlays(pa.DataFrameModel):
     league_opportunities: pl.Float64 = pa.Field(gt=0)
     pp_length: pl.Float64 = pa.Field(gt=0)
     sh_xg_per_pk_minute: pl.Float64 = pa.Field(ge=0, nullable=True)
+    known_utc: UtcDatetime
     as_of_utc: UtcDatetime
     train_cutoff: UtcDatetime
     artifact_version: pl.String = pa.Field(str_matches=r"^power-plays-\d{8}-")
@@ -1356,6 +1360,10 @@ class ExpectedPowerPlays(pa.DataFrameModel):
     @pa.dataframe_check
     def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def reads_only_games_public_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("known_utc") < pl.col("as_of_utc"))
 
     @pa.dataframe_check
     def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:

@@ -165,8 +165,32 @@ def test_a_game_public_at_the_as_of_time_is_not_read() -> None:
     same(on(a_expected, NIGHT), on(b_expected, NIGHT), EXPECTED_OUTPUTS)
 
 
+def test_xg_public_at_the_as_of_time_is_not_read() -> None:
+    # The night before's xG alone stamped public at tonight's as-of time leaves that night's
+    # team-games unread, the same as its strength time stamped so: none of its power plays,
+    # minutes or shorthanded xG count in the league's figures.
+    before = GAMES.filter(pl.col("game_date") < NIGHT)["game_date"].max()
+    as_of = BASE.filter(pl.col("game_date") == NIGHT)["as_of_utc"].min()
+    nights = GAMES.filter(pl.col("game_date") == before)["game_id"].implode()
+
+    def late(table: str) -> pl.DataFrame:
+        return FRAMES[table].with_columns(
+            observed_utc=pl.when(pl.col("game_id").is_in(nights))
+            .then(pl.lit(as_of))
+            .otherwise(pl.col("observed_utc"))
+        )
+
+    _, a, _ = run(shot_xg=late("shot_xg"))
+    _, b, _ = run(strength_time=late("strength_time"))
+    same(on(a, NIGHT), on(b, NIGHT), EXPECTED_OUTPUTS)
+    assert not np.allclose(
+        on(a, NIGHT)["pp_length"].to_numpy(), on(BASE_EXPECTED, NIGHT)["pp_length"].to_numpy()
+    )
+
+
 def test_every_row_was_read_before_its_as_of_time() -> None:
     assert (BASE["known_utc"] < BASE["as_of_utc"]).all()
+    assert (BASE_EXPECTED["known_utc"] < BASE_EXPECTED["as_of_utc"]).all()
     assert (BASE["observed_utc"] >= BASE["as_of_utc"]).all()
     assert (BASE_EXPECTED["observed_utc"] >= BASE_EXPECTED["as_of_utc"]).all()
     assert BASE_PULLS.source == pf.SEASONS[0]

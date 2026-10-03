@@ -55,10 +55,10 @@ The owner chose among these on 2026-10-03:
 
 **What is stored** (`nhl power-plays`):
 - **`penalty_rates`:** each candidate's `pen_taken` and `pen_drawn` per game, with player_ratings' columns except aging: mean, prior (ρ), sd, hours, known_utc, half_life_days, pull_hours, as_of_utc, train_cutoff, artifact_version, observed_utc.
-- **`expected_power_plays`:** per team-game, the two indexes, O, P, A's penalty-kill minutes, shorthanded xG, L, ℓ, s and the timestamps.
-- **The cutoff:** both tables carry RAPM's tuning cutoff (2018-04-09 10:00 UTC), since the memory was tuned (ADR 0011). observed_utc is the later of as_of_utc and it.
+- **`expected_power_plays`:** per team-game, the two indexes, O, P, A's penalty-kill minutes, shorthanded xG, L, ℓ, s, the latest game read (known_utc) and the timestamps.
+- **The cutoff:** both tables carry RAPM's tuning cutoff (2018-04-09 10:00 UTC), since the memory was tuned (ADR 0011), or the season's pulls' cutoff if later; `expected_power_plays` also the game's lineups' cutoff, whose expected minutes it reads. observed_utc is the later of as_of_utc and the cutoff.
 
-**Scored** per season by the command's report: the squared error of each team-game's power-play minutes against its actual minutes. B2's team-level estimate is the reference: team strength's expected power-play minutes with its frozen settings. Each season shows the paired difference with its weekly block bootstrap interval. The development and held-out seasons show only their counts until gate 2.
+**Scored** per season by the command's report: the squared error of each team-game's power-play minutes against its actual minutes. B2's team-level estimate is the reference: team strength's expected power-play minutes with its frozen settings. Each season shows the paired difference with its weekly block bootstrap interval. The training seasons are in-sample for both RAPM's memory and B2's settings (ADR 0011), so this compares the two and is not out-of-sample evidence. The development and held-out seasons show only their counts until gate 2.
 
 ## Backtest evidence
 

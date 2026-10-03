@@ -279,9 +279,11 @@ def test_expected_power_plays_average_the_two_views_at_the_league_s_level() -> N
             # BOS takes and draws at twice its role's rate; TOR at its role's.
             "mean": [2.0, 1.0, 1.0, 0.5],
             "prior": [1.0, 0.5, 1.0, 0.5],
+            "known_utc": [as_of - timedelta(hours=5)] * 4,
         },
-        schema_overrides={"season": pl.Int32},
+        schema_overrides={"season": pl.Int32, "known_utc": UTC_TYPE},
     )
+    lineup_cutoff = datetime(2011, 6, 1, tzinfo=UTC)
     candidates = pl.DataFrame(
         {
             "game_id": [gid, gid],
@@ -290,7 +292,9 @@ def test_expected_power_plays_average_the_two_views_at_the_league_s_level() -> N
             "exp_5v5": [10.0, 10.0],
             "exp_pp": [1.0, 1.0],
             "exp_pk": [1.0, 1.0],
-        }
+            "train_cutoff": [lineup_cutoff, lineup_cutoff],
+        },
+        schema_overrides={"train_cutoff": UTC_TYPE},
     )
     # Each team has a replacement forward with 12 minutes at his role's rates.
     replacements = pl.DataFrame(
@@ -301,7 +305,9 @@ def test_expected_power_plays_average_the_two_views_at_the_league_s_level() -> N
             "exp_5v5": [10.0, 10.0],
             "exp_pp": [1.0, 1.0],
             "exp_pk": [1.0, 1.0],
-        }
+            "train_cutoff": [lineup_cutoff, lineup_cutoff + timedelta(days=1)],
+        },
+        schema_overrides={"train_cutoff": UTC_TYPE},
     )
     roles = pl.DataFrame(
         {
@@ -319,8 +325,9 @@ def test_expected_power_plays_average_the_two_views_at_the_league_s_level() -> N
             "league_opportunities": [3.0],
             "pp_length": [1.8],
             "sh_xg_per_pk_minute": [0.01],
+            "known_utc": [as_of - timedelta(hours=4)],
         },
-        schema_overrides={"season": pl.Int32, "as_of_utc": UTC_TYPE},
+        schema_overrides={"season": pl.Int32, "as_of_utc": UTC_TYPE, "known_utc": UTC_TYPE},
     )
     got = {
         r["team"]: r
@@ -338,6 +345,9 @@ def test_expected_power_plays_average_the_two_views_at_the_league_s_level() -> N
     assert got["BOS"]["pk_minutes"] == pytest.approx(got["TOR"]["pp_minutes"])
     assert got["BOS"]["sh_xg"] == pytest.approx(0.01 * got["TOR"]["pp_minutes"])
     assert got["BOS"]["is_home"] and not got["TOR"]["is_home"]
+    # The latest of the league's and the rates' reads, and the later lineup cutoff of the game.
+    assert got["BOS"]["known_utc"] == as_of - timedelta(hours=4)
+    assert got["BOS"]["lineup_cutoff"] == lineup_cutoff + timedelta(days=1)
 
 
 def team_game(
@@ -383,6 +393,7 @@ def test_league_figures_read_the_season_and_the_one_before_public_before_the_as_
     assert row["league_opportunities"] == pytest.approx((4.0 + 2.0) / 2)
     assert row["pp_length"] == pytest.approx((8.0 + 3.0) / 6.0)
     assert row["sh_xg_per_pk_minute"] == pytest.approx(0.08 / 4.0)
+    assert row["known_utc"] == datetime(2012, 1, 1, tzinfo=UTC)
 
 
 def test_b2_s_power_play_minutes_average_the_team_s_and_the_opponent_s() -> None:
