@@ -1383,8 +1383,9 @@ class Finishing(pa.DataFrameModel):
     weighs his phi in the team's. half_life_days is RAPM's frozen memory (#103); known_utc the
     latest skater-game read, null before any.
 
-    train_cutoff is the latest of RAPM's and the goalie effect's tuning cutoff (ADR 0011) and the
-    season's pulls'; observed_utc the later of as_of_utc and train_cutoff."""
+    train_cutoff is the latest of RAPM's and the goalie effect's tuning cutoff (ADR 0011), the
+    season's pulls' and the game's lineups', whose expected minutes the share reads; observed_utc
+    the later of as_of_utc and train_cutoff."""
 
     game_id: pl.Int64
     season: pl.Int32

@@ -299,7 +299,8 @@ def multipliers(
     figures: pl.DataFrame,
     games: pl.DataFrame,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """rated with each candidate's share of his team's expected xG (share), and the goal
+    """rated with each candidate's share of his team's expected xG (share) and the game's
+    lineups' cutoff (lineup_cutoff, for stamp), and the goal
     multipliers (GoalMultipliers' columns but the stamps, with lineup_cutoff and effect_cutoff
     for stamp): per game, attacking team and the opposing team's candidate goalie (effects,
     goalie_effects rows), the team's φ, the goalie's gamma and their product. candidates are the
@@ -385,6 +386,8 @@ def multipliers(
         .group_by("game_id")
         .agg(lineup_cutoff=pl.col("train_cutoff").max())
     )
+    # A share reads the game's lineups too.
+    shared = shared.join(fitted, on="game_id", how="left")
     finishing_by_as_of = roles.select("as_of_utc", "league_finishing")
     goalies = effects.select(
         "game_id",
@@ -438,9 +441,9 @@ def stamp(
     version: str,
 ) -> pl.DataFrame:
     """The rows with train_cutoff, the latest of the memory's and the goalie settings' tuning
-    cutoff, the season's pulls' cutoff and, for goal multipliers, the game's lineups' and the
-    goalie effect's (lineup_cutoff, effect_cutoff), artifact_version, and observed_utc, the later
-    of as_of_utc and train_cutoff."""
+    cutoff, the season's pulls' cutoff, the game's lineups' (lineup_cutoff) and, for goal
+    multipliers, the goalie effect's (effect_cutoff), artifact_version, and observed_utc, the
+    later of as_of_utc and train_cutoff."""
     cutoffs = pl.DataFrame(
         {
             "season": list(pulls),

@@ -188,6 +188,26 @@ def test_xg_alone_public_at_the_as_of_time_is_not_read() -> None:
     assert not np.allclose(on(a, NIGHT)["phi"], on(BASE, NIGHT)["phi"])
 
 
+def test_stints_alone_public_at_the_as_of_time_are_not_read() -> None:
+    # The night before's stints alone stamped late leave that night's skater-games unread, the
+    # same as its shots and xG stamped so: its shots no longer count toward anyone's φ.
+    before = GAMES.filter(pl.col("game_date") < NIGHT)["game_date"].max()
+    as_of = BASE.filter(pl.col("game_date") == NIGHT)["as_of_utc"].min()
+    late = pl.col("game_id").is_in(GAMES.filter(pl.col("game_date") == before)["game_id"].implode())
+
+    def stamped(table: str) -> pl.DataFrame:
+        return FRAMES[table].with_columns(
+            observed_utc=pl.when(late).then(pl.lit(as_of)).otherwise(pl.col("observed_utc"))
+        )
+
+    a, _, _ = run(stints=stamped("stints"))
+    b, _, _ = run(shots=stamped("shots"), shot_xg=stamped("shot_xg"))
+    same(
+        on(a, NIGHT), on(b, NIGHT), ("phi", "phi_sd", "goals", "expected_goals", "xg_rate", "hours")
+    )
+    assert not np.allclose(on(a, NIGHT)["phi"], on(BASE, NIGHT)["phi"])
+
+
 def test_every_row_was_read_before_its_as_of_time() -> None:
     for frame in (BASE, BASE_MULTIPLIERS):
         known = frame.filter(pl.col("known_utc").is_not_null())
