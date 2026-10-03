@@ -145,10 +145,9 @@ def markdown_report(
         "its actual xG times the league's finishing; each variant multiplies that by the team's",
         "φ, the opposing starter's gamma, or both. Differences are the variant's error less the",
         "reference's, paired by team-game, with 95% weekly block bootstrap intervals: below 0 is",
-        "better. Only",
-        "team-games whose starter was a candidate goalie count. The training seasons are",
-        "in-sample for RAPM's memory and the goalie effect's settings, tuned on them (ADR 0011):",
-        "this compares the multipliers, and is not out-of-sample evidence.",
+        "better. Only team-games whose starter was a candidate goalie count. The training seasons",
+        "are in-sample for RAPM's memory and the goalie effect's settings, tuned on them (ADR",
+        "0011): this compares the multipliers, and is not out-of-sample evidence.",
         "",
         "| Season | Team-games | Reference | " + " | ".join(TITLES.values()) + " |",
         "| --- | ---: | ---: |" + " --- |" * len(TITLES),
@@ -163,14 +162,15 @@ def markdown_report(
         "## Forwards' finishing at their last game of the season",
         "",
         f"Forwards with at least {LEADER_EXPECTED_GOALS:g} decayed expected goals, the five",
-        "furthest above the league and the five furthest below, a face-validity check.",
+        "furthest above the league and the five furthest below, a face-validity check. A season",
+        "with an infinite pull, every forward at 1, has none.",
         "",
         "| Season | Rank | Player | Team | φ | Goals | Expected goals |",
         "| --- | --- | --- | --- | ---: | ---: | ---: |",
     ]
     for season in shown_seasons:
         table = leaders(finishing, players, season)
-        if table.is_empty():
+        if table.is_empty() or pulls[season].finishing["F"] == float("inf"):
             continue
         picks = [("top", i, r) for i, r in enumerate(table.head(LEADERS).iter_rows(named=True))]
         bottom = table.tail(LEADERS).reverse().iter_rows(named=True)
