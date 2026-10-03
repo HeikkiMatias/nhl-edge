@@ -94,8 +94,8 @@ def league_rates(rapm_terms: pl.DataFrame) -> pl.DataFrame:
 
 def team_goals(tables: Tables) -> pl.DataFrame:
     """One row per team-game with projected skaters: the team's expected 5v5, power-play and
-    shorthanded xG before its goal multiplier (raw), and when the rows behind it became known
-    (observed_utc)."""
+    shorthanded xG before its goal multiplier (raw), its own 5v5 strength (strength_5v5), and
+    when the rows behind it became known (observed_utc)."""
     ratings = tables.player_ratings.pivot(
         on="component", index=["game_id", "player_id"], values="mean"
     )
@@ -185,6 +185,9 @@ def team_goals(tables: Tables) -> pl.DataFrame:
         xg_pp=power,
         xg_sh="sh_xg",
         raw=five + power + pl.col("sh_xg"),
+        # The team's own 5v5 strength, its on-ice offense plus defense over its 5v5 minutes:
+        # what its lineup adds to the goal difference, whoever the opponent.
+        strength_5v5=pl.col("minutes_5v5") / 60 * (pl.col("off") + pl.col("defense")),
         observed_utc=known,
     ).sort("game_id", "team")
 

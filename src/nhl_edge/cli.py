@@ -2118,6 +2118,65 @@ def audit_report(
         typer.echo(f"  {section.title}: {len(section.problems)}")
 
 
+@audit_app.command("gaps")
+def audit_gaps(
+    gaps: Annotated[Path, typer.Option(help="A backtest's gaps_b3.csv.")] = DEFAULT_BACKTEST_OUT
+    / "gaps_b3.csv",
+    out: Annotated[Path, typer.Option(help="Report directory.")] = Path("reports/gaps"),
+) -> None:
+    """Screen B3's gaps above 8 points against B1 at the close (E1) for bug signatures, hard rule
+    8's review (#107): each game's log-odds in parts, both teams' expected goals and the flags,
+    to <out>/b3-gaps-<version>.md (the games to review) and .csv (every gap). No result is
+    read."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.audit import b3_gaps
+    from nhl_edge.backtest import reports
+    from nhl_edge.backtest.walk_forward import fold_start
+    from nhl_edge.game import b2
+    from nhl_edge.lake.tables import Lake
+
+    if not gaps.exists():
+        raise typer.BadParameter(f"{gaps} does not exist: run nhl backtest", param_hint="--gaps")
+    rows = pl.read_csv(gaps, try_parse_dates=True).filter(pl.col("experiment") == "E1")
+    lake = Lake()
+    games = lake.read("games")
+    tables = b2.Tables(
+        games,
+        *(
+            lake.read(name)
+            for name in (
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        ),
+    )
+    calendar = games.select("season", "start_utc")
+    starts = {int(s): fold_start(calendar, int(s)) for s in rows["season"].unique().to_list()}
+    try:
+        screened = b3_gaps.screen(_b3_tables(lake, tables), rows, starts)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    marked = b3_gaps.review_set(screened)
+    now = datetime.now(UTC)
+    version = reports.version("b3-gaps", now)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{version}.md"
+    path.write_text(b3_gaps.markdown(marked, str(gaps), version))
+    marked.write_csv(out / f"{version}.csv")
+    facts = b3_gaps.summary(marked)
+    typer.echo(f"{path}: {facts['games']:,} gaps, {facts['flagged']} flagged")
+    for flag, count in facts["flags"].items():
+        typer.echo(f"  {flag}: {count}")
+    typer.echo("  to review: " + ", ".join(f"{k} {v}" for k, v in facts["review"].items()))
+
+
 @app.command()
 def status(
     brief: Annotated[bool, typer.Option(help="One line, for the SessionStart hook.")] = False,
