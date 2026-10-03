@@ -1,21 +1,15 @@
+"""Gate 2's one-time 2025-26 test runs once (docs/plan.md section 5, #107): it is claimed in R2,
+beside the lake and in the reports before anything is scored, and refused once any of them or any
+report records an earlier run."""
+
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
-from fakes import MemoryBucket
+from fakes import ConditionalBucket, MemoryBucket
 
 from nhl_edge.backtest import one_time
-
-
-class ConditionalBucket(MemoryBucket):
-    """A bucket that, as R2 and S3 do, refuses a write with IfNoneMatch="*" to a key that
-    exists."""
-
-    def put_object(self, **kwargs: Any) -> None:
-        if kwargs.get("IfNoneMatch") == "*" and kwargs["Key"] in self.objects:
-            raise RuntimeError("PreconditionFailed")
-        super().put_object(**kwargs)
 
 
 def places(tmp_path: Path, bucket: MemoryBucket | None = None) -> one_time.Places:

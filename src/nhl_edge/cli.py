@@ -384,6 +384,7 @@ def backtest(
     from nhl_edge.ingest.sbr import SEASON_PAGES
     from nhl_edge.lake.tables import LAKE_DIR, Lake
     from nhl_edge.lineup import minutes as mins
+    from nhl_edge.settings import MissingSettingError, load_env
 
     # The hockey-only mode also scores the hockey validation seasons, opened at gate 2 (#107),
     # and, once, the one-time test season.
@@ -396,7 +397,13 @@ def backtest(
             raise typer.BadParameter(
                 f"the one-time test scores {list(ONE_TIME_SEASONS)} alone", param_hint="--seasons"
             )
-        where = one_time.places(LAKE_DIR, (DEFAULT_BACKTEST_OUT, out))
+        load_env()
+        try:
+            where = one_time.places(LAKE_DIR, (DEFAULT_BACKTEST_OUT, out))
+        except MissingSettingError as exc:
+            raise typer.BadParameter(
+                f"the one-time test is claimed in R2: {exc}", param_hint="--one-time-test"
+            ) from None
         earlier = one_time.records(where)
         if earlier:
             raise typer.BadParameter(

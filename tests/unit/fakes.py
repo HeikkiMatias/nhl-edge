@@ -41,3 +41,13 @@ class MemoryBucket:
             "IsTruncated": more,
             **({"NextContinuationToken": str(start + self.page_size)} if more else {}),
         }
+
+
+class ConditionalBucket(MemoryBucket):
+    """A bucket that, as R2 and S3 do, refuses a write with IfNoneMatch="*" to a key that
+    exists."""
+
+    def put_object(self, **kwargs: Any) -> None:
+        if kwargs.get("IfNoneMatch") == "*" and kwargs["Key"] in self.objects:
+            raise RuntimeError("PreconditionFailed")
+        super().put_object(**kwargs)

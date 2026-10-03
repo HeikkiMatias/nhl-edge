@@ -327,7 +327,7 @@ def test_backtest_refuses_held_out_seasons(tmp_path: Path, monkeypatch: pytest.M
 
 
 def test_the_one_time_test_runs_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from test_one_time import ConditionalBucket
+    from fakes import ConditionalBucket
 
     from nhl_edge.backtest import one_time
 
