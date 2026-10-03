@@ -79,6 +79,11 @@ def league_rates(rapm_terms: pl.DataFrame) -> pl.DataFrame:
         pl.col("model").is_in(["ev", "pp"]),
         (pl.col("term") == "intercept") | (pl.col("term") == season),
     )
+    # One fit per date and model: a second would be summed into the rate.
+    repeated = wanted.group_by("game_date", "model", "term").len().filter(pl.col("len") > 1)
+    if repeated.height:
+        dates = ", ".join(str(d) for d in repeated["game_date"].unique().sort().head(3))
+        raise ValueError(f"rapm_terms has more than one fit on a date, e.g. {dates}")
     return wanted.group_by("game_date").agg(
         mu_5v5=pl.col("value").filter(pl.col("model") == "ev").sum(),
         mu_pp=pl.col("value").filter(pl.col("model") == "pp").sum(),
@@ -394,18 +399,31 @@ def training_games(
     )
 
 
-def tuning_cutoff(tables: Tables) -> datetime:
-    """The latest tuning cutoff behind B3: RAPM's and B2's, and each table's train_cutoff."""
+CUTOFF_TABLES = (
+    "schedule_terms",
+    "lineups",
+    "lineup_replacements",
+    "player_ratings",
+    "rapm_terms",
+    "expected_power_plays",
+    "goal_multipliers",
+)
+
+
+def tuning_cutoff(tables: Tables, season: int) -> datetime:
+    """The latest tuning cutoff behind B3 for the season's fold: RAPM's and B2's, and the latest
+    train_cutoff of each table's rows of the seasons the fold reads, up to its own. Tables refit
+    each season (expected power plays, finishing, the projection) carry later seasons' cutoffs
+    that this fold never reads."""
     cutoffs = [TUNED_CUTOFF]
-    for name in (
-        "schedule_terms",
-        "player_ratings",
-        "expected_power_plays",
-        "goal_multipliers",
-    ):
+    for name in CUTOFF_TABLES:
         table = getattr(tables, name)
-        if "train_cutoff" in table.columns and table.height:
-            latest = table["train_cutoff"].max()
+        if "train_cutoff" not in table.columns:
+            continue
+        if "season" in table.columns:
+            table = table.filter(pl.col("season") <= season)
+        latest = table["train_cutoff"].max()
+        if latest is not None:
             assert isinstance(latest, datetime)
             cutoffs.append(latest)
     return max(cutoffs)
@@ -422,7 +440,7 @@ def predictions(
     games before start, with its train_cutoff, and the fit. A fold starting before the tuning
     cutoff is refused: its inputs were tuned on its own season's results (ADR 0011). Every row
     is read only once known (observed_utc)."""
-    cutoff = tuning_cutoff(tables)
+    cutoff = tuning_cutoff(tables, season)
     if start <= cutoff:
         raise ValueError(
             f"{season}'s fold starts at {start:%Y-%m-%d}, before the tuning cutoff "

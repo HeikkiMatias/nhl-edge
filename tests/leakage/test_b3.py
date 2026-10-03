@@ -9,11 +9,13 @@ from datetime import timedelta
 import numpy as np
 import polars as pl
 import pytest
+from b2_fixtures import feature_tables
 from b3_fixtures import league
 from polars.testing import assert_frame_equal
 
-from nhl_edge.backtest.walk_forward import fold_start
-from nhl_edge.game import b3
+from nhl_edge.backtest.walk_forward import HOCKEY, fold_start, hockey_only
+from nhl_edge.features import team_strength as ts
+from nhl_edge.game import b2, b3
 
 LEAGUE = league()
 TEST = 20182019
@@ -198,3 +200,51 @@ def test_the_fits_cutoff_is_the_last_row_it_read() -> None:
     projection = retimed(LEAGUE.lineups, IS_LAST, moment)
     _, model = b3.predictions(replaced(lineups=projection), MOMENTS, TEST, START)
     assert model.train_cutoff == moment
+
+
+def test_a_later_seasons_cutoffs_do_not_refuse_the_fold() -> None:
+    # Tables refit each season carry the later seasons' cutoffs, which this fold never reads.
+    later = {}
+    for name in ("lineups", "expected_power_plays", "goal_multipliers"):
+        table = getattr(LEAGUE, name)
+        copied = table.filter(pl.col("season") == TEST).with_columns(
+            pl.col("game_id") + 1_000_000_000,
+            season=pl.lit(TEST + 10001, pl.Int32),
+            train_cutoff=pl.lit(START + timedelta(days=200), UTC_TYPE),
+            observed_utc=pl.lit(START + timedelta(days=200), UTC_TYPE),
+        )
+        later[name] = pl.concat([table, copied])
+    tables = replaced(**later)
+    assert b3.tuning_cutoff(tables, TEST) == b3.TUNED_CUTOFF
+    assert b3.tuning_cutoff(tables, TEST + 10001) == START + timedelta(days=200)
+    assert same(predict(tables), BEFORE)
+
+
+def hockey_fits(tables: b3.Tables) -> tuple[np.ndarray, np.ndarray]:
+    fits2: dict[str, dict[int, b2.B2Model]] = {}
+    fits3: dict[str, dict[int, b3.B3Model]] = {}
+    hockey_only(tables.games, [TEST], feature_tables(tables.games, 4), tables, fits2, fits3)
+    two, three = fits2[HOCKEY][TEST], fits3[HOCKEY][TEST]
+    return (
+        np.array([two.intercept, *two.weights]),
+        np.array([three.intercept, *three.weights]),
+    )
+
+
+def test_hockey_only_fits_on_results_public_before_its_first_prediction() -> None:
+    # The last earlier result, published after the first as-of time but before the first puck
+    # drop: neither fit reads it.
+    first = LEAGUE.games.filter(pl.col("season") == TEST).sort("start_utc").row(0, named=True)
+    as_of = LEAGUE.games.filter(pl.col("game_id") == first["game_id"]).select(
+        ts.as_of(pl.col("game_date"), pl.col("start_utc"))
+    )["game_date"][0]
+    moment = as_of + timedelta(hours=1)
+    assert moment < first["start_utc"]
+    published = LEAGUE.games.with_columns(
+        observed_utc=pl.when(IS_LAST).then(pl.lit(moment)).otherwise(pl.col("observed_utc")),
+        home_score=pl.when(IS_LAST).then(pl.lit(9, pl.Int16)).otherwise(pl.col("home_score")),
+    )
+    late = hockey_fits(replaced(games=published))
+    left_out = hockey_fits(replaced(games=LEAGUE.games.filter(~IS_LAST)))
+    for got, expected in zip(late, left_out, strict=True):
+        np.testing.assert_allclose(got, expected, atol=1e-9)

@@ -346,7 +346,6 @@ def hockey_only(
     frames = [pl.DataFrame(schema=PREDICTION_SCHEMA)]
     coverage: Coverage = {HOCKEY: {}}
     for season in seasons:
-        start = fold_start(calendar, season)
         moments = (
             games.filter(pl.col("season") == season)
             .select(
@@ -358,6 +357,11 @@ def hockey_only(
             .join(results.select("game_id", "home_win"), on="game_id")
         )
         timing = moments.select("game_id", "prediction_utc")
+        # The fold starts at its first prediction, before the first puck drop (as E2's).
+        first = moments["prediction_utc"].min()
+        start = fold_start(calendar, season)
+        if isinstance(first, datetime):
+            start = min(start, first)
         counts = {"games": games.filter(pl.col("season") == season).height}
         rows, fit2 = b2.predictions(b2_tables, timing, season, start, b2.TUNED)
         frames.append(_scored(rows.join(moments, on="game_id"), HOCKEY, "B2", NO_METHOD))

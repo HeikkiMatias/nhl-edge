@@ -145,6 +145,12 @@ def test_a_teams_expected_goals_worked_by_hand() -> None:
     assert goals["observed_utc"].to_list() == [LATEST, LATEST]
 
 
+def test_two_rapm_fits_on_one_date_are_refused() -> None:
+    terms = hand_tables().rapm_terms
+    with pytest.raises(ValueError, match="more than one fit"):
+        b3.league_rates(pl.concat([terms, terms]))
+
+
 def test_the_multipliers_and_the_goalie_pairs() -> None:
     tables = hand_tables()
     base, gammas = b3.multipliers(tables)
