@@ -40,6 +40,7 @@ DEFAULT_TUNING_OUT = Path("reports/tuning")
 DEFAULT_GOALIE_START_OUT = Path("reports/goalie-start")
 DEFAULT_LINEUPS_OUT = Path("reports/lineups")
 DEFAULT_RATINGS_OUT = Path("reports/ratings")
+DEFAULT_POWER_PLAYS_OUT = Path("reports/power-plays")
 
 
 def _not_implemented(command: str, phase: str) -> NoReturn:
@@ -1237,6 +1238,128 @@ def _tune_rapm(
     path.write_text(tuning.markdown(choice, "RAPM", version, rapm.TUNING_SEASONS))
     frozen = "matches" if choice.chosen == rapm.TUNED else "differs from"
     typer.echo(f"{path}: chosen {choice.chosen.label}, which {frozen} the frozen TUNED")
+
+
+@app.command(name="power-plays")
+def power_plays_command(
+    seasons: Annotated[
+        str | None,
+        typer.Option(
+            help="Seasons to rate, as 20232024, a comma list or a range. Default: 2011-12 on."
+        ),
+    ] = None,
+    out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_POWER_PLAYS_OUT,
+    r2: Annotated[
+        bool, typer.Option("--r2", help="Mirror penalty_rates and expected_power_plays to R2.")
+    ] = False,
+) -> None:
+    """Rate every lineup candidate's penalties taken and drawn per hour, and each team's expected
+    power plays, power-play minutes and shorthanded xG, from both projected lineups (#104, ADR
+    0021). Writes penalty_rates and expected_power_plays to the lake and the report to
+    <out>/<version>.md: counts for every season, and pulls, league figures, the power-play
+    minutes against B2's and the leaders for the training seasons only."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.audit import power_plays as report
+    from nhl_edge.backtest import reports
+    from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, OPEN_SEASONS
+    from nhl_edge.features import team_strength as ts
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.lake.schemas import ExpectedPowerPlays, PenaltyRates
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.lineup import minutes as mins
+    from nhl_edge.ratings import penalty_rates as pr
+    from nhl_edge.ratings import rapm
+    from nhl_edge.settings import load_env
+
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    games = lake.read("games")
+    known = sorted(games["season"].unique().to_list())
+    try:
+        wanted = parse_seasons(seasons) if seasons else [s for s in known if s >= rapm.FIRST_SEASON]
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    if not wanted or min(wanted) < rapm.FIRST_SEASON:
+        raise typer.BadParameter(
+            f"expected power plays start in {rapm.FIRST_SEASON}, the first season with lineups",
+            param_hint="--seasons",
+        )
+    last = max(wanted)
+    boxscores = lake.read("actual_lineups").filter(pl.col("season") <= last)
+    minutes = mins.lake_minutes(lake, boxscores, last)
+    # Stints built for part of a season would rate its players on part of it.
+    problems = mins.input_problems(lake.read("shift_coverage"), minutes, last)
+    lineups = lake.read("lineups", seasons=wanted).filter(pl.col("role").is_in(["F", "D"]))
+    without = games.filter(pl.col("season").is_in(wanted)).join(
+        lineups.select("game_id").unique(), on="game_id", how="anti"
+    )
+    if without.height:
+        examples = ", ".join(map(str, without["game_id"].sort().head(3).to_list()))
+        problems.append(f"{without.height:,} games without lineups, e.g. {examples}")
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl stints and nhl lineups for those seasons", err=True)
+        raise typer.Exit(code=1)
+    as_of = ts.as_of(pl.col("game_date"), pl.col("start_utc"))
+    times = games.filter(pl.col("season").is_in(wanted)).select("season", as_of_utc=as_of)
+    candidates = lineups.join(games.select("game_id", as_of_utc=as_of), on="game_id", how="left")
+    weighted = pr.unoffset(lake.read("penalties").filter(pl.col("season") <= last))
+    read = [s for s in known if s <= last]
+    shots = lake.read("shots", seasons=read)
+    shot_xg = lake.read("shot_xg", seasons=read)
+    strength_time = lake.read("strength_time").filter(pl.col("season") <= last)
+    version = reports.version(pr.COMPONENT, datetime.now(UTC))
+    try:
+        rows = pr.player_games(minutes, weighted, games)
+        pulls = {season: pr.season_pulls(rows, season, games) for season in wanted}
+        rated = pr.rates(
+            candidates.select(
+                "game_id", "season", "game_date", "team", "player_id", "role", "as_of_utc"
+            ),
+            rows,
+            pulls,
+        )
+        history = pr.team_games(strength_time, weighted, shots, shot_xg)
+        expected = pr.expected(
+            rated,
+            candidates,
+            lake.read("lineup_replacements", seasons=wanted),
+            pr.role_rates(rows, times),
+            pr.league_figures(history, times),
+            games,
+        )
+        rates_table = pr.stamp(rated, PenaltyRates, pulls, version)
+        expected_table = pr.stamp(expected, ExpectedPowerPlays, pulls, version)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    days = games.filter(pl.col("season").is_in(wanted))["game_date"].unique().to_list()
+    lake.replace_dates("penalty_rates", rates_table, days)
+    lake.replace_dates("expected_power_plays", expected_table, days)
+    # B2's team-level power-play minutes, the reference (ADR 0021).
+    reference = ts.power_play_minutes(
+        games.filter(pl.col("season").is_in(wanted)),
+        ts.team_games(shots, shot_xg, strength_time),
+        ts.TUNED,
+    )
+    scores = report.scored(expected_table, history, reference)
+    # The development seasons stay unseen until gate 2 (phase 3 plan).
+    shown = [season for season in OPEN_SEASONS if season not in DEVELOPMENT_SEASONS]
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{version}.md"
+    path.write_text(
+        report.markdown_report(
+            rates_table, expected_table, scores, lake.read("players"), pulls, shown, version
+        )
+    )
+    typer.echo(
+        f"{path}: {rates_table.height:,} rates of {rates_table['player_id'].n_unique():,} skaters "
+        f"and {expected_table.height:,} team-games in {len(wanted)} seasons"
+    )
 
 
 @app.command()
