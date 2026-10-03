@@ -14,7 +14,7 @@ None. The backtest has the two market baselines, phase 2's model and phase 3's:
   - expected power plays;
   - finishing and the opposing goalie's conversion.
 
-  It keeps h_s, rest, travel, empty seats, B2's L2 of 100 and B2's mixture over goalie pairs. Each fold trains it on the projected skaters and the starters who played. It reads no price. Gate 2 (#107) judges it against B2.
+  It keeps h_s, rest, travel, empty seats, B2's L2 of 100 and B2's mixture over goalie pairs. Each fold trains it on the projected skaters and the starters who played. It reads no price. Gate 2 carried it forward as phase 4's model (ADR 0024), though the one-time 2025-26 test did not confirm its gain over B2.
 
 The run is backtest `backtest-20261003-b1a7b04` on the development seasons 2018-19 and 2021-22. E2 refuses implausible SBR openers (ADR 0007). B0, B1 and B2 are unchanged from `backtest-20261001-388bb85`.
 
@@ -47,6 +47,7 @@ Every metric is reported with a 95% weekly block bootstrap interval, pooled over
 | B3, 2018-19 fold (E1 and E2), B2's L2 100 | backtest-20261003-b1a7b04 | 2018-04-09 10:00 UTC |
 | B3, 2021-22 fold (E1 and E2) | backtest-20261003-b1a7b04 | 2021-05-20 10:00 UTC |
 | B2 and B3, hockey validation folds 2023-24 and 2024-25 | backtest-hockey-20261003-93d0f92 | 2023-04-15 and 2024-04-19 10:00 UTC |
+| B2 and B3, the one-time 2025-26 fold | backtest-hockey-20261003-82fbada | 2025-04-18 10:00 UTC |
 | Lineup projection and minutes (ADR 0017, 0018) | lineup-20261002-6297f8c | per season, before its first game |
 | RAPM ratings and league rates (ADR 0019, 0020, 0011) | rapm-20261003-86a736f | 2018-04-09 10:00 UTC (tuning) |
 | Penalty rates and expected power plays (ADR 0021) | power-plays-20261003-86a736f | 2018-04-09 10:00 UTC (tuning), then per season |
@@ -109,7 +110,7 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   E2 is within 0.0002 of E1 on each.
   - **The subsets are broad, as defined.** A skater counts as traded for 10 of his games after any move, an offseason signing included. A regular counts as injured when he is missing for any reason.
   - **Every lineup change falls in an opening week.** The projection reads only earlier boxscores, so in season it never drops 3 of the previous game's skaters. The 39 games fall in one week of each season, which a weekly block bootstrap cannot resample, so the report gives them no interval.
-  - Gate 2 (#107) weighs these definitions.
+  - Gate 2 (ADR 0024) found the lineup-change subset too small to judge in every test, with 20 to 39 games each.
 - **It is under-confident, like B2.** The calibration slope is 1.34 [1.11, 1.58] on E1 (2018-19 1.22 [0.85, 1.58], 2021-22 1.42 [1.15, 1.73]), and the intercept is -0.088 [-0.194, +0.020].
 - **Gaps above 8 points against B1** (hard rule 8): 411 of 2,583 games on E1 (203 in 2018-19, 208 in 2021-22) and 359 of 2,573 on E2. That is half of B2's. 26 exceed 15 points and 2 exceed 20. They are listed in `reports/backtest/gaps_b3.csv` without results.
   - **Reviewed at gate 2** (`reports/gaps/b3-gap-review.md`, screen `b3-gaps-20261003-291302e`): every flagged game (51), the gap above 20 points, and a seeded sample of 40, read without results. **No data error was found.**
@@ -144,6 +145,20 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - **Log loss:** B3 0.6594 [0.6501, 0.6686] against B2's 0.6672 [0.6587, 0.6759].
   - **B3 is better calibrated here than on the development seasons.** Its slope is 0.94 [0.80, 1.08] (B2's 0.83 [0.70, 0.96]). Its intercept is +0.089 [+0.015, +0.160], so it rates home teams slightly too low, most in 2024-25 (+0.118 [+0.031, +0.209]).
   - **Fits:** Δĝ's weight is 0.39 and 0.40 on standardized inputs. The folds train on 13,983 and 15,295 games, with `train_cutoff` 2023-04-15 and 2024-04-19.
+- **Gate 2's one-time 2025-26 test does not confirm B3's gain** (#107; `backtest-hockey-20261003-82fbada`, `reports/backtest/hockey-20261003-82fbada-171522.json`). It ran once, on the owner's go-ahead, after the gap review and the PR's review rounds, in the same hockey-only mode. The run is claimed in R2, beside the lake and in `reports/backtest/one_time_test.txt`, so no machine can run it again.
+
+  | | Games | B3 minus B2 |
+  | --- | --- | --- |
+  | Pooled | 1,312 | -0.0030 [-0.0094, +0.0034] |
+  | Trade | 845 | -0.0003 [-0.0073, +0.0060] |
+  | Injury | 847 | -0.0073 [-0.0161, +0.0020] |
+  | Lineup change | 20 | +0.0654 [+0.0621, +0.1275] (two weeks only) |
+  | Any | 1,114 | -0.0034 [-0.0103, +0.0033] |
+
+  - **Both models are over-confident on 2025-26.** B3's calibration slope is 0.55 [0.29, 0.80] and B2's 0.49 [0.24, 0.77]. Their log loss is 0.6898 [0.6768, 0.7035] and 0.6928 [0.6816, 0.7046], so B2 barely beats a coin flip (0.6931).
+  - **The inputs show no data shift** (an inputs-only check, which read no results). The spread of ΔS, ΔG and Δĝ is within the range of 2021-22 to 2024-25. Lineup projections miss as often as before, with 0.33 dressed skaters a team-game unprojected. The actual starter gets the usual probability, 0.58 on average.
+  - **Fits:** Δĝ's weight is 0.40 on standardized inputs, trained on 16,607 games with `train_cutoff` 2025-04-18.
+  - **The verdict** (ADR 0024): B3 goes forward as the model phase 4 compares with B1, because every test points the same way and 2025-26's interval includes the earlier gain. B3 minus B2 stays in every report (hard rule 3), and the live 2026-27 market test is its next independent evidence.
 
 **Held-out seasons seen for data format only** (#96, PR #108):
 - **What was seen:** the first draft of the `penalties` and `faceoffs` tables surveyed every cached season, 2023-24, 2025-26 and the first 2026-27 games included. It recorded which penalty codes exist and which fields can be blank, and it checked the faceoff zones of 200 games of 2023-24.
