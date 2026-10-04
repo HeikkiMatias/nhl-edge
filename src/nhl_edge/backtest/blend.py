@@ -288,6 +288,7 @@ def fit_rows(
             "u_scale": {
                 "means": dict(zip(uncertainty.PARTS, scales[season].means, strict=True)),
                 "sds": dict(zip(uncertainty.PARTS, scales[season].sds, strict=True)),
+                "u_sd": scales[season].u_sd,
             },
         }
         for season, by_name in sorted(fits.items())

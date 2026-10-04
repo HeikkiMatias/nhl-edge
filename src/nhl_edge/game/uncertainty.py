@@ -230,12 +230,19 @@ class Scale:
     sds: tuple[float, ...]
     games: int
     train_cutoff: datetime
+    # u's own spread over the training games, so the policy reads u in standard deviations
+    # above its training mean, which is 0 (ADR 0028).
+    u_sd: float = 1.0
 
     def score(self, frame: pl.DataFrame) -> pl.Series:
         """u for each row of frame (PARTS): the average of the standardized parts."""
         x = frame.select(PARTS).to_numpy()
         z = (x - np.asarray(self.means)) / np.asarray(self.sds)
         return pl.Series("u", z.mean(axis=1), dtype=pl.Float64)
+
+    def in_sds(self, frame: pl.DataFrame) -> pl.Series:
+        """u for each row of frame in standard deviations of the training games' u."""
+        return (self.score(frame) / self.u_sd).alias("u_sd")
 
 
 def fit_scale(training: pl.DataFrame) -> Scale:
@@ -248,12 +255,15 @@ def fit_scale(training: pl.DataFrame) -> Scale:
     cutoff = training.select(pl.max_horizontal("observed_utc", "train_cutoff").max()).item()
     assert isinstance(cutoff, datetime)
     x = training.select(PARTS).to_numpy()
-    sds = x.std(axis=0)
+    means = x.mean(axis=0)
+    sds = np.where(x.std(axis=0) > 0, x.std(axis=0), 1.0)
+    u = ((x - means) / sds).mean(axis=1)
     return Scale(
-        means=tuple(float(m) for m in x.mean(axis=0)),
-        sds=tuple(float(s) if s > 0 else 1.0 for s in sds),
+        means=tuple(float(m) for m in means),
+        sds=tuple(float(s) for s in sds),
         games=training.height,
         train_cutoff=cutoff,
+        u_sd=float(u.std()) if u.std() > 0 else 1.0,
     )
 
 
