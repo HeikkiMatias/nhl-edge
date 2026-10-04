@@ -388,6 +388,7 @@ def backtest(
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.ingest.sbr import SEASON_PAGES
+    from nhl_edge.ingest.sbr_suspect import load_suspect_openers
     from nhl_edge.lake.tables import LAKE_DIR, Lake
     from nhl_edge.lineup import minutes as mins
     from nhl_edge.settings import MissingSettingError, load_env
@@ -590,6 +591,15 @@ def backtest(
     )
     groups = blend_backtest.groups(blend_input, games).filter(pl.col("experiment") == e2)
     report["e3"] = e3.report(settled, groups.drop("experiment"))
+    # A sensitivity, never the policy: the bets on #56's suspect openers left out. The list
+    # reads the close, so E2 can't refuse them (ADR 0007), but one such price can flatter E3.
+    suspects = load_suspect_openers()["game_id"]
+    report["e3"]["sensitivity_without_suspect_openers"] = {
+        "bets_left_out": settled.filter(pl.col("game_id").is_in(suspects.implode())).height,
+        "pooled": e3.report(
+            settled.filter(~pl.col("game_id").is_in(suspects.implode())), groups.drop("experiment")
+        )["pooled"],
+    }
     report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
     report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}
     path = reports.write(report, out)
