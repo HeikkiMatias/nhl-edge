@@ -566,6 +566,53 @@ def test_hockey_only_scores_b2_and_b3_at_the_as_of_time() -> None:
     assert b3_model["paired_against_B2"]["pooled"]["mean"] < 0
 
 
+def test_each_hockey_run_has_its_own_report_file() -> None:
+    # Two runs of one commit on one day, a second apart, write two files.
+    first = {"version": "backtest-hockey-20261003-abc1234", "run_utc": "2026-10-03T15:48:46+00:00"}
+    second = first | {"run_utc": "2026-10-03T15:48:47+00:00"}
+    assert b3_report.hockey_file(first) == "hockey-20261003-abc1234-154846.json"
+    assert b3_report.hockey_file(second) != b3_report.hockey_file(first)
+
+
 def test_hockey_only_refuses_held_out_seasons() -> None:
+    for season in (20222023, 20252026, 20262027):
+        with pytest.raises(ValueError, match="held out"):
+            hockey_only(LEAGUE.games, [season], feature_tables(LEAGUE.games, 4), LEAGUE)
+
+
+def test_the_one_time_test_is_claimed_before_it_scores() -> None:
+    later = league((20232024, 20242025, 20252026), games=40)
+    b2_tables = feature_tables(later.games, 4)
+    claims: list[str] = []
+
+    def claim() -> None:
+        claims.append("claimed")
+
+    # 2025-26 alone, or nothing is claimed.
+    with pytest.raises(ValueError, match="alone"):
+        hockey_only(later.games, [20242025, 20252026], b2_tables, later, one_time=claim)
+    assert claims == []
+    predictions, _ = hockey_only(later.games, [20252026], b2_tables, later, one_time=claim)
+    assert set(predictions["season"]) == {20252026} and claims == ["claimed"]
+
+    # A refused claim stops the run before anything is scored.
+    def refused() -> None:
+        raise ValueError("the one-time test already ran: v1")
+
+    with pytest.raises(ValueError, match="already ran"):
+        hockey_only(later.games, [20252026], b2_tables, later, one_time=refused)
+    # Without a claim, 2025-26 stays held out.
     with pytest.raises(ValueError, match="held out"):
-        hockey_only(LEAGUE.games, [20222023], feature_tables(LEAGUE.games, 4), LEAGUE)
+        hockey_only(later.games, [20252026], b2_tables, later)
+
+
+def test_hockey_only_scores_the_hockey_validation_seasons() -> None:
+    # Gate 2 opens 2023-24 and 2024-25 for B2 against B3 on outcomes (#107).
+    later = league((20222023, 20232024), games=60)
+    fits3: dict[str, dict[int, b3.B3Model]] = {}
+    predictions, coverage = hockey_only(
+        later.games, [20232024], feature_tables(later.games, 4), later, b3_fits=fits3
+    )
+    assert set(predictions["season"]) == {20232024} and set(predictions["model"]) == {"B2", "B3"}
+    assert coverage[HOCKEY][20232024]["b3_scored"] == 60
+    assert fits3[HOCKEY][20232024].games == 60

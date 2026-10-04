@@ -13,7 +13,7 @@ Outcomes settle the moneyline on the full game, overtime and shootout included (
 are read to score a prediction and, for games before the fold, to fit B1.
 """
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -22,7 +22,14 @@ import polars as pl
 
 from nhl_edge.backtest.market import PREDICTION_LAG, Experiment, market_prices
 from nhl_edge.backtest.metrics import log_loss
-from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
+from nhl_edge.backtest.seasons import (
+    HOCKEY_ROLES,
+    ONE_TIME_SEASONS,
+    OPEN_ROLES,
+    OPEN_SEASONS,
+    SeasonRole,
+    season_role,
+)
 from nhl_edge.market import recalibration
 from nhl_edge.market.devig import (
     DEFAULT_METHOD,
@@ -327,20 +334,33 @@ def hockey_only(
     b3_tables: "b3.Tables",
     b2_fits: B2Fits | None = None,
     b3_fits: B3Fits | None = None,
+    one_time: Callable[[], None] | None = None,
 ) -> tuple[pl.DataFrame, Coverage]:
     """B2 and B3 scored at the as-of time on outcomes alone, for seasons without prices (ADR
     0023): every game of the season with a result, each model fitted on the games before the
     season's first start. A prediction runs PREDICTION_LAG after the as-of time, as E2's after
-    10:00 ET, so it reads the rows that became known at the as-of time. Held-out seasons are
-    refused until gate 2. The predictions carry the experiment HOCKEY and no method; coverage
-    counts each model's scored and training games."""
+    10:00 ET, so it reads the rows that became known at the as-of time. It scores the open
+    seasons and, from gate 2, the hockey validation seasons (HOCKEY_ROLES); the other held-out
+    seasons are refused, except the one-time test season alone with one_time, which claims the
+    run (one_time.claim) before anything is scored and refuses a second one. The predictions
+    carry the experiment HOCKEY and no method; coverage counts each model's scored and training
+    games."""
     from nhl_edge.features import team_strength as ts
     from nhl_edge.game import b2, b3
 
     seasons = sorted(set(seasons))
-    held_out = [season for season in seasons if season_role(season) not in OPEN_ROLES]
+    roles = HOCKEY_ROLES
+    if one_time is not None:
+        if seasons != list(ONE_TIME_SEASONS):
+            raise ValueError(f"the one-time test scores {list(ONE_TIME_SEASONS)} alone")
+        one_time()
+        roles = HOCKEY_ROLES | {SeasonRole.ONE_TIME_TEST}
+    held_out = [season for season in seasons if season_role(season) not in roles]
     if held_out:
-        raise ValueError(f"{held_out} are held out until gate 2 (#107)")
+        raise ValueError(
+            f"{held_out} are held out from the hockey-only mode: 2022-23 until phase 4 (#66), "
+            "2025-26 until the owner's go-ahead (#107)"
+        )
     results = outcomes(games.filter(pl.col("season").is_in(seasons)))
     calendar = games.select("season", "start_utc")
     frames = [pl.DataFrame(schema=PREDICTION_SCHEMA)]

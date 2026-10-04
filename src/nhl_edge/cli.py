@@ -12,6 +12,7 @@ from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, SEASON_ROLES
 if TYPE_CHECKING:
     import polars as pl
 
+    from nhl_edge.backtest.one_time import Places
     from nhl_edge.game import b2, b3
     from nhl_edge.lake.status import TableState
     from nhl_edge.lake.tables import Lake
@@ -330,7 +331,20 @@ def backtest(
         bool,
         typer.Option(
             "--hockey-only",
-            help="Score B2 and B3 at the as-of time on outcomes alone, for seasons without prices.",
+            help=(
+                "Score B2 and B3 at the as-of time on outcomes alone, for seasons without prices: "
+                "the open seasons and the hockey validation seasons 2023-24 and 2024-25."
+            ),
+        ),
+    ] = False,
+    one_time_test: Annotated[
+        bool,
+        typer.Option(
+            "--one-time-test",
+            help=(
+                "With --hockey-only, gate 2's one-time test on 2025-26 (#107): it runs once, and a "
+                "second run is refused."
+            ),
         ),
     ] = False,
 ) -> None:
@@ -340,7 +354,8 @@ def backtest(
     calibration, its gaps to B1 above 8 points and its lineup quality, and B3 against B2 overall
     and on gate 2's subsets. E2 refuses implausible openers (ADR 0007), and E2 on every opener is
     reported beside it, as is the diagnostic of SBR's change of closing book (#65). With
-    --hockey-only, B2 and B3 alone, at the as-of time on outcomes, to <out>/hockey.json."""
+    --hockey-only, B2 and B3 alone, at the as-of time on outcomes, to
+    <out>/hockey-<version>.json, logged in <out>/runs.csv."""
     from datetime import UTC
 
     import polars as pl
@@ -349,33 +364,71 @@ def backtest(
         b2_report,
         b3_report,
         book_era,
+        one_time,
         reports,
         sensitivity,
         subsets,
         walk_forward,
     )
-    from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
+    from nhl_edge.backtest.seasons import (
+        HOCKEY_ROLES,
+        ONE_TIME_SEASONS,
+        OPEN_ROLES,
+        OPEN_SEASONS,
+        SeasonRole,
+        season_role,
+    )
     from nhl_edge.game import b2, b3
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.ingest.sbr import SEASON_PAGES
-    from nhl_edge.lake.tables import Lake
+    from nhl_edge.lake.tables import LAKE_DIR, Lake
     from nhl_edge.lineup import minutes as mins
+    from nhl_edge.settings import MissingSettingError, load_env
 
+    # The hockey-only mode also scores the hockey validation seasons, opened at gate 2 (#107),
+    # and, once, the one-time test season.
+    roles = HOCKEY_ROLES if hockey_only else OPEN_ROLES
+    where = None
+    if one_time_test:
+        if not hockey_only:
+            raise typer.BadParameter("needs --hockey-only", param_hint="--one-time-test")
+        if sorted(set(parse_seasons(seasons))) != list(ONE_TIME_SEASONS):
+            raise typer.BadParameter(
+                f"the one-time test scores {list(ONE_TIME_SEASONS)} alone", param_hint="--seasons"
+            )
+        load_env()
+        try:
+            where = one_time.places(LAKE_DIR, (DEFAULT_BACKTEST_OUT, out))
+        except MissingSettingError as exc:
+            raise typer.BadParameter(
+                f"the one-time test is claimed in R2: {exc}", param_hint="--one-time-test"
+            ) from None
+        earlier = one_time.records(where)
+        if earlier:
+            raise typer.BadParameter(
+                f"the one-time test already ran: {'; '.join(earlier)} (docs/plan.md section 5)",
+                param_hint="--one-time-test",
+            )
+        roles = roles | {SeasonRole.ONE_TIME_TEST}
     try:
         wanted = sorted(set(parse_seasons(seasons)))
-        held_out = [season for season in wanted if season_role(season) not in OPEN_ROLES]
+        held_out = [season for season in wanted if season_role(season) not in roles]
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
     if held_out:
+        scope = (
+            "the hockey-only mode adds 2023-24 and 2024-25 (gate 2, #107)"
+            if hockey_only
+            else "a backtest runs on training and development seasons only"
+        )
         raise typer.BadParameter(
-            f"{held_out} are held out: a backtest runs on training and development seasons only "
-            "until their phase (docs/plan.md section 5, #10)",
+            f"{held_out} are held out: {scope} until their phase (docs/plan.md section 5, #10)",
             param_hint="--seasons",
         )
     lake = Lake()
     if hockey_only:
-        _hockey_backtest(lake, wanted, out)
+        _hockey_backtest(lake, wanted, out, where)
         return
     # B1 is fitted on every open SBR season before the test season, so those need prices too.
     history = [s for s in SEASON_PAGES if s in OPEN_SEASONS]
@@ -507,12 +560,15 @@ def _b3_tables(lake: "Lake", tables: "b2.Tables") -> "b3.Tables":
     )
 
 
-def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path) -> None:
-    """B2 and B3 at the as-of time on outcomes alone (ADR 0023), to <out>/hockey.json."""
+def _hockey_backtest(
+    lake: "Lake", wanted: list[int], out: Path, one_time_places: "Places | None" = None
+) -> None:
+    """B2 and B3 at the as-of time on outcomes alone (ADR 0023), to <out>/hockey-<version>.json,
+    with every run logged in <out>/runs.csv."""
     import json
     from datetime import UTC
 
-    from nhl_edge.backtest import b3_report, reports, subsets, walk_forward
+    from nhl_edge.backtest import b3_report, one_time, reports, subsets, walk_forward
     from nhl_edge.game import b2, b3
     from nhl_edge.ingest.games import EXPECTED_GAMES
 
@@ -538,27 +594,37 @@ def _hockey_backtest(lake: "Lake", wanted: list[int], out: Path) -> None:
             typer.echo(problem, err=True)
         typer.echo("run the feature commands for those seasons", err=True)
         raise typer.Exit(code=1)
+    b2_fits: dict[str, dict[int, b2.B2Model]] = {}
     b3_fits: dict[str, dict[int, b3.B3Model]] = {}
+    now = datetime.now(UTC)
+    run_version = reports.version("backtest-hockey", now)
     try:
         predictions, coverage = walk_forward.hockey_only(
-            games, wanted, tables, b3_tables, b3_fits=b3_fits
+            games,
+            wanted,
+            tables,
+            b3_tables,
+            b2_fits=b2_fits,
+            b3_fits=b3_fits,
+            # The one-time test is claimed before it scores (one_time.claim).
+            one_time=(
+                None
+                if one_time_places is None
+                else lambda: one_time.claim(one_time_places, run_version)
+            ),
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
     flags = subsets.flags(games, tables.actual_lineups, b3_tables.lineups, wanted)
-    now = datetime.now(UTC)
     report = b3_report.hockey(
-        predictions,
-        coverage,
-        b3_fits,
-        flags,
-        wanted,
-        reports.version("backtest-hockey", now),
-        now,
+        predictions, coverage, b3_fits, flags, wanted, run_version, now, b2_fits=b2_fits
     )
+    # One file per run, and every run logged: held-out seasons must not be rerun unseen.
     out.mkdir(parents=True, exist_ok=True)
-    path = out / b3_report.HOCKEY_FILE
-    path.write_text(json.dumps(report, indent=2) + "\n")
+    path = out / b3_report.hockey_file(report)
+    with path.open("x") as handle:  # never over an earlier run's report
+        handle.write(json.dumps(report, indent=2) + "\n")
+    reports.log_runs(b3_report.hockey_runs(report), out)
     typer.echo(f"{path}: {report['version']}")
     for model, body in report["models"].items():
         pooled = body["log_loss"]["pooled"]
@@ -2101,6 +2167,65 @@ def audit_report(
     typer.echo(f"{path}: {total} problems")
     for section in sections:
         typer.echo(f"  {section.title}: {len(section.problems)}")
+
+
+@audit_app.command("gaps")
+def audit_gaps(
+    gaps: Annotated[Path, typer.Option(help="A backtest's gaps_b3.csv.")] = DEFAULT_BACKTEST_OUT
+    / "gaps_b3.csv",
+    out: Annotated[Path, typer.Option(help="Report directory.")] = Path("reports/gaps"),
+) -> None:
+    """Screen B3's gaps above 8 points against B1 at the close (E1) for bug signatures, hard rule
+    8's review (#107): each game's log-odds in parts, both teams' expected goals and the flags,
+    to <out>/b3-gaps-<version>.md (the games to review) and .csv (every gap). No result is
+    read."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.audit import b3_gaps
+    from nhl_edge.backtest import reports
+    from nhl_edge.backtest.walk_forward import fold_start
+    from nhl_edge.game import b2
+    from nhl_edge.lake.tables import Lake
+
+    if not gaps.exists():
+        raise typer.BadParameter(f"{gaps} does not exist: run nhl backtest", param_hint="--gaps")
+    rows = pl.read_csv(gaps, try_parse_dates=True).filter(pl.col("experiment") == "E1")
+    lake = Lake()
+    games = lake.read("games")
+    tables = b2.Tables(
+        games,
+        *(
+            lake.read(name)
+            for name in (
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        ),
+    )
+    calendar = games.select("season", "start_utc")
+    starts = {int(s): fold_start(calendar, int(s)) for s in rows["season"].unique().to_list()}
+    try:
+        screened = b3_gaps.screen(_b3_tables(lake, tables), rows, starts)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    marked = b3_gaps.review_set(screened)
+    now = datetime.now(UTC)
+    version = reports.version("b3-gaps", now)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{version}.md"
+    path.write_text(b3_gaps.markdown(marked, str(gaps), version))
+    marked.write_csv(out / f"{version}.csv")
+    facts = b3_gaps.summary(marked)
+    typer.echo(f"{path}: {facts['games']:,} gaps, {facts['flagged']} flagged")
+    for flag, count in facts["flags"].items():
+        typer.echo(f"  {flag}: {count}")
+    typer.echo("  to review: " + ", ".join(f"{k} {v}" for k, v in facts["review"].items()))
 
 
 @app.command()

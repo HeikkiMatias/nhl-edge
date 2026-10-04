@@ -41,6 +41,15 @@ OPEN_SEASONS: tuple[int, ...] = tuple(
     season for season, role in SEASON_ROLES.items() if role in OPEN_ROLES
 )
 
+# The roles the hockey-only mode may score: gate 2 opens the hockey validation seasons for B2
+# against B3 on outcomes (#107). 2022-23 waits for phase 4 (#66), and 2025-26 for the owner's
+# go-ahead.
+HOCKEY_ROLES = OPEN_ROLES | {SeasonRole.HOCKEY_VALIDATION}
+# Gate 2's one-time hockey-only test (docs/plan.md section 5): run once, on the owner's go-ahead.
+ONE_TIME_SEASONS: tuple[int, ...] = tuple(
+    season for season, role in SEASON_ROLES.items() if role is SeasonRole.ONE_TIME_TEST
+)
+
 # The seasons a phase 2 design choice may rest on: training seasons without the bubble and empty
 # arenas, so the development seasons stay unseen until gate 1 (phase 2 plan, #11).
 TRAINING_SEASONS: tuple[int, ...] = tuple(

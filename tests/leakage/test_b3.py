@@ -13,6 +13,7 @@ from b2_fixtures import feature_tables
 from b3_fixtures import league
 from polars.testing import assert_frame_equal
 
+from nhl_edge.backtest.seasons import HOCKEY_ROLES, ONE_TIME_SEASONS, season_role
 from nhl_edge.backtest.walk_forward import HOCKEY, fold_start, hockey_only
 from nhl_edge.features import team_strength as ts
 from nhl_edge.game import b2, b3
@@ -277,3 +278,35 @@ def test_a_later_seasons_rows_are_not_read() -> None:
     )
     tables = replaced(rapm_terms=pl.concat([LEAGUE.rapm_terms, later, later]))
     assert same(predict(tables), BEFORE)
+
+
+def test_hockey_only_opens_the_hockey_validation_seasons_alone() -> None:
+    # Gate 2 opens 2023-24 and 2024-25 for B2 against B3 on outcomes (#107). 2022-23 waits for
+    # phase 4 (#66), 2025-26 for the owner's go-ahead, and live seasons for live.
+    for season in (20222023, 20252026, 20262027):
+        with pytest.raises(ValueError, match="held out"):
+            hockey_only(LEAGUE.games, [season], feature_tables(LEAGUE.games, 4), LEAGUE)
+    assert {season_role(s) for s in (20232024, 20242025)} <= HOCKEY_ROLES
+    assert not {season_role(s) for s in (20222023, 20252026, 20262027)} & HOCKEY_ROLES
+    # The one-time test opens 2025-26 alone, and claims nothing for another season.
+    assert ONE_TIME_SEASONS == (20252026,)
+    claims: list[int] = []
+    for season in (20222023, 20232024, 20262027):
+        with pytest.raises(ValueError, match="alone"):
+            hockey_only(
+                LEAGUE.games,
+                [season],
+                feature_tables(LEAGUE.games, 4),
+                LEAGUE,
+                one_time=lambda: claims.append(1),
+            )
+    assert claims == []
+
+    # A refused claim stops the run before anything is scored.
+    def refused() -> None:
+        raise ValueError("the one-time test already ran: v1")
+
+    with pytest.raises(ValueError, match="already ran"):
+        hockey_only(
+            LEAGUE.games, [20252026], feature_tables(LEAGUE.games, 4), LEAGUE, one_time=refused
+        )
