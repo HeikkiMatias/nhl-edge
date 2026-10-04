@@ -151,9 +151,11 @@ def write_ledger(settled: pl.DataFrame, games: pl.DataFrame, out: Path, version:
         "stake",
         "win",
         "profit",
+        *(c for c in ("p_close", "clv", "driver") if c in settled.columns),
     ).with_columns(
         pl.col("p_side", "ev", "hurdle", "u_sd", "fraction").round(4),
         pl.col("bankroll_before", "stake", "profit").round(3),
+        *(pl.col(c).round(4) for c in ("p_close", "clv") if c in settled.columns),
     ).write_csv(path)
     return path
 
