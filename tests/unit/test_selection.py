@@ -11,6 +11,17 @@ from nhl_edge.betting.selection import POLICY
 DAY = date(2021, 11, 10)
 
 
+def timed(bets: pl.DataFrame) -> pl.DataFrame:
+    """bets with each game decided at 14:00 UTC on its date, started at 23:00 UTC and its result
+    public at 10:00 UTC the next morning."""
+    day = pl.col("game_date").cast(pl.Datetime("us", "UTC"))
+    return bets.with_columns(
+        prediction_utc=day + pl.duration(hours=14),
+        start_utc=day + pl.duration(hours=23),
+        result_utc=day + pl.duration(days=1, hours=10),
+    )
+
+
 def games(**columns: list[object]) -> pl.DataFrame:
     n = len(next(iter(columns.values())))
     base: dict[str, list[object]] = {
@@ -89,7 +100,7 @@ def test_a_days_stakes_read_the_bankroll_left_by_earlier_days() -> None:
             "home_win": [1, 1, 0],
         }
     )
-    ledger = staking.settle(bets)
+    ledger = staking.settle(timed(bets))
     # Day one: 1% and 0.5% of 100; the home bet wins 1, the away bet loses 0.5.
     assert ledger["stake"].to_list()[:2] == pytest.approx([1.0, 0.5])
     assert ledger["profit"].to_list()[:2] == pytest.approx([1.0, -0.5])
@@ -118,6 +129,6 @@ def test_bets_settle_on_the_full_game(case: str, home_bet_wins: bool) -> None:
             ev=pl.lit(0.04),
             u_sd=pl.lit(0.0),
         )
-        ledger = staking.settle(bet)
+        ledger = staking.settle(timed(bet))
         assert ledger["win"][0] is wins
         assert ledger["profit"][0] == pytest.approx(1.0 if wins else -1.0)

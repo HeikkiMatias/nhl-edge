@@ -46,17 +46,40 @@ def won(side: pl.Expr, home_win: pl.Expr) -> pl.Expr:
     return pl.when(side == HOME).then(home_win == 1).otherwise(home_win == 0)
 
 
+def check_days(bets: pl.DataFrame) -> None:
+    """Refuse a ledger whose day could mix a decision made after one of its games began: every
+    bet of a day must be decided before the day's first game starts (prediction_utc against
+    start_utc), so the day cap reads only decisions made together."""
+    days = bets.group_by("season", "game_date").agg(
+        decided=pl.col("prediction_utc").max(), first_start=pl.col("start_utc").min()
+    )
+    late = days.filter(pl.col("decided") >= pl.col("first_start")).sort("game_date")
+    if late.height:
+        raise ValueError(
+            f"bets of {late['game_date'][0]} were decided after that day's first game started"
+        )
+
+
 def settle(bets: pl.DataFrame, policy: Policy = POLICY) -> pl.DataFrame:
-    """The ledger: each picked bet (season, game_date, game_id, side, price, ev, u_sd, home_win)
-    with its fraction, its stake in units, whether it won, its profit, and the season's bankroll
-    at the start of its day and after it."""
+    """The ledger: each picked bet (season, game_date, game_id, side, price, ev, u_sd, home_win,
+    prediction_utc, start_utc and result_utc) with its fraction, its stake in units, whether it
+    won, its profit, and the bankroll its day staked. A day's bankroll counts only the earlier
+    bets whose results were public before the day's first decision; a later result counts from
+    the first day after it became public."""
+    check_days(bets)
     staked = fractions(bets, policy).sort("season", "game_date", "game_id")
     out = []
     for (_,), season in staked.group_by("season", maintain_order=True):
         days = season.with_columns(win=won(pl.col("side"), pl.col("home_win")))
-        bankroll = policy.bankroll
+        settled_results: list[tuple[object, float]] = []
         befores, stakes, profits = [], [], []
         for (_,), day in days.group_by("game_date", maintain_order=True):
+            decision = day["prediction_utc"].min()
+            bankroll = policy.bankroll + sum(
+                profit
+                for public, profit in settled_results
+                if public < decision  # type: ignore[operator]
+            )
             day_stakes = day["fraction"].to_numpy() * bankroll
             day_profit = np.where(
                 day["win"].to_numpy(), day_stakes * (day["price"].to_numpy() - 1), -day_stakes
@@ -64,7 +87,9 @@ def settle(bets: pl.DataFrame, policy: Policy = POLICY) -> pl.DataFrame:
             befores += [bankroll] * day.height
             stakes += day_stakes.tolist()
             profits += day_profit.tolist()
-            bankroll += float(day_profit.sum())
+            settled_results += list(
+                zip(day["result_utc"].to_list(), day_profit.tolist(), strict=True)
+            )
         out.append(
             days.with_columns(
                 bankroll_before=pl.Series(befores, dtype=pl.Float64),

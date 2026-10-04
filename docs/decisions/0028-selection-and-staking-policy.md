@@ -33,7 +33,7 @@ As the phase 4 plan, approved by the owner on 2026-10-04 (#13). `betting/selecti
 - **Stake.** A quarter of Kelly, ¼·EV/(o − 1), divided by (1 + u⁺), where u⁺ is u's standard deviations above average or 0.
   - It is capped at 1.5% of the bankroll at the start of the day.
   - When a day's shares add up to more than 5%, all of them are scaled down together to 5%.
-  - Every bet of a day is decided before any of its games, so a day's stakes read only earlier days' results.
+  - Every bet of a day must be decided before the day's first game starts, or the ledger is refused. A day's bankroll counts only the earlier results that were public before its first decision.
 - **Bankroll.** 100 paper units per season. Bets settle on the full game, overtime and shootout included. A 20% drawdown calls for a review of data and code, never a model change.
 - **Live bets** (phase 5) are decided and placed at the 12:45 ET snapshot. That is late enough for most morning-skate goalie news, with hours left before the closing proxy.
   - The executable price is Pinnacle's at that snapshot, and the best EU book's price is logged beside it (plan §9).
@@ -42,7 +42,7 @@ As the phase 4 plan, approved by the owner on 2026-10-04 (#13). `betting/selecti
 
 ## Backtest evidence
 
-A local `nhl backtest` run on the development seasons. E2's blend bets in 2021-22 only, since 2018-19 has no blend (ADR 0027).
+A local `nhl backtest` run on the development seasons at commit `cb3453b`. #144's committed run logs it in `reports/backtest/runs.csv`. E2's blend bets in 2021-22 only, since 2018-19 has no blend (ADR 0027).
 
 | 2021-22, at the SBR opener | |
 | --- | --- |

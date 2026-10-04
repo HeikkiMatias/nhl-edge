@@ -18,6 +18,7 @@ import polars as pl
 from nhl_edge.backtest.blend import BLEND, Scales
 from nhl_edge.backtest.market import Experiment, market_prices
 from nhl_edge.backtest.metrics import bootstrap
+from nhl_edge.backtest.walk_forward import outcomes
 from nhl_edge.betting import selection, staking
 from nhl_edge.betting.selection import POLICY, Policy
 
@@ -32,7 +33,9 @@ def candidates(
     standard deviations of its fold's training u, and the full-game result."""
     blended = predictions.filter(
         pl.col("experiment") == EXPERIMENT, pl.col("model") == BLEND
-    ).select("season", "game_id", "game_date", "prediction_utc", "p_home", "home_win")
+    ).select(
+        "season", "game_id", "game_date", "prediction_utc", "p_home", "home_win", "train_cutoff"
+    )
     doubts = []
     for season, scale in scales.get(EXPERIMENT, {}).items():
         rows = every.filter(pl.col("experiment") == EXPERIMENT, pl.col("season") == season)
@@ -43,9 +46,13 @@ def candidates(
             away_price=pl.lit(None, pl.Float64),
             u_sd=pl.lit(None, pl.Float64),
         ).clear()
-    prices = market_prices(sbr_odds, Experiment.E2).select("game_id", "home_price", "away_price")
+    # The price taken is the opener the blend's market input came from: the same game and the
+    # same prediction time.
+    prices = market_prices(sbr_odds, Experiment.E2).select(
+        "game_id", "prediction_utc", "start_utc", "home_price", "away_price"
+    )
     return (
-        blended.join(prices, on="game_id")
+        blended.join(prices, on=["game_id", "prediction_utc"])
         .join(pl.concat(doubts), on="game_id")
         .sort("season", "game_date", "game_id")
     )
@@ -56,10 +63,15 @@ def ledger(
     every: pl.DataFrame,
     scales: Scales,
     sbr_odds: pl.DataFrame,
+    games: pl.DataFrame,
     policy: Policy = POLICY,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Every candidate game with the policy's pick, and the settled ledger of the picked bets."""
-    picked = selection.select(candidates(predictions, every, scales, sbr_odds), policy)
+    """Every candidate game with the policy's pick, and the settled ledger of the picked bets,
+    each with when its result became public."""
+    results = outcomes(games).select("game_id", "result_utc")
+    picked = selection.select(
+        candidates(predictions, every, scales, sbr_odds).join(results, on="game_id"), policy
+    )
     settled = staking.settle(picked.filter(pl.col("picked")), policy)
     return picked, settled.with_columns(ret=pl.col("profit") / pl.col("stake"))
 
@@ -115,13 +127,17 @@ def report(picked: pl.DataFrame, settled: pl.DataFrame, policy: Policy = POLICY)
     }
 
 
-def write_ledger(settled: pl.DataFrame, games: pl.DataFrame, out: Path) -> Path:
-    """The ledger of every bet to out/bets.csv."""
+def write_ledger(settled: pl.DataFrame, games: pl.DataFrame, out: Path, version: str) -> Path:
+    """The ledger of every bet to out/bets.csv, each with its prediction time, the blend's
+    train_cutoff and the run's version."""
     path = out / LEDGER_FILE
     settled.join(games.select("game_id", "home", "away"), on="game_id").select(
         "season",
         "game_id",
         "game_date",
+        "prediction_utc",
+        "train_cutoff",
+        pl.lit(version).alias("version"),
         "home",
         "away",
         "side",
