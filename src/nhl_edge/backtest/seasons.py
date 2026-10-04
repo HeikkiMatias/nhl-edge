@@ -61,6 +61,20 @@ DEVELOPMENT_SEASONS: tuple[int, ...] = tuple(
 )
 
 
+# The first season with out-of-sample B2 and B3 predictions: its fold is the first to start after
+# the tuning cutoff (ADR 0011, 2018-04-09), and every earlier fold is refused. The market blend
+# learns only from such predictions of earlier folds (hard rule 6, #138).
+FIRST_OUT_OF_SAMPLE_SEASON = 20182019
+
+
+def blend_training_seasons(season: int) -> list[int]:
+    """The seasons whose out-of-sample predictions the market blend of season learns from: the
+    open seasons from FIRST_OUT_OF_SAMPLE_SEASON up to the season before it (the whole-season
+    folds of the phase 4 plan, #13). None for the first out-of-sample season, which has no
+    earlier fold. The flagged seasons are training seasons, so they teach the blend too."""
+    return [s for s in OPEN_SEASONS if FIRST_OUT_OF_SAMPLE_SEASON <= s < season]
+
+
 def season_role(season: int) -> SeasonRole:
     """Role of a season given as 20252026. Seasons from 2026-27 on are live."""
     if season >= FIRST_LIVE_SEASON:
