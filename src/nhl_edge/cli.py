@@ -575,6 +575,8 @@ def backtest(
     # The policy's bets on E2's blend at the opener (#141, ADR 0028).
     picked, settled = bets.ledger(predictions, blend_input, blend_scales, sbr_odds, games)
     report["bets"] = bets.report(picked, settled)
+    # The market move guard (#142, ADR 0029): its frozen threshold, and how often it would fire.
+    report["bets"]["guard"] = bets.guard_report(settled, sbr_odds)
     report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
     report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}
     path = reports.write(report, out)

@@ -15,11 +15,12 @@ from typing import Any
 
 import polars as pl
 
+from nhl_edge.audit.sbr import moneylines, moves
 from nhl_edge.backtest.blend import BLEND, Scales
 from nhl_edge.backtest.market import Experiment, market_prices
 from nhl_edge.backtest.metrics import bootstrap
 from nhl_edge.backtest.walk_forward import outcomes
-from nhl_edge.betting import selection, staking
+from nhl_edge.betting import guard, selection, staking
 from nhl_edge.betting.selection import POLICY, Policy
 
 EXPERIMENT = Experiment.E2.value
@@ -155,3 +156,37 @@ def write_ledger(settled: pl.DataFrame, games: pl.DataFrame, out: Path, version:
         pl.col("bankroll_before", "stake", "profit").round(3),
     ).write_csv(path)
     return path
+
+
+def guard_report(settled: pl.DataFrame, sbr_odds: pl.DataFrame) -> dict[str, Any]:
+    """The market move guard on history (#142, ADR 0029): the frozen threshold and the one the
+    lake gives today, and per season how often it would have fired on E2's bets had the opener
+    been the morning price and the close the decision's. It can't act on history, where the bet
+    is taken at the opener, before the close is known; this only sizes it. Prices only."""
+    lines = moves(moneylines(sbr_odds)).select("game_id", p_morning="p_open", p_decision="p_close")
+    checked = guard.guard(settled.join(lines, on="game_id"))
+    every_game = moves(
+        moneylines(sbr_odds.filter(pl.col("season").is_in(checked["season"].unique().implode())))
+    )
+    try:
+        recomputed: float | None = guard.threshold(sbr_odds)
+    except ValueError:
+        recomputed = None  # a run before 2018-19 doesn't load every season the threshold reads
+    return {
+        "threshold": guard.MOVE_THRESHOLD,
+        "threshold_from_the_lake": recomputed,
+        "seasons": list(guard.THRESHOLD_SEASONS),
+        "per_season": {
+            str(season): {
+                "bets": rows.height,
+                "would_fire": int(rows["guarded"].sum()),
+                "games_moving_over_threshold": int(
+                    (
+                        every_game.filter(pl.col("season") == season)["move"] > guard.MOVE_THRESHOLD
+                    ).sum()
+                ),
+                "games": every_game.filter(pl.col("season") == season).height,
+            }
+            for (season,), rows in checked.sort("season").group_by("season", maintain_order=True)
+        },
+    }
