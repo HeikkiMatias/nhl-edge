@@ -160,6 +160,9 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - **Fits:** Δĝ's weight is 0.40 on standardized inputs, trained on 16,607 games with `train_cutoff` 2025-04-18.
   - **The verdict** (ADR 0024): B3 goes forward as the model phase 4 compares with B1, because every test points the same way and 2025-26's interval includes the earlier gain. B3 minus B2 stays in every report (hard rule 3), and the live 2026-27 market test is its next independent evidence.
 
+**Phase 4's inputs:**
+- **The uncertainty score u (ADR 0026):** history's goalie doubt comes from the goalie-start model alone, since no historical starter confirmations exist. Live, confirmed starters (#42's polls) lower u, so the blend will trust the model more on live games than it did in training.
+
 **Held-out seasons seen for data format only** (#96, PR #108):
 - **What was seen:** the first draft of the `penalties` and `faceoffs` tables surveyed every cached season, 2023-24, 2025-26 and the first 2026-27 games included. It recorded which penalty codes exist and which fields can be blank, and it checked the faceoff zones of 200 games of 2023-24.
 - **What was not:** no outcome, rate or model figure from those seasons.

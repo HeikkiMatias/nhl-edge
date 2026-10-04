@@ -48,6 +48,7 @@ The blend's paired log loss against B1 with and without u comes with #140.
 ## Consequences
 
 - **The backtest reports u's parts per season** under `uncertainty` in summary.json. It has a leakage test (`tests/leakage/test_uncertainty.py`).
+- **Cutoffs:** each game's parts carry the latest `train_cutoff` of the fitted tables they read, and a `Scale` carries the latest time behind its training rows, so the blend can refuse either one when it comes after the fold start.
 - **The blend (#140)** fits one b_u on u, and the policy (#141) reads u in standard deviations above its training mean.
 - **History's goalie doubt is the goalie-start model's alone,** since no historical confirmation exists. Live, a confirmed starter (#42's polls) lowers u, so the blend trusts the model more on live games than its training saw. The model card records this as a known weakness.
 - **u describes the projection, not the model's error.** A wrong but confident projection scores low.
@@ -56,3 +57,5 @@ The blend's paired log loss against B1 with and without u comes with #140.
 
 - The blend's b_u has the wrong sign (the model trusted more as doubt grows) on a fold, with an interval that excludes 0.
 - Or live 2026-27 shows u's distribution far from history's once confirmations arrive, enough that the policy's hurdle stops binding or binds on most games.
+
+A u revised on live evidence is a policy change (plan §5): it is judged only on games after its new freeze date, the live games that prompted it never score it, and the CLV count restarts.

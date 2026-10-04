@@ -15,6 +15,8 @@ DAY = date(2021, 11, 10)
 AS_OF = datetime(2021, 11, 10, 15, 0, tzinfo=UTC)
 PREDICTION = datetime(2021, 11, 10, 15, 0, 1, tzinfo=UTC)
 GAME = 2021020200
+# The fitted tables were cut off before the season (ADR 0012, 0017).
+CUTOFF = datetime(2021, 7, 9, 10, tzinfo=UTC)
 
 
 def frame(rows: list[dict[str, object]], schema: Mapping[str, Any]) -> pl.DataFrame:
@@ -33,15 +35,37 @@ GAMES = frame(
 )
 GOALIES = frame(
     [
-        {"game_id": GAME, "team": "BOS", "goalie_id": 1, "p_start": 0.6, "observed_utc": AS_OF},
-        {"game_id": GAME, "team": "BOS", "goalie_id": 2, "p_start": 0.4, "observed_utc": AS_OF},
-        {"game_id": GAME, "team": "TOR", "goalie_id": 3, "p_start": 1.0, "observed_utc": AS_OF},
+        {
+            "game_id": GAME,
+            "team": "BOS",
+            "goalie_id": 1,
+            "p_start": 0.6,
+            "train_cutoff": CUTOFF,
+            "observed_utc": AS_OF,
+        },
+        {
+            "game_id": GAME,
+            "team": "BOS",
+            "goalie_id": 2,
+            "p_start": 0.4,
+            "train_cutoff": CUTOFF,
+            "observed_utc": AS_OF,
+        },
+        {
+            "game_id": GAME,
+            "team": "TOR",
+            "goalie_id": 3,
+            "p_start": 1.0,
+            "train_cutoff": CUTOFF,
+            "observed_utc": AS_OF,
+        },
     ],
     {
         "game_id": pl.Int64,
         "team": pl.String,
         "goalie_id": pl.Int64,
         "p_start": pl.Float64,
+        "train_cutoff": UTC_TYPE,
         "observed_utc": UTC_TYPE,
     },
 )
@@ -102,12 +126,28 @@ LINEUPS = frame(
         "role": pl.String,
         "p_available": pl.Float64,
         "exp_5v5": pl.Float64,
+        "train_cutoff": UTC_TYPE,
         "observed_utc": UTC_TYPE,
     },
 )
 SPARE = frame(
-    [{"game_id": GAME, "team": "TOR", "exp_5v5": 10.0, "observed_utc": AS_OF}],
-    {"game_id": pl.Int64, "team": pl.String, "exp_5v5": pl.Float64, "observed_utc": UTC_TYPE},
+    [
+        {
+            "game_id": GAME,
+            "team": "TOR",
+            "exp_5v5": 10.0,
+            "train_cutoff": CUTOFF,
+            "observed_utc": AS_OF,
+        }
+    ],
+    {
+        "game_id": pl.Int64,
+        "team": pl.String,
+        "exp_5v5": pl.Float64,
+        "train_cutoff": UTC_TYPE,
+        "train_cutoff": UTC_TYPE,
+        "observed_utc": UTC_TYPE,
+    },
 )
 BOX_SCHEMA = {
     "game_id": pl.Int64,

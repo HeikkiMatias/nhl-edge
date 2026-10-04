@@ -135,7 +135,13 @@ def test_career_lines_count_only_for_earlier_seasons_once_public() -> None:
 
 def test_the_scale_comes_from_the_training_games_alone() -> None:
     training = pl.DataFrame(
-        {"goalie_doubt": [0.1, 0.3], "availability_doubt": [1.0, 3.0], "rookie_share": [0.1, 0.3]}
+        {
+            "goalie_doubt": [0.1, 0.3],
+            "availability_doubt": [1.0, 3.0],
+            "rookie_share": [0.1, 0.3],
+            "observed_utc": [PREDICTION - timedelta(days=200)] * 2,
+            "train_cutoff": [PREDICTION - timedelta(days=400), PREDICTION - timedelta(days=150)],
+        }
     )
     scored = un.parts(tables(), MOMENTS)
     other = scored.with_columns(rookie_share=pl.lit(0.9))
@@ -144,3 +150,16 @@ def test_the_scale_comes_from_the_training_games_alone() -> None:
     # scored game.
     both = scale.score(pl.concat([scored, other]))
     assert both[0] == scale.score(scored)[0]
+    # The scale's cutoff is the latest of its rows' times and of the fitted tables they read, so a
+    # fold can refuse a scale fitted on rows it could not have had.
+    assert scale.train_cutoff == PREDICTION - timedelta(days=150)
+
+
+def test_parts_carry_the_latest_cutoff_of_the_fitted_tables_they_read() -> None:
+    later = PREDICTION - timedelta(hours=1)
+    refit = LINEUPS.with_columns(
+        train_cutoff=pl.when(pl.col("team") == "TOR")
+        .then(pl.lit(later))
+        .otherwise(pl.col("train_cutoff"))
+    )
+    assert un.parts(tables(lineups=refit), MOMENTS)["train_cutoff"][0] == later

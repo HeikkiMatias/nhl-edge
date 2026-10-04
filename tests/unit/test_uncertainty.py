@@ -1,6 +1,6 @@
 import polars as pl
 import pytest
-from uncertainty_fixtures import GOALIES, MOMENTS, tables
+from uncertainty_fixtures import AS_OF, CUTOFF, GOALIES, MOMENTS, tables
 
 from nhl_edge.game import uncertainty as un
 
@@ -14,6 +14,9 @@ def test_each_part_by_hand() -> None:
     # Of 80 projected 5v5 minutes, 102 (58 NHL games last season and 12 this one, 70 < 82) has
     # 20, 103 (no NHL games) 5, and TOR's replacement slots 10.
     assert row["rookie_share"] == pytest.approx(35 / 80)
+    # The latest row read, and the latest cutoff of the fitted tables read.
+    assert row["observed_utc"] == AS_OF
+    assert row["train_cutoff"] == CUTOFF
 
 
 def test_a_team_without_candidate_goalies_is_fully_in_doubt() -> None:
@@ -38,9 +41,12 @@ def test_u_averages_the_standardized_parts() -> None:
             "goalie_doubt": [0.1, 0.3],
             "availability_doubt": [1.0, 3.0],
             "rookie_share": [0.2, 0.2],
+            "observed_utc": [AS_OF, AS_OF],
+            "train_cutoff": [CUTOFF, CUTOFF],
         }
     )
     scale = un.fit_scale(training)
+    assert scale.train_cutoff == AS_OF
     # A part that never varies gets a spread of 1, so it adds nothing beyond its mean.
     assert scale.sds[2] == 1.0
     assert scale.games == 2

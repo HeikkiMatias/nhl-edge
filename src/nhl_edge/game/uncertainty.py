@@ -19,6 +19,7 @@ weights are equal, and nothing is tuned.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 
 import numpy as np
 import polars as pl
@@ -74,12 +75,14 @@ def earlier_games(skaters: pl.DataFrame, tables: Tables) -> pl.DataFrame:
     ).unique()
     lines = tables.player_league_seasons.filter(
         pl.col("league") == NHL, pl.col("game_type") == REGULAR_SEASON
-    ).select("player_id", line_season="season", played=pl.col("games_played").fill_null(0))
-    lines_utc = tables.player_league_seasons.filter(
-        pl.col("league") == NHL, pl.col("game_type") == REGULAR_SEASON
-    ).select("player_id", line_season="season", line_utc="observed_utc")
+    ).select(
+        "player_id",
+        line_season="season",
+        played=pl.col("games_played").fill_null(0),
+        line_utc="observed_utc",
+    )
     career = (
-        keys.join(lines.join(lines_utc, on=["player_id", "line_season"]), on="player_id")
+        keys.join(lines, on="player_id")
         .filter(
             pl.col("line_season") < pl.col("season"),
             pl.col("line_utc") < pl.col("prediction_utc"),
@@ -125,17 +128,34 @@ def earlier_games(skaters: pl.DataFrame, tables: Tables) -> pl.DataFrame:
 
 def parts(tables: Tables, moments: pl.DataFrame) -> pl.DataFrame:
     """u's three parts for each game of moments (game_id, prediction_utc), from rows known before
-    its prediction time, with when the latest row read became known (observed_utc). A game whose
-    lineups were not known by then has no row."""
+    its prediction time, with when the latest row read became known (observed_utc) and the latest
+    train_cutoff of the fitted tables read (goalie_starts, lineups, lineup_replacements), which a
+    caller checks against its fold start. A game whose lineups were not known by then has no
+    row."""
     sides = _sides(tables.games, moments)
     goalies = (
-        _known(tables.goalie_starts.select("game_id", "team", "p_start", "observed_utc"), sides)
+        _known(
+            tables.goalie_starts.select(
+                "game_id", "team", "p_start", "train_cutoff", "observed_utc"
+            ),
+            sides,
+        )
         .group_by("game_id", "team")
-        .agg(top=pl.col("p_start").max(), goalies_utc=pl.col("observed_utc").max())
+        .agg(
+            top=pl.col("p_start").max(),
+            goalies_utc=pl.col("observed_utc").max(),
+            goalies_cutoff=pl.col("train_cutoff").max(),
+        )
     )
     skaters = _known(
         tables.lineups.filter(pl.col("role").is_in(SKATERS)).select(
-            "game_id", "team", "player_id", "p_available", "exp_5v5", "observed_utc"
+            "game_id",
+            "team",
+            "player_id",
+            "p_available",
+            "exp_5v5",
+            "train_cutoff",
+            "observed_utc",
         ),
         sides,
     )
@@ -148,14 +168,22 @@ def parts(tables: Tables, moments: pl.DataFrame) -> pl.DataFrame:
         minutes=minutes.sum(),
         rookie_minutes=(minutes * rookie).sum(),
         lineups_utc=pl.col("observed_utc").max(),
+        lineups_cutoff=pl.col("train_cutoff").max(),
         games_utc=pl.col("games_utc").max(),
     )
     spare = (
         _known(
-            tables.lineup_replacements.select("game_id", "team", "exp_5v5", "observed_utc"), sides
+            tables.lineup_replacements.select(
+                "game_id", "team", "exp_5v5", "train_cutoff", "observed_utc"
+            ),
+            sides,
         )
         .group_by("game_id", "team")
-        .agg(spare=pl.col("exp_5v5").sum(), spare_utc=pl.col("observed_utc").max())
+        .agg(
+            spare=pl.col("exp_5v5").sum(),
+            spare_utc=pl.col("observed_utc").max(),
+            spare_cutoff=pl.col("train_cutoff").max(),
+        )
     )
     per_team = (
         sides.join(teams, on=["game_id", "team"], how="left")
@@ -164,6 +192,7 @@ def parts(tables: Tables, moments: pl.DataFrame) -> pl.DataFrame:
         .with_columns(
             pl.col("surprises", "minutes", "rookie_minutes", "spare").fill_null(0.0),
             known=pl.max_horizontal("lineups_utc", "spare_utc", "goalies_utc", "games_utc"),
+            cutoff=pl.max_horizontal("lineups_cutoff", "spare_cutoff", "goalies_cutoff"),
             has_lineup=pl.col("lineups_utc").is_not_null() | pl.col("spare_utc").is_not_null(),
         )
     )
@@ -176,6 +205,7 @@ def parts(tables: Tables, moments: pl.DataFrame) -> pl.DataFrame:
             total=(pl.col("minutes") + pl.col("spare")).sum(),
             teams=pl.col("has_lineup").sum(),
             observed_utc=pl.col("known").max(),
+            train_cutoff=pl.col("cutoff").max(),
         )
         # Both teams need a projected lineup known by the prediction time.
         .filter(pl.col("teams") == 2, pl.col("total") > 0)
@@ -184,6 +214,7 @@ def parts(tables: Tables, moments: pl.DataFrame) -> pl.DataFrame:
             "goalie_doubt",
             "availability_doubt",
             rookie_share=pl.col("unknown") / pl.col("total"),
+            train_cutoff=pl.col("train_cutoff").cast(UTC),
             observed_utc=pl.col("observed_utc").cast(UTC),
         )
         .sort("game_id")
@@ -198,6 +229,7 @@ class Scale:
     means: tuple[float, ...]
     sds: tuple[float, ...]
     games: int
+    train_cutoff: datetime
 
     def score(self, frame: pl.DataFrame) -> pl.Series:
         """u for each row of frame (PARTS): the average of the standardized parts."""
@@ -207,16 +239,21 @@ class Scale:
 
 
 def fit_scale(training: pl.DataFrame) -> Scale:
-    """The Scale of training's rows (PARTS). A part that never varies gets a spread of 1, so it
-    adds nothing to u."""
+    """The Scale of training's rows (PARTS, observed_utc, train_cutoff). Its train_cutoff is the
+    latest time any row behind them became known, or any fitted table they read was cut off, so
+    a fold can refuse a Scale it could not have had. A part that never varies gets a spread of
+    1, so it adds nothing to u."""
     if training.is_empty():
         raise ValueError("no training games to standardize u on")
+    cutoff = training.select(pl.max_horizontal("observed_utc", "train_cutoff").max()).item()
+    assert isinstance(cutoff, datetime)
     x = training.select(PARTS).to_numpy()
     sds = x.std(axis=0)
     return Scale(
         means=tuple(float(m) for m in x.mean(axis=0)),
         sds=tuple(float(s) if s > 0 else 1.0 for s in sds),
         games=training.height,
+        train_cutoff=cutoff,
     )
 
 
