@@ -48,8 +48,12 @@ def test_valuing_against_the_close_never_moves_a_bet() -> None:
             "season": pl.Int32,
         },
     )
-    valued = e3.closing_value(settled, odds)
-    assert_frame_equal(valued.select(settled.columns), settled)
+    without = settled.with_columns(game_id=pl.lit(2, dtype=pl.Int64))
+    both = pl.concat([settled, without])
+    valued = e3.closing_value(both, odds)
+    # Every bet stays, the one without a close with no CLV.
+    assert_frame_equal(valued.select(both.columns), both)
+    assert valued["clv"].is_null().to_list() == [False, True]
 
 
 def test_the_attribution_never_reads_the_result() -> None:

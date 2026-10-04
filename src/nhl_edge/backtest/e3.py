@@ -40,17 +40,20 @@ PARTS = ("market", "skaters", "goalies", "home_ice", "schedule", "intercept")
 
 
 def closing_value(settled: pl.DataFrame, sbr_odds: pl.DataFrame) -> pl.DataFrame:
-    """The ledger's bets that have an SBR close, with the fair closing probability of their side
-    (p_close) and their CLV."""
+    """The ledger's bets with the fair closing probability of their side (p_close) and their CLV,
+    both null for a bet without an SBR close."""
     closes = market_prices(sbr_odds, Experiment.E1).select(
         "game_id", close_home="home_price", close_away="away_price"
     )
-    priced = settled.join(closes, on="game_id")
-    if priced.is_empty():
-        return priced.with_columns(p_close=pl.lit(None, pl.Float64), clv=pl.lit(None, pl.Float64))
-    fair = fair_probabilities(priced.select("close_home", "close_away").to_numpy())[:, 0]
+    # A left join: a bet without a close stays in the ledger, with no CLV.
+    priced = settled.join(closes, on="game_id", how="left")
+    known = priced["close_home"].is_not_null().to_numpy()
+    fair = np.full(priced.height, np.nan)
+    if known.any():
+        pair = priced.select("close_home", "close_away").to_numpy()[known]
+        fair[known] = fair_probabilities(pair)[:, 0]
     return (
-        priced.with_columns(p_close_home=pl.Series(fair, dtype=pl.Float64))
+        priced.with_columns(p_close_home=pl.Series(fair, dtype=pl.Float64).fill_nan(None))
         .with_columns(
             p_close=pl.when(pl.col("side") == HOME)
             .then(pl.col("p_close_home"))
@@ -125,9 +128,9 @@ def attribution(
         model_weight = pl.lit(b_x) + pl.lit(b_u) * pl.col("u")
         sign = pl.when(pl.col("side") == HOME).then(1.0).otherwise(-1.0)
         parts = (
-            rows.join(terms, on="game_id")
-            .join(skaters, on="game_id")
-            .join(p_market, on="game_id")
+            rows.join(terms, on="game_id", how="left")
+            .join(skaters, on="game_id", how="left")
+            .join(p_market, on="game_id", how="left")
             .with_columns(
                 part_market=pl.lit(a) + pl.lit(b_m - 1) * pl.col("logit_mkt"),
                 part_skaters=model_weight * weight * (pl.col("skater_delta") - mean) / scale,
@@ -146,7 +149,10 @@ def attribution(
         return bets.with_columns(driver=pl.lit(None, pl.String))
     out = pl.concat(frames, how="diagonal_relaxed")
     biggest = pl.concat_list([pl.col(f"part_{p}") for p in PARTS]).list.arg_max()
-    return out.with_columns(driver=pl.lit(list(PARTS)).list.get(biggest))
+    found = pl.all_horizontal(*(pl.col(f"part_{p}").is_not_null() for p in PARTS))
+    return out.with_columns(
+        driver=pl.when(found).then(pl.lit(list(PARTS)).list.get(biggest)).otherwise(None)
+    )
 
 
 def market_inputs(every: pl.DataFrame, scales: dict[int, Any], experiment: str) -> pl.DataFrame:
@@ -167,6 +173,9 @@ def market_inputs(every: pl.DataFrame, scales: dict[int, Any], experiment: str) 
 def report(valued: pl.DataFrame, groups: pl.DataFrame) -> dict[str, Any]:
     """E3 pooled and per season, by attribution group (different favourites from the market, a
     season's first 28 days) and by driver."""
+    # Bets without a close have no CLV, and are counted apart.
+    unvalued = valued.filter(pl.col("clv").is_null()).height
+    valued = valued.filter(pl.col("clv").is_not_null())
     flagged = valued.join(groups, on="game_id", how="left")
     by_group = {
         "different_favourites": flagged.filter(pl.col("different_favourites")),
@@ -177,7 +186,9 @@ def report(valued: pl.DataFrame, groups: pl.DataFrame) -> dict[str, Any]:
     drivers = (
         {
             str(driver): _summary(rows)
-            for (driver,), rows in valued.sort("driver").group_by("driver", maintain_order=True)
+            for (driver,), rows in valued.filter(pl.col("driver").is_not_null())
+            .sort("driver")
+            .group_by("driver", maintain_order=True)
         }
         if "driver" in valued.columns
         else {}
@@ -185,6 +196,7 @@ def report(valued: pl.DataFrame, groups: pl.DataFrame) -> dict[str, Any]:
     return {
         "closing_proxy": "SBR's close, de-vigged multiplicatively: not Pinnacle's, and from a "
         "lower-margin book than the opener from 2018-19 on (#65), which pushes CLV down",
+        "bets_without_a_close": unvalued,
         "pooled": _summary(valued),
         "per_season": {
             str(season): _summary(rows)

@@ -45,11 +45,14 @@ def test_clv_is_the_price_taken_times_the_fair_closing_probability() -> None:
     )
     odds = pl.concat([sbr(1, 1.90, 2.00), sbr(2, 1.90, 2.00)])
     valued = e3.closing_value(settled, odds)
-    # Game 3 has no close, so no CLV.
-    assert valued["game_id"].to_list() == [1, 2]
+    # Game 3 has no close, so no CLV, but it stays in the ledger.
+    assert valued["game_id"].to_list() == [1, 2, 3]
+    assert valued["clv"][2] is None
     p_home = (1 / 1.90) / (1 / 1.90 + 1 / 2.00)
-    assert valued["p_close"].to_list() == pytest.approx([p_home, 1 - p_home])
-    assert valued["clv"].to_list() == pytest.approx([2.10 * p_home - 1, 2.10 * (1 - p_home) - 1])
+    assert valued["p_close"].to_list()[:2] == pytest.approx([p_home, 1 - p_home])
+    assert valued["clv"].to_list()[:2] == pytest.approx(
+        [2.10 * p_home - 1, 2.10 * (1 - p_home) - 1]
+    )
 
 
 def test_the_report_gives_clv_per_bet_and_by_stake_with_intervals() -> None:
