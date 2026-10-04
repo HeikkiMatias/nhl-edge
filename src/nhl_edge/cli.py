@@ -381,7 +381,7 @@ def backtest(
         blend_training_seasons,
         season_role,
     )
-    from nhl_edge.game import b2, b3
+    from nhl_edge.game import b2, b3, uncertainty
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.ingest.sbr import SEASON_PAGES
@@ -510,6 +510,32 @@ def backtest(
     report["training_folds"] = walk_forward.training_folds(
         every_coverage, every_b2_fit, every_b3_fit, training_only
     )
+    # The uncertainty score's parts (#139, ADR 0026) for every game B3 predicted, at each
+    # experiment's prediction time: the blend's input, reported here as inputs only.
+    u_tables = uncertainty.Tables(
+        games,
+        tables.goalie_starts,
+        b3_tables.lineups,
+        b3_tables.lineup_replacements,
+        tables.actual_lineups,
+        lake.read("player_league_seasons"),
+    )
+    u_parts = {
+        experiment: uncertainty.parts(
+            u_tables,
+            every_prediction.filter(experiment=experiment, model="B3").select(
+                "game_id", "prediction_utc"
+            ),
+        ).join(games.select("game_id", "season"), on="game_id")
+        for experiment in sorted(every_coverage)
+    }
+    report["uncertainty"] = {
+        experiment: {
+            str(season): uncertainty.spread(rows)
+            for (season,), rows in frame.sort("season").group_by("season", maintain_order=True)
+        }
+        for experiment, frame in u_parts.items()
+    }
     report = b2_report.add(
         report,
         predictions,

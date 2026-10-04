@@ -86,6 +86,8 @@ def feature_tables(games: pl.DataFrame, seed: int = 0) -> b2.Tables:
                         "season": row["season"],
                         "game_date": row["game_date"],
                         "p_start": p,
+                        # Fitted per season on earlier seasons' results (ADR 0012).
+                        "train_cutoff": datetime(row["season"] // 10_000, 4, 1, tzinfo=UTC),
                         "observed_utc": moment,
                     }
                 )
@@ -117,7 +119,7 @@ def feature_tables(games: pl.DataFrame, seed: int = 0) -> b2.Tables:
             pl.col("as_of_utc", "observed_utc").cast(utc),
         ),
         goalie_starts=pl.DataFrame(starts).with_columns(
-            pl.col("season").cast(pl.Int32), pl.col("observed_utc").cast(utc)
+            pl.col("season").cast(pl.Int32), pl.col("train_cutoff", "observed_utc").cast(utc)
         ),
         goalie_effects=pl.DataFrame(effects).with_columns(
             pl.col("as_of_utc", "observed_utc").cast(utc)
