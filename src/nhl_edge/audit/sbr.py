@@ -7,9 +7,9 @@ listings name as a playoff game is not a problem: match_season tells a playoff g
 after the regular season's last date, and in 2020-21 the playoffs began before it.
 
 The price checks read sbr_odds and de-vig only through market/devig.py, with its default method,
-multiplicative (ADR 0008). They leave out 2022-23, the market validation season, which phase 1
-does not inspect (the owner's decision on #10, 2026-09-29). Its join is still reported, since
-that counts rows and reads no price.
+multiplicative (ADR 0008). They read prices only, never a result or a model. Phase 1 left out
+2022-23, the market validation season (the owner's decision on #10, 2026-09-29); phase 4 opens
+its prices to these checks before any of its games is scored (#66).
 """
 
 from collections.abc import Collection, Iterable, Mapping
@@ -27,9 +27,16 @@ from nhl_edge.ingest.sbr import SOURCE, SeasonReport, match_season, parse_season
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.market.devig import OVERROUND_TOLERANCE, fair_probabilities, overround
 
-# The seasons whose prices the audit may read. A market validation season counts as development
-# once inspected (backtest/seasons.py), and later seasons have no SBR prices.
-PRICE_ROLES = frozenset({SeasonRole.TRAINING, SeasonRole.TRAINING_FLAGGED, SeasonRole.DEVELOPMENT})
+# The seasons whose prices the audit may read. Phase 4 opens the market validation season's prices
+# to the checks before its games are scored (#66); later seasons have no SBR prices.
+PRICE_ROLES = frozenset(
+    {
+        SeasonRole.TRAINING,
+        SeasonRole.TRAINING_FLAGGED,
+        SeasonRole.DEVELOPMENT,
+        SeasonRole.MARKET_VALIDATION,
+    }
+)
 # What makes one sbr_odds row a price: the stored rows must match the page's on these.
 PRICE_KEY = ["game_id", "market", "side", "quote", "line", "price_american"]
 # A move of the de-vigged home probability from open to close larger than this is reviewed by
