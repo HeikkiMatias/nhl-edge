@@ -16,7 +16,7 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 | --- | --- | --- |
 | #9 and #42, the committed audit report | Two weeks of goalie polls from 2026-09-29: about **2026-10-13**. | First bring this machine's lake up to R2 with the commands `nhl status` prints. The report reads only the local lake, and it joins the polls to 2026-27's `games` and `actual_lineups`. Then run `nhl audit report`, commit it to `reports/audit/`, and review it as the comment on #9 says: every problem gets an issue in a milestone, and a dropped season or source gets an ADR. #42 closes with the report's answer on the NHL's starter flag (on the first night it was set for no team, while Daily Faceoff listed most starters as Confirmed). #9 closes with the reviewed report. |
 | #30, post-game corrections | Two weeks of rechecked 2026-27 games: the games of 2026-09-29 to about 10-12, each rechecked 7 days later, so about **2026-10-22**. The nightly ingest runs `nhl recheck --recent 3 --r2`. | Run `nhl audit report` and review its corrections section on #30. If corrections change more than scorer credit on more than a few games a season, reopen ADR 0004 with the owner. Then close #30. |
-| #79, gate 1 (draft PR #93, branch `phase-2/gate-1`) | #30 is reviewed. | **ADR and checks:** write ADR 0014 with the owner, from the outline in the comment on #79. If #30's corrections change any table B2 or B3 reads (`shots`, `shifts` or `actual_lineups`, the last feeding the goalie-start model and the starters both train on), rerun `/leakage-check` and `/run-backtest`. **Docs:** update the model card's gate 1 entry. **Merging:** merge main into the branch, taking main's `docs/handover.md` and model card over the branch's versions. Mark #93 ready (Codex reviews it then), triage and merge. Then close #11, phase 2's summary issue. |
+| #79, gate 1 (draft PR #93, branch `phase-2/gate-1`) | #30 is reviewed. | **ADR and checks:** write ADR 0014 with the owner, from the outline in the comment on #79. If #30's corrections change any table its report compares, rerun `/leakage-check` and `/run-backtest`. B2 or B3 reads every one of those tables through its features: `shots`, `shifts`, `actual_lineups`, `shift_coverage`, `strength_time`, `penalties` and `faceoffs`. Penalties feed B3's expected power plays, and faceoffs its stints' zone starts. **Merging:** first merge main into the branch, taking main's `docs/handover.md` and model card over the branch's versions. **Docs:** then write the model card's gate 1 entry on top of main's version. Mark #93 ready (Codex reviews it then), triage and merge. Then close #11, phase 2's summary issue. |
 
 ### Gate 1 as it stands
 
@@ -80,7 +80,7 @@ Phase 4 builds the market blend, bet selection and the full backtest, and ends a
      - buy the historical odds (about $90, a paid endpoint, so only with the owner's word);
      - drop 2022-23 as a market test and leave it to live 2026-27.
 
-     Before any of its games is scored, run the audit's SBR price checks on the 342 games.
+     Before any of its games is scored, run the audit's SBR price checks on the 342 games. Today the audit skips them: `price_seasons()` in `audit/sbr.py` reads only the training and development roles, so `nhl audit report` gives 2022-23's join counts alone. Opening its price checks is part of #66's task.
    - **What the blend trains on.** Hard rule 6 allows only out-of-sample predictions from earlier folds, so the 2018-19 fold has no earlier fold to learn from (#13, finding 7). The plan must say which earlier predictions the blend may use, and which development seasons it is scored on.
    - **Which models go in.** B3 is the model the blend uses (ADR 0024), and B2 stays as B3's reference (hard rule 3). B2 and B3 are under-confident on the development seasons, and B3's calibration moves between seasons (#13, finding 1, and gate 2's notes). The plan must also say whether the blend's own weights correct that, or a per-fold recalibration fitted only on earlier folds. Never retune B2 or B3 on the development seasons.
    - **The uncertainty score u** (§5): an unconfirmed goalie, availability doubts and the share of rookie ice time. `goalie_starts.p_start`, `lineups.p_available` and `lineup_replacements` already hold the inputs.
@@ -99,7 +99,7 @@ Phase 4 builds the market blend, bet selection and the full backtest, and ends a
 
 - **Ask the owner first** before any ADR, any won't-fix on a P0, or anything outside an issue's scope. Explain choices in plain language, without jargon.
 - **One PR per issue,** never combined.
-- **Tuning (ADR 0011):** each component is tuned once on the training seasons and frozen. That covers team strength, goalie effects, schedule terms, B2's L2 penalty, RAPM, the penalty model and finishing. Near-ties go to the steadier setting. The tuning runs' losses are not walk-forward evidence. Codex's P0s on #88 and #92 are won't-fix, by the owner's decision.
+- **Tuning (ADR 0011):** each component is tuned once on the training seasons and frozen. That covers team strength, goalie effects, schedule terms, B2's L2 penalty and RAPM. The penalty model and finishing tune nothing (ADR 0021, 0022): they reuse RAPM's and the goalie effect's frozen settings, and they measure their pulls and league figures from earlier data each season. Near-ties go to the steadier setting. The tuning runs' losses are not walk-forward evidence. Codex's P0s on #88 and #92 are won't-fix, by the owner's decision.
 - **B2 (ADR 0013) and B3 (ADR 0023):**
   - Both train on the starters who played and predict by mixing over the goalie-start probabilities. B3 trains on the projected skaters, not the ones who dressed. Codex's P0s on #90, #92 and #133 are won't-fix, by the owner's decision.
   - B3 reuses B2's L2 of 100.
@@ -185,7 +185,7 @@ Phase 4 builds the market blend, bet selection and the full backtest, and ends a
 - **Codex:**
   - It answers as a review with findings, a 👍 reaction, or a comment saying it found no major issues. Check all three.
   - Reply to every finding with "Fixed in <sha>", "Follow-up #n" or "Won't fix: <reason>". A won't-fix on a P0 needs the owner first.
-- **Reference upkeep in 2026-27:** at a coaching change, end the old stint in `coaches.csv` and add the new one. Add a new venue name to `venues.csv`. `nhl audit reference` flags both.
+- **Reference upkeep in 2026-27:** at a coaching change, end the old stint in `coaches.csv` and add the new one. Add a new venue name to `venues.csv`, and the building to `arenas.csv` if it is new (docs/data-sources.md). `nhl audit reference` flags both.
 - **#67 (P5):** `EXPECTED_GAMES` has no 2026-27 entry. It matters from April 2027.
 
 ## Continuing from a terminal
@@ -199,6 +199,6 @@ Phase 4 builds the market blend, bet selection and the full backtest, and ends a
    5. for the live season, the ingest window and replays that `uv run nhl status` prints
 
    None of them calls a paid endpoint.
-3. `uv run nhl backtest` reruns the backtest, and `uv run nhl backtest --hockey-only` the hockey validation. Commit code first: the run's version ends in `-dirty` when `src/`, `pyproject.toml` or `uv.lock` has uncommitted changes. Never include 2025-26 or live games unless the owner says so.
+3. `uv run nhl backtest` reruns the backtest, and `uv run nhl backtest --hockey-only --seasons 20232024,20242025` the hockey validation. Without `--seasons`, the hockey-only mode scores the development seasons. Commit code first: the run's version ends in `-dirty` when `src/`, `pyproject.toml` or `uv.lock` has uncommitted changes. Never include 2025-26 or live games unless the owner says so.
 4. **Tuning:** `nhl team-strength`, `nhl goalie-effect`, `nhl schedule-terms` and `nhl rapm` take `--tune`. They and `nhl tune-b2` rerun their grids on the training seasons only, and log them to `reports/tuning/`. Frozen settings change only through a new ADR.
 5. CLAUDE.md's workflow (a branch per issue, the Codex review budget, merging when ready) applies as before.
