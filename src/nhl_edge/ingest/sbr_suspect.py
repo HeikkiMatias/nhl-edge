@@ -3,7 +3,8 @@ on. Whether E2 excludes, fixes or keeps these openers is the owner's call; until
 every game.
 
 A game is listed when its moneyline meets at least one criterion, over the seasons whose prices
-phase 1 reads (audit.sbr.price_seasons, so 2022-23 is not inspected):
+the audit reads (audit.sbr.price_seasons): every SBR season, 2022-23's 342 games included since
+phase 4 opened them (#66).
 - big_move: the de-vigged home probability moves more than BIG_MOVE (15 points) from open to
   close, while the 90th percentile move is 4 to 5 points (the #9 audit).
 - extreme_open: the opener's home probability is outside EXTREME_OPEN (0.15 to 0.85). No close of
@@ -41,7 +42,7 @@ from nhl_edge.lake.tables import Lake
 from nhl_edge.reference import REFERENCE_DIR
 
 SUSPECT_FILE = REFERENCE_DIR / "sbr_suspect_openers.csv"
-# The seasons the list covers: every SBR season whose prices phase 1 reads.
+# The seasons the list covers: every SBR season whose prices the audit reads.
 SEASONS = tuple(price_seasons(SBR_SEASONS))
 EXTREME_OPEN = (0.15, 0.85)
 SWAP_TOLERANCE = 0.05
