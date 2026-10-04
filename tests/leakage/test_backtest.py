@@ -15,6 +15,12 @@ from test_sbr import NEW, NEW_SCHEDULE, results_empty
 
 from nhl_edge.backtest import book_era, walk_forward
 from nhl_edge.backtest.market import PREDICTION_LAG, Experiment, market_prices
+from nhl_edge.backtest.seasons import (
+    FIRST_OUT_OF_SAMPLE_SEASON,
+    OPEN_ROLES,
+    blend_training_seasons,
+    season_role,
+)
 from nhl_edge.backtest.walk_forward import run
 from nhl_edge.ingest.sbr import match_season, parse_season
 from nhl_edge.lake.schemas import Games, SbrOdds, dtypes
@@ -345,3 +351,53 @@ def test_the_book_era_diagnostic_never_reads_a_held_out_season() -> None:
         pl.concat([odds, held_odds]), pl.concat([games, held_games]), draws=50
     )
     assert with_held == book_era.diagnostic(odds, games, draws=50)
+
+
+def test_the_blend_learns_only_from_out_of_sample_folds_before_each_tested_season() -> None:
+    # #138: the blend's training folds start at the first fold after the tuning cutoff, end
+    # before the latest tested season, and are open seasons only.
+    for tested in ([20182019], [20182019, 20212022], [20212022], [20222023]):
+        learned = blend_training_seasons(tested)
+        assert all(FIRST_OUT_OF_SAMPLE_SEASON <= s < max(tested) for s in learned)
+        assert all(season_role(s) in OPEN_ROLES for s in learned)
+    assert blend_training_seasons([20182019]) == []
+    assert blend_training_seasons([20182019, 20212022]) == [20182019, 20192020, 20202021]
+    # 2022-23's one-time run (#145) learns from every development and flagged season before it.
+    assert blend_training_seasons([20222023]) == [20182019, 20192020, 20202021, 20212022]
+
+
+def test_the_first_out_of_sample_fold_is_the_first_after_the_tuning_cutoff() -> None:
+    # Every fold before 2018-19 starts before the tuning cutoff, so B2 and B3 refuse it, and the
+    # tuned seasons' predictions would be in-sample for their settings (ADR 0011).
+    from nhl_edge.game import b3
+
+    assert datetime(2017, 10, 4, tzinfo=UTC) < b3.TUNED_CUTOFF < datetime(2018, 10, 3, tzinfo=UTC)
+    assert FIRST_OUT_OF_SAMPLE_SEASON == 20182019
+
+
+def test_training_only_folds_stay_out_of_every_test_metric() -> None:
+    odds, games = market_history.seasons([20182019, 20192020, 20202021, 20212022], games=40)
+    predictions, coverage, fits = run(odds, games, [20192020, 20202021, 20212022])
+    kept, kept_coverage, kept_fits = walk_forward.tests_only(
+        predictions, coverage, fits, [20212022]
+    )
+    assert set(kept["season"].unique()) == {20212022}
+    assert all(set(by) == {20212022} for by in kept_coverage.values())
+    assert all(set(by) == {20212022} for by in kept_fits.values())
+    # The tested fold is the same whether or not the training folds ran beside it.
+    alone, _, _ = run(odds, games, [20212022])
+    assert kept.sort("experiment", "model", "method", "game_id").equals(
+        alone.sort("experiment", "model", "method", "game_id")
+    )
+    # The training folds report counts only, never a metric.
+    counts = walk_forward.training_folds(coverage, {}, {}, [20192020, 20202021])
+    assert counts["seasons"] == [20192020, 20202021]
+    for by_season in counts["folds"].values():
+        for season_counts in by_season.values():
+            assert set(season_counts) == {
+                "scored",
+                "b2_scored",
+                "b3_scored",
+                "b2_train_cutoff",
+                "b3_train_cutoff",
+            }

@@ -1,5 +1,6 @@
 """Season roles from docs/plan.md section 5: which seasons may influence design decisions."""
 
+from collections.abc import Iterable
 from enum import StrEnum
 
 
@@ -59,6 +60,21 @@ TRAINING_SEASONS: tuple[int, ...] = tuple(
 DEVELOPMENT_SEASONS: tuple[int, ...] = tuple(
     season for season, role in SEASON_ROLES.items() if role is SeasonRole.DEVELOPMENT
 )
+
+
+# The first season with out-of-sample B2 and B3 predictions: its fold is the first to start after
+# the tuning cutoff (ADR 0011, 2018-04-09), and every earlier fold is refused. The market blend
+# learns only from such predictions of earlier folds (hard rule 6, #138).
+FIRST_OUT_OF_SAMPLE_SEASON = 20182019
+
+
+def blend_training_seasons(tested: Iterable[int]) -> list[int]:
+    """The seasons whose out-of-sample predictions the blends of the tested seasons learn from:
+    the open seasons from FIRST_OUT_OF_SAMPLE_SEASON up to the season before the latest tested
+    one (the whole-season folds of the phase 4 plan, #13). Each tested season's blend reads only
+    those before it. The flagged seasons are training seasons, so they teach the blend too."""
+    latest = max(tested, default=FIRST_OUT_OF_SAMPLE_SEASON)
+    return [season for season in OPEN_SEASONS if FIRST_OUT_OF_SAMPLE_SEASON <= season < latest]
 
 
 def season_role(season: int) -> SeasonRole:

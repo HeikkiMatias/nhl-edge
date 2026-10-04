@@ -15,7 +15,7 @@ are read to score a prediction and, for games before the fold, to fit B1.
 
 from collections.abc import Callable, Iterable
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import polars as pl
@@ -322,6 +322,52 @@ def run(
         for method in methods:
             frames.append(_scored(b0(prices, method), experiment, "B0", method))
     return pl.concat(frames), coverage, fits
+
+
+def tests_only(
+    predictions: pl.DataFrame, coverage: Coverage, fits: Fits, tested: Iterable[int]
+) -> tuple[pl.DataFrame, Coverage, Fits]:
+    """A run's tested seasons alone. A run also predicts the folds whose out-of-sample predictions
+    only teach the market blend (seasons.blend_training_seasons, #138), and those stay out of
+    every test metric: the report gives them counts only (training_folds)."""
+    keep = set(tested)
+    return (
+        predictions.filter(pl.col("season").is_in(keep)),
+        {name: {s: c for s, c in by.items() if s in keep} for name, by in coverage.items()},
+        {name: {s: f for s, f in by.items() if s in keep} for name, by in fits.items()},
+    )
+
+
+def training_folds(
+    coverage: Coverage,
+    b2_fits: B2Fits,
+    b3_fits: B3Fits,
+    seasons: Iterable[int],
+) -> dict[str, Any]:
+    """Counts for the folds the market blend learns from (#138), per experiment and season: the
+    games B2 and B3 scored and trained on, and each fit's train_cutoff, which lies before the
+    fold's first prediction. No metric is reported for them: they are training seasons."""
+    return {
+        "seasons": sorted(seasons),
+        "folds": {
+            str(name): {
+                str(season): {
+                    "scored": by[season]["scored"],
+                    "b2_scored": by[season].get("b2_scored"),
+                    "b3_scored": by[season].get("b3_scored"),
+                    "b2_train_cutoff": b2_fits[name][season].train_cutoff.isoformat()
+                    if season in b2_fits.get(name, {})
+                    else None,
+                    "b3_train_cutoff": b3_fits[name][season].train_cutoff.isoformat()
+                    if season in b3_fits.get(name, {})
+                    else None,
+                }
+                for season in sorted(seasons)
+                if season in by
+            }
+            for name, by in sorted(coverage.items())
+        },
+    }
 
 
 HOCKEY = "hockey"

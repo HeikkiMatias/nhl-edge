@@ -353,7 +353,9 @@ def backtest(
     team and goalie model (ADR 0013), and B3, the player layer (ADR 0023), each with its
     calibration, its gaps to B1 above 8 points and its lineup quality, and B3 against B2 overall
     and on gate 2's subsets. E2 refuses implausible openers (ADR 0007), and E2 on every opener is
-    reported beside it, as is the diagnostic of SBR's change of closing book (#65). With
+    reported beside it, as is the diagnostic of SBR's change of closing book (#65). The folds the
+    market blend learns from (2018-19 up to the season before the latest tested one, #138) are
+    predicted too; a fold not tested gets counts only, under training_folds. With
     --hockey-only, B2 and B3 alone, at the as-of time on outcomes, to
     <out>/hockey-<version>.json, logged in <out>/runs.csv."""
     from datetime import UTC
@@ -376,6 +378,7 @@ def backtest(
         OPEN_ROLES,
         OPEN_SEASONS,
         SeasonRole,
+        blend_training_seasons,
         season_role,
     )
     from nhl_edge.game import b2, b3
@@ -437,7 +440,11 @@ def backtest(
         raise typer.BadParameter(
             f"{first} have no earlier SBR season to fit B1 on", param_hint="--seasons"
         )
-    needed = set(wanted) | {s for s in history if s < max(wanted)}
+    # The market blend learns from the out-of-sample predictions of the folds before each tested
+    # season (#138), so those folds are predicted too, and kept out of the test metrics.
+    training_only = [s for s in blend_training_seasons(wanted) if s not in wanted]
+    folds = sorted(set(wanted) | set(training_only))
+    needed = set(folds) | {s for s in history if s < max(folds)}
     sbr_odds = lake.read("sbr_odds").filter(pl.col("season").is_in(needed))
     missing = sorted(needed - set(sbr_odds["season"].unique().to_list()))
     if missing:
@@ -477,23 +484,31 @@ def backtest(
             typer.echo(problem, err=True)
         typer.echo("run the feature commands for those seasons", err=True)
         raise typer.Exit(code=1)
-    b2_fits: dict[str, dict[int, b2.B2Model]] = {}
-    b3_fits: dict[str, dict[int, b3.B3Model]] = {}
+    every_b2_fit: dict[str, dict[int, b2.B2Model]] = {}
+    every_b3_fit: dict[str, dict[int, b3.B3Model]] = {}
     try:
-        predictions, coverage, fits = walk_forward.run(
+        every_prediction, every_coverage, every_fit = walk_forward.run(
             sbr_odds,
             games,
-            wanted,
+            folds,
             b2_tables=tables,
-            b2_fits=b2_fits,
+            b2_fits=every_b2_fit,
             b3_tables=b3_tables,
-            b3_fits=b3_fits,
+            b3_fits=every_b3_fit,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    predictions, coverage, fits = walk_forward.tests_only(
+        every_prediction, every_coverage, every_fit, wanted
+    )
+    b2_fits = {e: {s: f for s, f in by.items() if s in wanted} for e, by in every_b2_fit.items()}
+    b3_fits = {e: {s: f for s, f in by.items() if s in wanted} for e, by in every_b3_fit.items()}
     now = datetime.now(UTC)
     run_version = reports.version("backtest", now)
     report = reports.summary(predictions, coverage, fits, wanted, run_version, now)
+    report["training_folds"] = walk_forward.training_folds(
+        every_coverage, every_b2_fit, every_b3_fit, training_only
+    )
     report = b2_report.add(
         report,
         predictions,
@@ -522,6 +537,12 @@ def backtest(
     b2_report.write_gaps(predictions, games, out)
     b3_report.write_gaps(predictions, games, out)
     typer.echo(f"{path}: {report['version']}")
+    for experiment, folds_by_season in report["training_folds"]["folds"].items():
+        for season, counts in folds_by_season.items():
+            typer.echo(
+                f"  {experiment} {season}, the blend's training fold only: "
+                f"B2 {counts['b2_scored']:,} and B3 {counts['b3_scored']:,} games predicted"
+            )
     parts = [(name, body) for name, body in report["experiments"].items()]
     parts += [(f"E2 {name}", body["E2"]) for name, body in report["sensitivity"].items()]
     for experiment, body in parts:
