@@ -138,6 +138,32 @@ def fold_start(calendar: pl.DataFrame, season: int) -> datetime:
     return first
 
 
+def fold_starts(
+    quotes: pl.DataFrame,
+    games: pl.DataFrame,
+    seasons: Iterable[int],
+    calendar_odds: pl.DataFrame | None = None,
+) -> dict[tuple[str, int], datetime]:
+    """Each experiment's fold start per season, the one start every component of the fold is cut
+    at (B1, B2, B3 and the blend): the season's first start (fold_start, over games and the
+    prices of calendar_odds, quotes by default), or, since E2 predicts at the opener before the
+    start, its first prediction from quotes when that comes earlier."""
+    frames = (games, quotes if calendar_odds is None else calendar_odds)
+    calendar = pl.concat([frame.select("season", "start_utc") for frame in frames])
+    seasons = sorted(set(seasons))
+    first_starts = {season: fold_start(calendar, season) for season in seasons}
+    starts: dict[tuple[str, int], datetime] = {}
+    for experiment in Experiment:
+        quoted = market_prices(quotes.filter(pl.col("season").is_in(seasons)), experiment)
+        for season in seasons:
+            first = quoted.filter(pl.col("season") == season)["prediction_utc"].min()
+            start = first_starts[season]
+            starts[(experiment.value, season)] = (
+                min(start, first) if isinstance(first, datetime) else start
+            )
+    return starts
+
+
 def b1(
     market: pl.DataFrame, start: datetime, season: int
 ) -> tuple[pl.DataFrame, recalibration.Recalibration]:
@@ -218,8 +244,7 @@ def run(
         raise ValueError(f"{held_out} are held out: phase 1 backtests open seasons only (#10)")
     open_odds = sbr_odds.filter(pl.col("season").is_in(OPEN_SEASONS))
     results = outcomes(games.filter(pl.col("season").is_in(OPEN_SEASONS)))
-    calendar = pl.concat([frame.select("season", "start_utc") for frame in (games, sbr_odds)])
-    starts = {season: fold_start(calendar, season) for season in seasons}
+    starts = fold_starts(open_odds, games, seasons, sbr_odds)
     frames = [pl.DataFrame(schema=PREDICTION_SCHEMA)]
     coverage: Coverage = {}
     fits: Fits = {}
@@ -232,14 +257,7 @@ def run(
         quoted = market_prices(open_odds, experiment)
         every = quoted.join(results, on="game_id")
         quoted = quoted.filter(pl.col("season").is_in(seasons))
-        folds = {}
-        for season in seasons:
-            # E2 predicts at the opener, before the start, so its fold starts at its first
-            # prediction when that comes earlier.
-            first = quoted.filter(pl.col("season") == season)["prediction_utc"].min()
-            folds[season] = (
-                min(starts[season], first) if isinstance(first, datetime) else starts[season]
-            )
+        folds = {season: starts[(experiment.value, season)] for season in seasons}
         # E2 refuses the openers outside each fold's bounds, in the fold's test season and in its
         # B1 fit (ADR 0007).
         refusing = experiment is Experiment.E2 and refuse_implausible
