@@ -1,6 +1,6 @@
 # 0024. Gate 2: B3 goes forward, though the one-time 2025-26 test does not show it beating B2
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-03
 
 ## Context
