@@ -77,3 +77,33 @@ def test_each_tested_season_gets_three_blends_on_the_same_games() -> None:
         ids = by_model["game_id"].to_list()
         assert all(i == ids[0] for i in ids)
     assert predictions["log_loss"].is_not_null().all()
+
+
+def test_a_term_that_never_varies_keeps_a_weight_of_zero() -> None:
+    frame = rows([20182019], games=2000)
+    fitted = blend.fit(
+        Kind.MODEL,
+        frame["home_win"].to_numpy(),
+        frame["p_mkt"].to_numpy(),
+        frame["result_utc"].max(),  # type: ignore[arg-type]
+        frame["p_b3"].to_numpy(),
+        np.zeros(frame.height),
+    )
+    assert fitted.named()["b_u"] == 0.0
+    assert np.isnan(fitted.standard_errors[3])
+    assert fitted.named()["b_x"] != 0.0
+
+
+def test_a_term_the_market_already_spans_keeps_a_weight_of_zero() -> None:
+    frame = rows([20182019], games=2000)
+    fitted = blend.fit(
+        Kind.MODEL,
+        frame["home_win"].to_numpy(),
+        frame["p_mkt"].to_numpy(),
+        frame["result_utc"].max(),  # type: ignore[arg-type]
+        frame["p_mkt"].to_numpy(),  # a model that is the market itself
+        np.ones(frame.height),
+    )
+    named = fitted.named()
+    assert named["b_x"] == 0.0 and named["b_u"] == 0.0
+    assert named["b_m"] != 0.0

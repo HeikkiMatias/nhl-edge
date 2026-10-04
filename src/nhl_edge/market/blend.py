@@ -46,6 +46,22 @@ def design(
     return np.column_stack(columns)
 
 
+# A column counts as independent when it adds at least this much to the span of the earlier
+# ones, after each is scaled to unit length.
+RANK_TOLERANCE = 1e-8
+
+
+def independent(x: NDArray[np.float64]) -> list[int]:
+    """The columns of x, in order, that the earlier kept columns don't already span."""
+    scaled = x / np.maximum(np.linalg.norm(x, axis=0), np.finfo(float).tiny)
+    kept = [0]
+    for j in range(1, x.shape[1]):
+        trial = scaled[:, [*kept, j]]
+        if np.linalg.matrix_rank(trial, tol=RANK_TOLERANCE) == len(kept) + 1:
+            kept.append(j)
+    return kept
+
+
 @dataclass(frozen=True)
 class Blend:
     """A fitted blend: its weights, their model-based standard errors, the games it read and
@@ -76,31 +92,39 @@ def fit(
     u: ArrayLike | None = None,
 ) -> Blend:
     """Fit a blend by maximum likelihood (Newton-Raphson) on the training games' full-game
-    results (1 when the home team won, OT and SO included), starting from the market as it is."""
+    results (1 when the home team won, OT and SO included), starting from the market as it is. A
+    term whose column the earlier ones span keeps a weight of 0, with no standard error."""
     x = design(kind, p_mkt, p_model, u)
     y = np.asarray(home_win, dtype=np.float64)
     if y.ndim != 1 or x.shape[0] != y.shape[0]:
         raise ValueError("the blend needs one result per game")
     if len(np.unique(y)) < 2:
         raise ValueError("the blend needs both home wins and home losses to fit")
-    beta = np.zeros(x.shape[1])
-    beta[1] = 1.0
-    hessian = np.eye(x.shape[1])
+    # A column the earlier ones already span, such as u·logit p_model when every game has the
+    # same u, holds its weight at 0 instead of making the fit singular.
+    active = independent(x)
+    fitted = x[:, active]
+    beta = np.zeros(len(active))
+    if 1 in active:
+        beta[active.index(1)] = 1.0  # start from the market as it is
     for _ in range(ITERATIONS):
-        p = sigmoid(x @ beta)
-        hessian = x.T @ (x * (p * (1 - p))[:, None])
-        step = np.linalg.solve(hessian, x.T @ (y - p))
+        p = sigmoid(fitted @ beta)
+        hessian = fitted.T @ (fitted * (p * (1 - p))[:, None])
+        step = np.linalg.solve(hessian, fitted.T @ (y - p))
         beta = beta + step
         if np.max(np.abs(step)) < TOLERANCE:
             break
     else:
         raise ValueError(f"the blend did not converge in {ITERATIONS} iterations")
-    p = sigmoid(x @ beta)
-    hessian = x.T @ (x * (p * (1 - p))[:, None])
-    errors = np.sqrt(np.diag(np.linalg.inv(hessian)))
+    p = sigmoid(fitted @ beta)
+    hessian = fitted.T @ (fitted * (p * (1 - p))[:, None])
+    weights = np.zeros(x.shape[1])
+    errors = np.full(x.shape[1], np.nan)
+    weights[active] = beta
+    errors[active] = np.sqrt(np.diag(np.linalg.inv(hessian)))
     return Blend(
         kind=kind,
-        weights=tuple(float(b) for b in beta),
+        weights=tuple(float(b) for b in weights),
         standard_errors=tuple(float(e) for e in errors),
         games=len(y),
         train_cutoff=train_cutoff,
