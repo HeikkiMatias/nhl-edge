@@ -440,9 +440,10 @@ def backtest(
         raise typer.BadParameter(
             f"{first} have no earlier SBR season to fit B1 on", param_hint="--seasons"
         )
-    # The market blend learns from the out-of-sample predictions of the folds before each tested
-    # season (#138), so those folds are predicted too, and kept out of the test metrics.
-    training_only = [s for s in blend_training_seasons(wanted) if s not in wanted]
+    # Each tested season's market blend learns from the out-of-sample predictions of the folds
+    # before it (#138), so those folds are predicted too, and kept out of the test metrics.
+    learned = {s for season in wanted for s in blend_training_seasons(season)}
+    training_only = sorted(learned - set(wanted))
     folds = sorted(set(wanted) | set(training_only))
     needed = set(folds) | {s for s in history if s < max(folds)}
     sbr_odds = lake.read("sbr_odds").filter(pl.col("season").is_in(needed))

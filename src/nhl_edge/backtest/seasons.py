@@ -1,6 +1,5 @@
 """Season roles from docs/plan.md section 5: which seasons may influence design decisions."""
 
-from collections.abc import Iterable
 from enum import StrEnum
 
 
@@ -68,13 +67,12 @@ DEVELOPMENT_SEASONS: tuple[int, ...] = tuple(
 FIRST_OUT_OF_SAMPLE_SEASON = 20182019
 
 
-def blend_training_seasons(tested: Iterable[int]) -> list[int]:
-    """The seasons whose out-of-sample predictions the blends of the tested seasons learn from:
-    the open seasons from FIRST_OUT_OF_SAMPLE_SEASON up to the season before the latest tested
-    one (the whole-season folds of the phase 4 plan, #13). Each tested season's blend reads only
-    those before it. The flagged seasons are training seasons, so they teach the blend too."""
-    latest = max(tested, default=FIRST_OUT_OF_SAMPLE_SEASON)
-    return [season for season in OPEN_SEASONS if FIRST_OUT_OF_SAMPLE_SEASON <= season < latest]
+def blend_training_seasons(season: int) -> list[int]:
+    """The seasons whose out-of-sample predictions the market blend of season learns from: the
+    open seasons from FIRST_OUT_OF_SAMPLE_SEASON up to the season before it (the whole-season
+    folds of the phase 4 plan, #13). None for the first out-of-sample season, which has no
+    earlier fold. The flagged seasons are training seasons, so they teach the blend too."""
+    return [s for s in OPEN_SEASONS if FIRST_OUT_OF_SAMPLE_SEASON <= s < season]
 
 
 def season_role(season: int) -> SeasonRole:

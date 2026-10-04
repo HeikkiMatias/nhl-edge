@@ -354,16 +354,16 @@ def test_the_book_era_diagnostic_never_reads_a_held_out_season() -> None:
 
 
 def test_the_blend_learns_only_from_out_of_sample_folds_before_each_tested_season() -> None:
-    # #138: the blend's training folds start at the first fold after the tuning cutoff, end
-    # before the latest tested season, and are open seasons only.
-    for tested in ([20182019], [20182019, 20212022], [20212022], [20222023]):
-        learned = blend_training_seasons(tested)
-        assert all(FIRST_OUT_OF_SAMPLE_SEASON <= s < max(tested) for s in learned)
+    # #138: a season's blend learns from the folds after the tuning cutoff and before it, open
+    # seasons only, and never from itself.
+    for season in (20182019, 20192020, 20202021, 20212022, 20222023):
+        learned = blend_training_seasons(season)
+        assert all(FIRST_OUT_OF_SAMPLE_SEASON <= s < season for s in learned)
         assert all(season_role(s) in OPEN_ROLES for s in learned)
-    assert blend_training_seasons([20182019]) == []
-    assert blend_training_seasons([20182019, 20212022]) == [20182019, 20192020, 20202021]
+    assert blend_training_seasons(20182019) == []
+    assert blend_training_seasons(20212022) == [20182019, 20192020, 20202021]
     # 2022-23's one-time run (#145) learns from every development and flagged season before it.
-    assert blend_training_seasons([20222023]) == [20182019, 20192020, 20202021, 20212022]
+    assert blend_training_seasons(20222023) == [20182019, 20192020, 20202021, 20212022]
 
 
 def test_the_first_out_of_sample_fold_is_the_first_after_the_tuning_cutoff() -> None:
@@ -401,3 +401,38 @@ def test_training_only_folds_stay_out_of_every_test_metric() -> None:
                 "b2_train_cutoff",
                 "b3_train_cutoff",
             }
+
+
+def test_each_training_folds_b2_and_b3_are_fitted_before_the_fold_starts() -> None:
+    # The blend's training folds go through B2's and B3's own fold paths: every row's fit is cut
+    # off before its fold's first prediction, and the counts carry each fit's cutoff.
+    from b2_fixtures import feature_tables
+    from b3_fixtures import player_tables
+
+    from nhl_edge.game import b2, b3
+
+    folds = [20182019, 20192020, 20202021]
+    odds, games = market_history.seasons([20172018, *folds], games=40)
+    tables = feature_tables(games)
+    players = player_tables(games, tables)
+    fits2: dict[str, dict[int, b2.B2Model]] = {}
+    fits3: dict[str, dict[int, b3.B3Model]] = {}
+    predictions, coverage, _ = run(
+        odds, games, folds, b2_tables=tables, b2_fits=fits2, b3_tables=players, b3_fits=fits3
+    )
+    starts = predictions.group_by("experiment", "season").agg(
+        fold_start=pl.col("prediction_utc").min()
+    )
+    fitted = predictions.filter(pl.col("model").is_in(["B2", "B3"])).join(
+        starts, on=["experiment", "season"]
+    )
+    assert set(fitted["season"].unique()) == set(folds)
+    assert (fitted["train_cutoff"] < fitted["fold_start"]).all()
+    assert (fitted["train_cutoff"] < fitted["prediction_utc"]).all()
+    counts = walk_forward.training_folds(coverage, fits2, fits3, folds[1:])
+    for experiment, by_season in counts["folds"].items():
+        assert set(by_season) == {"20192020", "20202021"}
+        for season, fold in by_season.items():
+            first = starts.filter(experiment=experiment, season=int(season))["fold_start"][0]
+            for model in ("b2", "b3"):
+                assert datetime.fromisoformat(fold[f"{model}_train_cutoff"]) < first
