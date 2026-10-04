@@ -1,6 +1,6 @@
 # 0025. 2022-23: its 342 SBR-priced games are scored once, last, after the freeze
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-10-04)
 - Date: 2026-10-04
 
 ## Context
