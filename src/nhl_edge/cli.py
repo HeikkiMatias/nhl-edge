@@ -367,6 +367,7 @@ def backtest(
         b3_report,
         bets,
         book_era,
+        e3,
         one_time,
         reports,
         sensitivity,
@@ -577,6 +578,18 @@ def backtest(
     report["bets"] = bets.report(picked, settled)
     # The market move guard (#142, ADR 0029): its frozen threshold, and how often it would fire.
     report["bets"]["guard"] = bets.guard_report(settled, sbr_odds)
+    # E3 on history (#143): the bets' closing line value against SBR's close, and each bet's
+    # driver among the blend's parts.
+    e2 = bets.EXPERIMENT
+    settled = e3.attribution(
+        e3.closing_value(settled, sbr_odds),
+        b3_tables,
+        b3_fits.get(e2, {}),
+        {season: by_name["BLEND"] for season, by_name in blend_fits.get(e2, {}).items()},
+        e3.market_inputs(blend_input, blend_scales.get(e2, {}), e2),
+    )
+    groups = blend_backtest.groups(blend_input, games).filter(pl.col("experiment") == e2)
+    report["e3"] = e3.report(settled, groups.drop("experiment"))
     report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
     report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}
     path = reports.write(report, out)
@@ -605,6 +618,12 @@ def backtest(
         typer.echo(
             f"  E2 bets {season}: {placed['bets']:,} of {placed['games']:,} games, "
             f"{placed['staked']:.1f} units staked, profit {placed['profit']:+.1f}"
+        )
+    for season, valued in report["e3"]["per_season"].items():
+        clv = valued["clv_per_bet"]
+        typer.echo(
+            f"  E3 {season}: CLV per bet {clv['mean']:+.4f} [{clv['low']:+.4f}, "
+            f"{clv['high']:+.4f}] over {clv['games']:,} bets against SBR's close"
         )
     eras = report["diagnostics"]["book_era"]
     for name, cost in eras["b0_e2_minus_e1"]["eras"].items():
