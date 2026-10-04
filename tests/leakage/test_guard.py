@@ -7,6 +7,7 @@ import market_history
 import polars as pl
 from guard_quotes import DECISION, START, quotes, snapshots
 
+from nhl_edge.audit.sbr import moneylines, moves
 from nhl_edge.betting import guard
 
 
@@ -32,5 +33,13 @@ def test_a_game_already_started_has_no_move() -> None:
 
 def test_the_threshold_never_reads_a_development_or_held_out_season() -> None:
     odds, _ = market_history.seasons([20132014, 20142015], games=200)
-    later, _ = market_history.seasons([20212022, 20222023], games=200, intercept=2.0)
-    assert guard.threshold(pl.concat([odds, later])) == guard.threshold(odds)
+    later, later_games = market_history.seasons([20212022, 20222023], games=200)
+    # Plant openers far from their close in the later seasons, so a threshold that read them
+    # would move.
+    for game_id in later_games["game_id"].to_list()[::4]:
+        later = market_history.implausible_opener(later, game_id)
+    every = pl.concat([odds, later])
+    moved = moves(moneylines(every))["move"].quantile(guard.QUANTILE, "linear")
+    assert isinstance(moved, float)
+    assert round(moved, 4) != guard.threshold(odds)
+    assert guard.threshold(every) == guard.threshold(odds)

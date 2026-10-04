@@ -16,7 +16,7 @@ The policy (ADR 0028) places live bets at the 12:45 ET snapshot, so the guard co
    - the development seasons, as §10 words it, where the moves include book differences;
    - both.
 2. **The statistic:**
-   - the 95th percentile of the move (chosen): only a move larger than 19 in 20 whole-day moves counts as sharp;
+   - the 95th percentile of the move in either direction (chosen): only a move larger than 19 in 20 whole-day moves counts as sharp. The guard fires only on a fall against the bet's side, so a given side is skipped in about 1 game in 40;
    - the 90th percentile, which would fire more often;
    - a fixed number of points.
 3. **Tuning the threshold on results** (which bets it would have saved). That would be tuning on seen seasons, and it is ruled out.
