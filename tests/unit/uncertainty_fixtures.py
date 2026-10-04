@@ -1,7 +1,9 @@
 """A small league for the uncertainty score u (#139): two games of one team pair, with explicit
 goalie, lineup, replacement, boxscore and career rows."""
 
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
+from typing import Any
 
 import polars as pl
 
@@ -15,7 +17,7 @@ PREDICTION = datetime(2021, 11, 10, 15, 0, 1, tzinfo=UTC)
 GAME = 2021020200
 
 
-def frame(rows: list[dict[str, object]], schema: dict[str, pl.DataType]) -> pl.DataFrame:
+def frame(rows: list[dict[str, object]], schema: Mapping[str, Any]) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=schema, orient="row")
 
 
