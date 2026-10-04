@@ -50,6 +50,12 @@ ONE_TIME_SEASONS: tuple[int, ...] = tuple(
     season for season, role in SEASON_ROLES.items() if role is SeasonRole.ONE_TIME_TEST
 )
 
+# Phase 4's market validation season, scored once after the freeze on its 342 SBR-priced games
+# (#145, ADR 0025).
+MARKET_VALIDATION_SEASONS: tuple[int, ...] = tuple(
+    season for season, role in SEASON_ROLES.items() if role is SeasonRole.MARKET_VALIDATION
+)
+
 # The seasons a phase 2 design choice may rest on: training seasons without the bubble and empty
 # arenas, so the development seasons stay unseen until gate 1 (phase 2 plan, #11).
 TRAINING_SEASONS: tuple[int, ...] = tuple(

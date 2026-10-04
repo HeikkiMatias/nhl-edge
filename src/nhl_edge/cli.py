@@ -347,6 +347,16 @@ def backtest(
             ),
         ),
     ] = False,
+    market_validation: Annotated[
+        bool,
+        typer.Option(
+            "--market-validation",
+            help=(
+                "Phase 4's one run on 2022-23's 342 SBR-priced games, after the freeze (#145, ADR "
+                "0025): it is claimed before anything is scored, and a second run is refused."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run the walk-forward backtest on the SBR archive, for E1 (the close) and E2 (the opener):
     B0 under each de-vig method, B1 fitted per season on the earlier seasons' prices, B2, the
@@ -377,6 +387,7 @@ def backtest(
     from nhl_edge.backtest import blend as blend_backtest
     from nhl_edge.backtest.seasons import (
         HOCKEY_ROLES,
+        MARKET_VALIDATION_SEASONS,
         ONE_TIME_SEASONS,
         OPEN_ROLES,
         OPEN_SEASONS,
@@ -418,6 +429,31 @@ def backtest(
                 param_hint="--one-time-test",
             )
         roles = roles | {SeasonRole.ONE_TIME_TEST}
+    if market_validation:
+        if hockey_only:
+            raise typer.BadParameter("prices the season", param_hint="--market-validation")
+        if sorted(set(parse_seasons(seasons))) != list(MARKET_VALIDATION_SEASONS):
+            raise typer.BadParameter(
+                f"the market validation run scores {list(MARKET_VALIDATION_SEASONS)} alone",
+                param_hint="--seasons",
+            )
+        load_env()
+        try:
+            where = one_time.places(
+                LAKE_DIR, (DEFAULT_BACKTEST_OUT, out), one_time.MARKET_VALIDATION
+            )
+        except MissingSettingError as exc:
+            raise typer.BadParameter(
+                f"the market validation run is claimed in R2: {exc}",
+                param_hint="--market-validation",
+            ) from None
+        earlier = one_time.records(where)
+        if earlier:
+            raise typer.BadParameter(
+                f"the market validation run already ran: {'; '.join(earlier)} (ADR 0025)",
+                param_hint="--market-validation",
+            )
+        roles = roles | {SeasonRole.MARKET_VALIDATION}
     try:
         wanted = sorted(set(parse_seasons(seasons)))
         held_out = [season for season in wanted if season_role(season) not in roles]
@@ -491,6 +527,14 @@ def backtest(
         raise typer.Exit(code=1)
     every_b2_fit: dict[str, dict[int, b2.B2Model]] = {}
     every_b3_fit: dict[str, dict[int, b3.B3Model]] = {}
+    now = datetime.now(UTC)
+    run_version = reports.version("backtest", now)
+    if market_validation and where is not None:
+        # Claimed before anything is scored: a failed run is never rerun (ADR 0025).
+        try:
+            one_time.claim(where, run_version)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--market-validation") from None
     try:
         every_prediction, every_coverage, every_fit = walk_forward.run(
             sbr_odds,
@@ -500,6 +544,7 @@ def backtest(
             b2_fits=every_b2_fit,
             b3_tables=b3_tables,
             b3_fits=every_b3_fit,
+            validated=wanted if market_validation else (),
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
@@ -536,8 +581,6 @@ def backtest(
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
     predictions = pl.concat([predictions, blend_predictions])
-    now = datetime.now(UTC)
-    run_version = reports.version("backtest", now)
     report = reports.summary(predictions, coverage, fits, wanted, run_version, now)
     report["training_folds"] = walk_forward.training_folds(
         every_coverage, every_b2_fit, every_b3_fit, training_only
@@ -594,13 +637,21 @@ def backtest(
     report["e3"]["sensitivity_without_suspect_openers"] = e3.without_suspects(
         settled, load_suspect_openers()["game_id"], groups.drop("experiment")
     )
-    report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
-    report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}
-    path = reports.write(report, out)
-    b2_report.write_gaps(predictions, games, out)
-    b3_report.write_gaps(predictions, games, out)
-    blend_backtest.write_gaps(predictions, games, out)
-    bets.write_ledger(settled, games, out, report["version"])
+    files = out
+    if market_validation:
+        # Its own report and files, so the development run's summary.json stays as it is.
+        report["market_validation"] = {"adr": "0025", "run_once": True}
+        path = reports.write(report, out, f"market-validation-{run_version}.json")
+        files = out / f"market-validation-{run_version}"
+        files.mkdir(parents=True, exist_ok=True)
+    else:
+        report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
+        report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}
+        path = reports.write(report, out)
+    b2_report.write_gaps(predictions, games, files)
+    b3_report.write_gaps(predictions, games, files)
+    blend_backtest.write_gaps(predictions, games, files)
+    bets.write_ledger(settled, games, files, report["version"])
     typer.echo(f"{path}: {report['version']}")
     for experiment, folds_by_season in report["training_folds"]["folds"].items():
         for season, counts in folds_by_season.items():
@@ -609,7 +660,7 @@ def backtest(
                 f"B2 {counts['b2_scored']:,} and B3 {counts['b3_scored']:,} games predicted"
             )
     parts = [(name, body) for name, body in report["experiments"].items()]
-    parts += [(f"E2 {name}", body["E2"]) for name, body in report["sensitivity"].items()]
+    parts += [(f"E2 {name}", body["E2"]) for name, body in report.get("sensitivity", {}).items()]
     for experiment, body in parts:
         for model, results in body["models"].items():
             for method, estimates in results["log_loss"].items():
@@ -629,7 +680,7 @@ def backtest(
             f"  E3 {season}: CLV per bet {clv['mean']:+.4f} [{clv['low']:+.4f}, "
             f"{clv['high']:+.4f}] over {clv['games']:,} bets against SBR's close"
         )
-    eras = report["diagnostics"]["book_era"]
+    eras = report.get("diagnostics", {}).get("book_era", {"b0_e2_minus_e1": {"eras": {}}})
     for name, cost in eras["b0_e2_minus_e1"]["eras"].items():
         gain = eras["b0_minus_b1"]["E1"]["eras"][name]
         typer.echo(

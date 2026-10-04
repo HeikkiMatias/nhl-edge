@@ -78,3 +78,42 @@ def test_a_report_that_scored_the_season_counts_as_a_run(tmp_path: Path) -> None
 def test_a_claim_needs_the_runs_version(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="version"):
         one_time.claim(places(tmp_path), "")
+
+
+def market_places(tmp_path: Path, bucket: MemoryBucket | None = None) -> one_time.Places:
+    return one_time.Places(
+        tmp_path / "lake",
+        (tmp_path / "reports",),
+        bucket or ConditionalBucket(),
+        "b",
+        one_time.MARKET_VALIDATION,
+    )
+
+
+def test_the_market_validation_run_has_its_own_claim_and_runs_once(tmp_path: Path) -> None:
+    # 2022-23's run (#145, ADR 0025) is claimed apart from gate 2's: neither blocks the other.
+    (tmp_path / "lake").mkdir()
+    bucket = ConditionalBucket()
+    bucket.put_object(Bucket="b", Key=one_time.GATE_2.r2_key, Body=b"backtest-hockey-x then\n")
+    where = market_places(tmp_path, bucket)
+    assert one_time.records(where) == []
+    one_time.claim(where, "backtest-20261004-abc")
+    assert where.repo.name == "market_validation.txt"
+    assert (
+        bucket.objects[one_time.MARKET_VALIDATION.r2_key]
+        .decode()
+        .startswith(  # type: ignore[attr-defined]
+            "backtest-20261004-abc "
+        )
+    )
+    with pytest.raises(ValueError, match="2022-23's market validation run already ran"):
+        one_time.claim(where, "backtest-20261005-def")
+
+
+def test_a_report_that_scored_2022_23_counts_as_its_run(tmp_path: Path) -> None:
+    (tmp_path / "lake").mkdir()
+    where = market_places(tmp_path)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "market-validation-backtest-x.json").write_text(json.dumps({"seasons": [20222023]}))
+    assert one_time.records(where) == [str(reports / "market-validation-backtest-x.json")]
