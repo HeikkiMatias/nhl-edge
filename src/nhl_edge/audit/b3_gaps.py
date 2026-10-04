@@ -284,12 +284,29 @@ def summary(marked: pl.DataFrame) -> dict[str, Any]:
     }
 
 
-def markdown(marked: pl.DataFrame, source: str, version: str) -> str:
+def every_gap(screened: pl.DataFrame) -> pl.DataFrame:
+    """screened with every game marked for review ("all"): the blend's gaps are few enough to
+    review each (#144)."""
+    return screened.with_columns(review=pl.lit("all"))
+
+
+def blend_gaps(rows: pl.DataFrame) -> pl.DataFrame:
+    """The blend's gaps (gaps_blend.csv: experiment, season, game_id, game_date, home, away,
+    p_blend, p_b1, gap), one row per game, the experiment with the larger gap kept."""
+    return (
+        rows.sort(pl.col("gap").abs(), descending=True)
+        .unique("game_id", keep="first")
+        .sort("season", "game_date", "game_id")
+    )
+
+
+def markdown(marked: pl.DataFrame, source: str, version: str, model: str = "B3") -> str:
     """The screen's report: what was screened, the flag counts, and one row per game to review,
-    with a blank column for the reviewer's note."""
+    with a blank column for the reviewer's note. For the blend's gaps (model "blend"), Gap is
+    the blend's gap against B1, and B3 and its terms are B3's own at the start."""
     facts = summary(marked)
     lines = [
-        f"# B3 gap screen ({version})",
+        f"# {model} gap screen ({version})",
         "",
         f"Hard rule 8's screen (#107) of {facts['games']:,} gaps above 8 points against B1 in "
         f"`{source}`. B3 is refit as in the backtest's E1 folds. No result was read.",
@@ -321,7 +338,7 @@ def markdown(marked: pl.DataFrame, source: str, version: str) -> str:
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
         "--- | --- |",
     ]
-    order = {"flagged": 0, "large": 1, "sample": 2}
+    order = {"flagged": 0, "large": 1, "sample": 2, "all": 3}
     shown = (
         marked.filter(pl.col("review") != "")
         .with_columns(order=pl.col("review").replace_strict(order, return_dtype=pl.Int8))

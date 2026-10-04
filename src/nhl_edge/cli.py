@@ -2267,11 +2267,20 @@ def audit_gaps(
     gaps: Annotated[Path, typer.Option(help="A backtest's gaps_b3.csv.")] = DEFAULT_BACKTEST_OUT
     / "gaps_b3.csv",
     out: Annotated[Path, typer.Option(help="Report directory.")] = Path("reports/gaps"),
+    blend: Annotated[
+        bool,
+        typer.Option(
+            "--blend",
+            help="Screen the market blend's gaps (a backtest's gaps_blend.csv, E1 and E2), every "
+            "one for review (#144).",
+        ),
+    ] = False,
 ) -> None:
     """Screen B3's gaps above 8 points against B1 at the close (E1) for bug signatures, hard rule
     8's review (#107): each game's log-odds in parts, both teams' expected goals and the flags,
     to <out>/b3-gaps-<version>.md (the games to review) and .csv (every gap). No result is
-    read."""
+    read. With --blend, the market blend's gaps instead, each game once, with B3's own terms at
+    the start, to <out>/blend-gaps-<version>.md and .csv."""
     from datetime import UTC
 
     import polars as pl
@@ -2279,12 +2288,15 @@ def audit_gaps(
     from nhl_edge.audit import b3_gaps
     from nhl_edge.backtest import reports
     from nhl_edge.backtest.walk_forward import fold_start
-    from nhl_edge.game import b2
+    from nhl_edge.game import b2, b3
     from nhl_edge.lake.tables import Lake
 
+    if blend and gaps == DEFAULT_BACKTEST_OUT / "gaps_b3.csv":
+        gaps = DEFAULT_BACKTEST_OUT / "gaps_blend.csv"
     if not gaps.exists():
         raise typer.BadParameter(f"{gaps} does not exist: run nhl backtest", param_hint="--gaps")
-    rows = pl.read_csv(gaps, try_parse_dates=True).filter(pl.col("experiment") == "E1")
+    rows = pl.read_csv(gaps, try_parse_dates=True)
+    rows = b3_gaps.blend_gaps(rows) if blend else rows.filter(pl.col("experiment") == "E1")
     lake = Lake()
     games = lake.read("games")
     tables = b2.Tables(
@@ -2302,17 +2314,31 @@ def audit_gaps(
     )
     calendar = games.select("season", "start_utc")
     starts = {int(s): fold_start(calendar, int(s)) for s in rows["season"].unique().to_list()}
+    b3_tables = _b3_tables(lake, tables)
+    if blend:
+        # The screen explains B3's part of each gap, so it reads B3's own probability at the
+        # start, refit as in the backtest's E1 fold.
+        found = []
+        for season, start in sorted(starts.items()):
+            moments = games.join(
+                rows.filter(pl.col("season") == season).select("game_id"), on="game_id"
+            ).select("game_id", prediction_utc="start_utc")
+            predicted, _ = b3.predictions(b3_tables, moments, season, start)
+            found.append(predicted.select("game_id", p_b3="p_home"))
+        rows = rows.join(pl.concat(found), on="game_id").select(
+            "season", "game_id", "game_date", "home", "away", "p_b3", "p_b1", "gap"
+        )
     try:
-        screened = b3_gaps.screen(_b3_tables(lake, tables), rows, starts)
+        screened = b3_gaps.screen(b3_tables, rows, starts)
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
-    marked = b3_gaps.review_set(screened)
+    marked = b3_gaps.every_gap(screened) if blend else b3_gaps.review_set(screened)
     now = datetime.now(UTC)
-    version = reports.version("b3-gaps", now)
+    version = reports.version("blend-gaps" if blend else "b3-gaps", now)
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{version}.md"
-    path.write_text(b3_gaps.markdown(marked, str(gaps), version))
+    path.write_text(b3_gaps.markdown(marked, str(gaps), version, "blend" if blend else "B3"))
     marked.write_csv(out / f"{version}.csv")
     facts = b3_gaps.summary(marked)
     typer.echo(f"{path}: {facts['games']:,} gaps, {facts['flagged']} flagged")
