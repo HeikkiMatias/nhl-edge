@@ -372,6 +372,7 @@ def backtest(
         subsets,
         walk_forward,
     )
+    from nhl_edge.backtest import blend as blend_backtest
     from nhl_edge.backtest.seasons import (
         HOCKEY_ROLES,
         ONE_TIME_SEASONS,
@@ -504,12 +505,6 @@ def backtest(
     )
     b2_fits = {e: {s: f for s, f in by.items() if s in wanted} for e, by in every_b2_fit.items()}
     b3_fits = {e: {s: f for s, f in by.items() if s in wanted} for e, by in every_b3_fit.items()}
-    now = datetime.now(UTC)
-    run_version = reports.version("backtest", now)
-    report = reports.summary(predictions, coverage, fits, wanted, run_version, now)
-    report["training_folds"] = walk_forward.training_folds(
-        every_coverage, every_b2_fit, every_b3_fit, training_only
-    )
     # The uncertainty score's parts (#139, ADR 0026) for every game B3 predicted, at each
     # experiment's prediction time: the blend's input, reported here as inputs only.
     u_tables = uncertainty.Tables(
@@ -529,6 +524,21 @@ def backtest(
         ).join(games.select("game_id", "season"), on="game_id")
         for experiment in sorted(every_coverage)
     }
+    # The market blend (#140, ADR 0027): each tested season's fits learn from the folds before it.
+    blend_input = blend_backtest.rows(every_prediction, u_parts, games)
+    try:
+        blend_predictions, blend_fits, blend_scales, blend_coverage = blend_backtest.run(
+            blend_input, blend_backtest.fold_starts(sbr_odds, games, wanted), wanted
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    predictions = pl.concat([predictions, blend_predictions])
+    now = datetime.now(UTC)
+    run_version = reports.version("backtest", now)
+    report = reports.summary(predictions, coverage, fits, wanted, run_version, now)
+    report["training_folds"] = walk_forward.training_folds(
+        every_coverage, every_b2_fit, every_b3_fit, training_only
+    )
     report["uncertainty"] = {
         experiment: {
             str(season): uncertainty.spread(rows)
@@ -558,11 +568,15 @@ def backtest(
         mins.lake_minutes(lake, scored_boxscores, max(wanted)),
         flags,
     )
+    report = blend_backtest.add(
+        report, predictions, blend_fits, blend_scales, blend_coverage, blend_input, games
+    )
     report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
     report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}
     path = reports.write(report, out)
     b2_report.write_gaps(predictions, games, out)
     b3_report.write_gaps(predictions, games, out)
+    blend_backtest.write_gaps(predictions, games, out)
     typer.echo(f"{path}: {report['version']}")
     for experiment, folds_by_season in report["training_folds"]["folds"].items():
         for season, counts in folds_by_season.items():
