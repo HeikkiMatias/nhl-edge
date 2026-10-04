@@ -528,7 +528,7 @@ def backtest(
     blend_input = blend_backtest.rows(every_prediction, u_parts, games)
     try:
         blend_predictions, blend_fits, blend_scales, blend_coverage = blend_backtest.run(
-            blend_input, blend_backtest.fold_starts(sbr_odds, games, wanted), wanted
+            blend_input, walk_forward.fold_starts(sbr_odds, games, wanted), wanted
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None

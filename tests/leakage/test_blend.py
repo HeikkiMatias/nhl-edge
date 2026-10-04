@@ -85,3 +85,16 @@ def test_every_blend_prediction_is_cut_off_before_its_fold() -> None:
         assert scales[str(experiment)][int(season)].train_cutoff < start  # type: ignore[arg-type]
         for model in fits[str(experiment)][int(season)].values():  # type: ignore[arg-type]
             assert model.train_cutoff < start
+
+
+def test_a_scored_game_whose_inputs_were_cut_off_at_the_fold_start_refuses_the_fold() -> None:
+    every = rows(SEASONS)
+    start = starts(every)[("E1", 20212022)]
+    first = every.filter(season=20212022)["game_id"][0]
+    leaked = every.with_columns(
+        parts_cutoff=pl.when(pl.col("game_id") == first)
+        .then(pl.lit(start))
+        .otherwise(pl.col("parts_cutoff"))
+    )
+    with pytest.raises(ValueError, match="would score a game whose inputs were cut off"):
+        blend_backtest.run(leaked, starts(leaked), TESTED)

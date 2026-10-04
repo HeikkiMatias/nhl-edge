@@ -9,7 +9,7 @@ B3 is level with the market, not ahead of it. B3 minus B1 is +0.0033 [-0.0013, +
 
 logit p = a + b_m·logit p_mkt + (b_x + b_u·u)·logit p_model
 
-It is fitted separately for E1 and E2, and only on out-of-sample predictions from earlier folds (hard rule 6). B2 and B3 have out-of-sample predictions from 2018-19 on, the first fold after the tuning cutoff (ADR 0011). B3 is under-confident on the development seasons (calibration slope 1.34), its calibration moves between seasons (0.94 on hockey validation, 0.55 on 2025-26), and 2021-22's market was itself under-confident (#13, findings 1 and 6). Everything here is fixed before any blend fit is scored.
+It is fitted separately for E1 and E2, and only on out-of-sample predictions from earlier folds (hard rule 6). B2 and B3 have out-of-sample predictions from 2018-19 on, the first fold after the tuning cutoff (ADR 0011). B3 is under-confident on the development seasons (calibration slope 1.34) and close to calibrated on hockey validation (0.94), and 2021-22's market was itself under-confident (#13, findings 1 and 6, and gate 2's finding 1). Everything here is fixed before any blend fit is scored. No choice here rests on the one-time 2025-26 test.
 
 ## Options
 
@@ -45,14 +45,47 @@ As the phase 4 plan, approved by the owner on 2026-10-04 (#13):
 
 ## Backtest evidence
 
-None yet. The first `nhl backtest` run with the blend on the development seasons provides it (#140).
+The first run with the blend: a local `nhl backtest` on the development seasons at commit `f1286a0`, with figures unchanged since. #144's committed run logs it in `reports/backtest/runs.csv`. The blend is scored on 2021-22 only, since 2018-19 has no earlier fold. All intervals are 95% weekly block bootstrap.
+
+| Paired log-loss difference, 2021-22 | E1 (close, 1,312 games) | E2 (opener, 1,306 games) |
+| --- | --- | --- |
+| BLEND minus B1 (the §1 criterion) | -0.0015 [-0.0043, +0.0018] | -0.0042 [-0.0078, -0.0007] |
+| BLEND minus BLEND_B2 (hard rule 3) | -0.0018 [-0.0040, +0.0005] | -0.0033 [-0.0062, -0.0002] |
+| BLEND minus BLEND_MARKET (the control) | -0.0022 [-0.0054, +0.0011] | -0.0049 [-0.0087, -0.0011] |
+| BLEND_B2 minus B1 | +0.0003 [-0.0021, +0.0028] | -0.0010 [-0.0041, +0.0023] |
+| BLEND_MARKET minus B1 | +0.0008 [+0.0000, +0.0016] | +0.0007 [-0.0001, +0.0014] |
+
+- **Calibration of BLEND** (pooled 2021-22):
+  - E1: intercept +0.021 [-0.138, +0.170], slope 1.16 [0.95, 1.39];
+  - E2: intercept +0.029 [-0.127, +0.180], slope 1.17 [0.94, 1.41].
+
+  Both include 0 and 1.
+- **The fits** (2021-22 fold, 3,221 training games on E1 and 3,213 on E2; ± is the model-based standard error):
+  - E1: a -0.071 ± 0.043, b_m 0.58 ± 0.18, b_x 0.59 ± 0.22, b_u +0.22 ± 0.15;
+  - E2: a -0.076 ± 0.042, b_m 0.49 ± 0.18, b_x 0.71 ± 0.21, b_u +0.23 ± 0.15.
+
+  The market-only control's b_m is 1.01 on E1 and 1.03 on E2.
+- **b_u is positive, against what u was meant to do,** but its interval includes 0 on both experiments. This revisit trigger needs an interval clear of 0, so it doesn't fire.
+- **Gaps above 8 points against B1** (hard rule 8): 17 on E1 and 49 on E2, listed in `gaps_blend.csv` for #144's review. B3 alone had 208 in 2021-22 on E1.
+- **Attribution** (BLEND minus B1):
+
+  | Group | E1 | E2 |
+  | --- | --- | --- |
+  | Different favourites | -0.0018 [-0.0166, +0.0128] (150 games) | -0.0102 [-0.0308, +0.0071] (139) |
+  | First 28 days | -0.0043 [-0.0173, +0.0034] (181) | -0.0005 [-0.0119, +0.0067] (180) |
+  | After 28 days | -0.0010 [-0.0041, +0.0025] | -0.0048 [-0.0089, -0.0003] |
+
+- **What it says:**
+  - On E2, the blend beats the opener's recalibrated market, the B2 blend and the control, all with intervals clear of 0, on one season. So its gain is not just a recalibration of the market.
+  - On E1, against the close, the interval includes 0.
+  - This is one development season of evidence. 2022-23's 342 games come once after the freeze (#145, ADR 0025).
 
 ## Consequences
 
 - **New code:** `market/blend.py` (the fit), `backtest/blend.py` (the walk-forward and its report) and their leakage test. `nhl backtest` runs the blend after B0 to B3.
 - **One season of development evidence.** The blend's test on history is 2021-22, plus 2022-23's 342 games once at the end (ADR 0025). Its intervals will be wide.
 - **The B2 twin keeps hard rule 3 at the level that matters,** inside the combination with the market.
-- **The blend inherits B3's calibration drift.** Weights learned on 2018-19 to 2020-21 rescale B3 the way those seasons needed.
+- **The blend inherits B3's calibration drift between seasons.** Weights learned on 2018-19 to 2020-21 rescale B3 the way those seasons needed. The choice of the blend's weights over a separate recalibration rests on arithmetic, not on any season's figures: a recalibration fitted on earlier folds is a straight-line rescale of B3's log-odds, which a and b_x fit anyway.
 
 ## Revisit when
 

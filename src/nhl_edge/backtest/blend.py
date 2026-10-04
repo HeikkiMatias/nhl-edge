@@ -24,10 +24,9 @@ from typing import Any
 import polars as pl
 
 from nhl_edge.backtest import b2_report
-from nhl_edge.backtest.market import Experiment, market_prices
 from nhl_edge.backtest.metrics import bootstrap, log_loss
 from nhl_edge.backtest.seasons import blend_training_seasons
-from nhl_edge.backtest.walk_forward import B1_METHOD, PREDICTION_SCHEMA, fold_start, outcomes
+from nhl_edge.backtest.walk_forward import B1_METHOD, PREDICTION_SCHEMA, outcomes
 from nhl_edge.game import uncertainty
 from nhl_edge.market import blend
 from nhl_edge.market.blend import Kind
@@ -45,24 +44,6 @@ EARLY_DAYS = 28
 
 Fits = dict[str, dict[int, dict[str, blend.Blend]]]
 Scales = dict[str, dict[int, uncertainty.Scale]]
-
-
-def fold_starts(
-    sbr_odds: pl.DataFrame, games: pl.DataFrame, seasons: list[int]
-) -> dict[tuple[str, int], datetime]:
-    """Each experiment's fold start per season, as walk_forward.run sets it: the season's first
-    start, or E2's first opener prediction when that is earlier."""
-    calendar = pl.concat([frame.select("season", "start_utc") for frame in (games, sbr_odds)])
-    starts: dict[tuple[str, int], datetime] = {}
-    for experiment in Experiment:
-        quoted = market_prices(sbr_odds, experiment)
-        for season in seasons:
-            start = fold_start(calendar, season)
-            first = quoted.filter(pl.col("season") == season)["prediction_utc"].min()
-            if isinstance(first, datetime):
-                start = min(start, first)
-            starts[(experiment.value, season)] = start
-    return starts
 
 
 def rows(
@@ -167,6 +148,16 @@ def run(
                 for name, source in MODELS.items()
             }
             tested_rows = by_experiment.filter(pl.col("season") == season)
+            # The scored games' own inputs were cut off before the fold too (B2's and B3's fits,
+            # and the fitted tables behind u).
+            scored_cutoff = tested_rows.select(
+                pl.max_horizontal("p_b2_cutoff", "p_b3_cutoff", "parts_cutoff").max()
+            ).item()
+            if isinstance(scored_cutoff, datetime) and scored_cutoff >= start:
+                raise ValueError(
+                    f"the {experiment} blend of {season} would score a game whose inputs were "
+                    f"cut off at {scored_cutoff}, after its fold starts at {start}"
+                )
             u_test = scale.score(tested_rows).to_numpy()
             for name, source in MODELS.items():
                 model = fitted[name]
