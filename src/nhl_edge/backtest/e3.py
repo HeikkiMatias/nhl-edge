@@ -7,7 +7,9 @@ that side at SBR's close (market/devig.py, ADR 0008). It is averaged per bet, an
 stake, each with a weekly block bootstrap interval (hard rule 7).
 
 SBR's close is not Pinnacle's: its book is unknown, and from 2018-19 it comes from a lower-margin
-book than its opener (#51, #65). Book differences then enter CLV, mostly pushing it down. §1's
+book than its opener (#51, #65). Book differences then enter CLV, mostly pushing it down. The fair
+move, the close's de-vigged probability of the bet's side over the opener's, less 1, leaves the
+margins out: it says only whether the market moved toward the bet. §1's
 criterion against the Pinnacle closing proxy can only be judged live (phase 5).
 
 **Attribution.** The blend moves away from the market by
@@ -40,8 +42,10 @@ PARTS = ("market", "skaters", "goalies", "home_ice", "schedule", "intercept")
 
 
 def closing_value(settled: pl.DataFrame, sbr_odds: pl.DataFrame) -> pl.DataFrame:
-    """The ledger's bets with the fair closing probability of their side (p_close) and their CLV,
-    both null for a bet without an SBR close."""
+    """The ledger's bets with the fair closing probability of their side (p_close), their CLV,
+    and the fair move of their side from the opener to the close (fair_move, p_close over the
+    opener's de-vigged probability, less 1), which leaves out the two books' margins; all null
+    for a bet without an SBR close."""
     closes = market_prices(sbr_odds, Experiment.E1).select(
         "game_id", close_home="home_price", close_away="away_price"
     )
@@ -52,15 +56,31 @@ def closing_value(settled: pl.DataFrame, sbr_odds: pl.DataFrame) -> pl.DataFrame
     if known.any():
         pair = priced.select("close_home", "close_away").to_numpy()[known]
         fair[known] = fair_probabilities(pair)[:, 0]
+    # The opener taken, de-vigged the same way (hard rule 3).
+    opener = (
+        fair_probabilities(priced.select("home_price", "away_price").to_numpy())[:, 0]
+        if priced.height
+        else np.empty(0)
+    )
     return (
-        priced.with_columns(p_close_home=pl.Series(fair, dtype=pl.Float64).fill_nan(None))
+        priced.with_columns(
+            p_close_home=pl.Series(fair, dtype=pl.Float64).fill_nan(None),
+            p_open_home=pl.Series(opener, dtype=pl.Float64),
+        )
         .with_columns(
             p_close=pl.when(pl.col("side") == HOME)
             .then(pl.col("p_close_home"))
             .otherwise(1 - pl.col("p_close_home"))
         )
-        .with_columns(clv=pl.col("price") * pl.col("p_close") - 1)
-        .drop("close_home", "close_away", "p_close_home")
+        .with_columns(
+            clv=pl.col("price") * pl.col("p_close") - 1,
+            fair_move=pl.col("p_close")
+            / pl.when(pl.col("side") == HOME)
+            .then(pl.col("p_open_home"))
+            .otherwise(1 - pl.col("p_open_home"))
+            - 1,
+        )
+        .drop("close_home", "close_away", "p_close_home", "p_open_home")
     )
 
 
@@ -83,6 +103,7 @@ def _summary(frame: pl.DataFrame) -> dict[str, Any]:
         "bets": frame.height,
         "clv_per_bet": bootstrap(frame, "clv").to_dict(),
         "clv_stake_weighted": _weighted(frame),
+        "fair_move_per_bet": bootstrap(frame, "fair_move").to_dict(),
         "positive_share": float((frame["clv"] > 0).mean()),  # type: ignore[arg-type]
         "return_per_bet": bootstrap(frame, "ret").to_dict(),
     }

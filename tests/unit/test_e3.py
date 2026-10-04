@@ -41,7 +41,13 @@ def sbr(game_id: int, close_home: float, close_away: float) -> pl.DataFrame:
 
 def test_clv_is_the_price_taken_times_the_fair_closing_probability() -> None:
     settled = pl.DataFrame(
-        {"game_id": [1, 2, 3], "side": ["home", "away", "home"], "price": [2.10, 2.10, 2.0]}
+        {
+            "game_id": [1, 2, 3],
+            "side": ["home", "away", "home"],
+            "price": [2.10, 2.10, 2.0],
+            "home_price": [2.10, 1.80, 2.0],
+            "away_price": [1.80, 2.10, 1.85],
+        }
     )
     odds = pl.concat([sbr(1, 1.90, 2.00), sbr(2, 1.90, 2.00)])
     valued = e3.closing_value(settled, odds)
@@ -53,6 +59,10 @@ def test_clv_is_the_price_taken_times_the_fair_closing_probability() -> None:
     assert valued["clv"].to_list()[:2] == pytest.approx(
         [2.10 * p_home - 1, 2.10 * (1 - p_home) - 1]
     )
+    # The fair move leaves both books' margins out: the close's fair probability over the
+    # opener's, less 1.
+    open_home = (1 / 2.10) / (1 / 2.10 + 1 / 1.80)
+    assert valued["fair_move"][0] == pytest.approx(p_home / open_home - 1)
 
 
 def test_the_report_gives_clv_per_bet_and_by_stake_with_intervals() -> None:
@@ -64,6 +74,7 @@ def test_the_report_gives_clv_per_bet_and_by_stake_with_intervals() -> None:
             "game_id": list(range(n)),
             "game_date": [date(2021, 10, 12 + k // 4) for k in range(n)],
             "clv": rng.normal(0.01, 0.03, n),
+            "fair_move": rng.normal(0.02, 0.03, n),
             "stake": rng.uniform(0.5, 1.5, n),
             "ret": rng.normal(0.0, 1.0, n),
             "driver": ["skaters", "market"] * (n // 2),

@@ -22,6 +22,8 @@ def test_valuing_against_the_close_never_moves_a_bet() -> None:
             "game_id": [1],
             "side": ["home"],
             "price": [2.1],
+            "home_price": [2.1],
+            "away_price": [1.8],
             "stake": [1.0],
             "profit": [1.1],
             "fraction": [0.01],
