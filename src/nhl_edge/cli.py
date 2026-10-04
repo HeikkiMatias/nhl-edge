@@ -365,6 +365,7 @@ def backtest(
     from nhl_edge.backtest import (
         b2_report,
         b3_report,
+        bets,
         book_era,
         one_time,
         reports,
@@ -571,12 +572,16 @@ def backtest(
     report = blend_backtest.add(
         report, predictions, blend_fits, blend_scales, blend_coverage, blend_input, games
     )
+    # The policy's bets on E2's blend at the opener (#141, ADR 0028).
+    picked, settled = bets.ledger(predictions, blend_input, blend_scales, sbr_odds)
+    report["bets"] = bets.report(picked, settled)
     report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
     report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}
     path = reports.write(report, out)
     b2_report.write_gaps(predictions, games, out)
     b3_report.write_gaps(predictions, games, out)
     blend_backtest.write_gaps(predictions, games, out)
+    bets.write_ledger(settled, games, out)
     typer.echo(f"{path}: {report['version']}")
     for experiment, folds_by_season in report["training_folds"]["folds"].items():
         for season, counts in folds_by_season.items():
@@ -594,6 +599,11 @@ def backtest(
                     f"  {experiment} {model} {method}: log loss {pooled['mean']:.4f} "
                     f"[{pooled['low']:.4f}, {pooled['high']:.4f}] over {pooled['games']:,} games"
                 )
+    for season, placed in report["bets"]["per_season"].items():
+        typer.echo(
+            f"  E2 bets {season}: {placed['bets']:,} of {placed['games']:,} games, "
+            f"{placed['staked']:.1f} units staked, profit {placed['profit']:+.1f}"
+        )
     eras = report["diagnostics"]["book_era"]
     for name, cost in eras["b0_e2_minus_e1"]["eras"].items():
         gain = eras["b0_minus_b1"]["E1"]["eras"][name]
