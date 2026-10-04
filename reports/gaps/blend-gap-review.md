@@ -1,6 +1,6 @@
 # Blend gap review, 2021-22 (#144, hard rule 8)
 
-These are the market blend's gaps above 8 points against B1 in `backtest-20261004-509d3da`: 17 on E1 and 49 on E2, 53 games in all. Each was screened by `nhl audit gaps --blend` (`reports/gaps/blend-gaps-20261004-509d3da.md`), with B3 refit as in the backtest's E1 fold, and read by hand. No game's result was read, and the screen shows none.
+These are the market blend's gaps above 8 points against B1 in `backtest-20261004-6f74840`: 17 on E1 and 49 on E2, 53 games in all. The screen read the same 53 games from `backtest-20261004-509d3da`, whose code and gaps are the same. Each was screened by `nhl audit gaps --blend` (`reports/gaps/blend-gaps-20261004-509d3da.md`), with B3 refit as in the backtest's E1 fold, and read by hand. No game's result was read, and the screen shows none.
 
 ## Verdict
 
