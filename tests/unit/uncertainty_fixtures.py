@@ -145,7 +145,6 @@ SPARE = frame(
         "team": pl.String,
         "exp_5v5": pl.Float64,
         "train_cutoff": UTC_TYPE,
-        "train_cutoff": UTC_TYPE,
         "observed_utc": UTC_TYPE,
     },
 )
