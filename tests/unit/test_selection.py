@@ -132,3 +132,14 @@ def test_bets_settle_on_the_full_game(case: str, home_bet_wins: bool) -> None:
         ledger = staking.settle(timed(bet))
         assert ledger["win"][0] is wins
         assert ledger["profit"][0] == pytest.approx(1.0 if wins else -1.0)
+
+
+def test_the_drawdown_applies_each_result_when_it_became_public() -> None:
+    ledger = pl.DataFrame(
+        {
+            "result_utc": [3, 1, 2],
+            "profit": [10.0, -20.0, 5.0],
+        }
+    )
+    # In publication order: 100, 80, 85, 95. The largest fall is 20 from 100.
+    assert staking.drawdown(ledger) == pytest.approx(0.20)

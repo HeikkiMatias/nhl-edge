@@ -11,16 +11,14 @@ the bankroll left by the earlier days' results only.
 
 Bets settle on the full game, overtime and shootout included (hard rule 2): the home side wins when
 home_win is 1. A won bet returns stake·(o - 1), a lost one -stake. Each season starts its own
-paper bankroll. A 20% drawdown calls for a review of data and code, never a model change (§11).
+paper bankroll. Live, a 20% drawdown calls for a review of data and code, never a model change
+(§11); the backtest reports the drawdown without a verdict on it (hard rule 7).
 """
 
 import numpy as np
 import polars as pl
 
 from nhl_edge.betting.selection import HOME, POLICY, Policy, doubt
-
-# The drawdown that calls for a review of data and code (plan §11).
-REVIEW_DRAWDOWN = 0.20
 
 
 def fractions(bets: pl.DataFrame, policy: Policy = POLICY) -> pl.DataFrame:
@@ -47,17 +45,21 @@ def won(side: pl.Expr, home_win: pl.Expr) -> pl.Expr:
 
 
 def check_days(bets: pl.DataFrame) -> None:
-    """Refuse a ledger whose day could mix a decision made after one of its games began: every
-    bet of a day must be decided before the day's first game starts (prediction_utc against
-    start_utc), so the day cap reads only decisions made together."""
-    days = bets.group_by("season", "game_date").agg(
-        decided=pl.col("prediction_utc").max(), first_start=pl.col("start_utc").min()
-    )
-    late = days.filter(pl.col("decided") >= pl.col("first_start")).sort("game_date")
+    """Refuse a ledger whose decisions could read the future. Each bet must be decided before its
+    own game starts, and a day's bets must share one decision time, so the day cap scales
+    decisions made together, from what was known then (prediction_utc, start_utc). A game already
+    under way at that time is never an input: the blend and the prices are fixed before it."""
+    late = bets.filter(pl.col("prediction_utc") >= pl.col("start_utc")).sort("game_date")
     if late.height:
-        raise ValueError(
-            f"bets of {late['game_date'][0]} were decided after that day's first game started"
-        )
+        raise ValueError(f"a bet of {late['game_date'][0]} was decided after its game started")
+    days = (
+        bets.group_by("season", "game_date")
+        .agg(decisions=pl.col("prediction_utc").n_unique())
+        .filter(pl.col("decisions") > 1)
+        .sort("game_date")
+    )
+    if days.height:
+        raise ValueError(f"bets of {days['game_date'][0]} were decided at more than one time")
 
 
 def settle(bets: pl.DataFrame, policy: Policy = POLICY) -> pl.DataFrame:
@@ -109,15 +111,12 @@ def settle(bets: pl.DataFrame, policy: Policy = POLICY) -> pl.DataFrame:
 
 def drawdown(ledger: pl.DataFrame, policy: Policy = POLICY) -> float:
     """The largest fall of the bankroll from its peak, as a share of the peak, over one season's
-    ledger, at each day's end."""
+    ledger, with each result applied when it became public (result_utc)."""
     if ledger.is_empty():
         return 0.0
-    ends = (
-        ledger.group_by("game_date", maintain_order=True)
-        .agg(pl.col("profit").sum())
-        .sort("game_date")["profit"]
-        .to_numpy()
-    )
-    path = policy.bankroll + np.concatenate([[0.0], np.cumsum(ends)])
+    steps = (
+        ledger.group_by("result_utc").agg(pl.col("profit").sum()).sort("result_utc")["profit"]
+    ).to_numpy()
+    path = policy.bankroll + np.concatenate([[0.0], np.cumsum(steps)])
     peaks = np.maximum.accumulate(path)
     return float(np.max((peaks - path) / peaks))

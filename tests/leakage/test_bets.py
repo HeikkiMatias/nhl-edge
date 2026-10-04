@@ -119,7 +119,7 @@ def test_a_days_stakes_never_read_that_day_or_later_days_results() -> None:
     assert base["stake"].to_list()[4:] != flipped["stake"].to_list()[4:]
 
 
-def test_a_day_decided_after_its_first_game_started_is_refused() -> None:
+def test_a_bet_decided_after_its_game_started_or_a_day_decided_twice_is_refused() -> None:
     bets = timed(
         pl.DataFrame(
             {
@@ -134,14 +134,22 @@ def test_a_day_decided_after_its_first_game_started_is_refused() -> None:
             }
         )
     )
-    # The second bet is decided after the first game has started (a matinee, say).
     late = bets.with_columns(
         prediction_utc=pl.when(pl.col("game_id") == 2)
         .then(pl.col("start_utc") + timedelta(minutes=5))
         .otherwise(pl.col("prediction_utc"))
     )
-    with pytest.raises(ValueError, match="decided after that day's first game started"):
+    with pytest.raises(ValueError, match="decided after its game started"):
         staking.settle(late)
+    # Two decision times on one day: the second could follow an earlier game's start, so the
+    # day cap would no longer scale decisions made together.
+    twice = bets.with_columns(
+        prediction_utc=pl.when(pl.col("game_id") == 2)
+        .then(pl.col("prediction_utc") + timedelta(hours=3))
+        .otherwise(pl.col("prediction_utc"))
+    )
+    with pytest.raises(ValueError, match="decided at more than one time"):
+        staking.settle(twice)
 
 
 def test_a_result_not_yet_public_is_left_out_of_the_bankroll_until_it_is() -> None:

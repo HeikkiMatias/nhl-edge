@@ -91,7 +91,6 @@ def _season(picked: pl.DataFrame, settled: pl.DataFrame, policy: Policy) -> dict
         "return_per_bet": bootstrap(settled, "ret").to_dict() if settled.height else None,
         "final_bankroll": policy.bankroll + profit,
         "max_drawdown": staking.drawdown(settled, policy),
-        "review_drawdown_reached": staking.drawdown(settled, policy) >= staking.REVIEW_DRAWDOWN,
     }
 
 
