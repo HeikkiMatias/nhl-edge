@@ -168,9 +168,13 @@ def guard_report(settled: pl.DataFrame, sbr_odds: pl.DataFrame) -> dict[str, Any
     every_game = moves(
         moneylines(sbr_odds.filter(pl.col("season").is_in(checked["season"].unique().implode())))
     )
+    try:
+        recomputed: float | None = guard.threshold(sbr_odds)
+    except ValueError:
+        recomputed = None  # a run before 2018-19 doesn't load every season the threshold reads
     return {
         "threshold": guard.MOVE_THRESHOLD,
-        "threshold_from_the_lake": guard.threshold(sbr_odds),
+        "threshold_from_the_lake": recomputed,
         "seasons": list(guard.THRESHOLD_SEASONS),
         "per_season": {
             str(season): {

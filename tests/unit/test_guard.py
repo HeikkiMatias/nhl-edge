@@ -23,7 +23,7 @@ def test_the_move_against_a_bet_is_the_fall_of_its_sides_probability() -> None:
 
 
 def test_the_threshold_is_the_95th_percentile_of_moves_in_its_seasons_only() -> None:
-    odds, _ = market_history.seasons([20112012, 20122013], games=200)
+    odds, _ = market_history.seasons(list(guard.THRESHOLD_SEASONS), games=60)
     found = guard.threshold(odds)
     assert 0 < found < 0.2
     later, _ = market_history.seasons([20182019], games=200, intercept=1.0)
@@ -31,6 +31,12 @@ def test_the_threshold_is_the_95th_percentile_of_moves_in_its_seasons_only() -> 
     assert guard.threshold(pl.concat([odds, later])) == found
     with pytest.raises(ValueError, match="no SBR openers and closes"):
         guard.threshold(later)
+
+
+def test_the_threshold_refuses_prices_lacking_one_of_its_seasons() -> None:
+    odds, _ = market_history.seasons([20112012, 20122013], games=50)
+    with pytest.raises(ValueError, match="20132014"):
+        guard.threshold(odds)
 
 
 def test_live_moves_read_the_books_morning_and_midday_snapshots() -> None:

@@ -22,6 +22,7 @@ import polars as pl
 from nhl_edge.audit.sbr import moneylines, moves
 from nhl_edge.betting.selection import HOME
 from nhl_edge.ingest.odds import available_at
+from nhl_edge.ingest.sbr import ET
 from nhl_edge.market.devig import fair_probabilities
 
 # Frozen by ADR 0029 from SBR's open-to-close moves of THRESHOLD_SEASONS: 8,140 games.
@@ -34,10 +35,12 @@ BOOK = "pinnacle"
 
 
 def threshold(sbr_odds: pl.DataFrame) -> float:
-    """The QUANTILE of the open-to-close move over THRESHOLD_SEASONS, from SBR's prices alone."""
+    """The QUANTILE of the open-to-close move over THRESHOLD_SEASONS, from SBR's prices alone.
+    Refuses prices lacking any of those seasons, which would give another number."""
     found = moves(moneylines(sbr_odds.filter(pl.col("season").is_in(THRESHOLD_SEASONS))))
-    if found.is_empty():
-        raise ValueError("no SBR openers and closes of 2011-12 to 2017-18 to set the guard on")
+    missing = sorted(set(THRESHOLD_SEASONS) - set(found["season"].unique().to_list()))
+    if missing:
+        raise ValueError(f"no SBR openers and closes of {missing} to set the guard on")
     value = found["move"].quantile(QUANTILE, "linear")
     assert isinstance(value, float)
     return round(value, 4)
@@ -82,7 +85,12 @@ def live_moves(snapshots: pl.DataFrame, decision_utc: object, book: str = BOOK) 
     de-vigged home probability at the latest MORNING_SLOT snapshot (p_morning) and at the latest
     DECISION_SLOT snapshot (p_decision), with each snapshot's time. Only quotes available at the
     decision are read (odds.available_at)."""
-    usable = available_at(snapshots.filter(pl.col("book") == book), decision_utc)  # type: ignore[arg-type]
+    # Only the decision day's slots (US Eastern): a quote of an earlier day would measure a longer
+    # move than 07:05 to 12:45, and with no game-day morning quote the guard doesn't apply.
+    day = pl.lit(decision_utc).dt.convert_time_zone(ET.key).dt.date()
+    usable = available_at(snapshots.filter(pl.col("book") == book), decision_utc).filter(  # type: ignore[arg-type]
+        pl.col("snapshot_utc").dt.convert_time_zone(ET.key).dt.date() == day
+    )
 
     def latest(slot: str, name: str) -> pl.DataFrame:
         priced = home_probability(usable.filter(pl.col("slot") == slot))
