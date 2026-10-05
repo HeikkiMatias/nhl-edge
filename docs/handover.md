@@ -95,9 +95,9 @@ Every deliverable merged under its own task issue:
 
 **Gate 3 (ADR 0031): not met.** The pooled figures combine 2021-22 and 2022-23 (`reports/backtest/accepted.json`):
 - **BLEND minus B1:** E1 -0.0002 [-0.0037, +0.0032] and E2 -0.0027 [-0.0072, +0.0019]. 2022-23 alone loses on both.
-- **B3 minus B2:** -0.0068 [-0.0120, -0.0016] over three seasons: passes.
+- **B3 minus B2:** -0.0068 [-0.0120, -0.0016] over three seasons: passes overall, with the 39-game lineup-change subset inconclusive.
 - **The blend's calibration:** passes on intervals.
-- **CLV against SBR's close:** -1.23% [-2.01%, -0.46%] over 625 bets: fails on history.
+- **CLV against SBR's close:** -1.23% [-2.01%, -0.46%] over 625 bets. That fails for E2's fit at the opener; the live policy's E1 fit has no historical bets, so only live can judge it.
 - **Gaps:** reviewed by hand, with one data error and no bug.
 
 **2022-23 is spent.** Its one run is `market-validation-20261005-6ec331b`, claimed in R2 (`ledger/market_validation.txt`), beside the lake and in `reports/backtest/market_validation.txt`. A second run is refused.

@@ -1,7 +1,7 @@
 {
   "accepted_on": "2026-10-05",
   "adr": "0031",
-  "gate_3": "not met: the blend adds no information beyond the recalibrated market on history; CLV against SBR's close is negative. Phase 5 paper-trades the frozen policy, and live 2026-27 judges CLV against Pinnacle.",
+  "gate_3": "not met: the blend adds no information beyond the recalibrated market on history. CLV against SBR's close is negative for the policy's rule with E2's fit at the opener; the live policy's E1 fit has no historical bets. B3 beats B2 overall (the lineup-change subset is inconclusive). Phase 5 paper-trades the frozen policy, and live 2026-27 judges CLV against Pinnacle.",
   "policy_version": "policy-20261005-8ec5cf3",
   "runs": {
     "development": "backtest-20261005-b7639f5",

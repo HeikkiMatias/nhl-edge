@@ -42,9 +42,9 @@ Every metric is reported with a 95% weekly block bootstrap interval, pooled over
 | --- | --- | --- | --- | --- |
 | BLEND minus B1, E1 | -0.0015 [-0.0043, +0.0018] | +0.0044 [-0.0062, +0.0180] | -0.0002 [-0.0037, +0.0032] | fails |
 | BLEND minus B1, E2 | -0.0042 [-0.0078, -0.0007] | +0.0033 [-0.0118, +0.0224] | -0.0027 [-0.0072, +0.0019] | fails |
-| B3 minus B2, E1 (2018-19 joins the pool) | -0.0091 [-0.0163, -0.0025] | +0.0013 [-0.0241, +0.0254] | -0.0068 [-0.0120, -0.0016] | passes |
+| B3 minus B2, E1 (2018-19 joins the pool) | -0.0091 [-0.0163, -0.0025] | +0.0013 [-0.0241, +0.0254] | -0.0068 [-0.0120, -0.0016] | passes overall; the lineup-change subset (39 games) is inconclusive |
 | Blend calibration slope, E1 | 1.16 [0.95, 1.39] | 0.71 [0.25, 1.21] | | passes on intervals |
-| CLV per bet against SBR's close | -1.24% [-2.15%, -0.24%] | -1.22% [-2.41%, -0.01%] | -1.23% [-2.01%, -0.46%] | fails on history |
+| CLV per bet against SBR's close, E2's fit at the opener | -1.24% [-2.15%, -0.24%] | -1.22% [-2.41%, -0.01%] | -1.23% [-2.01%, -0.46%] | fails for E2's fit; the live E1 policy is untested on history |
 
 The gaps of both seasons were reviewed by hand: one data error, no bug.
 
