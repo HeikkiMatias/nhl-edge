@@ -1,14 +1,15 @@
-# Handover, 2026-10-04
+# Handover, 2026-10-05
 
-This file says where the build stands after the cloud sessions of 2026-09-29 to 10-04, and how a fresh session picks it up. CLAUDE.md holds the rules; this file holds the state. Update it, or delete it, when it goes stale.
+This file says where the build stands after the cloud sessions of 2026-09-29 to 10-05, and how a fresh session picks it up. CLAUDE.md holds the rules; this file holds the state. Update it, or delete it, when it goes stale.
 
 ## Start here (a fresh session)
 
 1. **Read** CLAUDE.md, this file and `docs/model-card.md`.
 2. **Finish any waiting item whose date has come** (the next section). The SessionStart hook lists the open issues of the earliest milestone, P1 (#9, #42). They wait on the calendar, not on work, so don't start them early.
-3. **Otherwise start phase 4 (#13), in plan mode.** See "Phase 4: where to start" below.
-   - Phase 3 is done: #12 is closed, and ADR 0024 records gate 2's verdict.
-   - Gate 1 (#79) is still open. It is a checkpoint, not a stop (ADR 0002), so phase 4 doesn't wait for it.
+3. **Otherwise start phase 5 (#14), in plan mode.** See "Phase 5: where to start" below.
+   - Phase 4 is done. Gate 3 is not met (ADR 0031): the blend adds no information beyond the recalibrated market on history. As the owner decided, phase 5 paper-trades the frozen policy anyway, and live 2026-27 is the remaining test.
+   - Gate 1 (#79) is still open. It is a checkpoint, not a stop (ADR 0002).
+   - **The clock runs:** the policy was frozen on 2026-10-05, and live games count from 2026-10-06. Every game without a logged pre-game prediction is a paper bet the live test can't use.
 
 ## Waiting items: when and how
 
@@ -55,7 +56,7 @@ Every deliverable merged under its own task issue:
 - **The one-time test is spent.** `nhl backtest --hockey-only --one-time-test` is refused for good. Records of the run sit in R2 (`ledger/one_time_test.txt`), beside the lake and in `reports/backtest/one_time_test.txt`.
 - **The gap review** (`reports/gaps/b3-gap-review.md`, tool `nhl audit gaps`) found no data error in 92 games read without results.
 
-**Open P3 follow-ups.** None blocks phase 4. Take them when convenient, one PR each:
+**Open P3 follow-ups.** None blocks phase 5. Take them when convenient, one PR each:
 - #114: `nhl status` compares the stored time-on-ice reports with R2.
 - #117: refetch the landing pages once a season.
 - #120: two possible calibration gaps in lineup availability. They need intervals before they count as findings.
@@ -65,35 +66,67 @@ Every deliverable merged under its own task issue:
 - #132: B2's tuning check leaves out `goalie_starts`.
 - #134: rate replacement skaters below RAPM's reference skater.
 
-## Phase 4: where to start (#13)
+## Phase 4: done (#13)
 
-Phase 4 builds the market blend, bet selection and the full backtest, and ends at **gate 3**: the §1 criteria pass, and the selection policy is frozen before live games. Like phases 2 and 3, it starts with a plan the owner approves, not with code.
+Every deliverable merged under its own task issue:
+- 2022-23's price checks (#66, ADR 0025);
+- the blend's training folds (#138);
+- the uncertainty score u (#139, ADR 0026);
+- the market blend (#140, ADR 0027);
+- selection and staking (#141, ADR 0028);
+- the market move guard (#142, ADR 0029);
+- E3 and attribution (#143);
+- the development backtest and the freeze (#144, ADR 0030);
+- 2022-23's one run (#145);
+- gate 3 (#146, ADR 0031).
+
+**The frozen policy, `policy-20261005-8ec5cf3`** (model card, "The freeze"):
+- **The blend:** logit p = a + b_m·logit p_mkt + (b_x + b_u·u)·logit p_B3, fitted per whole-season fold on earlier folds' out-of-sample predictions.
+  - Live bets use **E1's fit**, learned against SBR's close and fed Pinnacle's 12:45 ET price (ADR 0030).
+- **u:** goalie doubt, availability doubt and rookie minutes, equally weighted. Live, its goalie doubt reads the goalie-start model, never a confirmation (ADR 0030).
+- **Selection and staking:**
+  - a hurdle of 2.5% expected return plus 1 point per standard deviation of u above average;
+  - a quarter of Kelly divided by (1 + u⁺);
+  - caps of 1.5% per bet and 5% per day;
+  - 100 units a season.
+- **Bets** are placed at 12:45 ET at Pinnacle's price, with the best EU book logged beside it.
+- **The guard** skips a bet whose side fell more than 5.35 points between Pinnacle's 07:05 and 12:45 quotes.
+- `betting/selection.py` holds `POLICY_VERSION`, `FROZEN_ON` and `LIVE_BLEND_EXPERIMENT`, and `tests/unit/test_freeze.py` fails if a frozen number changes.
+
+**Gate 3 (ADR 0031): not met.** The pooled figures combine 2021-22 and 2022-23 (`reports/backtest/accepted.json`):
+- **BLEND minus B1:** E1 -0.0002 [-0.0037, +0.0032] and E2 -0.0027 [-0.0072, +0.0019]. 2022-23 alone loses on both.
+- **B3 minus B2:** -0.0068 [-0.0120, -0.0016] over three seasons: passes overall, with the 39-game lineup-change subset inconclusive.
+- **The blend's calibration:** passes on intervals.
+- **CLV against SBR's close:** -1.23% [-2.01%, -0.46%] over 625 bets. That fails for E2's fit at the opener; the live policy's E1 fit has no historical bets, so only live can judge it.
+- **Gaps:** reviewed by hand, with one data error and no bug.
+
+**2022-23 is spent.** Its one run is `market-validation-20261005-6ec331b`, claimed in R2 (`ledger/market_validation.txt`), beside the lake and in `reports/backtest/market_validation.txt`. A second run is refused.
+
+**ADR 0026's revisit trigger fired.** 2022-23's fits put u's weight at +0.24 [+0.01, +0.48] (E1): the model is trusted more as doubt grows. The owner kept u frozen. Live evidence decides, and any change is a new policy version.
+
+**Open follow-ups:** none blocks phase 5.
+- #154 (P5): the E3 driver mostly marks favourite against underdog.
+- #156: recompute the blend's probability in the gap screen.
+
+## Phase 5: where to start (#14)
+
+Phase 5 paper-trades the frozen policy on live 2026-27 and builds the dashboard. Like every phase, it starts with a plan the owner approves.
 
 1. **Enter plan mode and read:**
-   - #13: its deliverables, and its findings log, with 12 items from phase 2 and 3 from gate 2;
-   - #66: what to do about 2022-23;
-   - docs/plan.md §1 (criteria), §5 ("Uncertainty", "Expected return and CLV", "Validation design"), §6, §10 ("Market move guard", "Edge attribution") and §11 ("Staking rules");
-   - ADRs 0008, 0013, 0023 and 0024, and the model card.
-2. **Write the phase plan.** It must bring these choices to the owner; each modeling choice gets an ADR, with the owner's go-ahead first:
-   - **2022-23's role (#66),** to settle first, since it sets what the full backtest covers. SBR prices only 342 of its 1,312 games (26%). The options are:
-     - score those 342 games alone;
-     - buy the historical odds (about $90, a paid endpoint, so only with the owner's word);
-     - drop 2022-23 as a market test and leave it to live 2026-27.
-
-     Before any of its games is scored, run the audit's SBR price checks on the 342 games. Today the audit skips them: `price_seasons()` in `audit/sbr.py` reads only the training and development roles, so `nhl audit report` gives 2022-23's join counts alone. Opening its price checks is part of #66's task.
-   - **What the blend trains on.** Hard rule 6 allows only out-of-sample predictions from earlier folds, so the 2018-19 fold has no earlier fold to learn from (#13, finding 7). The plan must say which earlier predictions the blend may use, and which development seasons it is scored on.
-   - **Which models go in.** B3 is the model the blend uses (ADR 0024), and B2 stays as B3's reference (hard rule 3). B2 and B3 are under-confident on the development seasons, and B3's calibration moves between seasons (#13, finding 1, and gate 2's notes). The plan must also say whether the blend's own weights correct that, or a per-fold recalibration fitted only on earlier folds. Never retune B2 or B3 on the development seasons.
-   - **The uncertainty score u** (§5): an unconfirmed goalie, availability doubts and the share of rookie ice time. `goalie_starts.p_start`, `lineups.p_available` and `lineup_replacements` already hold the inputs.
-   - **Selection and staking** (§5, §11): the expected return at the executable price (hard rule 4), at least 2.5% and more when u is high. A quarter of Kelly, capped at 1.5% of bankroll per bet and 5% per day, with one bet per game.
-   - **The market move guard** (§10): its threshold set on the development seasons from SBR open against close, then frozen.
-   - **E3 on history:** which price counts as taken (E2's opener) and which as the closing proxy (SBR's close), since live snapshots exist only from 2026-09-28.
-   - **Attribution** (§10): report separately the games where the model and the market pick different favourites, early-season games, and each season (#13, findings 4, 6 and 11).
-3. **After approval:**
-   - break #13 into task issues in the P4 milestone and link them from #13 in a comment;
-   - paste the approved plan into every phase 4 PR (branches `phase-4/<topic>`).
-
-   Never write a closing keyword followed by another issue's number in a pasted plan, since GitHub acts on it.
-4. **Mind the clock.** Live 2026-27 is the only untouched market test, and a model is judged only on games after its freeze date (plan §5). Each week before the policy freezes is a week of live games the test can't use. Phase 5's paper trading also needs the live season's feature tables, which stop at 2026-04-16 (phase 3's) or 2026-09-30 (the others).
+   - #14;
+   - docs/plan.md §5 ("Expected return and CLV"), §6, §7, §10 and §11;
+   - ADRs 0026 to 0031 and the model card's "The freeze".
+2. **The plan must cover:**
+   - **The daily pipeline.** It ingests, builds the live season's feature rows, predicts at 12:45 ET, applies the policy and the guard, and logs every prediction and paper bet with its prices' `last_update`.
+     - Phase 3's tables stop at 2026-04-16 and the others at 2026-09-30. The live season needs them daily, at the right as-of times.
+     - Log each prediction before its game: a paper bet reconstructed later is not evidence.
+   - **The live blend's fit (ADR 0030).** It trains on the E1 out-of-sample predictions of 2018-19 to 2022-23.
+     - **The catch:** 2022-23's predictions exist only inside the one run, which keeps no per-game rows, and `nhl backtest` refuses to predict that season again.
+     - **What's needed:** a training-only path that predicts 2022-23's fold without scoring it. The backtest already has such a path for 2019-20 and 2020-21. It needs its own leakage test and the owner's word that it doesn't count as a second run.
+   - **CLV against Pinnacle's closing proxy,** the §1 test: `is_closing_proxy` on `odds_snapshots` (#21), with stale quotes excluded.
+   - **The live E2 test:** the blend against B1 at the 12:45 price, with weekly block bootstrap intervals as games accrue.
+   - **The dashboard,** with Supabase's row-level security before it goes live (§10).
+3. **Never change the frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and the CLV count restarts.
 
 ## The owner's standing decisions
 
@@ -105,10 +138,14 @@ Phase 4 builds the market blend, bet selection and the full backtest, and ends a
   - B3 reuses B2's L2 of 100.
   - Gate 2's subsets stay as ADR 0023 defined them.
 - **Seen seasons:**
-  - The development seasons (2018-19, 2021-22) and the hockey validation seasons (2023-24, 2024-25) have been scored, and 2025-26 is spent. Nothing may be tuned on them.
+  - The development seasons (2018-19, 2021-22) and the hockey validation seasons (2023-24, 2024-25) have been scored. 2025-26 and 2022-23's 342 priced games are spent. Nothing may be tuned on any of them.
   - A change to B2 or B3 now needs the owner and an ADR.
 - **Gate 2 (ADR 0024):** B3 is phase 4's model against the market. B2 stays in every report as B3's reference.
-- **Phase 4 notes** go on #13 as they turn up.
+- **Phase 4 (ADRs 0025 to 0031):**
+  - The policy is frozen as `policy-20261005-8ec5cf3`. Live games count from 2026-10-06.
+  - Live bets use E1's blend fit and Pinnacle's 12:45 ET price, and u never reads a confirmation (ADR 0030). Codex's P0 on #155, "closing odds in a tradable prediction" for E1's fit, is won't-fix by the owner's decision: the fit reads only earlier seasons' closes.
+  - Gate 3 is not met, and phase 5 goes ahead regardless (ADR 0031).
+  - u stays frozen although its revisit trigger fired: live evidence decides.
 - **Data:**
   - **Stints (ADR 0015):** drop only impossible on-ice counts.
   - **Time-on-ice reports (#68):** fetched once, for the 57 games only, and never again (NHL.com's terms).
@@ -145,9 +182,11 @@ Phase 4 builds the market blend, bet selection and the full backtest, and ends a
   - E2 reads the opener at 10:00 US Eastern on the game date.
   - `reference/sbr_suspect_openers.csv` lists 40 likely wrong openers, and its `bad_close` column marks 3 bad closes (#64).
 - **Backtest:**
-  - `nhl backtest` runs the walk-forward of B0 to B3 on the development seasons. It writes `reports/backtest/summary.json`, `runs.csv`, `gaps.csv` and `gaps_b3.csv`.
+  - `nhl backtest` runs the walk-forward of B0 to B3, the three blends, the policy's bets and E3 on the development seasons. It writes `reports/backtest/summary.json`, `runs.csv`, `bets.csv`, `gaps.csv`, `gaps_b3.csv` and `gaps_blend.csv`.
+  - `nhl backtest --seasons 20222023 --market-validation` was 2022-23's one run, and it is refused for good.
+  - `reports/backtest/accepted.json` holds the frozen policy's figures and gate 3's verdict.
   - `nhl backtest --hockey-only` scores B2 and B3 on outcomes alone, without prices, as for 2023-24 and 2024-25 at gate 2.
-  - `nhl audit gaps` explains each B3 gap for review.
+  - `nhl audit gaps` explains each B3 gap for review. `--blend` does the same for the blend's gaps, each at its own prediction time.
   - **The baselines:**
     - **B0** is the de-vigged market (ADR 0008).
     - **B1** is its per-fold recalibration. B1 doesn't beat B0: B0 minus B1 is +0.0004 [-0.0005, +0.0013] on E1.
@@ -160,7 +199,7 @@ Phase 4 builds the market blend, bet selection and the full backtest, and ends a
     - A 401 is a bad or expired token (it expires around 2027-09). A 403 or 404 means the token lacks Actions read and write.
     - `npx wrangler@4 secret put GITHUB_TOKEN` stores a new token.
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
-- **Open, waiting:** #9 and #42 (P1); #30, #79 and #11 (P2). **Open, later:** #13 and #66 (P4); #14, #21, #67 and #121 (P5); #15 (P6).
+- **Open, waiting:** #9 and #42 (P1); #30, #79 and #11 (P2). **Open, later:** #14, #21, #67, #121, #154 and #156 (P5); #15 (P6).
 
 ## Keep an eye on
 
