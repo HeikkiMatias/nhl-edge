@@ -222,6 +222,7 @@ def run(
     b3_tables: "b3.Tables | None" = None,
     b3_fits: B3Fits | None = None,
     validated: Iterable[int] = (),
+    claim: Callable[[], None] | None = None,
 ) -> tuple[pl.DataFrame, Coverage, Fits]:
     """Every prediction for the test seasons, scored, the coverage per experiment and season, and
     B1's fit per experiment and season. sbr_odds and games hold the test seasons and the earlier
@@ -242,11 +243,15 @@ def run(
     b3_fits do the same for B3, the player layer (ADR 0023).
 
     validated names the market validation seasons a once-only run may score (MARKET_VALIDATION
-    _SEASONS, #145): they are tested, but never fit B1, which reads earlier open seasons only."""
+    _SEASONS, #145): they are tested, but never fit B1, which reads earlier open seasons only.
+    Such a run needs claim (one_time.claim), called before anything is scored, which refuses a
+    second run."""
     seasons = sorted(set(seasons))
     validated = set(validated)
     if validated - set(MARKET_VALIDATION_SEASONS):
         raise ValueError(f"{sorted(validated)} are not market validation seasons")
+    if validated and claim is None:
+        raise ValueError("the market validation run must be claimed before it scores (ADR 0025)")
     held_out = [
         season
         for season in seasons
@@ -254,6 +259,8 @@ def run(
     ]
     if held_out:
         raise ValueError(f"{held_out} are held out: phase 1 backtests open seasons only (#10)")
+    if validated and claim is not None:
+        claim()
     allowed = set(OPEN_SEASONS) | validated
     open_odds = sbr_odds.filter(pl.col("season").is_in(allowed))
     results = outcomes(games.filter(pl.col("season").is_in(allowed)))

@@ -36,6 +36,8 @@ app.add_typer(audit_app, name="audit")
 
 DEFAULT_BACKTEST_SEASONS = ",".join(str(season) for season in DEVELOPMENT_SEASONS)
 DEFAULT_BACKTEST_OUT = Path("reports/backtest")
+# The version component of 2022-23's one run, apart from the development runs' (#145).
+MARKET_VALIDATION_RUN = "market-validation"
 DEFAULT_AUDIT_OUT = Path("reports/audit")
 DEFAULT_XG_OUT = Path("reports/xg")
 DEFAULT_TUNING_OUT = Path("reports/tuning")
@@ -437,6 +439,11 @@ def backtest(
                 f"the market validation run scores {list(MARKET_VALIDATION_SEASONS)} alone",
                 param_hint="--seasons",
             )
+        if reports.version(MARKET_VALIDATION_RUN, datetime.now(UTC)).endswith("-dirty"):
+            raise typer.BadParameter(
+                "commit first: the one run must be reproducible from its commit (ADR 0025)",
+                param_hint="--market-validation",
+            )
         load_env()
         try:
             where = one_time.places(
@@ -528,13 +535,8 @@ def backtest(
     every_b2_fit: dict[str, dict[int, b2.B2Model]] = {}
     every_b3_fit: dict[str, dict[int, b3.B3Model]] = {}
     now = datetime.now(UTC)
-    run_version = reports.version("backtest", now)
-    if market_validation and where is not None:
-        # Claimed before anything is scored: a failed run is never rerun (ADR 0025).
-        try:
-            one_time.claim(where, run_version)
-        except ValueError as exc:
-            raise typer.BadParameter(str(exc), param_hint="--market-validation") from None
+    run_version = reports.version(MARKET_VALIDATION_RUN if market_validation else "backtest", now)
+    validation_places = where if market_validation else None
     try:
         every_prediction, every_coverage, every_fit = walk_forward.run(
             sbr_odds,
@@ -545,6 +547,12 @@ def backtest(
             b3_tables=b3_tables,
             b3_fits=every_b3_fit,
             validated=wanted if market_validation else (),
+            # Claimed before anything is scored: a failed run is never rerun (ADR 0025).
+            claim=(
+                None
+                if validation_places is None
+                else lambda: one_time.claim(validation_places, run_version)
+            ),
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None
@@ -640,9 +648,14 @@ def backtest(
     files = out
     if market_validation:
         # Its own report and files, so the development run's summary.json stays as it is.
-        report["market_validation"] = {"adr": "0025", "run_once": True}
-        path = reports.write(report, out, f"market-validation-{run_version}.json")
-        files = out / f"market-validation-{run_version}"
+        report["market_validation"] = {
+            "adr": "0025",
+            "run_once": True,
+            "note": "342 games of October and November 2022, priced by SBR: B3's ratings then "
+            "rest mostly on the season before, and the intervals are wide (ADR 0025)",
+        }
+        path = reports.write(report, out, f"{run_version}.json")
+        files = out / run_version
         files.mkdir(parents=True, exist_ok=True)
     else:
         report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)

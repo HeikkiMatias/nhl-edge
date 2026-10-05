@@ -371,6 +371,59 @@ def test_the_one_time_test_runs_once(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert again.exit_code == 2 and "already ran" in flat and "backtest-hockey-abc" in flat
 
 
+def test_the_market_validation_run_runs_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fakes import ConditionalBucket
+
+    from nhl_edge.backtest import one_time, reports
+
+    monkeypatch.chdir(tmp_path)
+    bucket = ConditionalBucket()
+    monkeypatch.setattr(
+        one_time,
+        "places",
+        lambda lake_dir, report_dirs, test: one_time.Places(
+            lake_dir, report_dirs, bucket, "b", test
+        ),
+    )
+    once = ["backtest", "--seasons", "20222023", "--market-validation"]
+
+    def plain(output: str) -> str:
+        return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", output).replace("│", " ").split())
+
+    refused = {
+        "prices the season": [*once, "--hockey-only"],
+        "scores [20222023] alone": [
+            "backtest",
+            "--seasons",
+            "20212022,20222023",
+            "--market-validation",
+        ],
+    }
+    for message, args in refused.items():
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2 and message in plain(result.output), result.output
+    # Uncommitted code can't spend the one run: it couldn't be reproduced from its commit.
+    version = reports.version
+    monkeypatch.setattr(reports, "version", lambda component, now: f"{component}-x-abc-dirty")
+    dirty = runner.invoke(app, once)
+    assert dirty.exit_code == 2 and "commit first" in plain(dirty.output), dirty.output
+    monkeypatch.setattr(reports, "version", version)
+    # Not yet run: past the gate, to the empty lake's price check, which stops it before the
+    # claim.
+    first = plain(runner.invoke(app, once).output)
+    assert "held out" not in first and "already ran" not in first
+    assert "run nhl odds sbr" in first and not bucket.objects
+    # Claimed on another machine: refused here, whatever the report directory.
+    bucket.put_object(
+        Bucket="b", Key=one_time.MARKET_VALIDATION.r2_key, Body=b"market-validation-abc then\n"
+    )
+    again = runner.invoke(app, [*once, "--out", "elsewhere"])
+    flat = plain(again.output)
+    assert again.exit_code == 2 and "already ran" in flat and "market-validation-abc" in flat
+
+
 def test_backtest_refuses_the_first_sbr_season(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
