@@ -1,6 +1,6 @@
 # 0027. The market blend: B3 and the market in one logistic fit per whole-season fold, with a B2 twin and a market-only control
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-10-04); amended by 0030 (live bets use E1's fit)
 - Date: 2026-10-04
 
 ## Context

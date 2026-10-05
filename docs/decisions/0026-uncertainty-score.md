@@ -1,6 +1,6 @@
 # 0026. The uncertainty score u: goalie doubt, availability doubt and rookie minutes, equally weighted
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-10-04); amended by 0030 (live u is history's u)
 - Date: 2026-10-04
 
 ## Context
@@ -49,12 +49,12 @@ Run `backtest-20261004-6f74840` in reports/backtest/runs.csv, on the 2021-22 fol
 ## Consequences
 
 - **Each game's parts carry their inputs' cutoffs,** and so does `Scale`, so the blend can refuse a fold that read later rows. `tests/leakage/test_uncertainty.py` covers u.
-- **History's goalie doubt is the goalie-start model's alone.** Live, confirmed starters lower u, so the blend trusts the model more live than in training. The model card records this.
+- **History's goalie doubt is the goalie-start model's alone.** Live, u reads the same goalie-start probabilities and never a confirmation, so it is the quantity the blend was fitted on (amended by 0030).
 - **The policy's hurdle and stake still read u** (ADR 0028), even though the blend gives it no clear weight.
 
 ## Revisit when
 
 - b_u's interval excludes 0 on the wrong side (the model trusted more as doubt grows).
-- Or live 2026-27 shows u far from its historical range once confirmations arrive.
+- Or live 2026-27 shows u far from its historical range (confirmations no longer reach u, amended by 0030).
 
 A u revised on live evidence is a policy change. It is judged only on games after its new freeze date, and the CLV count restarts.

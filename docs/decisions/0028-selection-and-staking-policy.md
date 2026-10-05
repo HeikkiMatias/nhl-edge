@@ -1,6 +1,6 @@
 # 0028. The selection and staking policy: expected return at the executable price, a hurdle that rises with doubt, quarter Kelly with caps, bets at the midday snapshot
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-10-04); amended by 0030 (live inputs, CLV wording)
 - Date: 2026-10-04
 
 ## Context
@@ -46,12 +46,12 @@ Run `backtest-20261004-6f74840` in reports/backtest/runs.csv. 2021-22 at the SBR
 - **Against the close (E3, #143):**
   - CLV per bet is −1.24% [−2.15%, −0.24%] against SBR's close.
   - The fair move toward the bets is +2.82% [+1.90%, +3.85%].
-  - The market moved toward the picks, but not by enough to pay back the opener's ~4% margin against a ~2.4% close.
+  - The market moved toward the picks, but not by enough to pay back the opener's ~4.1% margin. With multiplicative de-vig, CLV = (1 + fair move) / the opener's overround − 1, so the close's margin plays no part (corrected by 0030).
 
 ## Consequences
 
 - **The backtest reports bets** (`summary.json`'s `bets`, `bets.csv`) and E3. `tests/leakage/test_bets.py` checks that picks read the opener, never the close or the result.
-- **Historical CLV fails §1's criterion against SBR's close.** Whether Pinnacle's lower margin at both ends turns the fair move into positive CLV is phase 5's question.
+- **Historical CLV fails §1's criterion against SBR's close.** Whether Pinnacle's lower margin on the price taken turns the fair move into positive CLV is phase 5's question (corrected by 0030).
 - **36% of games are bet,** at a mean EV far above what a sharp market allows. The blend disagrees with the opener often, mostly backing underdogs and away teams.
 
 ## Revisit when

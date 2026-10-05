@@ -1,6 +1,6 @@
 # 0029. The market move guard: skip a bet whose side's probability fell more than 5.35 points since the morning
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-10-04)
 - Date: 2026-10-04
 
 ## Context

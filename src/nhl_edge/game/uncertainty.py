@@ -4,8 +4,8 @@ on it, and the policy (#141) raises its hurdle and lowers its stake.
 
 u has three parts, each per game from rows known before its prediction time (observed_utc):
 - goalie doubt: 1 minus the likeliest candidate starter's p_start (goalie_starts), averaged over
-  the two teams. A team without candidates is fully in doubt (1). Live, a confirmed starter makes
-  it 0.
+  the two teams. A team without candidates is fully in doubt (1). Live too, it reads the model's
+  p_start and never a confirmation, so u is the quantity the blend was fitted on (ADR 0030).
 - availability doubt: the sum of p·(1-p) over a team's skater candidates (lineups.p_available),
   the expected number of lineup surprises, averaged over the two teams.
 - rookie minutes: the share of both teams' projected 5v5 minutes (exp_5v5) that goes to skaters
