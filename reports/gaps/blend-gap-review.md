@@ -4,9 +4,10 @@ These are the market blend's gaps above 8 points against B1 in `backtest-2026100
 
 **Re-screened at each gap's own prediction time** (Codex, PR 155):
 - **What was wrong:** the first screen refit B3 at each game's start, even for E2's gaps, which the backtest predicted at the opener. It also checked its refit against itself.
-- **The re-screen:** `backtest-20261005-b7639f5` reproduces `backtest-20261004-6f74840`, with every figure identical. Its `gaps_blend.csv` carries each gap's prediction time and the backtest's own B3. `nhl audit gaps --blend` then refit B3 at that time and at the experiment's fold start, and checked it against the backtest's B3 (`reports/gaps/blend-gaps-20261005-b7639f5.md`).
-  - 45 of the 53 games were screened at E2's opener time and 8 at E1's start.
-  - Every term and every flag matches the first screen on all 53 games. B3 differs from the first screen's by at most 0.00005, which is the file's rounding.
+- **The re-screen:** `backtest-20261005-b7639f5` reproduces `backtest-20261004-6f74840`, with every figure identical. Its `gaps_blend.csv` carries each gap's prediction time and the backtest's own B3.
+  - `nhl audit gaps --blend` refit B3 for each experiment's gap at that time and at the experiment's fold start, and checked it against the backtest's B3 (`reports/gaps/blend-gaps-20261005-ebb7710.md`).
+  - That covers all 66 rows: 49 at E2's opener time and 17 at E1's start. A game that is a gap on both experiments is screened twice.
+  - Every term and flag matches the first screen for its game, across 59 columns. The same 18 games are flagged.
 - **So the review below stands as written.**
 
 ## Verdict
