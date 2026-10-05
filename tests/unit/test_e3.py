@@ -114,7 +114,17 @@ def test_the_sensitivity_leaves_out_only_the_listed_bets() -> None:
     groups = valued.select(
         "game_id", different_favourites=pl.lit(False), early_season=pl.lit(False)
     )
-    # A listed game the policy never bet doesn't count.
+    # A listed game the policy never bet doesn't count, nor does a listed bet without a close,
+    # which E3's pooled figures never held.
+    unclosed = valued.with_columns(
+        clv=pl.when(pl.col("game_id") == 11).then(None).otherwise(pl.col("clv"))
+    )
+    found = e3.without_suspects(unclosed, pl.Series("game_id", [3, 7, 11, 999]), groups)
+    assert found["bets_left_out"] == 2
+    assert (
+        found["pooled"]
+        == e3.report(unclosed.filter(~pl.col("game_id").is_in([3, 7])), groups)["pooled"]
+    )
     found = e3.without_suspects(valued, pl.Series("game_id", [3, 7, 999]), groups)
     assert found["bets_left_out"] == 2
     assert found["pooled"]["bets"] == n - 2

@@ -235,9 +235,10 @@ def without_suspects(
 ) -> dict[str, Any]:
     """E3 pooled without the bets on suspect openers (#56's list, game_id): a sensitivity, never
     the policy. The list reads the close, so E2 can't refuse those openers (ADR 0007), but one such
-    price can flatter E3. Counts the bets left out."""
+    price can flatter E3. Counts the bets left out of E3's pooled figures: a listed bet without a
+    close was never in them."""
     listed = pl.col("game_id").is_in(suspects.implode())
     return {
-        "bets_left_out": valued.filter(listed).height,
+        "bets_left_out": valued.filter(listed, pl.col("clv").is_not_null()).height,
         "pooled": report(valued.filter(~listed), groups)["pooled"],
     }

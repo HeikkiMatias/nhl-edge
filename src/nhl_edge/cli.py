@@ -2343,7 +2343,9 @@ def audit_gaps(
     if not frames:
         typer.echo(f"{gaps}: no gaps to screen")
         return
-    screened = pl.concat(frames, how="diagonal_relaxed").sort("season", "game_date", "game_id")
+    screened = pl.concat(frames, how="diagonal_relaxed").sort(
+        "season", "game_date", "game_id", "experiment"
+    )
     marked = b3_gaps.every_gap(screened) if blend else b3_gaps.review_set(screened)
     now = datetime.now(UTC)
     version = reports.version("blend-gaps" if blend else "b3-gaps", now)

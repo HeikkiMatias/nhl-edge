@@ -113,6 +113,21 @@ def test_a_blend_gap_must_be_the_blends_probability_less_b1s() -> None:
         b3_gaps.screen(LEAGUE, stale, {TEST: START})
 
 
+def test_a_game_gapped_on_both_experiments_is_screened_at_each_time() -> None:
+    rows = pl.DataFrame(
+        {
+            "experiment": ["E2", "E1", "E2"],
+            "season": [TEST] * 3,
+            "game_id": [1, 1, 2],
+            "game_date": ["2018-10-04"] * 3,
+            "prediction_utc": ["2018-10-04 14:00:01", "2018-10-04 23:00:00", "2018-10-04 14:00:01"],
+            "p_b3": [0.6] * 3,
+        }
+    )
+    kept = b3_gaps.blend_gaps(rows)
+    assert kept.select("game_id", "experiment").rows() == [(1, "E1"), (1, "E2"), (2, "E2")]
+
+
 def test_a_blend_gaps_file_without_b3s_own_probability_is_refused() -> None:
     old = gaps_for(LEAGUE).drop("p_b3").rename({"gap": "blend_gap"})
     with pytest.raises(ValueError, match="rerun nhl backtest"):

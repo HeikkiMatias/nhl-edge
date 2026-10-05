@@ -323,16 +323,15 @@ def every_gap(screened: pl.DataFrame) -> pl.DataFrame:
 
 def blend_gaps(rows: pl.DataFrame) -> pl.DataFrame:
     """The blend's gaps (gaps_blend.csv: experiment, season, game_id, game_date, prediction_utc,
-    home, away, p_blend, p_b1, p_b3, gap), one row per game, the experiment with the larger gap
-    kept. Refuses a file without the backtest's own B3 and prediction time, which the screen
-    checks its refit against."""
+    home, away, p_blend, p_b1, p_b3, gap), one row per experiment and game: a game that is a gap
+    on both E1 and E2 is screened at each experiment's own prediction time. Refuses a file
+    without the backtest's own B3 and prediction time, which the screen checks its refit
+    against."""
     missing = {"prediction_utc", "p_b3"} - set(rows.columns)
     if missing:
         raise ValueError(f"the gaps file lacks {sorted(missing)}: rerun nhl backtest")
-    return (
-        rows.sort(pl.col("gap").abs(), descending=True)
-        .unique("game_id", keep="first")
-        .sort("season", "game_date", "game_id")
+    return rows.unique(["experiment", "game_id"], keep="first").sort(
+        "season", "game_date", "game_id", "experiment"
     )
 
 
@@ -380,12 +379,14 @@ def markdown(marked: pl.DataFrame, source: str, version: str, model: str = "B3")
     shown = (
         marked.filter(pl.col("review") != "")
         .with_columns(order=pl.col("review").replace_strict(order, return_dtype=pl.Int8))
-        .sort("order", "season", "game_date", "game_id")
+        .sort("order", "season", "game_date", "game_id", *(["experiment"] * (model == "blend")))
     )
     for row in shown.iter_rows(named=True):
         flags = ", ".join(flag for flag in FLAGS if row[flag])
+        # A blend game can be a gap on both experiments, each screened at its own time.
+        game = f"{row['game_id']} ({row['experiment']})" if model == "blend" else row["game_id"]
         lines.append(
-            f"| {row['review']} | {row['game_id']} | {row['game_date']} | {row['home']} | "
+            f"| {row['review']} | {game} | {row['game_date']} | {row['home']} | "
             f"{row['away']} | {row['p_b3']:.3f} | {row['p_b1']:.3f} | {row['gap']:+.3f} | "
             f"{row['delta_g_hat']:+.3f} | {row['driver']} | {row['home_goals']:.2f} | "
             f"{row['away_goals']:.2f} | {row['home_missed']}/{row['away_missed']} | "
