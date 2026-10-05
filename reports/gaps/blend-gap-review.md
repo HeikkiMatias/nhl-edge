@@ -2,12 +2,12 @@
 
 These are the market blend's gaps above 8 points against B1 in `backtest-20261004-6f74840`: 17 on E1 and 49 on E2, 53 games in all. The screen read the same 53 games from `backtest-20261004-509d3da`, whose code and gaps are the same. Each was screened by `nhl audit gaps --blend` (`reports/gaps/blend-gaps-20261004-509d3da.md`), with B3 refit as in the backtest's E1 fold, and read by hand. No game's result was read, and the screen shows none.
 
-**A screen check that couldn't fail, and why it doesn't matter here.**
-- **The fault:** the leakage check of #144 found that this version of the screen compared B3's refit with itself, so its drift check always passed.
-- **The fix:** `gaps_blend.csv` now carries the backtest's own B3 and prediction time, and the screen checks its refit against them.
-- **This run's numbers hold, checked by hand:**
-  - B3's predictions are identical on E1 and E2 for every 2018-19 and 2021-22 game: B3's E2-minus-E1 log loss is 0 on all 2,573 games.
-  - For the 23 gaps on E2 only that also appear in `gaps_b3.csv`, the screen's B3 differs from the backtest's by at most 0.00005.
+**Re-screened at each gap's own prediction time** (Codex, PR 155):
+- **What was wrong:** the first screen refit B3 at each game's start, even for E2's gaps, which the backtest predicted at the opener. It also checked its refit against itself.
+- **The re-screen:** `backtest-20261005-b7639f5` reproduces `backtest-20261004-6f74840`, with every figure identical. Its `gaps_blend.csv` carries each gap's prediction time and the backtest's own B3. `nhl audit gaps --blend` then refit B3 at that time and at the experiment's fold start, and checked it against the backtest's B3 (`reports/gaps/blend-gaps-20261005-b7639f5.md`).
+  - 45 of the 53 games were screened at E2's opener time and 8 at E1's start.
+  - Every term and every flag matches the first screen on all 53 games. B3 differs from the first screen's by at most 0.00005, which is the file's rounding.
+- **So the review below stands as written.**
 
 ## Verdict
 

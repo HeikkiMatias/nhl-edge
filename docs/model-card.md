@@ -18,7 +18,7 @@ None. The backtest has the two market baselines, phase 2's model and phase 3's:
 
 - **The blend** (phase 4, ADR 0027) is the de-vigged market and B3 combined by a logistic regression whose model weight moves with the uncertainty score u (ADR 0026). It is fitted per whole-season fold on out-of-sample predictions of the folds before it, so on history it scores 2021-22 only. A twin on B2 and a market-only control are fitted beside it. The selection and staking policy (ADR 0028) and the market move guard (ADR 0029) bet with it. Live, the policy bets with the blend fitted on SBR's close (E1), at Pinnacle's 12:45 ET price (ADR 0030).
 
-The run is backtest `backtest-20261004-6f74840` on the development seasons 2018-19 and 2021-22. E2 refuses implausible SBR openers (ADR 0007). B0 to B3 are unchanged from `backtest-20261003-b1a7b04`.
+The run is backtest `backtest-20261004-6f74840` on the development seasons 2018-19 and 2021-22, reproduced with every figure identical by `backtest-20261005-b7639f5`, whose files are committed with the gaps' prediction times. E2 refuses implausible SBR openers (ADR 0007). B0 to B3 are unchanged from `backtest-20261003-b1a7b04`.
 
 ## Metrics
 
