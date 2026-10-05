@@ -102,6 +102,17 @@ def test_the_screen_refits_at_each_gaps_own_prediction_time() -> None:
         b3_gaps.screen(LEAGUE, before(9), {TEST: START})
 
 
+def test_a_blend_gap_must_be_the_blends_probability_less_b1s() -> None:
+    gaps = gaps_for(LEAGUE).with_columns(p_blend=pl.col("p_b3") + 0.02)
+    gaps = gaps.with_columns(gap=pl.col("p_blend") - pl.col("p_b1"))
+    frame = b3_gaps.screen(LEAGUE, gaps, {TEST: START})
+    assert frame.sort("game_id")["p_blend"].equals(gaps.sort("game_id")["p_blend"])
+    # A stale blend probability beside its gap is refused, however right B3 is.
+    stale = gaps.with_columns(p_blend=pl.col("p_blend") + 0.01)
+    with pytest.raises(ValueError, match="30 gaps are not p_blend - p_b1"):
+        b3_gaps.screen(LEAGUE, stale, {TEST: START})
+
+
 def test_a_blend_gaps_file_without_b3s_own_probability_is_refused() -> None:
     old = gaps_for(LEAGUE).drop("p_b3").rename({"gap": "blend_gap"})
     with pytest.raises(ValueError, match="rerun nhl backtest"):

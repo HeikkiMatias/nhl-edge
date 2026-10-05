@@ -228,3 +228,16 @@ def report(valued: pl.DataFrame, groups: pl.DataFrame) -> dict[str, Any]:
         "groups": {name: _summary(rows) for name, rows in by_group.items()},
         "drivers": drivers,
     }
+
+
+def without_suspects(
+    valued: pl.DataFrame, suspects: pl.Series, groups: pl.DataFrame
+) -> dict[str, Any]:
+    """E3 pooled without the bets on suspect openers (#56's list, game_id): a sensitivity, never
+    the policy. The list reads the close, so E2 can't refuse those openers (ADR 0007), but one such
+    price can flatter E3. Counts the bets left out."""
+    listed = pl.col("game_id").is_in(suspects.implode())
+    return {
+        "bets_left_out": valued.filter(listed).height,
+        "pooled": report(valued.filter(~listed), groups)["pooled"],
+    }

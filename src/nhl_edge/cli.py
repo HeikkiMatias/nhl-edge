@@ -591,15 +591,9 @@ def backtest(
     )
     groups = blend_backtest.groups(blend_input, games).filter(pl.col("experiment") == e2)
     report["e3"] = e3.report(settled, groups.drop("experiment"))
-    # A sensitivity, never the policy: the bets on #56's suspect openers left out. The list
-    # reads the close, so E2 can't refuse them (ADR 0007), but one such price can flatter E3.
-    suspects = load_suspect_openers()["game_id"]
-    report["e3"]["sensitivity_without_suspect_openers"] = {
-        "bets_left_out": settled.filter(pl.col("game_id").is_in(suspects.implode())).height,
-        "pooled": e3.report(
-            settled.filter(~pl.col("game_id").is_in(suspects.implode())), groups.drop("experiment")
-        )["pooled"],
-    }
+    report["e3"]["sensitivity_without_suspect_openers"] = e3.without_suspects(
+        settled, load_suspect_openers()["game_id"], groups.drop("experiment")
+    )
     report["sensitivity"] = sensitivity.every_opener(sbr_odds, games, wanted)
     report["diagnostics"] = {"book_era": book_era.diagnostic(sbr_odds, games)}
     path = reports.write(report, out)

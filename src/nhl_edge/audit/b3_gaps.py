@@ -35,6 +35,8 @@ from nhl_edge.game import b2, b3
 from nhl_edge.lineup.goalie_start import team_goalie_games
 
 UTC = pl.Datetime("us", "UTC")
+# The gaps files round each probability and gap to 4 decimals.
+ROUNDING = 2e-4
 JUMP = 0.08
 MISSED = 4
 UNSURE = 0.1
@@ -164,15 +166,34 @@ def screen(tables: b3.Tables, gaps: pl.DataFrame, starts: Mapping[int, datetime]
     and the flags, B3 refit for each season as the backtest's fold starting at starts[season] and
     predicting at each game's prediction_utc, or its start without one. Raises if the refit leaves
     out a gap game or its probability differs from p_b3: the screen would then not explain the
-    backtest's gaps."""
+    backtest's gaps. A blend gaps file's p_blend is kept, and every row's gap must be its model's
+    probability (p_blend, or p_b3 without one) less p_b1."""
     # The gaps file's own columns only: nothing else it might carry reaches the report.
+    gapped = "p_blend" if "p_blend" in gaps.columns else "p_b3"
+    off = gaps.filter((pl.col(gapped) - pl.col("p_b1") - pl.col("gap")).abs() > ROUNDING)
+    if off.height:
+        raise ValueError(
+            f"{off.height} gaps are not {gapped} - p_b1, e.g. game {off['game_id'][0]}: "
+            "rerun nhl backtest"
+        )
     at = (
         pl.col("prediction_utc").cast(UTC)
         if "prediction_utc" in gaps.columns
         else pl.lit(None, UTC).alias("prediction_utc")
     )
     gaps = (
-        gaps.select("season", "game_id", "game_date", at, "home", "away", "p_b3", "p_b1", "gap")
+        gaps.select(
+            "season",
+            "game_id",
+            "game_date",
+            at,
+            "home",
+            "away",
+            *(["p_blend"] if gapped == "p_blend" else []),
+            "p_b3",
+            "p_b1",
+            "gap",
+        )
         .join(tables.games.select("game_id", "start_utc"), on="game_id", how="left")
         .with_columns(prediction_utc=pl.coalesce("prediction_utc", "start_utc"))
         .drop("start_utc")
