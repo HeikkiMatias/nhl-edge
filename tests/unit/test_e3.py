@@ -97,6 +97,46 @@ def test_the_report_gives_clv_per_bet_and_by_stake_with_intervals() -> None:
     assert set(found["drivers"]) == {"skaters", "market"}
 
 
+def test_the_sensitivity_leaves_out_only_the_listed_bets() -> None:
+    n = 40
+    valued = pl.DataFrame(
+        {
+            "season": [20212022] * n,
+            "game_id": list(range(n)),
+            "game_date": [date(2021, 10, 12 + k // 4) for k in range(n)],
+            # The listed bets carry an outsized CLV, so leaving them out moves the mean.
+            "clv": [0.5 if k in (3, 7) else 0.01 for k in range(n)],
+            "fair_move": [0.02] * n,
+            "stake": [1.0] * n,
+            "ret": [0.1] * n,
+        }
+    )
+    groups = valued.select(
+        "game_id", different_favourites=pl.lit(False), early_season=pl.lit(False)
+    )
+    # A listed game the policy never bet doesn't count, nor does a listed bet without a close,
+    # which E3's pooled figures never held.
+    unclosed = valued.with_columns(
+        clv=pl.when(pl.col("game_id") == 11).then(None).otherwise(pl.col("clv"))
+    )
+    found = e3.without_suspects(unclosed, pl.Series("game_id", [3, 7, 11, 999]), groups)
+    assert found["bets_left_out"] == 2
+    assert (
+        found["pooled"]
+        == e3.report(unclosed.filter(~pl.col("game_id").is_in([3, 7])), groups)["pooled"]
+    )
+    found = e3.without_suspects(valued, pl.Series("game_id", [3, 7, 999]), groups)
+    assert found["bets_left_out"] == 2
+    assert found["pooled"]["bets"] == n - 2
+    assert found["pooled"]["clv_per_bet"]["mean"] == pytest.approx(0.01)
+    kept = valued.filter(~pl.col("game_id").is_in([3, 7]))
+    assert found["pooled"] == e3.report(kept, groups)["pooled"]
+    # An empty list leaves E3 as it is.
+    nothing = e3.without_suspects(valued, pl.Series("game_id", [], dtype=pl.Int64), groups)
+    assert nothing["bets_left_out"] == 0
+    assert nothing["pooled"] == e3.report(valued, groups)["pooled"]
+
+
 def test_each_bet_is_attributed_to_the_part_that_pushes_it_most() -> None:
     tables = league()
     season = 20182019

@@ -13,11 +13,22 @@ a 50% fair price at 1.90 has an EV of -0.25% and is no bet.
 """
 
 from dataclasses import dataclass
+from datetime import date
 
 import polars as pl
 
 HOME = "home"
 AWAY = "away"
+
+# The policy's freeze (#144): u (ADR 0026), the blend (ADR 0027), this policy (ADR 0028) and the
+# guard (ADR 0029) as on main at 8ec5cf3, with the live inputs of ADR 0030. Live games count from
+# the day after FROZEN_ON; any change is a new version, judged only on games after its own freeze
+# date.
+POLICY_VERSION = "policy-20261005-8ec5cf3"
+FROZEN_ON = date(2026, 10, 5)
+# Live bets use the blend fitted on SBR's close (E1), applied to Pinnacle's 12:45 ET price
+# (ADR 0030).
+LIVE_BLEND_EXPERIMENT = "E1"
 
 
 @dataclass(frozen=True)
