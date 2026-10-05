@@ -6,11 +6,12 @@ price of the bet's side (the price taken) and p_close the multiplicative de-vigg
 that side at SBR's close (market/devig.py, ADR 0008). It is averaged per bet, and weighted by
 stake, each with a weekly block bootstrap interval (hard rule 7).
 
-SBR's close is not Pinnacle's: its book is unknown, and from 2018-19 it comes from a lower-margin
-book than its opener (#51, #65). Book differences then enter CLV, mostly pushing it down. The fair
-move, the close's de-vigged probability of the bet's side over the opener's, less 1, leaves the
-margins out: it says only whether the market moved toward the bet. §1's
-criterion against the Pinnacle closing proxy can only be judged live (phase 5).
+The fair move is the close's de-vigged probability of the bet's side over the opener's, less 1:
+whether the market moved toward the bet, with both margins left out. Since the close is de-vigged,
+CLV = (1 + fair move) / the opener's overround - 1: the close's margin plays no part, and the
+opener's margin is what CLV must overcome (ADR 0030). SBR's close is not Pinnacle's: its book is
+unknown, and from 2018-19 it differs from the opener's (#51, #65). §1's criterion against the
+Pinnacle closing proxy can only be judged live (phase 5).
 
 **Attribution.** The blend moves away from the market by
     (a + (b_m - 1)·logit p_mkt) + (b_x + b_u·u)·logit p_B3,
@@ -215,8 +216,9 @@ def report(valued: pl.DataFrame, groups: pl.DataFrame) -> dict[str, Any]:
         else {}
     )
     return {
-        "closing_proxy": "SBR's close, de-vigged multiplicatively: not Pinnacle's, and from a "
-        "lower-margin book than the opener from 2018-19 on (#65), which pushes CLV down",
+        "closing_proxy": "SBR's close, de-vigged multiplicatively: not Pinnacle's, and from "
+        "2018-19 another book than the opener's (#65). CLV = (1 + fair move) / the opener's "
+        "overround - 1",
         "bets_without_a_close": unvalued,
         "pooled": _summary(valued),
         "per_season": {
