@@ -106,7 +106,7 @@ Every deliverable merged under its own task issue:
 
 **Open follow-ups:** none blocks phase 5.
 - #154 (P5): the E3 driver mostly marks favourite against underdog.
-- #156: recompute the blend's probability in the gap screen.
+- #156 (P5): recompute the blend's probability in the gap screen.
 
 ## Phase 5: where to start (#14)
 
@@ -143,7 +143,7 @@ Phase 5 paper-trades the frozen policy on live 2026-27 and builds the dashboard.
 - **Gate 2 (ADR 0024):** B3 is phase 4's model against the market. B2 stays in every report as B3's reference.
 - **Phase 4 (ADRs 0025 to 0031):**
   - The policy is frozen as `policy-20261005-8ec5cf3`. Live games count from 2026-10-06.
-  - Live bets use E1's blend fit and Pinnacle's 12:45 ET price, and u never reads a confirmation (ADR 0030). Codex's P0 on #155, "closing odds in a tradable prediction" for E1's fit, is won't-fix by the owner's decision: the fit reads only earlier seasons' closes.
+  - Live bets use E1's blend fit and Pinnacle's 12:45 ET price, and u never reads a confirmation (ADR 0030). Codex's P0s on #155 and #159, "closing odds in a tradable prediction" for E1's fit, are won't-fix by the owner's decision: the fit reads only earlier seasons' closes.
   - Gate 3 is not met, and phase 5 goes ahead regardless (ADR 0031).
   - u stays frozen although its revisit trigger fired: live evidence decides.
 - **Data:**
@@ -223,6 +223,7 @@ Phase 5 paper-trades the frozen policy on live 2026-27 and builds the dashboard.
   - The proxy refuses branch deletes, so merged branches stay on GitHub. Delete them from GitHub's branch page if you like.
 - **Codex:**
   - It answers as a review with findings, a 👍 reaction, or a comment saying it found no major issues. Check all three.
+  - It doesn't always start on its own. If nothing has arrived about 15 minutes after a PR opens, comment `@codex review`. A "Something went wrong" reply is an error, not a review round: ask again.
   - Reply to every finding with "Fixed in <sha>", "Follow-up #n" or "Won't fix: <reason>". A won't-fix on a P0 needs the owner first.
 - **Reference upkeep in 2026-27:** at a coaching change, end the old stint in `coaches.csv` and add the new one. Add a new venue name to `venues.csv`, and the building to `arenas.csv` if it is new (docs/data-sources.md). `nhl audit reference` flags both.
 - **#67 (P5):** `EXPECTED_GAMES` has no 2026-27 entry. It matters from April 2027.
@@ -238,6 +239,6 @@ Phase 5 paper-trades the frozen policy on live 2026-27 and builds the dashboard.
    5. for the live season, the ingest window and replays that `uv run nhl status` prints
 
    None of them calls a paid endpoint.
-3. `uv run nhl backtest` reruns the backtest, and `uv run nhl backtest --hockey-only --seasons 20232024,20242025` the hockey validation. Without `--seasons`, the hockey-only mode scores the development seasons. Commit code first: the run's version ends in `-dirty` when `src/`, `pyproject.toml` or `uv.lock` has uncommitted changes. Never include 2025-26 or live games unless the owner says so.
+3. `uv run nhl backtest` reruns the backtest, and `uv run nhl backtest --hockey-only --seasons 20232024,20242025` the hockey validation. Without `--seasons`, the hockey-only mode scores the development seasons. Commit code first: the run's version ends in `-dirty` when `src/`, `pyproject.toml` or `uv.lock` has uncommitted changes. Never include 2025-26, 2022-23 or live games unless the owner says so: 2025-26's and 2022-23's one runs are spent.
 4. **Tuning:** `nhl team-strength`, `nhl goalie-effect`, `nhl schedule-terms` and `nhl rapm` take `--tune`. They and `nhl tune-b2` rerun their grids on the training seasons only, and log them to `reports/tuning/`. Frozen settings change only through a new ADR.
 5. CLAUDE.md's workflow (a branch per issue, the Codex review budget, merging when ready) applies as before.
