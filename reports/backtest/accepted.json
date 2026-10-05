@@ -1,0 +1,457 @@
+{
+  "accepted_on": "2026-10-05",
+  "adr": "0031",
+  "gate_3": "not met: the blend adds no information beyond the recalibrated market on history; CLV against SBR's close is negative. Phase 5 paper-trades the frozen policy, and live 2026-27 judges CLV against Pinnacle.",
+  "policy_version": "policy-20261005-8ec5cf3",
+  "runs": {
+    "development": "backtest-20261005-b7639f5",
+    "development_reproduces": "backtest-20261004-6f74840",
+    "market_validation_2022_23": "market-validation-20261005-6ec331b"
+  },
+  "models": {
+    "E1": {
+      "BLEND_paired_against_B1": {
+        "per_season": {
+          "20212022": {
+            "mean": -0.0014556529140651664,
+            "low": -0.004345958535076361,
+            "high": 0.001758783201201158,
+            "games": 1312
+          },
+          "20222023": {
+            "mean": 0.004375229155356474,
+            "low": -0.006152423836370387,
+            "high": 0.017999497977379788,
+            "games": 342
+          }
+        },
+        "pooled": {
+          "mean": -0.00024999289729237266,
+          "low": -0.0037280919773378116,
+          "high": 0.0032281061827530667,
+          "games": 1654,
+          "method": "normal approximation over the seasons' weekly block bootstraps"
+        }
+      },
+      "BLEND_paired_against_BLEND_B2": {
+        "per_season": {
+          "20212022": {
+            "mean": -0.001783811675460844,
+            "low": -0.003972950876826149,
+            "high": 0.0005079263801745539,
+            "games": 1312
+          },
+          "20222023": {
+            "mean": 0.004474150252582859,
+            "low": -0.006686034434614727,
+            "high": 0.017174293968461152,
+            "games": 342
+          }
+        },
+        "pooled": {
+          "mean": -0.0004898437314518075,
+          "low": -0.003530165565042015,
+          "high": 0.0025504781021384003,
+          "games": 1654,
+          "method": "normal approximation over the seasons' weekly block bootstraps"
+        }
+      },
+      "BLEND_paired_against_BLEND_MARKET": {
+        "per_season": {
+          "20212022": {
+            "mean": -0.002232453421337139,
+            "low": -0.005376030160610857,
+            "high": 0.001132004962060913,
+            "games": 1312
+          },
+          "20222023": {
+            "mean": 0.004466166449492004,
+            "low": -0.006164267329231622,
+            "high": 0.018144149278751916,
+            "games": 342
+          }
+        },
+        "pooled": {
+          "mean": -0.0008473699897630357,
+          "low": -0.0044499215843626806,
+          "high": 0.002755181604836609,
+          "games": 1654,
+          "method": "normal approximation over the seasons' weekly block bootstraps"
+        }
+      },
+      "B3_paired_against_B2": {
+        "per_season": {
+          "20182019": {
+            "mean": -0.006629187971344766,
+            "low": -0.013696966406519595,
+            "high": 1.1970771599687983e-05,
+            "games": 1271
+          },
+          "20212022": {
+            "mean": -0.00908434936807792,
+            "low": -0.01628914716893936,
+            "high": -0.0025398297762728736,
+            "games": 1312
+          },
+          "20222023": {
+            "mean": 0.0013412847704234944,
+            "low": -0.02405521842642269,
+            "high": 0.025405035267113952,
+            "games": 342
+          }
+        },
+        "pooled": {
+          "mean": -0.006798511073850459,
+          "low": -0.011969664877704721,
+          "high": -0.0016273572699961967,
+          "games": 2925,
+          "method": "normal approximation over the seasons' weekly block bootstraps"
+        }
+      },
+      "B3_paired_against_B1": {
+        "per_season": {
+          "20182019": {
+            "mean": 0.0010266628312410044,
+            "low": -0.006665632855177475,
+            "high": 0.008884908977722655,
+            "games": 1271
+          },
+          "20212022": {
+            "mean": 0.005557183948241724,
+            "low": 0.00041064543309521384,
+            "high": 0.010592841709049006,
+            "games": 1312
+          },
+          "20222023": {
+            "mean": 0.005146213264930292,
+            "low": -0.0007835519776916774,
+            "high": 0.012982331763476572,
+            "games": 342
+          }
+        },
+        "pooled": {
+          "mean": 0.0035404850376774765,
+          "low": -0.0006161160354099739,
+          "high": 0.007697086110764927,
+          "games": 2925,
+          "method": "normal approximation over the seasons' weekly block bootstraps"
+        }
+      },
+      "B2_paired_against_B1": {
+        "per_season": {
+          "20182019": {
+            "mean": 0.007655850802585771,
+            "low": -0.0011452920837956993,
+            "high": 0.018000216940195723,
+            "games": 1271
+          },
+          "20212022": {
+            "mean": 0.014641533316319644,
+            "low": 0.005008813507999541,
+            "high": 0.02452353846856872,
+            "games": 1312
+          },
+          "20222023": {
+            "mean": 0.0038049284945067935,
+            "low": -0.013832977951428797,
+            "high": 0.02380631215023653,
+            "games": 342
+          }
+        },
+        "pooled": {
+          "mean": 0.010338996111527936,
+          "low": 0.003912519829714703,
+          "high": 0.01676547239334117,
+          "games": 2925,
+          "method": "normal approximation over the seasons' weekly block bootstraps"
+        }
+      },
+      "BLEND_calibration": {
+        "20212022": {
+          "intercept": {
+            "value": 0.02055403117044975,
+            "low": -0.13788127245828596,
+            "high": 0.1698167790945822
+          },
+          "slope": {
+            "value": 1.1575203971854633,
+            "low": 0.9488683461014834,
+            "high": 1.3913800722184708
+          }
+        },
+        "20222023": {
+          "intercept": {
+            "value": 0.0027990561031576767,
+            "low": -0.18905597375511818,
+            "high": 0.17934550600882543
+          },
+          "slope": {
+            "value": 0.7084170930397948,
+            "low": 0.24632346227729762,
+            "high": 1.2062292673733295
+          }
+        }
+      }
+    },
+    "E2": {
+      "BLEND_paired_against_B1": {
+        "per_season": {
+          "20212022": {
+            "mean": -0.004232806984013051,
+            "low": -0.007838835518999871,
+            "high": -0.0006867502152996758,
+            "games": 1306
+          },
+          "20222023": {
+            "mean": 0.0032764423845887017,
+            "low": -0.01175293415416931,
+            "high": 0.022379057653003305,
+            "games": 342
+          }
+        },
+        "pooled": {
+          "mean": -0.002674455476693998,
+          "low": -0.007210327182946404,
+          "high": 0.0018614162295584077,
+          "games": 1648,
+          "method": "normal approximation over the seasons' weekly block bootstraps"
+        }
+      },
+      "BLEND_paired_against_BLEND_B2": {
+        "per_season": {
+          "20212022": {
+            "mean": -0.0032692501435426674,
+            "low": -0.006243489460841813,
+            "high": -0.000219044168034021,
+            "games": 1306
+          },
+          "20222023": {
+            "mean": 0.0038688412772409485,
+            "low": -0.011428978304118839,
+            "high": 0.02123855811882217,
+            "games": 342
+          }
+        },
+        "pooled": {
+          "mean": -0.0017879229190839315,
+          "low": -0.005933771437614904,
+          "high": 0.0023579255994470418,
+          "games": 1648,
+          "method": "normal approximation over the seasons' weekly block bootstraps"
+        }
+      },
+      "BLEND_paired_against_BLEND_MARKET": {
+        "per_season": {
+          "20212022": {
+            "mean": -0.0049272989837275,
+            "low": -0.008662269313094264,
+            "high": -0.0010865016110353308,
+            "games": 1306
+          },
+          "20222023": {
+            "mean": 0.00320520284143902,
+            "low": -0.011756759785006258,
+            "high": 0.022238087854031075,
+            "games": 342
+          }
+        },
+        "pooled": {
+          "mean": -0.003239607464184447,
+          "low": -0.007871371156816232,
+          "high": 0.0013921562284473386,
+          "games": 1648,
+          "method": "normal approximation over the seasons' weekly block bootstraps"
+        }
+      },
+      "B3_paired_against_B2": {
+        "per_season": {
+          "20182019": {
+            "mean": -0.006436150988013835,
+            "low": -0.013391471484179844,
+            "high": 0.00012963939204532648,
+            "games": 1267
+          },
+          "20212022": {
+            "mean": -0.00918492033782741,
+            "low": -0.016261398208434617,
+            "high": -0.0023820712543428575,
+            "games": 1306
+          },
+          "20222023": {
+            "mean": 0.0013412847704234944,
+            "low": -0.02405521842642269,
+            "high": 0.025405035267113952,
+            "games": 342
+          }
+        },
+        "pooled": {
+          "mean": -0.006755193780971283,
+          "low": -0.011924314850298483,
+          "high": -0.001586072711644083,
+          "games": 2915,
+          "method": "normal approximation over the seasons' weekly block bootstraps"
+        }
+      },
+      "B3_paired_against_B1": {
+        "per_season": {
+          "20182019": {
+            "mean": -0.0009085900604155299,
+            "low": -0.007828539216294294,
+            "high": 0.005849236105120838,
+            "games": 1267
+          },
+          "20212022": {
+            "mean": 0.0008527055965613521,
+            "low": -0.005619471320083908,
+            "high": 0.006125913498582002,
+            "games": 1306
+          },
+          "20222023": {
+            "mean": 0.0007598677148632026,
+            "low": -0.008852304657772543,
+            "high": 0.013423689328276206,
+            "games": 342
+          }
+        },
+        "pooled": {
+          "mean": 7.626918046170316e-05,
+          "low": -0.004102997200282732,
+          "high": 0.004255535561206138,
+          "games": 2915,
+          "method": "normal approximation over the seasons' weekly block bootstraps"
+        }
+      },
+      "B2_paired_against_B1": {
+        "per_season": {
+          "20182019": {
+            "mean": 0.0055275609275983045,
+            "low": -0.0027879162399614865,
+            "high": 0.015413812493959064,
+            "games": 1267
+          },
+          "20212022": {
+            "mean": 0.01003762593438876,
+            "low": -0.00035441904168314735,
+            "high": 0.020111269691161712,
+            "games": 1306
+          },
+          "20222023": {
+            "mean": -0.0005814170555602931,
+            "low": -0.017027665806810328,
+            "high": 0.01971392468724542,
+            "games": 342
+          }
+        },
+        "pooled": {
+          "mean": 0.006831462961432985,
+          "low": 0.0004040709324539746,
+          "high": 0.013258854990411996,
+          "games": 2915,
+          "method": "normal approximation over the seasons' weekly block bootstraps"
+        }
+      },
+      "BLEND_calibration": {
+        "20212022": {
+          "intercept": {
+            "value": 0.028563356582837627,
+            "low": -0.12650351029010143,
+            "high": 0.18013737062282206
+          },
+          "slope": {
+            "value": 1.164603118692974,
+            "low": 0.9384503725124753,
+            "high": 1.4070736490286773
+          }
+        },
+        "20222023": {
+          "intercept": {
+            "value": 0.01553310756631488,
+            "low": -0.17053062592572565,
+            "high": 0.18976044963074182
+          },
+          "slope": {
+            "value": 0.6677675676836546,
+            "low": 0.19691872435259056,
+            "high": 1.1848020378722341
+          }
+        }
+      }
+    }
+  },
+  "e3": {
+    "clv_per_bet": {
+      "per_season": {
+        "20212022": {
+          "mean": -0.012371797372670114,
+          "low": -0.021452691073677813,
+          "high": -0.0023575259961338742,
+          "games": 465
+        },
+        "20222023": {
+          "mean": -0.012174275669790546,
+          "low": -0.024117147658826138,
+          "high": -0.0001444421580758227,
+          "games": 160
+        }
+      },
+      "pooled": {
+        "mean": -0.012321231816732944,
+        "low": -0.020059063716785914,
+        "high": -0.0045833999166799725,
+        "games": 625,
+        "method": "normal approximation over the seasons' weekly block bootstraps"
+      }
+    },
+    "fair_move_per_bet": {
+      "per_season": {
+        "20212022": {
+          "mean": 0.02821841968417138,
+          "low": 0.019012927152584725,
+          "high": 0.03848357220929258,
+          "games": 465
+        },
+        "20222023": {
+          "mean": 0.028500036806994554,
+          "low": 0.016294131775996534,
+          "high": 0.040564243819452624,
+          "games": 160
+        }
+      },
+      "pooled": {
+        "mean": 0.028290513667614113,
+        "low": 0.020409332825730438,
+        "high": 0.03617169450949779,
+        "games": 625,
+        "method": "normal approximation over the seasons' weekly block bootstraps"
+      }
+    },
+    "return_per_bet": {
+      "per_season": {
+        "20212022": {
+          "mean": 0.06120941351452436,
+          "low": -0.005224823447341397,
+          "high": 0.13327923862625207,
+          "games": 465
+        },
+        "20222023": {
+          "mean": 0.12662136170654356,
+          "low": -0.07182615844315994,
+          "high": 0.2799323288651003,
+          "games": 160
+        }
+      },
+      "pooled": {
+        "mean": 0.07795487225168128,
+        "low": 0.009530237811294112,
+        "high": 0.14637950669206845,
+        "games": 625,
+        "method": "normal approximation over the seasons' weekly block bootstraps"
+      }
+    },
+    "closing_proxy": "SBR's close, de-vigged multiplicatively; the price taken is SBR's opener (E2)"
+  },
+  "gaps_reviewed": {
+    "20212022": "reports/gaps/blend-gap-review.md",
+    "20222023": "reports/gaps/blend-gap-review-2022-23.md"
+  }
+}

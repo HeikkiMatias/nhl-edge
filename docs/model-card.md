@@ -4,7 +4,7 @@ Current production model, how it scored, and its known weaknesses. It is updated
 
 ## Current model
 
-None. The backtest has the two market baselines, phase 2's model and phase 3's:
+None in production: gate 3 is not met (ADR 0031). The blend adds no information beyond the recalibrated market on history, and phase 5 paper-trades the frozen policy (`policy-20261005-8ec5cf3`) on live 2026-27. The backtest has the two market baselines, phase 2's model and phase 3's:
 - **B0** is the de-vigged SBR moneyline, with nothing fitted, under the default multiplicative method (ADR 0008).
 - **B1** is the recalibrated market, a logistic regression on B0's log-odds fitted per test season on the earlier seasons.
 - **B2** is the team and goalie model (ADR 0013). It is an L2 logistic regression on team strength, goalie effects, rest and travel and empty seats, with the season home edge as a fixed term. Each fold fits it on earlier games with their actual starters. It predicts by averaging over the goalie-start model's pairs of starters, and reads no price. Gate 1 (#79) judges it against B1.
@@ -36,12 +36,25 @@ Every metric is reported with a 95% weekly block bootstrap interval, pooled over
 | Calibration slope | | | E1 1.35 [1.09, 1.62]; E2 1.35 [1.10, 1.62] | E1 1.34 [1.11, 1.58]; E2 1.34 [1.12, 1.58] | E1 1.16 [0.95, 1.39]; E2 1.17 [0.94, 1.41] |
 | E3 CLV under the frozen policy | | | | | -1.24% [-2.15%, -0.24%] per bet against SBR's close, not Pinnacle's (465 bets, 2021-22) |
 
+**Gate 3 (ADR 0031), with 2022-23's 342 SBR-priced games scored once after the freeze** (`market-validation-20261005-6ec331b`). The pooled figures combine the seasons' weekly block bootstraps by a normal approximation (`reports/backtest/accepted.json`).
+
+| | 2021-22 | 2022-23 | Pooled | §1 verdict |
+| --- | --- | --- | --- | --- |
+| BLEND minus B1, E1 | -0.0015 [-0.0043, +0.0018] | +0.0044 [-0.0062, +0.0180] | -0.0002 [-0.0037, +0.0032] | fails |
+| BLEND minus B1, E2 | -0.0042 [-0.0078, -0.0007] | +0.0033 [-0.0118, +0.0224] | -0.0027 [-0.0072, +0.0019] | fails |
+| B3 minus B2, E1 (2018-19 joins the pool) | -0.0091 [-0.0163, -0.0025] | +0.0013 [-0.0241, +0.0254] | -0.0068 [-0.0120, -0.0016] | passes |
+| Blend calibration slope, E1 | 1.16 [0.95, 1.39] | 0.71 [0.25, 1.21] | | passes on intervals |
+| CLV per bet against SBR's close | -1.24% [-2.15%, -0.24%] | -1.22% [-2.41%, -0.01%] | -1.23% [-2.01%, -0.46%] | fails on history |
+
+The gaps of both seasons were reviewed by hand: one data error, no bug.
+
 ## Artifact versions
 
 | Component | Version | train_cutoff |
 | --- | --- | --- |
 | Backtest (B0 to B3 and the blend; E2 refuses implausible openers, with every opener as a sensitivity) | backtest-20261004-6f74840 | per fold, below |
 | Blend, 2021-22 fold (E1 and E2; ADR 0027), learning from 2018-19 to 2020-21 | backtest-20261004-6f74840 | 2021-05-20 10:00 UTC |
+| 2022-23's one run (ADR 0025): B1, B2, B3 and the blend, learning from 2018-19 to 2021-22 | market-validation-20261005-6ec331b | 2022-05-02 10:00 UTC |
 | The frozen policy: u, the blend, selection, staking and the guard (ADR 0026 to 0030) | policy-20261005-8ec5cf3, see "The freeze" below | the blend per fold; θ from 2011-12 to 2017-18 prices |
 | B0 | the de-vigged market (multiplicative, ADR 0008) | none: B0 fits nothing |
 | B1, 2018-19 fold (E1 and E2) | backtest-20261003-b1a7b04 | 2018-04-09 10:00 UTC |
@@ -194,12 +207,12 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - **The verdict** (ADR 0024): B3 goes forward as the model phase 4 compares with B1, because every test points the same way and 2025-26's interval includes the earlier gain. B3 minus B2 stays in every report (hard rule 3), and the live 2026-27 market test is its next independent evidence.
 
 **The blend and the policy (phase 4, `backtest-20261004-6f74840`; ADR 0026 to 0029):**
-- **One season of evidence.** 2018-19 has no earlier out-of-sample fold, so the blend is scored on 2021-22 alone, and the market was itself under-confident that season. 2022-23's 342 games come once, after the freeze (ADR 0025).
+- **Two seasons of evidence, and they disagree.** 2018-19 has no earlier out-of-sample fold, so the blend is scored on 2021-22 and on 2022-23's 342 games, scored once after the freeze (ADR 0025). The blend beats B1 on 2021-22's E2 and loses to it on both of 2022-23's experiments, so gate 3 is not met (ADR 0031).
 - **It beats the opener and not the close.**
   - On E2, BLEND minus B1 is -0.0042 [-0.0078, -0.0007]. It also beats the B2 blend (-0.0033 [-0.0062, -0.0002]) and the market-only control (-0.0049 [-0.0087, -0.0011]), so the gain is not only recalibration.
   - On E1, against the close, it is -0.0015 [-0.0043, +0.0018].
   - The E2 blend's log loss, 0.6410, is about that of the recalibrated close.
-- **u adds nothing measurable.** Its weight b_u is +0.22 [-0.06, +0.51] on E2 (from the fit's standard errors), leaning the wrong way: the model is trusted more as doubt grows. In 2021-22, u reaches 5.3 standard deviations among the bets. The policy still reads u in its hurdle and stake. Live u is history's quantity (ADR 0030), so the fit isn't pushed outside its range by confirmations.
+- **u leans the wrong way.** Its weight b_u is +0.22 [-0.06, +0.51] on E2 in 2021-22's fit (from the fit's standard errors): the model is trusted more as doubt grows. In 2022-23's fit it is +0.25 [+0.02, +0.49], which is ADR 0026's revisit trigger. The owner kept u frozen: live evidence decides (ADR 0031). In 2021-22, u reaches 5.3 standard deviations among the bets. The policy still reads u in its hurdle and stake. Live u is history's quantity (ADR 0030), so the fit isn't pushed outside its range by confirmations.
 - **The bets don't beat the close.**
   - The policy bets 465 of 1,306 games at the opener, mostly away teams and underdogs, at a mean expected return of 7.7%.
   - The return per unit staked is +6.1% [-0.5%, +13.3%].
