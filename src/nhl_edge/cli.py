@@ -2290,15 +2290,15 @@ def audit_gaps(
     8's review (#107): each game's log-odds in parts, both teams' expected goals and the flags,
     to <out>/b3-gaps-<version>.md (the games to review) and .csv (every gap). No result is
     read. With --blend, the market blend's gaps instead, each game once, with B3's own terms at
-    the start, to <out>/blend-gaps-<version>.md and .csv."""
+    the backtest's prediction time, to <out>/blend-gaps-<version>.md and .csv."""
     from datetime import UTC
 
     import polars as pl
 
     from nhl_edge.audit import b3_gaps
-    from nhl_edge.backtest import reports
+    from nhl_edge.backtest import reports, walk_forward
     from nhl_edge.backtest.walk_forward import fold_start
-    from nhl_edge.game import b2, b3
+    from nhl_edge.game import b2
     from nhl_edge.lake.tables import Lake
 
     if blend and gaps == DEFAULT_BACKTEST_OUT / "gaps_b3.csv":
@@ -2306,7 +2306,11 @@ def audit_gaps(
     if not gaps.exists():
         raise typer.BadParameter(f"{gaps} does not exist: run nhl backtest", param_hint="--gaps")
     rows = pl.read_csv(gaps, try_parse_dates=True)
-    rows = b3_gaps.blend_gaps(rows) if blend else rows.filter(pl.col("experiment") == "E1")
+    try:
+        rows = b3_gaps.blend_gaps(rows) if blend else rows.filter(pl.col("experiment") == "E1")
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
     lake = Lake()
     games = lake.read("games")
     tables = b2.Tables(
@@ -2322,27 +2326,30 @@ def audit_gaps(
             )
         ),
     )
-    calendar = games.select("season", "start_utc")
-    starts = {int(s): fold_start(calendar, int(s)) for s in rows["season"].unique().to_list()}
+    seasons = sorted(int(s) for s in rows["season"].unique().to_list())
     b3_tables = _b3_tables(lake, tables)
     if blend:
-        # The screen explains B3's part of each gap, so it reads B3's own probability at the
-        # start, refit as in the backtest's E1 fold.
-        found = []
-        for season, start in sorted(starts.items()):
-            moments = games.join(
-                rows.filter(pl.col("season") == season).select("game_id"), on="game_id"
-            ).select("game_id", prediction_utc="start_utc")
-            predicted, _ = b3.predictions(b3_tables, moments, season, start)
-            found.append(predicted.select("game_id", p_b3="p_home"))
-        rows = rows.join(pl.concat(found), on="game_id").select(
-            "season", "game_id", "game_date", "home", "away", "p_b3", "p_b1", "gap"
-        )
+        # Each experiment's gaps are refit at its own fold start, as in the backtest: E2's comes
+        # at the season's first opener when that is before its first game.
+        sbr_odds = lake.read("sbr_odds").filter(pl.col("season").is_in(seasons))
+        folds = walk_forward.fold_starts(sbr_odds, games, seasons)
+        batches = [
+            (str(experiment), part, {s: folds[(str(experiment), s)] for s in seasons})
+            for (experiment,), part in rows.group_by("experiment", maintain_order=True)
+        ]
+    else:
+        calendar = games.select("season", "start_utc")
+        batches = [("E1", rows, {s: fold_start(calendar, s) for s in seasons})]
     try:
-        screened = b3_gaps.screen(b3_tables, rows, starts)
+        found = [(name, b3_gaps.screen(b3_tables, part, starts)) for name, part, starts in batches]
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
+    frames = [frame.with_columns(experiment=pl.lit(name)) for name, frame in found if frame.height]
+    if not frames:
+        typer.echo(f"{gaps}: no gaps to screen")
+        return
+    screened = pl.concat(frames, how="diagonal_relaxed").sort("season", "game_date", "game_id")
     marked = b3_gaps.every_gap(screened) if blend else b3_gaps.review_set(screened)
     now = datetime.now(UTC)
     version = reports.version("blend-gaps" if blend else "b3-gaps", now)

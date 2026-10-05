@@ -242,8 +242,9 @@ def groups(every: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
 
 
 def gap_rows(rows: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
-    """The games where the blend differs from B1 by more than GAP, without results."""
-    keys = ["season", "game_id", "game_date"]
+    """The games where the blend differs from B1 by more than GAP, without results, with B3's
+    own probability at the same prediction time for the screen to check its refit against."""
+    keys = ["season", "game_id", "game_date", "prediction_utc"]
     return (
         rows.filter(pl.col("model") == BLEND)
         .select(*keys, p_blend="p_home")
@@ -251,10 +252,15 @@ def gap_rows(rows: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
             rows.filter(pl.col("model") == BASELINE).select("game_id", p_b1="p_home"),
             on="game_id",
         )
+        .join(
+            rows.filter(pl.col("model") == MODELS[BLEND]).select("game_id", p_b3="p_home"),
+            on="game_id",
+            how="left",
+        )
         .with_columns(gap=pl.col("p_blend") - pl.col("p_b1"))
         .filter(pl.col("gap").abs() > GAP)
         .join(games.select("game_id", "home", "away"), on="game_id")
-        .select("season", "game_id", "game_date", "home", "away", "p_blend", "p_b1", "gap")
+        .select(*keys, "home", "away", "p_blend", "p_b1", "p_b3", "gap")
         .sort("game_date", "game_id")
     )
 
@@ -269,7 +275,9 @@ def write_gaps(predictions: pl.DataFrame, games: pl.DataFrame, out: Path) -> Pat
         for experiment in sorted(predictions["experiment"].unique().to_list())
     ]
     path = out / GAPS_FILE
-    pl.concat(frames).with_columns(pl.col("p_blend", "p_b1", "gap").round(4)).write_csv(path)
+    pl.concat(frames).with_columns(pl.col("p_blend", "p_b1", "p_b3", "gap").round(4)).write_csv(
+        path
+    )
     return path
 
 

@@ -79,6 +79,35 @@ def test_a_gaps_file_from_other_code_is_refused() -> None:
         b3_gaps.screen(replaced(schedule_terms=late), gaps, {TEST: START})
 
 
+def test_the_screen_refits_at_each_gaps_own_prediction_time() -> None:
+    gaps = gaps_for(LEAGUE)
+
+    def before(hours: int) -> pl.DataFrame:
+        return gaps.join(
+            LEAGUE.games.select(
+                "game_id", prediction_utc=pl.col("start_utc") - pl.duration(hours=hours)
+            ),
+            on="game_id",
+        )
+
+    # Three hours before the start, B3's inputs are known and it is checked there.
+    frame = b3_gaps.screen(LEAGUE, before(3), {TEST: START})
+    assert frame.height == GAP_GAMES
+    assert frame.sort("game_id")["prediction_utc"].equals(
+        before(3).sort("game_id")["prediction_utc"].cast(UTC_TYPE)
+    )
+    # Nine hours before, they aren't yet: a screen at the start instead would explain the gap
+    # with inputs the backtest's B3 never saw.
+    with pytest.raises(ValueError, match="does not predict 30 gap games"):
+        b3_gaps.screen(LEAGUE, before(9), {TEST: START})
+
+
+def test_a_blend_gaps_file_without_b3s_own_probability_is_refused() -> None:
+    old = gaps_for(LEAGUE).drop("p_b3").rename({"gap": "blend_gap"})
+    with pytest.raises(ValueError, match="rerun nhl backtest"):
+        b3_gaps.blend_gaps(old)
+
+
 def test_each_bug_signature_is_flagged() -> None:
     games = gaps_for(LEAGUE).sort("game_id")
     first, second, third, fourth, fifth = games.head(5).iter_rows(named=True)

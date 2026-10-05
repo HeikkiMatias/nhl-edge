@@ -2,6 +2,13 @@
 
 These are the market blend's gaps above 8 points against B1 in `backtest-20261004-6f74840`: 17 on E1 and 49 on E2, 53 games in all. The screen read the same 53 games from `backtest-20261004-509d3da`, whose code and gaps are the same. Each was screened by `nhl audit gaps --blend` (`reports/gaps/blend-gaps-20261004-509d3da.md`), with B3 refit as in the backtest's E1 fold, and read by hand. No game's result was read, and the screen shows none.
 
+**A screen check that couldn't fail, and why it doesn't matter here.**
+- **The fault:** the leakage check of #144 found that this version of the screen compared B3's refit with itself, so its drift check always passed.
+- **The fix:** `gaps_blend.csv` now carries the backtest's own B3 and prediction time, and the screen checks its refit against them.
+- **This run's numbers hold, checked by hand:**
+  - B3's predictions are identical on E1 and E2 for every 2018-19 and 2021-22 game: B3's E2-minus-E1 log loss is 0 on all 2,573 games.
+  - For the 23 gaps on E2 only that also appear in `gaps_b3.csv`, the screen's B3 differs from the backtest's by at most 0.00005.
+
 ## Verdict
 
 - **One data error:** game 2021020487 (ARI at VAN, 2022-02-08), a swapped SBR opener. The policy bet on it, and since the error lies in the price, not the model, the policy is unchanged (below).

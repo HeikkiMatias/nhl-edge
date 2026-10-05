@@ -3,7 +3,7 @@ B1's by more than 8 points, screened for bug signatures before a manual review. 
 game's result: only B3's inputs and fit, the projection, and, to check the projection against
 what happened, the game's own boxscore (who dressed and who started), which no model reads.
 
-For each gap game, as B3 saw it at the start (E1):
+For each gap game, as B3 saw it at the backtest's prediction time (the start for E1):
 - B3's log-odds in parts: β0, the home term h_s, Δĝ's term at the goalie mixture's expected Δĝ
   and each schedule input's term, beside the market's log-odds; the input with the largest term
   is the gap's driver;
@@ -34,6 +34,7 @@ from nhl_edge.features import team_strength as ts
 from nhl_edge.game import b2, b3
 from nhl_edge.lineup.goalie_start import team_goalie_games
 
+UTC = pl.Datetime("us", "UTC")
 JUMP = 0.08
 MISSED = 4
 UNSURE = 0.1
@@ -159,20 +160,29 @@ def team_flags(tables: b3.Tables, games: pl.Series, goalies: pl.DataFrame) -> pl
 
 def screen(tables: b3.Tables, gaps: pl.DataFrame, starts: Mapping[int, datetime]) -> pl.DataFrame:
     """Every gap game of gaps (one experiment's gaps_b3.csv rows: season, game_id, game_date,
-    home, away, p_b3, p_b1, gap) with B3's terms, both teams' parts and the flags, B3 refit for
-    each season as the backtest's E1 fold starting at starts[season] and predicting at each
-    game's start. Raises if the refit leaves out a gap game or its probability differs from p_b3:
-    the screen would then not explain the backtest's gaps."""
+    home, away, p_b3, p_b1, gap, and optionally prediction_utc) with B3's terms, both teams' parts
+    and the flags, B3 refit for each season as the backtest's fold starting at starts[season] and
+    predicting at each game's prediction_utc, or its start without one. Raises if the refit leaves
+    out a gap game or its probability differs from p_b3: the screen would then not explain the
+    backtest's gaps."""
     # The gaps file's own columns only: nothing else it might carry reaches the report.
-    gaps = gaps.select("season", "game_id", "game_date", "home", "away", "p_b3", "p_b1", "gap")
+    at = (
+        pl.col("prediction_utc").cast(UTC)
+        if "prediction_utc" in gaps.columns
+        else pl.lit(None, UTC).alias("prediction_utc")
+    )
+    gaps = (
+        gaps.select("season", "game_id", "game_date", at, "home", "away", "p_b3", "p_b1", "gap")
+        .join(tables.games.select("game_id", "start_utc"), on="game_id", how="left")
+        .with_columns(prediction_utc=pl.coalesce("prediction_utc", "start_utc"))
+        .drop("start_utc")
+    )
     frames = []
     for season, start in sorted(starts.items()):
         season_gaps = gaps.filter(pl.col("season") == season)
         if season_gaps.is_empty():
             continue
-        moments = tables.games.join(season_gaps.select("game_id"), on="game_id").select(
-            "game_id", prediction_utc="start_utc"
-        )
+        moments = season_gaps.select("game_id", "prediction_utc")
         predicted, model = b3.predictions(tables, moments, season, start)
         through = b3.through(tables, season)
         inputs = b3.game_inputs(through)
@@ -291,8 +301,13 @@ def every_gap(screened: pl.DataFrame) -> pl.DataFrame:
 
 
 def blend_gaps(rows: pl.DataFrame) -> pl.DataFrame:
-    """The blend's gaps (gaps_blend.csv: experiment, season, game_id, game_date, home, away,
-    p_blend, p_b1, gap), one row per game, the experiment with the larger gap kept."""
+    """The blend's gaps (gaps_blend.csv: experiment, season, game_id, game_date, prediction_utc,
+    home, away, p_blend, p_b1, p_b3, gap), one row per game, the experiment with the larger gap
+    kept. Refuses a file without the backtest's own B3 and prediction time, which the screen
+    checks its refit against."""
+    missing = {"prediction_utc", "p_b3"} - set(rows.columns)
+    if missing:
+        raise ValueError(f"the gaps file lacks {sorted(missing)}: rerun nhl backtest")
     return (
         rows.sort(pl.col("gap").abs(), descending=True)
         .unique("game_id", keep="first")
@@ -303,13 +318,15 @@ def blend_gaps(rows: pl.DataFrame) -> pl.DataFrame:
 def markdown(marked: pl.DataFrame, source: str, version: str, model: str = "B3") -> str:
     """The screen's report: what was screened, the flag counts, and one row per game to review,
     with a blank column for the reviewer's note. For the blend's gaps (model "blend"), Gap is
-    the blend's gap against B1, and B3 and its terms are B3's own at the start."""
+    the blend's gap against B1, and B3 and its terms are B3's own at the backtest's prediction
+    time."""
     facts = summary(marked)
     lines = [
         f"# {model} gap screen ({version})",
         "",
         f"Hard rule 8's screen (#107) of {facts['games']:,} gaps above 8 points against B1 in "
-        f"`{source}`. B3 is refit as in the backtest's E1 folds. No result was read.",
+        f"`{source}`. B3 is refit as in the backtest's folds, at each gap's prediction time. No "
+        "result was read.",
         "",
         "## Shape of the gaps",
         "",

@@ -107,3 +107,22 @@ def test_a_term_the_market_already_spans_keeps_a_weight_of_zero() -> None:
     named = fitted.named()
     assert named["b_x"] == 0.0 and named["b_u"] == 0.0
     assert named["b_m"] != 0.0
+
+
+def test_each_gap_carries_b3s_own_probability_and_its_prediction_time() -> None:
+    at = pl.datetime(2021, 11, 10, 15, time_zone="UTC")
+    predictions = pl.DataFrame(
+        {
+            "model": ["BLEND", "B1", "B3", "BLEND", "B1", "B3"],
+            "season": [20212022] * 6,
+            "game_id": [1, 1, 1, 2, 2, 2],
+            "game_date": [None] * 6,
+            "p_home": [0.70, 0.55, 0.74, 0.52, 0.50, 0.60],
+        }
+    ).with_columns(prediction_utc=at)
+    games = pl.DataFrame({"game_id": [1, 2], "home": ["TOR", "BOS"], "away": ["MTL", "NYR"]})
+    gaps = blend_backtest.gap_rows(predictions, games)
+    # Only the first game's blend is more than 8 points from B1.
+    row = gaps.row(0, named=True)
+    assert gaps.height == 1
+    assert (row["game_id"], row["p_b3"], row["prediction_utc"].hour) == (1, 0.74, 15)
