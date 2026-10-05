@@ -436,3 +436,29 @@ def test_each_training_folds_b2_and_b3_are_fitted_before_the_fold_starts() -> No
             first = starts.filter(experiment=experiment, season=int(season))["fold_start"][0]
             for model in ("b2", "b3"):
                 assert datetime.fromisoformat(fold[f"{model}_train_cutoff"]) < first
+
+
+def test_only_a_validated_run_scores_2022_23_and_b1_never_fits_on_it() -> None:
+    odds, games = market_history.seasons([20202021, 20212022, 20222023], games=60)
+    with pytest.raises(ValueError, match="held out"):
+        run(odds, games, [20222023])
+    with pytest.raises(ValueError, match="not market validation seasons"):
+        run(odds, games, [20212022], validated=[20212022], claim=lambda: None)
+    # The run is claimed before anything is scored (ADR 0025), or it doesn't run.
+    with pytest.raises(ValueError, match="must be claimed"):
+        run(odds, games, [20222023], validated=[20222023])
+
+    def refused() -> None:
+        raise ValueError("already ran")
+
+    with pytest.raises(ValueError, match="already ran"):
+        run(odds, games, [20222023], validated=[20222023], claim=refused)
+    claims: list[str] = []
+    predictions, coverage, fits = run(
+        odds, games, [20222023], validated=[20222023], claim=lambda: claims.append("claimed")
+    )
+    assert claims == ["claimed"]
+    assert set(predictions["season"].unique()) == {20222023}
+    # B1 fits on the earlier open seasons only, never on 2022-23's own games.
+    assert fits["E1"][20222023].games == 120
+    assert coverage["E1"][20222023]["scored"] == 60

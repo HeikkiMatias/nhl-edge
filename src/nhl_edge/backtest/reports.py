@@ -217,11 +217,16 @@ def summary(
     }
 
 
-def write(report: dict[str, Any], out: Path) -> Path:
-    """Write summary.json and append the pooled log losses to runs.csv (log_runs)."""
+def write(report: dict[str, Any], out: Path, name: str = "summary.json") -> Path:
+    """Write the report to out/name (summary.json for the development run) and append the
+    pooled log losses to runs.csv (log_runs). A named report is never written over."""
     out.mkdir(parents=True, exist_ok=True)
-    path = out / "summary.json"
-    path.write_text(json.dumps(report, indent=2) + "\n")
+    path = out / name
+    if name == "summary.json":
+        path.write_text(json.dumps(report, indent=2) + "\n")
+    else:
+        with path.open("x") as handle:
+            handle.write(json.dumps(report, indent=2) + "\n")
     rows = []
     for experiment, body in report["experiments"].items():
         for model, results in body["models"].items():

@@ -24,6 +24,7 @@ from nhl_edge.backtest.market import PREDICTION_LAG, Experiment, market_prices
 from nhl_edge.backtest.metrics import log_loss
 from nhl_edge.backtest.seasons import (
     HOCKEY_ROLES,
+    MARKET_VALIDATION_SEASONS,
     ONE_TIME_SEASONS,
     OPEN_ROLES,
     OPEN_SEASONS,
@@ -220,6 +221,8 @@ def run(
     b2_fits: B2Fits | None = None,
     b3_tables: "b3.Tables | None" = None,
     b3_fits: B3Fits | None = None,
+    validated: Iterable[int] = (),
+    claim: Callable[[], None] | None = None,
 ) -> tuple[pl.DataFrame, Coverage, Fits]:
     """Every prediction for the test seasons, scored, the coverage per experiment and season, and
     B1's fit per experiment and season. sbr_odds and games hold the test seasons and the earlier
@@ -237,13 +240,30 @@ def run(
     With b2_tables, B2 (ADR 0013) predicts the games B1 scores, at the experiment's prediction
     time, from a fit on the games before the fold, and b2_fits receives its fit per experiment and
     season. Coverage then counts the games B2 scored and those it trained on. b3_tables and
-    b3_fits do the same for B3, the player layer (ADR 0023)."""
+    b3_fits do the same for B3, the player layer (ADR 0023).
+
+    validated names the market validation seasons a once-only run may score (MARKET_VALIDATION
+    _SEASONS, #145): they are tested, but never fit B1, which reads earlier open seasons only.
+    Such a run needs claim (one_time.claim), called before anything is scored, which refuses a
+    second run."""
     seasons = sorted(set(seasons))
-    held_out = [season for season in seasons if season_role(season) not in OPEN_ROLES]
+    validated = set(validated)
+    if validated - set(MARKET_VALIDATION_SEASONS):
+        raise ValueError(f"{sorted(validated)} are not market validation seasons")
+    if validated and claim is None:
+        raise ValueError("the market validation run must be claimed before it scores (ADR 0025)")
+    held_out = [
+        season
+        for season in seasons
+        if season_role(season) not in OPEN_ROLES and season not in validated
+    ]
     if held_out:
         raise ValueError(f"{held_out} are held out: phase 1 backtests open seasons only (#10)")
-    open_odds = sbr_odds.filter(pl.col("season").is_in(OPEN_SEASONS))
-    results = outcomes(games.filter(pl.col("season").is_in(OPEN_SEASONS)))
+    if validated and claim is not None:
+        claim()
+    allowed = set(OPEN_SEASONS) | validated
+    open_odds = sbr_odds.filter(pl.col("season").is_in(allowed))
+    results = outcomes(games.filter(pl.col("season").is_in(allowed)))
     starts = fold_starts(open_odds, games, seasons, sbr_odds)
     frames = [pl.DataFrame(schema=PREDICTION_SCHEMA)]
     coverage: Coverage = {}
