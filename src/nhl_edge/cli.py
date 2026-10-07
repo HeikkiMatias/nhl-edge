@@ -2048,6 +2048,183 @@ def bets() -> None:
     _not_implemented("bets", "phase 5")
 
 
+@live_app.command("blend-fit")
+def live_blend_fit(
+    out: Annotated[
+        Path, typer.Option(help="Where a dry run writes the fit, beside the lake.")
+    ] = Path("data/live/blend"),
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="The one fit of the season: claimed and written once to R2, and to "
+            "reports/live/ to commit. Refused once claimed.",
+        ),
+    ] = False,
+) -> None:
+    """Fit the live blend once for 2026-27 (ADR 0030, #163). Rebuild E1's out-of-sample rows of
+    2018-19 to 2022-23 (2022-23 predicted, never scored), check that the rows of 2018-19 to
+    2021-22 reproduce the 2022-23 fold's fits the one run recorded, then fit u's scale, BLEND and
+    its twins on every row public before the live fold starts, and B1 on every earlier SBR close.
+    Without --r2 it is a dry run, written to --out."""
+    import json
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import blend as blend_backtest
+    from nhl_edge.backtest import one_time, reports
+    from nhl_edge.backtest.seasons import blend_training_seasons
+    from nhl_edge.game import b2, b3, uncertainty
+    from nhl_edge.ingest.games import EXPECTED_GAMES
+    from nhl_edge.lake.r2 import R2Config
+    from nhl_edge.lake.tables import LAKE_DIR, Lake
+    from nhl_edge.live import blend_fit as bf
+    from nhl_edge.settings import load_env
+
+    load_env()
+    now = datetime.now(UTC)
+    version = reports.version(bf.COMPONENT, now)
+    if r2 and (version.endswith("-dirty") or not bf.committed()):
+        raise typer.BadParameter(
+            f"commit first: the season's one fit, and {bf.REFERENCE} that checks it, must be "
+            "reproducible from its commit",
+            param_hint="--r2",
+        )
+    where = None
+    if r2:
+        config = R2Config.require("--r2")
+        where = one_time.Places(LAKE_DIR, (bf.REPORTS,), config.client(), config.bucket, bf.CLAIM)
+        # An earlier fit is the first refusal, before any table is read.
+        earlier = one_time.records(where)
+        if earlier:
+            typer.echo(f"the season's live fit exists: {'; '.join(earlier)}", err=True)
+            raise typer.Exit(code=1)
+    lake = Lake()
+    games, sbr_odds = lake.read("games"), lake.read("sbr_odds")
+    last = max(bf.TRAINING_SEASONS)
+    priced_seasons = set(sbr_odds["season"].unique().to_list())
+    problems = [f"{s}: no SBR prices" for s in bf.TRAINING_SEASONS if s not in priced_seasons]
+    problems += [
+        f"{season}: {height:,} of {EXPECTED_GAMES[season]:,} games"
+        for season in sorted(priced_seasons)
+        if season <= last
+        and (height := games.filter(pl.col("season") == season).height) != EXPECTED_GAMES[season]
+    ]
+    tables = b2.Tables(
+        games,
+        *(
+            lake.read(name)
+            for name in (
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        ),
+    )
+    b3_tables = _b3_tables(lake, tables)
+    problems += b2.input_problems(tables, last, EXPECTED_GAMES)
+    problems += b3.input_problems(b3_tables, last)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl ingest, nhl odds sbr and the feature commands first", err=True)
+        raise typer.Exit(code=1)
+    u_tables = uncertainty.Tables(
+        games,
+        tables.goalie_starts,
+        b3_tables.lineups,
+        b3_tables.lineup_replacements,
+        tables.actual_lineups,
+        lake.read("player_league_seasons"),
+    )
+    priced = bf.market(sbr_odds, games)
+    starts = {s: bf.fold_start(sbr_odds, games, s) for s in bf.TRAINING_SEASONS}
+    live_start = bf.fold_start(sbr_odds, games, bf.LIVE_SEASON)
+    frames, parts = [], []
+    for season in bf.TRAINING_SEASONS:
+        predicted, doubts = bf.season_predictions(
+            tables, b3_tables, u_tables, priced, season, starts[season]
+        )
+        frames.append(predicted)
+        parts.append(doubts)
+        counts = predicted.group_by("model").len().sort("model").iter_rows()
+        typer.echo(f"  {season}: " + ", ".join(f"{m} {n:,}" for m, n in counts))
+    rows = blend_backtest.rows(pl.concat(frames), {bf.EXPERIMENT.value: pl.concat(parts)}, games)
+    problems = bf.early(rows, starts) + bf.short(rows, priced, bf.recorded_coverage())
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        raise typer.Exit(code=1)
+    try:
+        reference = bf.fit(
+            rows,
+            blend_training_seasons(bf.REFERENCE_SEASON),
+            starts[bf.REFERENCE_SEASON],
+            bf.REFERENCE_SEASON,
+        )
+        reproduced = bf.describe(reference)
+        differences = bf.differences(reproduced, bf.recorded())
+        if differences:
+            for line in differences:
+                typer.echo(line, err=True)
+            typer.echo(
+                f"the rebuilt rows do not reproduce {bf.REFERENCE}'s 2022-23 fold: nothing written",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        typer.echo(f"reproduced the {bf.REFERENCE_SEASON} fold's fits of {bf.REFERENCE}")
+        fold = bf.fit(rows, list(bf.TRAINING_SEASONS), live_start, bf.LIVE_SEASON)
+        record = bf.artifact(
+            version, fold, bf.b1_fit(priced, live_start), live_start, now, reproduced
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    body = json.dumps(record, indent=2, sort_keys=True) + "\n"
+    if not r2:
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"{version}.json"
+        path.write_text(body)
+    else:
+        assert where is not None
+        objects, key = where.objects, f"{bf.R2_PREFIX}/{version}.json"
+        # Written before the claim, so a refused upload leaves the fit to copy, not to refit.
+        bf.REPORTS.mkdir(parents=True, exist_ok=True)
+        path = bf.REPORTS / f"{version}.json"
+        with path.open("x") as handle:
+            handle.write(body)
+        try:
+            # The season has one fit (ADR 0030): claimed before its copy goes to R2.
+            one_time.claim(where, version)
+        except ValueError as exc:
+            path.unlink()
+            typer.echo(f"the live fit was not written: {exc}", err=True)
+            raise typer.Exit(code=1) from None
+        try:
+            objects.put_object(Bucket=where.bucket, Key=key, Body=body.encode(), IfNoneMatch="*")
+        except Exception as exc:
+            typer.echo(
+                f"claimed, but R2 refused {key} ({exc}): upload {path} there unchanged, "
+                "never refit",
+                err=True,
+            )
+            raise typer.Exit(code=1) from None
+    typer.echo(
+        f"{path}: {record['training']['games']:,} training games, fold start "
+        f"{record['fold_start']}, train_cutoff {record['train_cutoff']}"
+    )
+    for name, entry in record["fits"].items():
+        weights = ", ".join(f"{t} {w:+.3f}" for t, w in entry["weights"].items())
+        typer.echo(f"  {name}: {weights}")
+    b1 = record["b1"]
+    typer.echo(
+        f"  B1: intercept {b1['intercept']:+.4f}, slope {b1['slope']:.4f} on {b1['games']:,}"
+    )
+
+
 @odds_app.command()
 def snapshot(
     regions: Annotated[str, typer.Option(help="Odds API regions.")] = "eu",

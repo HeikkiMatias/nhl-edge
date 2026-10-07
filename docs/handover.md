@@ -131,14 +131,18 @@ Every deliverable merged under its own task issue:
 
 **State on 2026-10-07:**
 - **No live prediction is logged yet.** Every game from 2026-10-06 until the first logged slate is lost to the live test and is never reconstructed.
-- **Task 2 has begun.** Branch `phase-5/live-blend` (47bee47) holds one untested refactor: the blend's fold fit pulled out into `backtest/blend.py`'s `fit_fold()`.
-- **Task 1 is in review** on `phase-5/live-features`:
+- **Task 1 is merged** (#180):
   - the `slate` table;
   - `--targets` on every builder;
   - `nhl live features` with its `feature_builds` record;
   - the nightly step.
 
-  Before the first live prediction, its first nightly run must have written today's rows to R2.
+  Its first nightly run, on 2026-10-08 at 09:00 UTC, writes that day's rows to R2. The check-in at 09:55 UTC reads them back. Opening nights are refused until #181.
+- **Task 2 is done** (#182): the season's one live fit is `reports/live/blend-live-20261007-89ec631.json`.
+  - It was claimed and copied to R2 on 2026-10-07 (`live/`, `ledger/live_blend_20262027.txt`), and a second fit is refused.
+  - It reproduces the 2022-23 fold's fits exactly.
+  - BLEND is a −0.065, b_m 0.710, b_x 0.492 and b_u 0.203, on 4,875 games.
+  - `live/blend_fit.load` reads it back.
 - **Reminders** for the dated items fire into this session on 2026-10-13 and 2026-10-22 at 10:30 UTC.
 
 **Never change the frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and the CLV count restarts.
