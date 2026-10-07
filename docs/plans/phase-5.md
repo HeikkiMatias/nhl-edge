@@ -2,7 +2,7 @@
 
 <!-- The approved phase 5 plan, kept in the repository so reviewers (Codex included) and fresh sessions can read it. Change it only with the owner's approval. -->
 
-**Status:** approved by the owner on 2026-10-05, in plan mode. It is also posted on #14.
+**Status:** approved by the owner on 2026-10-05, in plan mode. It is also posted on #14. The owner approved two amendments on 2026-10-07 ("The owner's word needed").
 
 **Issues:**
 - **Task issues (P5 milestone):** 1 #162, 2 #163, 3 #164, 4 #21, 5 #165, 6 #166, 7 #154, 8 #167 and #168, 9 #169.
@@ -80,7 +80,7 @@ Each task gets an issue in milestone P5, one branch `phase-5/<topic>` and one PR
   - E1's out-of-sample B2 and B3 predictions, with u's parts, for 2018-19 to 2021-22, from the walk-forward's test and training-only folds;
   - 2022-23's 342 games through the predict-only path above.
 - **One fit for the season:** u's scale (`uncertainty.fit_scale`), then `blend.fit` for BLEND and its twins BLEND_B2 and BLEND_MARKET, all through the frozen code. B1's E1 recalibration for 2026-27 is fitted on every earlier SBR close.
-- **The artifact `blend-live-<yyyymmdd>-<shortsha>`:** weights, standard errors, the u scale (means, sds, u_sd), the training game count and `train_cutoff` (2026-27's fold start).
+- **The artifact `blend-live-<yyyymmdd>-<shortsha>`:** weights, standard errors, the u scale (means, sds, u_sd), the training game count `train_cutoff`, the latest time any training row became public, which is before 2026-27's fold start, and the fold start beside it.
   - It is written once to R2, with the write-once claim pattern of `backtest/one_time.py`, and committed under `reports/live/`.
   - It is fitted once for the whole 2026-27 season, like any whole-season fold. Live games never refit it.
 - **Checks:** the reproduction of the 2022-23 fold's fit above, the 2022-23 tests above, and a leakage test that every training row was known before the live fold start (hard rule 6).
@@ -93,7 +93,7 @@ Each task gets an issue in milestone P5, one branch `phase-5/<topic>` and one PR
 - **The season fits:** B1, B2 and B3 for 2026-27, each trained on results public before the season's fold start. They are refit identically on each run, or cached, and every row carries its artifact version and `train_cutoff`.
 - **Per game:**
   1. B0 is Pinnacle's 12:45 price de-vigged (`market/devig.py`), and B1 its recalibration.
-  2. B2 and B3, both mixing over the goalie-start model's likely starters as on history. **No confirmed starter feeds B3 live** (the owner's ruling, 2026-10-05). The blend was fitted on B3 without confirmations, against a close that knew the starters. The ruling is recorded as an amendment line in ADR 0030 and in the model card's freeze section, in this task's PR. #42's report can still inform a later policy version.
+  2. B2 and B3, both mixing over the goalie-start model's likely starters as on history. **No confirmed starter feeds B3 live** (the owner's ruling, 2026-10-05). The blend was fitted on B3 without confirmations, against a close that knew the starters. The ruling is recorded in ADR 0030 and the model card's freeze section (PR #178), before any live prediction, so the live evidence is judged against it. #42's report can still inform a later policy version.
   3. u's parts from the goalie-start model, never a confirmation, then u and u_sd on the live scale.
   4. The blend and its twins.
   5. The frozen `selection.select`.
@@ -107,7 +107,7 @@ Each task gets an issue in milestone P5, one branch `phase-5/<topic>` and one PR
   - Each date is written to R2 as `ledger/live/<date>.parquet` with `IfNoneMatch="*"`, so it can't be rewritten. R2's server timestamp and the Actions run log date it.
   - The command refuses to write if `prediction_utc` is at or after any predicted game's start.
   - The lake's `predictions` and `paper_bets` tables (schemas in `lake/schemas.py`) are rebuilt from those files.
-- **The decision time** is the run's clock once the midday snapshot is stored, about 12:47 ET. It is one decision time per day (`staking.check_days`). A late manual run on the same day predicts only games not yet started, and only if the date has no log yet.
+- **The decision time** is the run's clock once the midday snapshot is stored, about 12:47 ET. It is one decision time per day (`staking.check_days`). **No late runs** (the owner's ruling, 2026-10-07): the command refuses to decide more than 30 minutes after the midday snapshot's `snapshot_utc`. The 12:45 price is no longer executable later. A missed day is logged as skipped, and it is never reconstructed.
 - **The workflow:** a `predict` job in `odds-snapshots.yml` (`needs: snapshot`, midday slot only, R2 secrets, a timeout of about 30 minutes). The Cloudflare timer is unchanged. Plan §8's "predict-daily 16:00 UTC" gets updated.
 - **Tests:**
   - Leakage: later snapshots, later boxscores, goalie polls after the decision, or results change nothing.
@@ -164,11 +164,11 @@ The first decision is 2026-10-06 at 12:45 ET (16:45 UTC). Tasks 1 to 3, each wit
 - To keep the loss small, tasks 1 and 2 are built in parallel.
 - Tasks 4 to 9 cost no games if they come later: the prices, polls and results they read are already logged.
 
-## The daily schedule (EDT; EST from 2026-11-01, when the timer shifts by itself)
+## The daily schedule (EDT; from 2026-11-01 the odds slots keep their ET times, while the nightly stays at 09:00 UTC)
 
 | ET | UTC (EDT) | Job |
 | --- | --- | --- |
-| 05:00 | 09:00 | Nightly: ingest, recheck, odds and goalie replays, then `nhl live features --date today`, settlement (task 5), and the closing proxy (task 4) |
+| 05:00 (04:00 EST) | 09:00 | Nightly: ingest, recheck, odds and goalie replays, then `nhl live features --date today`, settlement (task 5), and the closing proxy (task 4) |
 | 07:05 | 11:05 | Morning snapshot (the guard's reference) |
 | 12:45 | 16:45 | Midday snapshot, then the `predict` job logs the day's predictions and paper bets |
 | 18:45 to 21:45 | 22:45 to 01:45 | Pre-game snapshots (the closing proxy) |
@@ -196,6 +196,10 @@ The first decision is 2026-10-06 at 12:45 ET (16:45 UTC). Tasks 1 to 3, each wit
 **Already given, 2026-10-05:**
 - 2022-23's predict-only path is not a second run.
 - Live B3 uses no confirmed starter.
+
+**Given 2026-10-07, on Codex's review of PR #178:**
+- The live B3 ruling is recorded in ADR 0030, under the same policy version, before any live prediction.
+- A run refuses to decide more than 30 minutes after the midday snapshot.
 
 **Still to come:**
 1. **Task 4's freshness threshold:** an ADR, when that task starts.

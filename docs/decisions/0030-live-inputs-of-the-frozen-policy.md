@@ -1,6 +1,6 @@
 # 0030. The frozen policy's live inputs: the blend fitted on the close, and u as on history
 
-- Status: Accepted (by the owner, 2026-10-05)
+- Status: Accepted (by the owner, 2026-10-05); amended by the owner's ruling of the same day on live B3, recorded on 2026-10-07 (PR #178)
 - Date: 2026-10-05
 
 ## Context
@@ -26,7 +26,10 @@ The first option of each, chosen by the owner on 2026-10-05:
   - **Training rows:** the E1 out-of-sample predictions of every priced fold before the live season: 2018-19 to 2021-22, plus 2022-23 once its one run has scored it (ADR 0025).
   - **The market input:** Pinnacle's 12:45 ET price, de-vigged multiplicatively (ADR 0008).
   - SBR's close is the sharpest price history has, and the nearest to Pinnacle at midday.
-- **Live u is history's u.** Goalie doubt reads the goalie-start model's `p_start` (ADR 0012), never a confirmation. B3 itself still uses a confirmed starter where phase 5 provides one. u's scale is fitted on the live blend's training games.
+- **Live u is history's u.** Goalie doubt reads the goalie-start model's `p_start` (ADR 0012), never a confirmation. u's scale is fitted on the live blend's training games.
+- **Live B3 uses no confirmed starter either** (the owner's ruling, 2026-10-05). It mixes over the goalie-start model's likely starters, as on history, so the blend sees the B3 it was fitted on.
+  - The ruling predates every counted game and every live prediction, so all live evidence is judged against it, under the same policy version.
+  - It replaces this ADR's first wording, "B3 itself still uses a confirmed starter where phase 5 provides one".
 - **Recorded in code:** `LIVE_BLEND_EXPERIMENT = "E1"` in `betting/selection.py`. `uncertainty.Tables` reads no confirmation table, and `tests/unit/test_freeze.py` checks both.
 
 ## Backtest evidence
