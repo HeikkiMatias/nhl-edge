@@ -60,6 +60,38 @@ TRAIN_CUTOFF = rapm.TRAIN_CUTOFF
 MOMENT = ("game_id", "period", "seconds", "duration_min")
 
 
+def input_problems(
+    games: pl.DataFrame,
+    penalties: pl.DataFrame,
+    strength_time: pl.DataFrame,
+    shot_xg: pl.DataFrame,
+    last: int,
+) -> list[str]:
+    """Why the lake cannot rate power plays up to the season last (#130). A game of 2011-12 on
+    without strength time or xG would drop its power-play minutes from the league's length and its
+    shorthanded xG from the league's rate unnoticed. A game can have no penalty (24 of 17,974 from
+    2011-12 to 2025-26), so penalties are checked per date: a date of games without any would drop
+    them from players' rates and the league's level, and none of those seasons' dates had none."""
+    needed = games.filter(pl.col("season").is_between(rapm.FIRST_SEASON, last))
+    problems = []
+    for label, table in (("strength time", strength_time), ("xG", shot_xg)):
+        missing = needed.join(table.select("game_id").unique(), on="game_id", how="anti")
+        for (season,), frame in missing.sort("game_id").group_by("season", maintain_order=True):
+            examples = ", ".join(str(g) for g in frame["game_id"].head(3).to_list())
+            problems.append(f"{season}: {frame.height:,} games without {label}, e.g. {examples}")
+    dates = (
+        needed.select("season", "game_date")
+        .unique()
+        .join(penalties.select("game_date").unique(), on="game_date", how="anti")
+    )
+    for (season,), frame in dates.sort("game_date").group_by("season", maintain_order=True):
+        examples = ", ".join(d.isoformat() for d in frame["game_date"].head(3).to_list())
+        problems.append(
+            f"{season}: {frame.height:,} dates of games without penalties, e.g. {examples}"
+        )
+    return sorted(problems)
+
+
 def unoffset(penalties: pl.DataFrame) -> pl.DataFrame:
     """The counted penalties (Penalties rows) with weight, the share of each that leaves its team
     short-handed rather than offset by the other team's of the same length at the same moment."""

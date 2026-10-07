@@ -461,3 +461,46 @@ def test_the_command_refuses_a_season_before_2011_12(
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(app, ["power-plays", "--seasons", "20102011"])
     assert result.exit_code == 2
+
+
+def test_games_without_strength_time_or_xg_and_dates_without_penalties_are_refused() -> None:
+    # #130: a game or date missing from these would rate on part of the data, silently. A game
+    # with no penalty is fine when its date has some.
+    days = [date(2011, 10, 6), date(2011, 10, 6), date(2011, 10, 7), date(2010, 10, 7)]
+    games = pl.DataFrame(
+        {
+            "game_id": [2011020001, 2011020002, 2011020003, 2010020001],
+            "season": [20112012, 20112012, 20112012, 20102011],
+            "game_date": days,
+        },
+        schema_overrides={"season": pl.Int32},
+    )
+    penalties = pl.DataFrame({"game_id": [2011020001], "game_date": [date(2011, 10, 6)]})
+    strength_time = pl.DataFrame({"game_id": [2011020001, 2011020002, 2011020003]})
+    shot_xg = pl.DataFrame({"game_id": [2011020001, 2011020003]})
+    assert pr.input_problems(games, penalties, strength_time, shot_xg, 20112012) == [
+        "20112012: 1 dates of games without penalties, e.g. 2011-10-07",
+        "20112012: 1 games without xG, e.g. 2011020002",
+    ]
+    complete = pl.DataFrame({"game_id": [2011020001, 2011020002, 2011020003]})
+    every_day = penalties.vstack(pl.DataFrame({"game_id": [2011020003], "game_date": days[2:3]}))
+    assert pr.input_problems(games, every_day, complete, complete, 20112012) == []
+    # Seasons after the last one read aren't checked.
+    assert pr.input_problems(games, every_day, complete, complete, 20102011) == []
+
+
+def test_the_command_refuses_a_lake_missing_a_game_s_strength_time(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+
+    frames = fixture_lake(monkeypatch)
+    first = frames["games"].filter(pl.col("season") == 20112012)["game_id"].min()
+    frames["strength_time"] = frames["strength_time"].filter(pl.col("game_id") != first)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(app, ["power-plays", "--seasons", "20112012", "--out", "out"])
+    assert result.exit_code == 1
+    assert f"games without strength time, e.g. {first}" in result.output
+    assert not (tmp_path / "data" / "lake" / "penalty_rates").exists()

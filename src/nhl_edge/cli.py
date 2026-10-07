@@ -1947,10 +1947,21 @@ def power_plays_command(
     if without.height:
         examples = ", ".join(map(str, without["game_id"].sort().head(3).to_list()))
         problems.append(f"{without.height:,} games without lineups, e.g. {examples}")
+    penalties = lake.read("penalties").filter(pl.col("season") <= last)
+    read = [s for s in known if s <= last]
+    shots = lake.read("shots", seasons=read)
+    shot_xg = lake.read("shot_xg", seasons=read)
+    strength_time = lake.read("strength_time").filter(pl.col("season") <= last)
+    # A game or date missing from these would rate on part of the data, silently (#130).
+    problems += pr.input_problems(games, penalties, strength_time, shot_xg, last)
     if problems:
         for problem in problems:
             typer.echo(problem, err=True)
-        typer.echo("run nhl stints and nhl lineups for those seasons", err=True)
+        typer.echo(
+            "run nhl stints and nhl lineups for those seasons, or replay the games' feeds and "
+            "nhl xg",
+            err=True,
+        )
         raise typer.Exit(code=1)
     slate = _slate_targets(lake, targets, wanted)
     if slate is not None:
@@ -1960,11 +1971,7 @@ def power_plays_command(
     candidates = rated(lineups, games).join(
         games.select("game_id", as_of_utc=as_of), on="game_id", how="left"
     )
-    weighted = pr.unoffset(lake.read("penalties").filter(pl.col("season") <= last))
-    read = [s for s in known if s <= last]
-    shots = lake.read("shots", seasons=read)
-    shot_xg = lake.read("shot_xg", seasons=read)
-    strength_time = lake.read("strength_time").filter(pl.col("season") <= last)
+    weighted = pr.unoffset(penalties)
     version = reports.version(pr.COMPONENT, datetime.now(UTC))
     try:
         rows = pr.player_games(minutes, weighted, games)
