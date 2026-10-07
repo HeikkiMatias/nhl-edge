@@ -285,7 +285,7 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   - A run after the window writes the day as skipped, and so does a day without a midday snapshot in it.
   - A run before the window writes nothing.
 - **Its inputs, all known before the decision:**
-  - the day's slate and its feature rows (`feature_builds` must show a build that finished before the decision, on the same slate);
+  - the day's slate and its feature rows (`feature_builds` must show a build of committed code that finished before the decision, on the same slate);
   - the season's live fit (`reports/live/`);
   - B2 and B3 refit from history before the live fold start, read at the decision;
   - the day's morning and midday odds, parsed from the raw responses and matched to the slate's games;
