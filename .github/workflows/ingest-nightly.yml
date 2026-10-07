@@ -28,7 +28,7 @@ jobs:
     # repository variable TIMER_ACTIVE is true and only its on-time dispatches start this job.
     if: github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -65,6 +65,14 @@ jobs:
         # missed nights are caught up.
         if: always()
         run: uv run nhl goalies replay --recent 4 --r2
+      - name: Live feature rows for today's slate
+        # Today's slate (US Eastern date) and its games' feature rows (#162, docs/plans/phase-5.md
+        # task 1): the lake's tables pulled from R2, the season's played-game tables brought up
+        # to date with the night's games, the target rows written beside them, and the build
+        # recorded in feature_builds. It refuses while a game of the week before is not final in
+        # the lake, so a missing game never drops out of its teams' histories unnoticed.
+        if: always()
+        run: uv run nhl live features --date "$(TZ=America/New_York date +%F)" --r2
       - name: Contract test on a golden game
         # One golden game read live must parse as its frozen copy does (issue #6). A failure
         # means the NHL API changed under the parsers.

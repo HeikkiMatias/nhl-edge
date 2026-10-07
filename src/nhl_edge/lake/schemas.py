@@ -424,6 +424,54 @@ class Slate(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("home") != pl.col("away"))
 
 
+class FeatureBuilds(pa.DataFrameModel):
+    """One table a live feature build (nhl live features, #162) wrote for a game date's slate: the
+    record a prediction checks before it reads the slate's feature rows (#170).
+
+    A build deletes its date's record before it changes any table, and writes it once every step
+    is done, so a record means the whole build finished. The table "slate" is the slate itself.
+    Each other row gives a feature table's rows of the date under one artifact_version, and how
+    many of the slate's games they cover (games; null for a table without game_id). A table can
+    hold another component's rows, as lineups holds goalie_starts' goalies, but never two versions
+    of one component: a build that left them is refused. build_id and code_version name the build
+    and the commit it ran. slate_raw_key and slate_fetched_utc name the schedule response, and
+    started_utc and finished_utc are the build's actual clock times, never a convention.
+    """
+
+    game_date: pl.Date
+    season: pl.Int32
+    table: pl.String
+    artifact_version: pl.String
+    rows: pl.Int64 = pa.Field(ge=0)
+    games: pl.Int64 = pa.Field(ge=0, nullable=True)
+    slate_games: pl.Int64 = pa.Field(ge=0)
+    build_id: pl.String = pa.Field(str_matches=r"^live-features-\d{8}-")
+    code_version: pl.String
+    slate_raw_key: pl.String
+    slate_fetched_utc: UtcDatetime
+    started_utc: UtcDatetime
+    finished_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = [  # noqa: RUF012 (pandera config)
+            "game_date",
+            "table",
+            "artifact_version",
+        ]
+
+    @pa.dataframe_check
+    def finished_after_it_started(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("finished_utc") >= pl.col("started_utc"))
+
+    @pa.dataframe_check
+    def covers_no_more_games_than_the_slate(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("games").is_null() | (pl.col("games") <= pl.col("slate_games"))
+        )
+
+
 class Players(pa.DataFrameModel):
     """One NHL player, from the player landing page.
 
