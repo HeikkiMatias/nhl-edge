@@ -31,6 +31,7 @@ COMMANDS = [
     "odds",
     "lake",
     "audit",
+    "live",
     "status",
     "toi-reports",
     "player-seasons",

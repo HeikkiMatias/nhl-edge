@@ -131,7 +131,8 @@ Every deliverable merged under its own task issue:
 
 **State on 2026-10-07:**
 - **No live prediction is logged yet.** Every game from 2026-10-06 until the first logged slate is lost to the live test and is never reconstructed.
-- **Task 2 has begun.** Branch `phase-5/live-blend` (47bee47) holds one untested refactor: the blend's fold fit pulled out into `backtest/blend.py`'s `fit_fold()`.
+- **Task 2 is in review** on `phase-5/live-blend`: `nhl live blend-fit` and `live/blend_fit.py`. The dry run reproduces the one run's 2022-23 fold fits.
+  - **After merge:** run `nhl live blend-fit --r2` once from a clean checkout of main, with the lake up to R2. Commit its `reports/live/` files. A second run is refused.
 - **Task 1 hasn't started.** An agent began it on 2026-10-05, but it was cut off and left nothing. `phase-5/live-features` is an empty branch at main.
 - **Reminders** for the dated items fire into this session on 2026-10-13 and 2026-10-22 at 10:30 UTC.
 
