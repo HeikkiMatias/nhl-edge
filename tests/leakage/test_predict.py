@@ -38,6 +38,7 @@ class Spy:
         return predictions
 
     late: bool = False
+    cut: datetime = datetime(2026, 4, 17, tzinfo=UTC)
 
     def parts(self, tables: Any, moments: pl.DataFrame) -> pl.DataFrame:
         self.calls["parts"] = (tables.games, moments)
@@ -46,7 +47,7 @@ class Spy:
             "game_id",
             *[pl.lit(0.1).alias(p) for p in uncertainty.PARTS],
             observed_utc=pl.lit(observed),
-            train_cutoff=pl.lit(datetime(2026, 4, 17, tzinfo=UTC)),
+            train_cutoff=pl.lit(self.cut),
         )
 
 
@@ -85,6 +86,10 @@ def test_the_models_read_every_game_at_the_decision_from_fits_cut_at_the_fold(
     # u read a row known at the decision itself: refused.
     late = Spy({}, late=True)
     monkeypatch.setattr(uncertainty, "parts", late.parts)
+    with pytest.raises(ValueError, match="known after"):
+        lp.models(tables, tables, tables, slate, moments, start)
+    # u read a table cut off at the live fold start: refused too.
+    monkeypatch.setattr(uncertainty, "parts", Spy({}, cut=start).parts)
     with pytest.raises(ValueError, match="known after"):
         lp.models(tables, tables, tables, slate, moments, start)
 
