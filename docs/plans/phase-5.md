@@ -2,7 +2,7 @@
 
 <!-- The approved phase 5 plan, kept in the repository so reviewers (Codex included) and fresh sessions can read it. Change it only with the owner's approval. -->
 
-**Status:** approved by the owner on 2026-10-05, in plan mode. It is also posted on #14. The owner approved two amendments on 2026-10-07 ("The owner's word needed").
+**Status:** approved by the owner on 2026-10-05, in plan mode. It is also posted on #14. The owner approved amendments on 2026-10-07, listed under "The owner's word needed".
 
 **Issues:**
 - **Task issues (P5 milestone):** 1 #162, 2 #163, 3 #164, 4 #21, 5 #165, 6 #166, 7 #154, 8 #167 and #168, 9 #169.
@@ -92,32 +92,36 @@ Each task gets an issue in milestone P5, one branch `phase-5/<topic>` and one PR
   - the season fits (below) and the live blend artifact (task 2).
 - **The season fits:** B1, B2 and B3 for 2026-27, each trained on results public before the season's fold start. They are refit identically on each run, or cached, and every row carries its artifact version and `train_cutoff`.
 - **Per game:**
-  1. B0 is Pinnacle's 12:45 price de-vigged (`market/devig.py`), and B1 its recalibration.
-  2. B2 and B3, both mixing over the goalie-start model's likely starters as on history. **No confirmed starter feeds B3 live** (the owner's ruling, 2026-10-05). The blend was fitted on B3 without confirmations, against a close that knew the starters. The ruling is recorded in ADR 0030 and the model card's freeze section (PR #178), before any live prediction, so the live evidence is judged against it. #42's report can still inform a later policy version.
-  3. u's parts from the goalie-start model, never a confirmation, then u and u_sd on the live scale.
-  4. The blend and its twins.
-  5. The frozen `selection.select`.
-  6. The frozen `guard.guard` on `guard.live_moves`, Pinnacle's 07:05 against its 12:45 quote on the decision day. Events are mapped to games, since `live_moves` keys on `event_id`.
-  7. The frozen `staking.fractions` times the bankroll: 100 units at the season's start plus the profit of earlier logged bets whose results were public before the decision. Bets settle on the full game, OT and shootout included.
+  1. **A fresh decision quote first:** Pinnacle's midday quote must be at most 5 minutes old (`snapshot_utc − last_update_utc`; the owner's ruling, 2026-10-07). Otherwise the game gets a "no fresh price" row and no prediction or bet. An ADR records the limit before the first live run, and task 4's closing proxy can reuse it.
+  2. B0 is Pinnacle's 12:45 price de-vigged (`market/devig.py`), and B1 its recalibration.
+  3. B2 and B3, both mixing over the goalie-start model's likely starters as on history. **No confirmed starter feeds B3 live** (the owner's ruling, 2026-10-05). The blend was fitted on B3 without confirmations, against a close that knew the starters. The ruling is recorded in ADR 0030 and the model card's freeze section (PR #178), before any live prediction, so the live evidence is judged against it. #42's report can still inform a later policy version.
+  4. u's parts from the goalie-start model, never a confirmation, then u and u_sd on the live scale.
+  5. The blend and its twins.
+  6. The frozen `selection.select`.
+  7. The frozen `guard.guard` on `guard.live_moves`, Pinnacle's 07:05 against its 12:45 quote on the decision day. Events are mapped to games, since `live_moves` keys on `event_id`.
+  8. The frozen `staking.fractions` times the bankroll: 100 units at the season's start plus the profit of earlier logged bets whose results were public before the decision. Bets settle on the full game, OT and shootout included.
 - **What is logged:**
-  - **Every slate game gets a row:** its prediction, or why it has none (started before the decision, no Pinnacle midday price, or a missing input).
+  - **Every slate game gets a row:** its prediction, or why it has none: started before the decision, no Pinnacle midday price, no fresh price, or a missing input.
   - **Every prediction row:** p_b0, p_b1, p_b2, p_b3, p_blend and the two twins, u's parts, u and u_sd, the prices used with their `last_update`, `policy_version`, the artifact versions and `prediction_utc`.
   - **Every bet row:** the side, Pinnacle's price and `last_update`, the best EU book and its price and `last_update`, ev, hurdle, stake, and the guard's fields.
 - **Write-once proof that the log is pre-game:**
   - Each date is written to R2 as `ledger/live/<date>.parquet` with `IfNoneMatch="*"`, so it can't be rewritten. R2's server timestamp and the Actions run log date it.
   - The command refuses to write if `prediction_utc` is at or after any predicted game's start.
   - The lake's `predictions` and `paper_bets` tables (schemas in `lake/schemas.py`) are rebuilt from those files.
-- **The decision time** is the run's clock once the midday snapshot is stored, about 12:47 ET. It is one decision time per day (`staking.check_days`). **No late runs** (the owner's ruling, 2026-10-07): the command refuses to decide more than 30 minutes after the midday snapshot's `snapshot_utc`. The 12:45 price is no longer executable later. A missed day is logged as skipped, and it is never reconstructed.
-- **The workflow:** a `predict` job in `odds-snapshots.yml` (`needs: snapshot`, midday slot only, R2 secrets, a timeout of about 30 minutes). The Cloudflare timer is unchanged. Plan §8's "predict-daily 16:00 UTC" gets updated.
+- **The decision time** is the run's clock once the midday snapshot is stored, about 12:47 ET. It is one decision time per day (`staking.check_days`). **No late runs or late snapshots** (the owner's rulings, 2026-10-07): the midday snapshot's `snapshot_utc` and the decision must both fall between 12:45 and 13:15 ET, the scheduled slot plus 30 minutes. A fallback snapshot hours late keeps the `midday` label (`resolve_slot`), so the check reads the time, not the label. Outside the window the day is logged as skipped, and it is never reconstructed.
+- **The workflow:** a `predict` job in `odds-snapshots.yml`, midday slot only, with R2 secrets and a timeout of about 30 minutes.
+  - It runs after the snapshot job whatever that job's outcome (`needs: snapshot` with `if: always()`). A failed goalie poll in the same job doesn't skip it.
+  - When the midday odds are missing, it logs the day as skipped. The Cloudflare timer is unchanged. Plan §8's "predict-daily 16:00 UTC" gets updated.
 - **Tests:**
   - Leakage: later snapshots, later boxscores, goalie polls after the decision, or results change nothing.
   - The write-once refusal.
-  - The freeze test is untouched.
+  - The freeze test's numbers are untouched. A new freeze test changes a starter confirmation made *before* the decision and checks that live p_b3 and u don't move (ADR 0030).
+  - The time window and the freshness limit: a late snapshot, a late run and a stale quote are each refused or skipped.
   - A `--dry-run` that writes only locally.
 - **Before going live:** a dry run on the next slate, with its output read for sanity (coverage, prices matched, stakes within caps). It reads no results.
 
 ### 4. The closing proxy (#21)
-- **A freshness threshold** for `snapshot_utc − last_update_utc`, chosen from the logged quotes (Pinnacle's median age is 10 s). The ADR is written with the owner.
+- **A freshness threshold** for `snapshot_utc − last_update_utc`. Task 3's 5-minute limit for the decision quote is the starting point (the owner's ruling, 2026-10-07), and the ADR is written with the owner.
 - **`is_closing_proxy` for h2h:** derived in the odds replay itself, since the replay rebuilds the lake from raw and would wipe a flag stored apart. Supabase is upserted on `ODDS_KEY`.
 - **The lead-time report** in the audit. Matinees get only the midday snapshot.
 
@@ -200,6 +204,8 @@ The first decision is 2026-10-06 at 12:45 ET (16:45 UTC). Tasks 1 to 3, each wit
 **Given 2026-10-07, on Codex's review of PR #178:**
 - The live B3 ruling is recorded in ADR 0030, under the same policy version, before any live prediction.
 - A run refuses to decide more than 30 minutes after the midday snapshot.
+- Anchored to the scheduled slot: the midday snapshot and the decision must both fall between 12:45 and 13:15 ET.
+- Pinnacle's decision quote must be at most 5 minutes old, or the game gets a "no fresh price" row.
 
 **Still to come:**
 1. **Task 4's freshness threshold:** an ADR, when that task starts.
