@@ -98,6 +98,50 @@ def _known_by(frame: pl.DataFrame) -> datetime:
     return latest
 
 
+def fit_fold(
+    by_experiment: pl.DataFrame,
+    learned: list[int],
+    start: datetime,
+    experiment: str,
+    season: int,
+) -> tuple[dict[str, blend.Blend], uncertainty.Scale, pl.DataFrame]:
+    """One fold's three blends and u scale, and the rows they learned from: by_experiment's rows
+    of the learned seasons whose results and predictions came before start, with u standardized
+    on them. Refused when no row qualifies, or when any row was known at or after start. The live
+    blend (live/blend_fit.py, ADR 0030) is fitted by the same function."""
+    train = by_experiment.filter(
+        pl.col("season").is_in(learned),
+        pl.col("result_utc") < start,
+        pl.col("prediction_utc") < start,
+    )
+    if train.is_empty():
+        raise ValueError(f"no out-of-sample games before {season} to fit the blend on")
+    known = _known_by(train)
+    if known >= start:
+        raise ValueError(
+            f"the {experiment} blend of {season} would read a row known at {known}, "
+            f"after its fold starts at {start}"
+        )
+    scale = uncertainty.fit_scale(
+        train.select(*uncertainty.PARTS, observed_utc="parts_utc", train_cutoff="parts_cutoff")
+    )
+    u_train = scale.score(train).to_numpy()
+    y = train["home_win"].to_numpy()
+    p_mkt = train["p_mkt"].to_numpy()
+    fitted = {
+        name: blend.fit(
+            Kind.MARKET if source is None else Kind.MODEL,
+            y,
+            p_mkt,
+            known,
+            None if source is None else train[f"p_{source.lower()}"].to_numpy(),
+            None if source is None else u_train,
+        )
+        for name, source in MODELS.items()
+    }
+    return fitted, scale, train
+
+
 def run(
     every: pl.DataFrame, starts: dict[tuple[str, int], datetime], tested: list[int]
 ) -> tuple[pl.DataFrame, Fits, Scales, dict[str, dict[int, dict[str, int]]]]:
@@ -115,38 +159,7 @@ def run(
             if not learned:
                 continue  # the first out-of-sample season has no earlier fold
             start = starts[(experiment, season)]
-            train = by_experiment.filter(
-                pl.col("season").is_in(learned),
-                pl.col("result_utc") < start,
-                pl.col("prediction_utc") < start,
-            )
-            if train.is_empty():
-                raise ValueError(f"no out-of-sample games before {season} to fit the blend on")
-            known = _known_by(train)
-            if known >= start:
-                raise ValueError(
-                    f"the {experiment} blend of {season} would read a row known at {known}, "
-                    f"after its fold starts at {start}"
-                )
-            scale = uncertainty.fit_scale(
-                train.select(
-                    *uncertainty.PARTS, observed_utc="parts_utc", train_cutoff="parts_cutoff"
-                )
-            )
-            u_train = scale.score(train).to_numpy()
-            y = train["home_win"].to_numpy()
-            p_mkt = train["p_mkt"].to_numpy()
-            fitted = {
-                name: blend.fit(
-                    Kind.MARKET if source is None else Kind.MODEL,
-                    y,
-                    p_mkt,
-                    known,
-                    None if source is None else train[f"p_{source.lower()}"].to_numpy(),
-                    None if source is None else u_train,
-                )
-                for name, source in MODELS.items()
-            }
+            fitted, scale, train = fit_fold(by_experiment, learned, start, experiment, season)
             tested_rows = by_experiment.filter(pl.col("season") == season)
             # The scored games' own inputs were cut off before the fold too (B2's and B3's fits,
             # and the fitted tables behind u).
