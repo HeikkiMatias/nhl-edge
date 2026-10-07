@@ -1,12 +1,12 @@
-# Handover, 2026-10-05
+# Handover, 2026-10-07
 
-This file says where the build stands after the cloud sessions of 2026-09-29 to 10-05, and how a fresh session picks it up. CLAUDE.md holds the rules; this file holds the state. Update it, or delete it, when it goes stale.
+This file says where the build stands after the cloud sessions of 2026-09-29 to 10-07, and how a fresh session picks it up. CLAUDE.md holds the rules; this file holds the state. Update it, or delete it, when it goes stale.
 
 ## Start here (a fresh session)
 
 1. **Read** CLAUDE.md, this file and `docs/model-card.md`.
 2. **Finish any waiting item whose date has come** (the next section). The SessionStart hook lists the open issues of the earliest milestone, P1 (#9, #42). They wait on the calendar, not on work, so don't start them early.
-3. **Otherwise start phase 5 (#14), in plan mode.** See "Phase 5: where to start" below.
+3. **Otherwise carry on with phase 5 (#14).** Its plan is approved and lives in `docs/plans/phase-5.md`. See "Phase 5: where it stands" below.
    - Phase 4 is done. Gate 3 is not met (ADR 0031): the blend adds no information beyond the recalibrated market on history. As the owner decided, phase 5 paper-trades the frozen policy anyway, and live 2026-27 is the remaining test.
    - Gate 1 (#79) is still open. It is a checkpoint, not a stop (ADR 0002).
    - **The clock runs:** the policy was frozen on 2026-10-05, and live games count from 2026-10-06. Every game without a logged pre-game prediction is a paper bet the live test can't use.
@@ -108,25 +108,34 @@ Every deliverable merged under its own task issue:
 - #154 (P5): the E3 driver mostly marks favourite against underdog.
 - #156 (P5): recompute the blend's probability in the gap screen.
 
-## Phase 5: where to start (#14)
+## Phase 5: where it stands (#14)
 
-Phase 5 paper-trades the frozen policy on live 2026-27 and builds the dashboard. Like every phase, it starts with a plan the owner approves.
+**The plan** was approved by the owner on 2026-10-05 and is committed as `docs/plans/phase-5.md`, which is also posted on #14. Paste it into every phase 5 PR's description, as CLAUDE.md asks.
+- It covers the daily pipeline, the live blend fit, `nhl predict` with a write-once paper ledger, the closing proxy, settlement and CLV, the live report, attribution, Supabase and the dashboard, and a raw backup.
+- **The owner's rulings of 2026-10-05:**
+  - 2022-23's predict-only rebuild for the live blend is not a second run.
+  - Live B3 uses no confirmed starter.
 
-1. **Enter plan mode and read:**
-   - #14;
-   - docs/plan.md §5 ("Expected return and CLV"), §6, §7, §10 and §11;
-   - ADRs 0026 to 0031 and the model card's "The freeze".
-2. **The plan must cover:**
-   - **The daily pipeline.** It ingests, builds the live season's feature rows, predicts at 12:45 ET, applies the policy and the guard, and logs every prediction and paper bet with its prices' `last_update`.
-     - Phase 3's tables stop at 2026-04-16 and the others at 2026-09-30. The live season needs them daily, at the right as-of times.
-     - Log each prediction before its game: a paper bet reconstructed later is not evidence.
-   - **The live blend's fit (ADR 0030).** It trains on the E1 out-of-sample predictions of 2018-19 to 2022-23.
-     - **The catch:** 2022-23's predictions exist only inside the one run, which keeps no per-game rows, and `nhl backtest` refuses to predict that season again.
-     - **What's needed:** a training-only path that predicts 2022-23's fold without scoring it. The backtest already has such a path for 2019-20 and 2020-21. It needs its own leakage test and the owner's word that it doesn't count as a second run.
-   - **CLV against Pinnacle's closing proxy,** the §1 test: `is_closing_proxy` on `odds_snapshots` (#21), with stale quotes excluded.
-   - **The live E2 test:** the blend against B1 at the 12:45 price, with weekly block bootstrap intervals as games accrue.
-   - **The dashboard,** with Supabase's row-level security before it goes live (§10).
-3. **Never change the frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and the CLV count restarts.
+**Order of work:**
+1. **The owner's [priority] issues come first under CLAUDE.md:**
+   - #170: live data readiness;
+   - #171: immutable run bundles;
+   - #172: how live evidence is judged, an ADR for the owner.
+
+   Each asks for an assessment first, and says not to delay the first valid paper ledger. Fold #170's and #171's minimum checks into tasks 1 to 3 rather than ahead of them.
+2. **Then the critical path to the first logged slate:**
+   - task 1, #162: live targets and feature rows;
+   - task 2, #163: the live blend fit;
+   - task 3, #164: `nhl predict` and the ledger.
+3. **Then** tasks 4 to 9, and #173 after #30.
+
+**State on 2026-10-07:**
+- **No live prediction is logged yet.** Every game from 2026-10-06 until the first logged slate is lost to the live test and is never reconstructed.
+- **Task 2 has begun.** Branch `phase-5/live-blend` (47bee47) holds one untested refactor: the blend's fold fit pulled out into `backtest/blend.py`'s `fit_fold()`.
+- **Task 1 hasn't started.** An agent began it on 2026-10-05, but it was cut off and left nothing. `phase-5/live-features` is an empty branch at main.
+- **Reminders** for the dated items fire into this session on 2026-10-13 and 2026-10-22 at 10:30 UTC.
+
+**Never change the frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and the CLV count restarts.
 
 ## The owner's standing decisions
 
@@ -199,7 +208,7 @@ Phase 5 paper-trades the frozen policy on live 2026-27 and builds the dashboard.
     - A 401 is a bad or expired token (it expires around 2027-09). A 403 or 404 means the token lacks Actions read and write.
     - `npx wrangler@4 secret put GITHUB_TOKEN` stores a new token.
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
-- **Open, waiting:** #9 and #42 (P1); #30, #79 and #11 (P2). **Open, later:** #14, #21, #67, #121, #154 and #156 (P5); #15 (P6).
+- **Open, waiting:** #9 and #42 (P1); #30, #79 and #11 (P2). **Open, later:** phase 5's #14 and #162 to #173, with #21, #67, #121, #154 and #156 (P5); #15 (P6).
 
 ## Keep an eye on
 
