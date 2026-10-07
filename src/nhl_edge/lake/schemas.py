@@ -434,8 +434,8 @@ class PaperLedger(pa.DataFrameModel):
     beside them, B0 to B3, u's parts, u and u_sd, and the blend and its twins. A picked row adds
     the side, its price and expected return, the hurdle, the guard's move, and the stake: its
     share of the day's bankroll times the bankroll. Bets settle on the full game, OT and shootout
-    included. Each date is written once to R2 (ledger/live/<date>.parquet) before any of its
-    games starts.
+    included. Each date is written once to R2 (ledger/live/<date>.parquet), and every prediction
+    precedes its game's start.
     """
 
     game_date: pl.Date

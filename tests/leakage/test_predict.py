@@ -11,6 +11,7 @@ from typing import Any
 
 import polars as pl
 import predict_fixtures as pf
+import pytest
 
 from nhl_edge.game import b2, b3, uncertainty
 from nhl_edge.live import blend_fit
@@ -36,9 +37,17 @@ class Spy:
 
         return predictions
 
+    late: bool = False
+
     def parts(self, tables: Any, moments: pl.DataFrame) -> pl.DataFrame:
         self.calls["parts"] = (tables.games, moments)
-        return moments.select("game_id", *[pl.lit(0.1).alias(p) for p in uncertainty.PARTS])
+        observed = pf.DECISION if self.late else pf.DECISION - timedelta(hours=3)
+        return moments.select(
+            "game_id",
+            *[pl.lit(0.1).alias(p) for p in uncertainty.PARTS],
+            observed_utc=pl.lit(observed),
+            train_cutoff=pl.lit(datetime(2026, 4, 17, tzinfo=UTC)),
+        )
 
 
 @dataclass(frozen=True)
@@ -73,6 +82,11 @@ def test_the_models_read_every_game_at_the_decision_from_fits_cut_at_the_fold(
     games, read = spy.calls["parts"]
     assert set(read["prediction_utc"]) == {pf.DECISION}
     assert games.filter(pl.col("game_id").is_in(list(pf.GAMES)))["home_score"].is_null().all()
+    # u read a row known at the decision itself: refused.
+    late = Spy({}, late=True)
+    monkeypatch.setattr(uncertainty, "parts", late.parts)
+    with pytest.raises(ValueError, match="known after"):
+        lp.models(tables, tables, tables, slate, moments, start)
 
 
 def test_quotes_and_results_after_the_decision_change_nothing() -> None:
@@ -109,3 +123,41 @@ def test_the_decision_snapshot_precedes_the_decision() -> None:
     # Decided at the snapshot's own instant, the snapshot isn't yet known.
     assert lp.decision_snapshot(quotes, at) is None
     assert lp.decision_snapshot(quotes, at + timedelta(microseconds=1)) == at
+
+
+def test_a_later_snapshot_never_matches_a_quote_to_a_game() -> None:
+    # The midday quote of one game carries a commence time 13 hours off, so it matches nothing;
+    # a snapshot after the decision with the right time must not rescue it (the leakage check
+    # of #164).
+    off = pf.START + timedelta(hours=13)
+    quotes = (
+        pf.day_quotes()
+        .with_columns(
+            commence_time_utc=pl.when(
+                (pl.col("event_id") == "e2026020053") & (pl.col("snapshot_utc") == pf.MIDDAY)
+            )
+            .then(pl.lit(off))
+            .otherwise(pl.col("commence_time_utc"))
+        )
+        .filter(~((pl.col("event_id") == "e2026020053") & (pl.col("slot") == "morning")))
+    )
+    later = pf.quotes(pf.quote(pf.DECISION + timedelta(hours=2), 2026020053, "pinnacle", 2.1, 1.8))
+    alone = lp.decide(pf.day(quotes=quotes))
+    rescued = lp.decide(pf.day(quotes=pl.concat([quotes, later])))
+    status = dict(rescued.select("game_id", "status").iter_rows())
+    assert status[2026020053] == lp.NO_PRICE
+    assert rescued.equals(alone)
+
+
+def test_an_in_play_price_never_prices_a_bet() -> None:
+    # The odds show the game under way at the decision, while the slate still has its old
+    # start: the game has started, and its price is no prediction's.
+    early = pf.DECISION - timedelta(minutes=30)
+    quotes = pf.day_quotes().with_columns(
+        commence_time_utc=pl.when(pl.col("event_id") == "e2026020054")
+        .then(pl.lit(early))
+        .otherwise(pl.col("commence_time_utc"))
+    )
+    row = lp.decide(pf.day(quotes=quotes)).filter(pl.col("game_id") == 2026020054)
+    assert row["status"].to_list() == [lp.STARTED]
+    assert row["p_blend"].to_list() == [None]

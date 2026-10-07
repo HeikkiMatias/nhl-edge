@@ -396,7 +396,8 @@ def predict(
     """Decide the day's paper bets at the midday snapshot (#164, ADRs 0028, 0030 and 0033): every
     slate game gets one ledger row, its prediction and bet or why it has none. The decision
     instant is fixed when the run starts. A real run (--r2) writes the day once to R2
-    (ledger/live/<date>.parquet), before any predicted game starts, and to the lake's paper_ledger;
+    (ledger/live/<date>.parquet), every prediction before its game's start, and to the lake's
+    paper_ledger;
     after the window it writes the day as skipped, so no late run can reconstruct it."""
     import json
     from datetime import UTC

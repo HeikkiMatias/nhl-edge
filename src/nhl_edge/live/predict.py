@@ -33,7 +33,7 @@ from nhl_edge.betting import selection, staking
 from nhl_edge.betting.selection import POLICY, POLICY_VERSION
 from nhl_edge.game import b2, b3, uncertainty
 from nhl_edge.ingest.nhl_api import parse_utc
-from nhl_edge.ingest.odds import ET, ODDS_FRAME_SCHEMA, SOURCE, parse_odds
+from nhl_edge.ingest.odds import ET, ODDS_FRAME_SCHEMA, SOURCE, available_at, parse_odds
 from nhl_edge.ingest.odds_lake import dated_raw_keys, is_complete, match_games
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.schemas import PaperLedger, dtypes
@@ -195,10 +195,16 @@ def models(
     b2_rows, b2_fit = b2.predictions(tables, moments, season, start, b2.TUNED)
     b3_rows, b3_fit = b3.predictions(b3_tables, moments, season, start)
     b3_moments = moments.join(b3_rows.select("game_id"), on="game_id", how="semi")
+    parts = uncertainty.parts(u_tables, b3_moments)
+    late = parts.join(b3_moments, on="game_id").filter(
+        (pl.col("train_cutoff") >= start) | (pl.col("observed_utc") >= pl.col("prediction_utc"))
+    )
+    if late.height:
+        raise ValueError(f"u read rows known after the fold start or the decision ({late.height})")
     return Models(
         b2_rows.select("game_id", p_b2="p_home"),
         b3_rows.select("game_id", p_b3="p_home"),
-        uncertainty.parts(u_tables, b3_moments).select("game_id", *uncertainty.PARTS),
+        parts.select("game_id", *uncertainty.PARTS),
         b2_fit.train_cutoff,
         b3_fit.train_cutoff,
     )
@@ -294,17 +300,28 @@ def decide(inputs: Day) -> pl.DataFrame:
     slate = inputs.slate.select("game_id", "season", "game_date", "start_utc", "home", "away")
     if after_window(decision) or not in_window(decision):
         return skipped(slate, decision, LATE if after_window(decision) else "before the window")
-    snapshot = decision_snapshot(inputs.quotes, decision)
+    # Only quotes known before the decision: snapshots taken before it, and of those, prices of
+    # games not under way by then. A later snapshot never matches a quote to a game, and an
+    # in-play price never prices a bet.
+    known = inputs.quotes.filter(pl.col("snapshot_utc") < decision)
+    usable = available_at(known, decision)
+    snapshot = decision_snapshot(usable, decision)
     if snapshot is None:
         return skipped(slate, decision, NO_SNAPSHOT)
-    matched = match_games(inputs.quotes, listings(inputs.slate))
+    matched = match_games(usable, listings(inputs.slate))
+    # A game the odds already showed under way has started, whatever the slate's start says.
+    under_way = match_games(
+        known.filter(pl.col("commence_time_utc") <= decision), listings(inputs.slate)
+    )["game_id"].drop_nulls()
     quoted = pinnacle(matched, snapshot)
     rows = (
         slate.join(quoted, on="game_id", how="left")
         .join(best_other(matched, snapshot), on="game_id", how="left")
         .with_columns(prediction_utc=pl.lit(decision), decision_snapshot_utc=pl.lit(snapshot))
     )
-    started = pl.col("start_utc") <= pl.col("prediction_utc")
+    started = (pl.col("start_utc") <= pl.col("prediction_utc")) | pl.col("game_id").is_in(
+        under_way.implode()
+    )
     stale = (pl.col("prediction_utc") - pl.col("last_update_utc")) > MAX_QUOTE_AGE
     rows = rows.with_columns(
         status=pl.when(started)
