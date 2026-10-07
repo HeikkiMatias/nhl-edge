@@ -387,6 +387,43 @@ class Schedule(pa.DataFrameModel):
         return data.lazyframe.select((observed >= start - SCHEDULE_LEAD) & (observed < start))
 
 
+class Slate(pa.DataFrameModel):
+    """One regular-season game scheduled for a game date, as the NHL schedule listed it when it
+    was fetched: the targets a live prediction rates (docs/plans/phase-5.md, task 1, #162).
+
+    observed_utc is the actual fetch time of the schedule response, not a convention: the slate
+    is what this installation knew at that moment. Only games whose schedule state is OK are
+    listed, so a postponed or cancelled game has no row. A slate never holds a result; the game's
+    state when fetched (FUT before the start) is kept for the decision's checks.
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    venue: pl.String
+    neutral_site: pl.Boolean
+    limited_attendance: pl.Boolean
+    game_state: pl.String
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = "game_id"
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def home_is_not_away(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("home") != pl.col("away"))
+
+
 class Players(pa.DataFrameModel):
     """One NHL player, from the player landing page.
 

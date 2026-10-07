@@ -54,6 +54,7 @@ from nhl_edge.lake.schemas import (
     Shifts,
     Shots,
     ShotXg,
+    Slate,
     Stints,
     StrengthTime,
     TeamStrength,
@@ -80,6 +81,7 @@ BY_DATE = ("season", "game_date")
 TABLES: dict[str, Table] = {
     "games": Table(Games, ("game_id",), BY_DATE),
     "schedule": Table(Schedule, ("game_id",), BY_DATE),
+    "slate": Table(Slate, ("game_id",), BY_DATE),
     "players": Table(Players, ("player_id",)),
     "shots": Table(Shots, ("game_id", "event_id"), BY_DATE),
     "shifts": Table(Shifts, ("game_id", "player_id", "period", "shift_number"), BY_DATE),
