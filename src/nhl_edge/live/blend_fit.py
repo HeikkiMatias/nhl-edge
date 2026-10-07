@@ -20,7 +20,9 @@ recalibration for the live season is fitted on every earlier SBR close.
 2022-23 fold's E1 fits that the one run recorded (REFERENCE), or nothing is written.
 """
 
+import hashlib
 import json
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -210,6 +212,49 @@ def differences(rebuilt: dict[str, Any], recorded: dict[str, Any]) -> list[str]:
     return problems
 
 
+def short(rows: pl.DataFrame, priced: pl.DataFrame, reference: dict[str, Any]) -> list[str]:
+    """Why the rows are not the frozen specification's: a season whose rows are fewer than its
+    priced games, since B2, B3 or u dropped one, or 2022-23's rows other than the games its one run
+    scored with B3 (the reproduction fits only the earlier seasons, so it can't see them)."""
+    problems = []
+    counts = dict(rows.group_by("season").len().iter_rows())
+    for season in TRAINING_SEASONS:
+        expected = priced.filter(pl.col("season") == season).height
+        if counts.get(season, 0) != expected:
+            problems.append(
+                f"{season}: {counts.get(season, 0):,} rows of {expected:,} priced games"
+            )
+    scored = reference["b3_scored"]
+    if counts.get(REFERENCE_SEASON, 0) != scored:
+        problems.append(
+            f"{REFERENCE_SEASON}: {counts.get(REFERENCE_SEASON, 0):,} rows, its one run scored "
+            f"{scored:,}"
+        )
+    return problems
+
+
+def recorded_coverage(path: Path = REFERENCE) -> dict[str, Any]:
+    """The one run's E1 coverage of 2022-23."""
+    report = json.loads(path.read_text())
+    return report["experiments"][EXPERIMENT.value]["coverage"][str(REFERENCE_SEASON)]
+
+
+def committed(path: Path = REFERENCE) -> bool:
+    """Whether path is tracked and unchanged from HEAD, so the check it decides can be redone from
+    the commit the fit's version names."""
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", str(path)], capture_output=True, check=False
+    )
+    same = subprocess.run(
+        ["git", "diff", "--quiet", "HEAD", "--", str(path)], capture_output=True, check=False
+    )
+    return tracked.returncode == 0 and same.returncode == 0
+
+
+def digest(path: Path = REFERENCE) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def recorded(path: Path = REFERENCE) -> dict[str, Any]:
     """The one run's E1 fits of the 2022-23 fold, by blend."""
     models = json.loads(path.read_text())["experiments"][EXPERIMENT.value]["models"]
@@ -253,6 +298,7 @@ def artifact(
             "season": REFERENCE_SEASON,
             "seasons": blend_training_seasons(REFERENCE_SEASON),
             "reference": str(REFERENCE),
+            "reference_sha256": digest(),
             "tolerance": TOLERANCE,
             "fits": reproduced,
         },
