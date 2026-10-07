@@ -1,6 +1,6 @@
 # 0032. Judging live evidence: one formal review at the season's end, a practical calibration band, and every denominator shown
 
-- Status: Accepted (by the owner, 2026-10-07); amended the same day by the owner's rulings on Codex's review of #179: the coverage floor and bound, the probability band for calibration, and the proxy's maximum lead time
+- Status: Accepted (by the owner, 2026-10-07); amended the same day by the owner's rulings on Codex's review of #179: the coverage floor and bound, a calibration band derived from the hurdle, and the proxy's maximum lead time
 - Date: 2026-10-07
 
 ## Context
@@ -45,10 +45,17 @@ Option 1, if the owner accepts it.
   - **How they are computed:** paired on the same games, with weekly block bootstrap intervals, and every exclusion counted.
   - **No multiplicity correction.** Each answers its own §1 question, and only the primary measure can open the way to a real stake.
 - **A calibration band** for the blend, with practical meaning:
-  - **The band:** the recalibrated probability at forecasts of 35%, 50% and 65% stays within ±2.5 points of the forecast. It is computed from the calibration intercept and slope fitted on the live games, and from each bootstrap refit of them.
-  - **Why this:** 2.5 points is the size of the 2.5% expected-return hurdle.
-    - The band judges the intercept and slope by their joint effect on probabilities. Separate limits of 0.80 to 1.25 on the slope and ±0.10 on the intercept would let a 60% forecast mean about 64.7% (Codex on #179).
+  - **The band:** at each of the forecasts p = 35%, 50% and 65%, the recalibrated probability stays within ±0.025·p of p:
+    - ±0.875 points at 35%;
+    - ±1.25 points at 50%;
+    - ±1.625 points at 65%.
+
+    The recalibrated probability is computed from the calibration intercept and slope fitted on the live games, and from each bootstrap refit of them.
+  - **Why this:** the band is the 2.5% expected-return hurdle, expressed in probability.
+    - A probability error δ moves the expected return of a bet at odds o by δ·o. At the fair odds 1/p, the band keeps that within 2.5%.
+    - It judges the intercept and slope by their joint effect on probabilities. Separate limits of 0.80 to 1.25 on the slope and ±0.10 on the intercept would let a 60% forecast mean about 64.7% (Codex on #179).
     - The three forecasts span the bulk of the blend's range.
+  - **What one season can show:** about 1,300 games give an interval about ±2.7 points wide at a 50% forecast. No pass is possible within the season, so its verdict is either a fail or "insufficient evidence". A pass needs more seasons of live games.
   - **The verdict:**
     - it passes only when all three 95% intervals lie inside the band;
     - it fails when any of them lies wholly outside it;
