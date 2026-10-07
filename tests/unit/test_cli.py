@@ -1388,7 +1388,9 @@ def test_targets_must_be_a_slate_of_the_seasons_rated(tmp_path: Any) -> None:
         "observed_utc": datetime(2026, 10, 7, 9, tzinfo=UTC),
         "raw_key": "nhl/schedule/2026-10-07/x",
     }
-    lake.write("slate", pl.DataFrame([row], schema=dtypes(Slate)))
+    # A game fetched after its as-of time (10:00 ET, 14:00 UTC) is no target.
+    late = {**row, "game_id": 2026020061, "observed_utc": datetime(2026, 10, 7, 14, tzinfo=UTC)}
+    lake.write("slate", pl.DataFrame([row, late], schema=dtypes(Slate)))
     day = datetime(2026, 10, 7)
     assert _slate_targets(lake, None, [20262027]) is None
     slate = _slate_targets(lake, day, [20262027])

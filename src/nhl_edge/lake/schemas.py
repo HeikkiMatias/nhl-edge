@@ -429,13 +429,15 @@ class FeatureBuilds(pa.DataFrameModel):
     record a prediction checks before it reads the slate's feature rows (#170).
 
     A build deletes its date's record before it changes any table, and writes it once every step
-    is done, so a record means the whole build finished. The table "slate" is the slate itself.
-    Each other row gives a feature table's rows of the date under one artifact_version, and how
-    many of the slate's games they cover (games; null for a table without game_id). A table can
-    hold another component's rows, as lineups holds goalie_starts' goalies, but never two versions
-    of one component: a build that left them is refused. build_id and code_version name the build
-    and the commit it ran. slate_raw_key and slate_fetched_utc name the schedule response, and
-    started_utc and finished_utc are the build's actual clock times, never a convention.
+    is done, so a record means the whole build finished. The table "slate" is the slate itself:
+    its rows are every slate game, and its games those fetched before their as-of time, the only
+    ones rated. Each other row gives a feature table's rows of the date under one
+    artifact_version, and how many of the slate's games they cover (games; null for a table
+    without game_id). A table can hold another component's rows, as lineups holds goalie_starts'
+    goalies, but never two versions of one component: a build that left them is refused.
+    build_id and code_version name the build and the commit it ran. slate_raw_key and
+    slate_fetched_utc name the schedule response, and started_utc and finished_utc are the
+    build's actual clock times, never a convention.
     """
 
     game_date: pl.Date

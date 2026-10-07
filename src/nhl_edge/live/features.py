@@ -14,6 +14,7 @@ from datetime import date
 import polars as pl
 
 from nhl_edge.lake.schemas import FeatureBuilds, dtypes
+from nhl_edge.live.targets import in_time
 
 COMPONENT = "live-features"
 # The tables holding the slate games' target rows, in the order the steps write them.
@@ -94,12 +95,13 @@ def record(
     """The build's FeatureBuilds rows: the slate's, then one per target table and artifact version
     from its rows of the date (tables). build holds build_id, code_version, slate_raw_key,
     slate_fetched_utc, started_utc and finished_utc."""
+    # The slate's games are all its rows; those fetched in time to be rated are its games.
     rows: list[dict[str, object]] = [
         {
             "table": SLATE,
             "artifact_version": build["build_id"],
             "rows": slate.height,
-            "games": slate.height,
+            "games": in_time(slate).height,
         }
     ]
     for name, frame in tables.items():

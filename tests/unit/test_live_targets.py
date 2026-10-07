@@ -181,6 +181,17 @@ def test_every_target_table_is_in_the_lake_and_pulled() -> None:
     assert TABLES["feature_builds"].key == ("game_date", "table", "artifact_version")
 
 
+def test_the_slate_row_counts_the_games_fetched_in_time() -> None:
+    late = slate(2026020061, fetched=datetime(2026, 10, 7, 15, tzinfo=UTC))
+    games = pl.concat([slate(2026020060), late])
+    tables = {"team_strength": table("team-strength-20261007-abc1234", [2026020060])}
+    record = lf.record(games, NIGHT, 20262027, tables, BUILD)
+    assert record.select("table", "rows", "games", "slate_games").rows() == [
+        ("slate", 2, 1, 2),
+        ("team_strength", 1, 1, 2),
+    ]
+
+
 def test_a_day_without_games_is_recorded() -> None:
     empty = slate().head(0)
     record = lf.record(empty, NIGHT, 20262027, {}, BUILD)
