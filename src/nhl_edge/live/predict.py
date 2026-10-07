@@ -471,13 +471,19 @@ def build_problems(
     slate: pl.DataFrame,
     decision_utc: datetime,
     rows: Mapping[str, pl.DataFrame],
+    *,
+    committed: bool = True,
 ) -> list[str]:
     """Why the day's feature rows can't be read (#170): no record of a finished build, a build
     finished at or after the decision, a slate other than the one it rated, or a target table
-    holding rows of a version it didn't record."""
+    holding rows of a version it didn't record. A logged decision also needs a build of committed
+    code, as it names its own commit; a dry run (committed=False) may read a local build."""
     if record.is_empty():
         return ["no finished feature build for the date"]
     problems = []
+    dirty = sorted(set(record.filter(pl.col("build_id").str.ends_with("-dirty"))["build_id"]))
+    if committed and dirty:
+        problems.append(f"the feature build {dirty[0]} ran uncommitted code")
     finished = record["finished_utc"].max()
     assert isinstance(finished, datetime)
     if finished >= decision_utc:

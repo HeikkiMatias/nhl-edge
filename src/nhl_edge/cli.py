@@ -488,7 +488,7 @@ def predict(
         typer.echo(f"odds snapshot left out, it did not parse: {problem}", err=True)
     # Model inputs are cut at the decision snapshot, when the price bet was observed.
     cutoff = lp.input_cutoff(quotes, decision)
-    problems = lp.build_problems(record, slate, cutoff, target_rows)
+    problems = lp.build_problems(record, slate, cutoff, target_rows, committed=not dry_run)
     for problem in problems:
         typer.echo(problem, err=True)
     games = lake.read("games")

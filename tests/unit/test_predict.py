@@ -196,6 +196,7 @@ def test_the_feature_build_must_have_finished_before_the_decision_on_this_slate(
             "artifact_version": ["live-features-x", "lineup-20261007-abc"],
             "slate_raw_key": [slate["raw_key"][0]] * 2,
             "finished_utc": [datetime(2026, 10, 7, 9, 20, tzinfo=UTC)] * 2,
+            "build_id": ["live-features-20261007-abc1234"] * 2,
         }
     )
     rows = {"lineups": pl.DataFrame({"artifact_version": ["lineup-20261007-abc"]})}
@@ -213,6 +214,12 @@ def test_the_feature_build_must_have_finished_before_the_decision_on_this_slate(
     assert lp.build_problems(record, slate, pf.DECISION, mixed) == [
         "lineups holds rows of ['lineup-x'], not its build's"
     ]
+    # A build of uncommitted code: refused for a logged decision, read by a dry run.
+    local = record.with_columns(build_id=pl.lit("live-features-20261007-abc1234-dirty"))
+    assert lp.build_problems(local, slate, pf.DECISION, rows) == [
+        "the feature build live-features-20261007-abc1234-dirty ran uncommitted code"
+    ]
+    assert lp.build_problems(local, slate, pf.DECISION, rows, committed=False) == []
 
 
 def test_no_confirmed_starter_is_read() -> None:
