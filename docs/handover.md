@@ -120,7 +120,7 @@ Every deliverable merged under its own task issue:
 1. **The owner's [priority] issues come first under CLAUDE.md:**
    - #170: live data readiness;
    - #171: immutable run bundles;
-   - #172: how live evidence is judged, an ADR for the owner.
+   - #172: how live evidence is judged. ADR 0032 is merged (#179), with the owner's amendments: coverage rules, the proxy's maximum lead time, and a calibration band derived from the hurdle. #166 implements it.
 
    Each asks for an assessment first, and says not to delay the first valid paper ledger. Fold #170's and #171's minimum checks into tasks 1 to 3 rather than ahead of them.
 2. **Then the critical path to the first logged slate:**
@@ -132,7 +132,13 @@ Every deliverable merged under its own task issue:
 **State on 2026-10-07:**
 - **No live prediction is logged yet.** Every game from 2026-10-06 until the first logged slate is lost to the live test and is never reconstructed.
 - **Task 2 has begun.** Branch `phase-5/live-blend` (47bee47) holds one untested refactor: the blend's fold fit pulled out into `backtest/blend.py`'s `fit_fold()`.
-- **Task 1 hasn't started.** An agent began it on 2026-10-05, but it was cut off and left nothing. `phase-5/live-features` is an empty branch at main.
+- **Task 1 is in review** on `phase-5/live-features`:
+  - the `slate` table;
+  - `--targets` on every builder;
+  - `nhl live features` with its `feature_builds` record;
+  - the nightly step.
+
+  Before the first live prediction, its first nightly run must have written today's rows to R2.
 - **Reminders** for the dated items fire into this session on 2026-10-13 and 2026-10-22 at 10:30 UTC.
 
 **Never change the frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and the CLV count restarts.

@@ -33,6 +33,10 @@ audit_app = typer.Typer(
     help="Data audits, reviewed by hand before a model depends on the data.", no_args_is_help=True
 )
 app.add_typer(audit_app, name="audit")
+live_app = typer.Typer(
+    help="Phase 5's live path: the day's slate and its feature rows.", no_args_is_help=True
+)
+app.add_typer(live_app, name="live")
 
 DEFAULT_BACKTEST_SEASONS = ",".join(str(season) for season in DEVELOPMENT_SEASONS)
 DEFAULT_BACKTEST_OUT = Path("reports/backtest")
@@ -46,6 +50,39 @@ DEFAULT_LINEUPS_OUT = Path("reports/lineups")
 DEFAULT_RATINGS_OUT = Path("reports/ratings")
 DEFAULT_POWER_PLAYS_OUT = Path("reports/power-plays")
 DEFAULT_FINISHING_OUT = Path("reports/finishing")
+# A live build's builder reports: beside the lake, never committed.
+DEFAULT_LIVE_OUT = Path("data/live/reports")
+
+TargetsOption = Annotated[
+    datetime | None,
+    typer.Option(
+        "--targets",
+        formats=["%Y-%m-%d"],
+        help="Also rate this date's slate (nhl live features): its games not played yet.",
+    ),
+]
+
+
+def _slate_targets(
+    lake: "Lake", day: datetime | None, wanted: list[int], tune: bool = False
+) -> "pl.DataFrame | None":
+    """The date's slate games fetched before their as-of time, to rate beside the seasons' games
+    (#162); None without --targets. They must be in the seasons rated."""
+    if day is None:
+        return None
+    if tune:
+        raise typer.BadParameter("--tune rates no slate", param_hint="--targets")
+    from nhl_edge.live import slate
+    from nhl_edge.live.targets import in_time
+
+    games = in_time(slate.of_day(lake.read("slate"), day.date()))
+    outside = sorted(set(games["season"].to_list()) - set(wanted))
+    if outside:
+        raise typer.BadParameter(
+            f"the slate of {day:%Y-%m-%d} is in {outside}, outside the seasons rated",
+            param_hint="--targets",
+        )
+    return games
 
 
 def _not_implemented(command: str, phase: str) -> NoReturn:
@@ -957,10 +994,12 @@ def team_strength(
     ] = False,
     out: Annotated[Path, typer.Option(help="Tuning report directory.")] = DEFAULT_TUNING_OUT,
     r2: Annotated[bool, typer.Option("--r2", help="Mirror the team_strength table to R2.")] = False,
+    targets: TargetsOption = None,
 ) -> None:
     """Rate every game's rolling team strength ΔS with the frozen settings (#74, ADR 0011) into the
     lake's team_strength. With --tune, score the 16 candidate settings on the training seasons
-    instead and write the log to <out>/team-strength-<version>.md."""
+    instead and write the log to <out>/team-strength-<version>.md. With --targets, also rate that
+    date's slate games (#162)."""
     from datetime import UTC
 
     import polars as pl
@@ -970,6 +1009,7 @@ def team_strength(
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.lake.tables import Lake
+    from nhl_edge.live.targets import with_targets
     from nhl_edge.settings import load_env
 
     load_env()
@@ -994,6 +1034,7 @@ def team_strength(
             typer.echo(problem, err=True)
         typer.echo("run nhl ingest --replay and nhl xg for those seasons", err=True)
         raise typer.Exit(code=1)
+    slate = _slate_targets(lake, targets, wanted, tune)
     history = ts.team_games(lake.read("shots"), shot_xg, strength_time)
     version = reports.version(ts.COMPONENT, datetime.now(UTC))
     if tune:
@@ -1017,6 +1058,8 @@ def team_strength(
         frozen = "matches" if choice.chosen == ts.TUNED else "differs from"
         typer.echo(f"{path}: chose {choice.chosen.label}, which {frozen} the frozen TUNED")
         return
+    if slate is not None:
+        games = with_targets(games, slate)
     try:
         rated = games.filter(pl.col("season").is_in(wanted))
         if rated.is_empty():
@@ -1046,11 +1089,13 @@ def goalie_effect(
     r2: Annotated[
         bool, typer.Option("--r2", help="Mirror the goalie_effects table to R2.")
     ] = False,
+    targets: TargetsOption = None,
 ) -> None:
     """Rate every goalie_starts candidate's effect with the frozen settings (#75, ADR 0011) into
     the lake's goalie_effects. With --tune, score the 16 candidate settings on the training seasons
     instead, by the ΔG expected under the goalie-start probabilities, and write the log to
-    <out>/goalie-effect-<version>.md."""
+    <out>/goalie-effect-<version>.md. With --targets, also rate that date's slate games (#162),
+    whose goalie_starts rows nhl goalie-start --targets wrote."""
     from datetime import UTC
 
     import polars as pl
@@ -1060,6 +1105,7 @@ def goalie_effect(
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.lake.tables import Lake
+    from nhl_edge.live.targets import rated, with_targets
     from nhl_edge.settings import load_env
 
     load_env()
@@ -1086,6 +1132,7 @@ def goalie_effect(
             "run nhl ingest --replay, nhl xg and nhl goalie-start for those seasons", err=True
         )
         raise typer.Exit(code=1)
+    slate = _slate_targets(lake, targets, wanted, tune)
     goalies = ge.goalie_games(shots, shot_xg)
     team_shots = ge.team_shot_games(games, shots, shot_xg)
     version = reports.version(ge.COMPONENT, datetime.now(UTC))
@@ -1105,11 +1152,13 @@ def goalie_effect(
         frozen = "matches" if choice.chosen == ge.TUNED else "differs from"
         typer.echo(f"{path}: chose {choice.chosen.label}, which {frozen} the frozen TUNED")
         return
+    if slate is not None:
+        games = with_targets(games, slate)
     try:
         rated_games = games.filter(pl.col("season").is_in(wanted))
         if rated_games.is_empty():
             raise ValueError(f"no games of {wanted} in the lake")
-        candidates = starts.filter(pl.col("season").is_in(wanted))
+        candidates = rated(starts.filter(pl.col("season").is_in(wanted)), rated_games)
         rated = ge.effects(candidates, rated_games, goalies, team_shots, ge.TUNED)
         frame = ge.rows(rated, ge.TUNED, version)
     except ValueError as exc:
@@ -1138,10 +1187,12 @@ def schedule_terms(
     r2: Annotated[
         bool, typer.Option("--r2", help="Mirror the schedule_terms table to R2.")
     ] = False,
+    targets: TargetsOption = None,
 ) -> None:
     """Rate every game's rest, travel, open seats and season home edge with the frozen setting
     (#77, ADR 0011) into the lake's schedule_terms. With --tune, score the home edge's candidate
-    pulls on the training seasons instead and write the log to <out>/schedule-terms-<version>.md."""
+    pulls on the training seasons instead and write the log to <out>/schedule-terms-<version>.md.
+    With --targets, also rate that date's slate games (#162)."""
     from datetime import UTC
 
     import polars as pl
@@ -1151,6 +1202,7 @@ def schedule_terms(
     from nhl_edge.ingest.games import EXPECTED_GAMES
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.lake.tables import Lake
+    from nhl_edge.live.targets import with_schedule_targets
     from nhl_edge.settings import load_env
 
     load_env()
@@ -1174,6 +1226,7 @@ def schedule_terms(
             typer.echo(problem, err=True)
         typer.echo("run nhl ingest --replay, or fix the reference files", err=True)
         raise typer.Exit(code=1)
+    slate = _slate_targets(lake, targets, wanted, tune)
     version = reports.version(st.COMPONENT, datetime.now(UTC))
     if tune:
         rated_seasons = [s for s in known if st.FIRST_SEASON <= s <= last]
@@ -1196,6 +1249,8 @@ def schedule_terms(
         frozen = "matches" if choice.chosen == st.TUNED else "differs from"
         typer.echo(f"{path}: chose {choice.chosen.label}, which {frozen} the frozen TUNED")
         return
+    if slate is not None:
+        schedule = with_schedule_targets(schedule, slate)
     try:
         if schedule.filter(pl.col("season").is_in(wanted)).is_empty():
             raise ValueError(f"no games of {wanted} in the schedule")
@@ -1270,11 +1325,12 @@ def goalie_start(
     ] = None,
     out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_GOALIE_START_OUT,
     r2: Annotated[bool, typer.Option("--r2", help="Mirror the goalie_starts table to R2.")] = False,
+    targets: TargetsOption = None,
 ) -> None:
     """Fit the goalie-start model per season on earlier seasons' boxscores (#76, ADR 0012), write
     each candidate goalie's start probability to the lake's goalie_starts, and the report to
     <out>/<version>.md: figures per open season but the development seasons, which wait for
-    gate 1."""
+    gate 1. With --targets, also score that date's slate games (#162)."""
     from datetime import UTC
 
     import polars as pl
@@ -1286,6 +1342,7 @@ def goalie_start(
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.lake.tables import Lake
     from nhl_edge.lineup import goalie_start as gs
+    from nhl_edge.live.targets import with_targets
     from nhl_edge.settings import load_env
 
     load_env()
@@ -1302,6 +1359,9 @@ def goalie_start(
             typer.echo(problem, err=True)
         typer.echo("run nhl ingest --replay for those seasons", err=True)
         raise typer.Exit(code=1)
+    slate = _slate_targets(lake, targets, wanted)
+    if slate is not None:
+        games = with_targets(games, slate)
     try:
         version = reports.version(gs.COMPONENT, datetime.now(UTC))
         table, scored, models = gs.score(lineups, games, wanted, version)
@@ -1335,13 +1395,15 @@ def lineups(
     r2: Annotated[
         bool, typer.Option("--r2", help="Mirror lineups and lineup_replacements to R2.")
     ] = False,
+    targets: TargetsOption = None,
 ) -> None:
     """Fit the lineup model per season on earlier seasons' boxscores (#99, ADR 0017), project each
     candidate skater's minutes from earlier games' stints (#100, ADR 0018), and write his
     probability of dressing, expected minutes and power-play unit, and each candidate goalie's
     start probability from goalie_starts, to the lake's lineups; the replacement skaters to
     lineup_replacements; and the report to <out>/<version>.md: figures for the training seasons,
-    while the development and held-out seasons wait for gate 2."""
+    while the development and held-out seasons wait for gate 2. With --targets, also project that
+    date's slate games (#162), whose goalie_starts rows nhl goalie-start --targets wrote."""
     from datetime import UTC
 
     import polars as pl
@@ -1355,6 +1417,7 @@ def lineups(
     from nhl_edge.lake.tables import Lake
     from nhl_edge.lineup import minutes as mins
     from nhl_edge.lineup import projection as proj
+    from nhl_edge.live.targets import rated, with_targets
     from nhl_edge.settings import load_env
 
     load_env()
@@ -1371,6 +1434,9 @@ def lineups(
             typer.echo(problem, err=True)
         typer.echo("run nhl ingest --replay for those seasons", err=True)
         raise typer.Exit(code=1)
+    slate = _slate_targets(lake, targets, wanted)
+    if slate is not None:
+        games = with_targets(games, slate)
     try:
         version = reports.version(proj.COMPONENT, datetime.now(UTC))
         lines = team_strength.team_lines()
@@ -1397,7 +1463,7 @@ def lineups(
         raise typer.Exit(code=1) from None
     skaters = mins.with_minutes(skaters, projected, constants)
     try:
-        table = proj.with_goalies(skaters, lake.read("goalie_starts"))
+        table = proj.with_goalies(skaters, rated(lake.read("goalie_starts"), games))
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         typer.echo("run nhl goalie-start for those seasons", err=True)
@@ -1447,6 +1513,7 @@ def rapm_command(
             "--tune", help="Run the tuning grid on the training seasons and log it; write no table."
         ),
     ] = False,
+    targets: TargetsOption = None,
 ) -> None:
     """Refit RAPM every game day from the stints public before it (#101, ADR 0019), with the
     settings tuned in #103 (ADR 0011) and each season's priors (#102, ADR 0020), and write each
@@ -1454,7 +1521,8 @@ def rapm_command(
     the report to <out>/<version>.md: counts for every season, and terms, leaders and priors
     for the training seasons only. With --tune, score the 36 candidate settings on the training
     seasons by the projected 5v5 expected-goal difference (#103, ADR 0011) and log them to
-    reports/tuning/."""
+    reports/tuning/. With --targets, also rate that date's slate games' candidates (#162), whose
+    lineups rows nhl lineups --targets wrote."""
     from collections.abc import Iterator
     from datetime import UTC
 
@@ -1466,6 +1534,7 @@ def rapm_command(
     from nhl_edge.ingest.nhl_ingest import parse_seasons
     from nhl_edge.lake.tables import Lake
     from nhl_edge.lineup import minutes as mins
+    from nhl_edge.live.targets import rated, with_targets
     from nhl_edge.ratings import rapm
     from nhl_edge.reference import load_venues
     from nhl_edge.settings import load_env
@@ -1495,7 +1564,10 @@ def rapm_command(
     played = pl.concat([lake.read("stints", seasons=[s]).select("game_id").unique() for s in read])
     coverage = lake.read("shift_coverage").filter(pl.col("season") >= rapm.FIRST_SEASON)
     problems = mins.input_problems(coverage, played, max(wanted))
-    candidates = rapm.targets(lake.read("lineups", seasons=wanted), games, wanted)
+    slate = _slate_targets(lake, targets, wanted, tune)
+    if slate is not None:
+        games = with_targets(games, slate)
+    candidates = rapm.targets(rated(lake.read("lineups", seasons=wanted), games), games, wanted)
     without = games.filter(pl.col("season").is_in(wanted)).join(
         candidates.select("game_id").unique(), on="game_id", how="anti"
     )
@@ -1610,12 +1682,14 @@ def power_plays_command(
     r2: Annotated[
         bool, typer.Option("--r2", help="Mirror penalty_rates and expected_power_plays to R2.")
     ] = False,
+    targets: TargetsOption = None,
 ) -> None:
     """Rate every lineup candidate's penalties taken and drawn per hour, and each team's expected
     power plays, power-play minutes and shorthanded xG, from both projected lineups (#104, ADR
     0021). Writes penalty_rates and expected_power_plays to the lake and the report to
     <out>/<version>.md: counts for every season, and pulls, league figures, the power-play
-    minutes against B2's and the leaders for the training seasons only."""
+    minutes against B2's and the leaders for the training seasons only. With --targets, also rate
+    that date's slate games (#162), whose lineups rows nhl lineups --targets wrote."""
     from datetime import UTC
 
     import polars as pl
@@ -1628,6 +1702,7 @@ def power_plays_command(
     from nhl_edge.lake.schemas import ExpectedPowerPlays, PenaltyRates
     from nhl_edge.lake.tables import Lake
     from nhl_edge.lineup import minutes as mins
+    from nhl_edge.live.targets import rated, with_targets
     from nhl_edge.ratings import penalty_rates as pr
     from nhl_edge.ratings import rapm
     from nhl_edge.settings import load_env
@@ -1662,9 +1737,14 @@ def power_plays_command(
             typer.echo(problem, err=True)
         typer.echo("run nhl stints and nhl lineups for those seasons", err=True)
         raise typer.Exit(code=1)
+    slate = _slate_targets(lake, targets, wanted)
+    if slate is not None:
+        games = with_targets(games, slate)
     as_of = ts.as_of(pl.col("game_date"), pl.col("start_utc"))
     times = games.filter(pl.col("season").is_in(wanted)).select("season", as_of_utc=as_of)
-    candidates = lineups.join(games.select("game_id", as_of_utc=as_of), on="game_id", how="left")
+    candidates = rated(lineups, games).join(
+        games.select("game_id", as_of_utc=as_of), on="game_id", how="left"
+    )
     weighted = pr.unoffset(lake.read("penalties").filter(pl.col("season") <= last))
     read = [s for s in known if s <= last]
     shots = lake.read("shots", seasons=read)
@@ -1674,7 +1754,7 @@ def power_plays_command(
     try:
         rows = pr.player_games(minutes, weighted, games)
         pulls = {season: pr.season_pulls(rows, season, games) for season in wanted}
-        rated = pr.rates(
+        rates = pr.rates(
             candidates.select(
                 "game_id", "season", "game_date", "team", "player_id", "role", "as_of_utc"
             ),
@@ -1683,14 +1763,14 @@ def power_plays_command(
         )
         history = pr.team_games(strength_time, weighted, shots, shot_xg)
         expected = pr.expected(
-            rated,
+            rates,
             candidates,
-            lake.read("lineup_replacements", seasons=wanted),
+            rated(lake.read("lineup_replacements", seasons=wanted), games),
             pr.role_rates(rows, times),
             pr.league_figures(history, times),
             games,
         )
-        rates_table = pr.stamp(rated, PenaltyRates, pulls, version)
+        rates_table = pr.stamp(rates, PenaltyRates, pulls, version)
         expected_table = pr.stamp(expected, ExpectedPowerPlays, pulls, version)
     except ValueError as exc:
         typer.echo(str(exc), err=True)
@@ -1732,12 +1812,15 @@ def finishing_command(
     r2: Annotated[
         bool, typer.Option("--r2", help="Mirror finishing and goal_multipliers to R2.")
     ] = False,
+    targets: TargetsOption = None,
 ) -> None:
     """Rate every lineup candidate's finishing φ and xG share, and each team's goal multipliers
     against each opposing candidate goalie: the team's φ times the goalie's conversion (#105, ADR
     0022). Writes finishing and goal_multipliers to the lake and the report to
     <out>/<version>.md: counts for every season, and pulls, league figures, the goals against
-    the league's finishing and the leaders for the training seasons only."""
+    the league's finishing and the leaders for the training seasons only. With --targets, also
+    rate that date's slate games (#162), whose lineups and goalie_effects rows the builders before
+    it wrote with --targets."""
     from datetime import UTC
 
     import polars as pl
@@ -1750,6 +1833,7 @@ def finishing_command(
     from nhl_edge.lake.schemas import Finishing, GoalMultipliers
     from nhl_edge.lake.tables import Lake
     from nhl_edge.lineup import minutes as mins
+    from nhl_edge.live.targets import rated, with_targets
     from nhl_edge.ratings import finishing as fn
     from nhl_edge.ratings import rapm
     from nhl_edge.settings import load_env
@@ -1794,14 +1878,19 @@ def finishing_command(
             err=True,
         )
         raise typer.Exit(code=1)
+    slate = _slate_targets(lake, targets, wanted)
+    if slate is not None:
+        games = with_targets(games, slate)
     as_of = ts.as_of(pl.col("game_date"), pl.col("start_utc"))
     times = games.filter(pl.col("season").is_in(wanted)).select("season", as_of_utc=as_of)
-    candidates = lineups.join(games.select("game_id", as_of_utc=as_of), on="game_id", how="left")
+    candidates = rated(lineups, games).join(
+        games.select("game_id", as_of_utc=as_of), on="game_id", how="left"
+    )
     version = reports.version(fn.COMPONENT, datetime.now(UTC))
     try:
         rows = fn.shooter_games(minutes, shots, shot_xg, games)
         pulls = {season: fn.season_pulls(rows, season, games) for season in wanted}
-        rated = fn.rates(
+        rates = fn.rates(
             candidates.select(
                 "game_id", "season", "game_date", "team", "player_id", "role", "as_of_utc"
             ),
@@ -1809,11 +1898,11 @@ def finishing_command(
             pulls,
         )
         shared, multipliers = fn.multipliers(
-            rated,
+            rates,
             candidates,
-            lake.read("lineup_replacements", seasons=wanted),
+            rated(lake.read("lineup_replacements", seasons=wanted), games),
             fn.league_rates(rows, times),
-            effects,
+            rated(effects, games),
             fn.shot_figures(shots, shot_xg, times),
             games,
         )
@@ -1843,6 +1932,114 @@ def finishing_command(
         f"{path}: {finishing_table.height:,} skaters' finishing and {multipliers_table.height:,} "
         f"goal multipliers in {len(wanted)} seasons"
     )
+
+
+@live_app.command("features")
+def live_features(
+    day: Annotated[
+        datetime, typer.Option("--date", formats=["%Y-%m-%d"], help="The game date to rate.")
+    ],
+    out: Annotated[Path, typer.Option(help="The builders' report directory.")] = DEFAULT_LIVE_OUT,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2", help="Pull the lake's tables from R2 first, and mirror what it writes to R2."
+        ),
+    ] = False,
+) -> None:
+    """Rate a game date's slate (#162). Fetch the date's schedule, and refuse, before changing
+    anything, while a game of the week before is not final in the lake, no slate game was
+    fetched before its as-of time, or no game of the slate's season is final yet (#181). Then
+    write the slate, bring its season's played-game tables up to date (xg, stints, then each
+    builder) with the slate games' target rows beside them, and record the build in
+    feature_builds once every step is done."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.ingest.dailyfaceoff import season_of
+    from nhl_edge.ingest.nhl_api import NhlApi
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import TABLES, Lake
+    from nhl_edge.live import features as lf
+    from nhl_edge.live import slate as live_slate
+    from nhl_edge.live.targets import in_time
+    from nhl_edge.settings import load_env
+
+    load_env()
+    started = datetime.now(UTC)
+    game_date = day.date()
+    lake = Lake.from_env(mirror=r2)
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    if r2:
+        pulled = sum(lake.pull(table) for table in lf.LAKE_TABLES)
+        typer.echo(f"pulled {pulled:,} table files from R2")
+    api = NhlApi(store)
+    fetched = live_slate.fetch(api, game_date)
+    slate = fetched.games
+    typer.echo(f"slate {game_date}: {slate.height} games ({fetched.raw_key})")
+    # Checked before any table changes, so a refused run leaves the date's last build standing.
+    late = slate.join(in_time(slate), on="game_id", how="anti")
+    if late.height:
+        games = ", ".join(map(str, late["game_id"].to_list()))
+        typer.echo(f"fetched at or after their as-of time, so not rated: {games}", err=True)
+        if late.height == slate.height:
+            raise typer.Exit(code=1)
+    played = lake.read("games")
+    problems = live_slate.opening(slate, played)
+    if slate.height and not problems:
+        problems = live_slate.settled_problems(api, game_date, played)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl ingest for those dates, then this again", err=True)
+        raise typer.Exit(code=1)
+    # The record goes first, so a build cut short leaves none (#170).
+    lake.replace_dates("feature_builds", TABLES["feature_builds"].empty(), [game_date])
+    lake.replace_dates("slate", slate, [game_date])
+    build_id = reports.version(lf.COMPONENT, started)
+    build = {
+        "build_id": build_id,
+        "code_version": build_id.removeprefix(f"{lf.COMPONENT}-{started:%Y%m%d}-"),
+        "slate_raw_key": fetched.raw_key,
+        "slate_fetched_utc": fetched.fetched_utc,
+        "started_utc": started,
+    }
+    if slate.is_empty():
+        # A day without games is recorded too, so a prediction tells it from a missed build.
+        empty = lf.record(
+            slate, game_date, season_of(game_date), {}, {**build, "finished_utc": datetime.now(UTC)}
+        )
+        lake.replace_dates("feature_builds", empty, [game_date])
+        return
+    (season,) = slate["season"].unique().to_list()
+    seasons = str(season)
+    xg(seasons=seasons, out=out / "xg", r2=r2)
+    stints(seasons=seasons, r2=r2)
+    team_strength(seasons=seasons, r2=r2, targets=day)
+    goalie_start(seasons=seasons, out=out / "goalie-start", r2=r2, targets=day)
+    lineups(seasons=seasons, out=out / "lineups", r2=r2, targets=day)
+    goalie_effect(seasons=seasons, r2=r2, targets=day)
+    schedule_terms(seasons=seasons, r2=r2, targets=day)
+    rapm_command(seasons=seasons, out=out / "rapm", r2=r2, targets=day)
+    power_plays_command(seasons=seasons, out=out / "power-plays", r2=r2, targets=day)
+    finishing_command(seasons=seasons, out=out / "finishing", r2=r2, targets=day)
+    tables = {
+        name: lake.read(name, seasons=[season]).filter(pl.col("game_date") == game_date)
+        for name in lf.TARGET_TABLES
+    }
+    try:
+        record = lf.record(
+            slate, game_date, season, tables, {**build, "finished_utc": datetime.now(UTC)}
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    lake.replace_dates("feature_builds", record, [game_date])
+    for line in lf.uncovered(slate, tables):
+        typer.echo(line, err=True)
+    typer.echo(f"{build_id}: {slate.height} slate games rated into {len(tables)} tables")
 
 
 @app.command()
