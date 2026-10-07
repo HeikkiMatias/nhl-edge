@@ -233,8 +233,58 @@ def test_the_ledger_is_published_after_the_decision_and_before_each_start() -> N
         lp.pre_game(published_late)
     # By the clock at the write, too.
     lp.pre_game(rows, pf.START - timedelta(seconds=1))
-    with pytest.raises(ValueError, match="at or after their game's start"):
+    with pytest.raises(lp.StartsFirst, match="at or after their game's start"):
         lp.pre_game(rows, pf.START)
+
+
+def clock(*times: datetime) -> Any:
+    """A clock reading the given times in turn, then the last one."""
+    readings = iter(times)
+    last: list[datetime] = []
+
+    def read() -> datetime:
+        last[:] = [next(readings, last[0] if last else times[-1])]
+        return last[0]
+
+    return read
+
+
+def test_a_game_starting_while_the_ledger_is_built_is_decided_again_as_started() -> None:
+    # Codex's P1 on #184: the matinee starts at 13:00 ET between the publication clock and the
+    # check after the ledger is built. The day is decided again at the later clock: the matinee
+    # has no prediction, and the other games keep theirs.
+    matinee = datetime(2026, 10, 7, 17, tzinfo=UTC)
+    games = {**pf.GAMES, 2026020053: ("WSH", "PIT", matinee)}
+    inputs = pf.day(slate=pf.slate(games))
+    second = timedelta(seconds=1)
+    rows = lp.publish(inputs, clock(matinee - second, matinee + second, matinee + 2 * second))
+    status = dict(rows.select("game_id", "status").iter_rows())
+    assert status[2026020053] == lp.STARTS_BEFORE_PUBLISHED
+    assert status[2026020054] == status[2026020055] == lp.PREDICTED
+    assert set(rows["published_utc"]) == {matinee + second}
+    # Nothing starts while it is built: one pass, published at the first reading.
+    once = lp.publish(inputs, clock(matinee - 2 * second, matinee - second))
+    assert set(once["published_utc"]) == {matinee - 2 * second}
+    assert dict(once.select("game_id", "status").iter_rows())[2026020053] == lp.PREDICTED
+
+
+def test_a_game_starting_before_the_write_has_the_day_decided_again() -> None:
+    from fakes import ConditionalBucket
+
+    matinee = datetime(2026, 10, 7, 17, tzinfo=UTC)
+    games = {**pf.GAMES, 2026020053: ("WSH", "PIT", matinee)}
+    inputs = pf.day(slate=pf.slate(games))
+    second = timedelta(seconds=1)
+    bucket = ConditionalBucket()
+    # Built before the start, but the clock at the write is past it: decided again, then written.
+    times = clock(matinee - 2 * second, matinee - second, matinee, matinee + second, matinee)
+    rows, key = lp.write_published(bucket, "b", inputs, times)
+    assert key == "ledger/live/2026-10-07.parquet"
+    written = pl.read_parquet(bucket.objects[key])
+    assert written.equals(rows)
+    assert dict(written.select("game_id", "status").iter_rows())[2026020053] == (
+        lp.STARTS_BEFORE_PUBLISHED
+    )
 
 
 def test_the_feature_build_must_have_finished_before_the_decision_on_this_slate() -> None:

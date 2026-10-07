@@ -3,7 +3,8 @@
 At about 12:47 ET, after the midday odds snapshot, every slate game gets one ledger row: its
 prediction and bet, or why it has none. The decision instant is fixed when the run starts, and
 everything read must be known before it. The ledger is published minutes later, once the models
-are read: published_utc, the actual clock just before it is built and written (#170).
+are read: published_utc, the actual clock as it is built and written, read again after it is
+built and at the write, with the day decided again if a game starts meanwhile (#170).
 
 - **The window (ADR 0033):** the midday snapshot and the decision both fall between 12:45 and
   13:15 ET, read from their times, not the slot's label. Outside it the day is skipped.
@@ -22,8 +23,8 @@ are read: published_utc, the actual clock just before it is built and written (#
 The functions here are pure: the CLI loads the inputs and writes the ledger once.
 """
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
@@ -441,18 +442,42 @@ def stamp(ledger: pl.DataFrame, inputs: Day) -> pl.DataFrame:
     )
 
 
+class StartsFirst(ValueError):
+    """A predicted game starts by the clock at the write: decide the day again (publish)."""
+
+
 def pre_game(ledger: pl.DataFrame, now: datetime | None = None) -> None:
-    """Refuse a ledger with any prediction decided or published at or after its game's start, or,
-    given the clock (now), one whose game starts by then."""
-    published = pl.col("published_utc") if now is None else pl.lit(now)
-    late = ledger.filter(
-        pl.col("status") == PREDICTED,
+    """Refuse a ledger with any prediction decided or published at or after its game's start, and,
+    given the clock (now), one whose game starts by then (StartsFirst)."""
+    predicted = ledger.filter(pl.col("status") == PREDICTED)
+    late = predicted.filter(
         (pl.col("prediction_utc") >= pl.col("start_utc"))
         | (pl.col("published_utc") >= pl.col("start_utc"))
-        | (published >= pl.col("start_utc")),
     )
     if late.height:
         raise ValueError(f"{late.height} predictions at or after their game's start")
+    if now is not None and (started := predicted.filter(pl.col("start_utc") <= now)).height:
+        raise StartsFirst(f"{started.height} predictions at or after their game's start by {now}")
+
+
+def publish(inputs: Day, clock: Callable[[], datetime], tries: int = 5) -> pl.DataFrame:
+    """The day's ledger, decided against the publication clock (#170). published_utc is read
+    from the clock, the ledger built, and the clock read again: while a predicted game starts by
+    then, the day is decided again at the later clock. A game that starts while the ledger is
+    built is recorded as started, and the others keep their predictions, the stakes rescaled
+    without it."""
+    published = clock()
+    for _ in range(tries):
+        day = replace(inputs, published_utc=published)
+        built = ledger(decide(day), day)
+        now = clock()
+        try:
+            pre_game(built, now)
+        except StartsFirst:
+            published = now
+            continue
+        return built
+    raise ValueError(f"games kept starting while the ledger was built ({tries} tries)")
 
 
 def day_quotes(store: RawStore, day: date) -> tuple[pl.DataFrame, list[str]]:
@@ -551,7 +576,7 @@ def ledger_key(day: date) -> str:
 def write_once(objects: Any, bucket: str, day: date, ledger: pl.DataFrame, now: datetime) -> str:
     """Write the day's ledger to R2 once, refused if the day exists (a second run, or a late one
     after a skipped day), and only if every prediction precedes its game's start, by the clock at
-    the write (now) too."""
+    the write (now) too (StartsFirst)."""
     import io
 
     pre_game(ledger, now)
@@ -560,3 +585,17 @@ def write_once(objects: Any, bucket: str, day: date, ledger: pl.DataFrame, now: 
     key = ledger_key(day)
     objects.put_object(Bucket=bucket, Key=key, Body=body.getvalue(), IfNoneMatch="*")
     return key
+
+
+def write_published(
+    objects: Any, bucket: str, inputs: Day, clock: Callable[[], datetime], tries: int = 3
+) -> tuple[pl.DataFrame, str]:
+    """publish() the day and write it once. A game that starts between the ledger and the write
+    has the day decided again at the later clock, never the whole day refused (#170)."""
+    for _ in range(tries):
+        built = publish(inputs, clock)
+        try:
+            return built, write_once(objects, bucket, inputs.day, built, clock())
+        except StartsFirst:
+            continue
+    raise ValueError(f"games kept starting before the ledger was written ({tries} tries)")

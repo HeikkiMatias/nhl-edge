@@ -546,17 +546,19 @@ def predict(
             "b2_train_cutoff": fitted.b2_cutoff if fitted else None,
             "b3_train_cutoff": fitted.b3_cutoff if fitted else None,
         },
-        # The clock as the ledger is built and written, seconds before the write (#170); a dry
-        # run with --at shifts it by the run's own time since its start.
-        published_utc=decision + (datetime.now(UTC) - started),
     )
-    try:
-        ledger = lp.ledger(lp.decide(inputs), inputs)
-        lp.pre_game(ledger)
-    except ValueError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1) from None
+
+    def clock() -> datetime:
+        """The publication clock (#170): the actual one in a real run; a dry run with --at shifts
+        it by the run's own time since its start."""
+        return decision + (datetime.now(UTC) - started)
+
     if dry_run:
+        try:
+            ledger = lp.publish(inputs, clock)
+        except ValueError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
         out.mkdir(parents=True, exist_ok=True)
         path = out / f"{game_date.isoformat()}.parquet"
         ledger.write_parquet(path)
@@ -565,12 +567,11 @@ def predict(
         assert lake.objects is not None and lake.bucket is not None
         try:
             # Written once: a second run, or a late one, can't replace the day (ADR 0033).
-            where = "R2 " + lp.write_once(
-                lake.objects, lake.bucket, game_date, ledger, datetime.now(UTC)
-            )
+            ledger, key = lp.write_published(lake.objects, lake.bucket, inputs, clock)
         except Exception as exc:
             typer.echo(f"the {game_date} ledger was not written ({exc}): never rewritten", err=True)
             raise typer.Exit(code=1) from None
+        where = f"R2 {key}"
         lake.replace_dates("paper_ledger", ledger, [game_date])
     counts = ledger.group_by("status").len().sort("status").iter_rows()
     typer.echo(f"{where}: " + ", ".join(f"{n} {status}" for status, n in counts))

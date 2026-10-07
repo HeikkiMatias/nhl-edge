@@ -293,7 +293,7 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
 
   Every model input must be known before the decision snapshot, when the price bet was observed, not merely before the run. It reads no table of confirmed starters (ADR 0030).
 - **Per game, in order:**
-  1. started before the decision, or starts before the decision is published. The ledger reaches R2 minutes after the decision instant, once the lake is pulled and B2 and B3 are read, and a weekend matinee can start inside the window. `published_utc` is the actual clock as the ledger is built and written, and the write itself is refused if a predicted game has started by then (#170);
+  1. started before the decision, or starts before the decision is published. The ledger reaches R2 minutes after the decision instant, once the lake is pulled and B2 and B3 are read, and a weekend matinee can start inside the window. `published_utc` is the actual clock as the ledger is built and written. The clock is read again after the ledger is built and at the write: a game that starts by then has the day decided again at the later clock, so it is recorded as started and the other games keep theirs (#170);
   2. no Pinnacle midday price;
   3. no fresh price: Pinnacle's quote more than 5 minutes old at the decision;
   4. a missing input;
