@@ -82,6 +82,7 @@ The policy was frozen on 2026-10-05 as **`policy-20261005-8ec5cf3`** (#144). It 
   - The backtest review found two places where the live policy wasn't fixed. ADR 0030 settles both.
 - **What is frozen:** the code on main at 8ec5cf3 in `game/uncertainty.py`, `market/blend.py` and `betting/`, with ADR 0030's live inputs:
   - **u:** its three equally weighted parts, standardized on each fold's training games (ADR 0026). Live goalie doubt reads the goalie-start model, never a confirmation, as on history (ADR 0030).
+  - **Live B3** uses no confirmed starter either: it mixes over the goalie-start model's likely starters, as on history (ADR 0030, the owner's ruling of 2026-10-05).
   - **The blend:** its form and its unpenalized fit on earlier out-of-sample folds. Only its four weights are refit (ADR 0027).
     - Live bets use the E1 fit, learned against SBR's close. It trains on 2018-19 to 2021-22, plus 2022-23 once its one run has scored it, and is fed Pinnacle's 12:45 ET price (ADR 0030).
   - **Selection and staking (ADR 0028):**
@@ -232,7 +233,7 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
 - **Gaps above 8 points against B1:** 17 on E1 and 49 on E2, against B3's 208 in 2021-22 on E1. All were reviewed by hand, and no bug was found.
 
 **Phase 4's inputs:**
-- **The uncertainty score u (ADR 0026):** history's goalie doubt comes from the goalie-start model alone, since no historical starter confirmations exist. Live, u reads the same goalie-start probabilities and ignores confirmations (ADR 0030), so it stays the quantity the blend was fitted on. B3 itself still uses a confirmed starter.
+- **The uncertainty score u (ADR 0026):** history's goalie doubt comes from the goalie-start model alone, since no historical starter confirmations exist. Live, u reads the same goalie-start probabilities and ignores confirmations (ADR 0030), so it stays the quantity the blend was fitted on. Live B3 uses no confirmed starter either (the owner's ruling, 2026-10-05, ADR 0030).
 
 **Held-out seasons seen for data format only** (#96, PR #108):
 - **What was seen:** the first draft of the `penalties` and `faceoffs` tables surveyed every cached season, 2023-24, 2025-26 and the first 2026-27 games included. It recorded which penalty codes exist and which fields can be blank, and it checked the faceoff zones of 200 games of 2023-24.
