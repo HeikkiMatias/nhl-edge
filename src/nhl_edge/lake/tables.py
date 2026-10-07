@@ -118,7 +118,7 @@ TABLES: dict[str, Table] = {
     "slate": Table(Slate, ("game_id",), BY_DATE),
     "feature_builds": Table(FeatureBuilds, ("game_date", "table", "artifact_version"), BY_DATE),
     # The paper ledger (#164): each date's decisions, as written once to R2.
-    "paper_ledger": Table(PaperLedger, ("game_id",), BY_DATE),
+    "paper_ledger": Table(PaperLedger, ("game_date", "game_id"), BY_DATE),
 }
 # Partition columns replace_dates can replace a date at a time.
 DATE_PARTITIONS = ("game_date", "snapshot_date")

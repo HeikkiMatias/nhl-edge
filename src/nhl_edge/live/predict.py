@@ -114,6 +114,21 @@ def devigable(quotes: pl.DataFrame) -> pl.DataFrame:
     return quotes.join(bad, on=[*keys, "market"], how="anti")
 
 
+def usable_quotes(quotes: pl.DataFrame, decision_utc: datetime) -> pl.DataFrame:
+    """The quotes a decision may read: from snapshots before it, of games not under way by then
+    (odds.available_at), without pairs de-vigging refuses."""
+    known = quotes.filter(pl.col("snapshot_utc") < decision_utc)
+    return devigable(available_at(known, decision_utc))
+
+
+def input_cutoff(quotes: pl.DataFrame, decision_utc: datetime) -> datetime:
+    """The instant every model input must precede: the decision snapshot's, since the price bet
+    was observed then, so nothing learned between the price and the decision informs a bet
+    against it. Without a decision snapshot the day is skipped, and the decision instant
+    stands."""
+    return decision_snapshot(usable_quotes(quotes, decision_utc), decision_utc) or decision_utc
+
+
 def listings(slate: pl.DataFrame) -> pl.DataFrame:
     """The slate as listings to match odds events against (odds_lake.match_games)."""
     return slate.select(
@@ -318,7 +333,7 @@ def decide(inputs: Day) -> pl.DataFrame:
     # games not under way by then. A later snapshot never matches a quote to a game, and an
     # in-play price never prices a bet.
     known = inputs.quotes.filter(pl.col("snapshot_utc") < decision)
-    usable = devigable(available_at(known, decision))
+    usable = usable_quotes(inputs.quotes, decision)
     snapshot = decision_snapshot(usable, decision)
     if snapshot is None:
         return skipped(slate, decision, NO_SNAPSHOT)

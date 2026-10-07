@@ -428,8 +428,10 @@ class PaperLedger(pa.DataFrameModel):
     """One slate game's paper decision (nhl predict, #164; ADRs 0028, 0030 and 0033): its
     prediction and bet, or why it has none (status).
 
-    Every row carries the decision instant (prediction_utc, fixed when the run started), the
-    policy and the versions of the live fit, the feature build and the code. A predicted row adds
+    Every row carries the decision instant (prediction_utc, fixed when the run started; one per
+    date), the policy and the versions of the live fit, the feature build and the code. Every
+    model input was known before the decision snapshot, when the price bet was observed. A
+    predicted row adds
     Pinnacle's prices at the decision snapshot with their last update, the best other EU book's
     beside them, B0 to B3, u's parts, u and u_sd, and the blend and its twins. A picked row adds
     the side, its price and expected return, the hurdle, the guard's move, and the stake: its
@@ -495,7 +497,8 @@ class PaperLedger(pa.DataFrameModel):
     class Config(pa.DataFrameModel.Config):
         strict = True
         ordered = True
-        unique: str | list[str] | None = "game_id"
+        # A game postponed after its decision is decided again on its new date.
+        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
 
     @pa.dataframe_check
     def decided_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
@@ -511,7 +514,7 @@ class PaperLedger(pa.DataFrameModel):
 
     @pa.dataframe_check
     def one_decision_a_day(cls, data: pa.PolarsData) -> pl.LazyFrame:
-        return data.lazyframe.select(pl.col("prediction_utc").n_unique() == 1)
+        return data.lazyframe.select(pl.col("prediction_utc").n_unique().over("game_date") == 1)
 
 
 class FeatureBuilds(pa.DataFrameModel):

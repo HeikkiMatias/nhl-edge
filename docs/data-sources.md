@@ -291,7 +291,7 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   - the day's morning and midday odds, parsed from the raw responses and matched to the slate's games;
   - the earlier ledgers, for the bankroll.
 
-  It reads no table of confirmed starters (ADR 0030).
+  Every model input must be known before the decision snapshot, when the price bet was observed, not merely before the run. It reads no table of confirmed starters (ADR 0030).
 - **Per game, in order:**
   1. started before the decision;
   2. no Pinnacle midday price;
@@ -302,6 +302,7 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   The frozen selection, guard and staking then decide the bet, and the best other EU book's prices are logged beside Pinnacle's.
 - **The ledger:**
   - one row per slate game (`PaperLedger`), written once to R2 as `ledger/live/<date>.parquet` with `IfNoneMatch="*"`, and to the lake's `paper_ledger`;
+  - each real run first rebuilds the lake's `paper_ledger` from the ledgers in R2, the record, before reading the bankroll from it;
   - refused if any prediction is at or after its game's start;
   - `--dry-run` writes only to `data/live/dry/`, and with `--at` it decides at a past instant to check a day.
 

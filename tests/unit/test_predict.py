@@ -335,3 +335,28 @@ def test_a_real_run_decides_today_from_the_committed_fit(monkeypatch: Any) -> No
     assert "today's slate only" in " ".join(other_day.output.split())
     other_fit = runner.invoke(cli.app, ["predict", "--r2", "--fit", "x.json"])
     assert other_fit.exit_code == 2
+
+
+def test_model_inputs_are_cut_at_the_decision_snapshot() -> None:
+    # The price bet was observed at the snapshot, so nothing learned after it may inform the bet.
+    assert lp.input_cutoff(pf.day_quotes(), pf.DECISION) == pf.MIDDAY < pf.DECISION
+    # Without a snapshot in the window the day is skipped, and the decision instant stands.
+    morning = pf.day_quotes().filter(pl.col("slot") == "morning")
+    assert lp.input_cutoff(morning, pf.DECISION) == pf.DECISION
+
+
+def test_a_season_of_ledgers_validates_one_decision_per_date() -> None:
+    from nhl_edge.lake.schemas import PaperLedger
+
+    first = decided()
+    tomorrow = decided(decision_utc=pf.DECISION + timedelta(minutes=1)).with_columns(
+        game_date=pl.lit(pf.DAY + timedelta(days=1))
+    )
+    # Two dates, two decision instants, and a postponed game decided again on its new date.
+    PaperLedger.validate(pl.concat([first, tomorrow]))
+    with pytest.raises(SchemaError):
+        PaperLedger.validate(
+            pl.concat([first, tomorrow.with_columns(game_date=pl.lit(pf.DAY))]).unique(
+                ["game_date", "game_id", "prediction_utc"]
+            )
+        )

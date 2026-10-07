@@ -483,7 +483,12 @@ def predict(
         name: lake.read(name, seasons=[season]).filter(pl.col("game_date") == game_date)
         for name in lf.TARGET_TABLES
     }
-    problems = lp.build_problems(record, slate, decision, target_rows)
+    quotes, failed = lp.day_quotes(store, decision.date())
+    for problem in failed:
+        typer.echo(f"odds snapshot left out, it did not parse: {problem}", err=True)
+    # Model inputs are cut at the decision snapshot, when the price bet was observed.
+    cutoff = lp.input_cutoff(quotes, decision)
+    problems = lp.build_problems(record, slate, cutoff, target_rows)
     for problem in problems:
         typer.echo(problem, err=True)
     games = lake.read("games")
@@ -511,7 +516,7 @@ def predict(
             tables.actual_lineups,
             lake.read("player_league_seasons"),
         )
-        moments = slate.select("game_id", prediction_utc=pl.lit(decision))
+        moments = slate.select("game_id", prediction_utc=pl.lit(cutoff))
         fitted = lp.models(tables, b3_tables, u_tables, slate, moments, live.fold_start)
     if r2:
         # The ledgers in R2 are the record: the lake's copy is rebuilt from them first, so a day
@@ -525,9 +530,6 @@ def predict(
         earlier = lake.read("paper_ledger", seasons=[season]).filter(
             pl.col("game_date") < game_date
         )
-    quotes, failed = lp.day_quotes(store, decision.date())
-    for problem in failed:
-        typer.echo(f"odds snapshot left out, it did not parse: {problem}", err=True)
     inputs = lp.Day(
         day=game_date,
         decision_utc=decision,
