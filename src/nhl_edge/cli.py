@@ -1948,10 +1948,11 @@ def live_features(
     ] = False,
 ) -> None:
     """Rate a game date's slate (#162). Fetch the date's schedule, and refuse, before changing
-    anything, while a game of the week before is not final in the lake or no slate game was
-    fetched before its as-of time. Then write the slate, bring its season's played-game tables up
-    to date (xg, stints, then each builder) with the slate games' target rows beside them, and
-    record the build in feature_builds once every step is done."""
+    anything, while a game of the week before is not final in the lake, no slate game was
+    fetched before its as-of time, or no game of the slate's season is final yet (#181). Then
+    write the slate, bring its season's played-game tables up to date (xg, stints, then each
+    builder) with the slate games' target rows beside them, and record the build in
+    feature_builds once every step is done."""
     from datetime import UTC
 
     import polars as pl
@@ -1985,9 +1986,10 @@ def live_features(
         typer.echo(f"fetched at or after their as-of time, so not rated: {games}", err=True)
         if late.height == slate.height:
             raise typer.Exit(code=1)
-    problems = (
-        live_slate.settled_problems(api, game_date, lake.read("games")) if slate.height else []
-    )
+    played = lake.read("games")
+    problems = live_slate.opening(slate, played)
+    if slate.height and not problems:
+        problems = live_slate.settled_problems(api, game_date, played)
     if problems:
         for problem in problems:
             typer.echo(problem, err=True)
