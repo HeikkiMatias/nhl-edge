@@ -208,3 +208,23 @@ def test_rows_short_of_the_priced_games_or_the_recorded_run_are_refused() -> Non
 def test_the_recorded_run_covered_342_games_of_2022_23() -> None:
     assert bf.recorded_coverage()["b3_scored"] == 342
     assert bf.committed()
+
+
+def test_a_fit_past_its_fold_or_of_another_season_or_policy_is_never_loaded() -> None:
+    _, record = fitted()
+    late = json.loads(json.dumps(record))
+    late["fits"]["BLEND"]["train_cutoff"] = record["fold_start"]
+    with pytest.raises(ValueError, match="at or after its fold start"):
+        bf.load(late)
+    b1_late = json.loads(json.dumps(record))
+    b1_late["b1"]["train_cutoff"] = "2026-10-01T00:00:00+00:00"
+    with pytest.raises(ValueError, match="at or after its fold start"):
+        bf.load(b1_late)
+    other = json.loads(json.dumps(record))
+    other["policy"] = "policy-20990101-abc1234"
+    with pytest.raises(ValueError, match="not of 20262027"):
+        bf.load(other)
+    missing = json.loads(json.dumps(record))
+    del missing["fits"]["BLEND_B2"]
+    with pytest.raises(ValueError, match="lacks blends"):
+        bf.load(missing)

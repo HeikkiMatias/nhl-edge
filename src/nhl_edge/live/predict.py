@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from nhl_edge.backtest.walk_forward import refused
 from nhl_edge.betting import guard as market_guard
 from nhl_edge.betting import selection, staking
 from nhl_edge.betting.selection import POLICY, POLICY_VERSION
@@ -98,6 +99,19 @@ def decision_snapshot(quotes: pl.DataFrame, decision_utc: datetime) -> datetime 
         }
     )
     return times[-1] if times else None
+
+
+def devigable(quotes: pl.DataFrame) -> pl.DataFrame:
+    """The quotes without any h2h pair de-vigging refuses (implied probabilities summing below
+    100%, such as both sides at plus money): that pair is no price, so its game alone gets none,
+    and neither B0 nor the guard ever reads it."""
+    keys = ["snapshot_utc", "event_id", "book"]
+    h2h = quotes.filter(pl.col("market") == "h2h")
+    pairs = _wide(h2h, keys)
+    if pairs.is_empty():
+        return quotes
+    bad = pairs.filter(refused(pairs)).select(keys).with_columns(market=pl.lit("h2h"))
+    return quotes.join(bad, on=[*keys, "market"], how="anti")
 
 
 def listings(slate: pl.DataFrame) -> pl.DataFrame:
@@ -304,7 +318,7 @@ def decide(inputs: Day) -> pl.DataFrame:
     # games not under way by then. A later snapshot never matches a quote to a game, and an
     # in-play price never prices a bet.
     known = inputs.quotes.filter(pl.col("snapshot_utc") < decision)
-    usable = available_at(known, decision)
+    usable = devigable(available_at(known, decision))
     snapshot = decision_snapshot(usable, decision)
     if snapshot is None:
         return skipped(slate, decision, NO_SNAPSHOT)
@@ -393,20 +407,48 @@ def pre_game(ledger: pl.DataFrame) -> None:
         raise ValueError(f"{late.height} predictions at or after their game's start")
 
 
-def day_quotes(store: RawStore, day: date) -> pl.DataFrame:
+def day_quotes(store: RawStore, day: date) -> tuple[pl.DataFrame, list[str]]:
     """Every quote of the day's stored odds snapshots (odds/<day>/, by UTC date: the morning and
-    midday slots fall on the ET date's own), parsed as the odds replay parses them."""
-    frames = []
+    midday slots fall on the ET date's own), parsed as the odds replay parses them, and the raw
+    keys that failed to parse. A malformed response is left out, so it can neither block the
+    others nor stand in for a snapshot."""
+    frames, failed = [], []
     for raw_key in dated_raw_keys(SOURCE, store).get(day, []):
         if not is_complete(store, raw_key):
             continue
         meta = store.meta(raw_key)
-        snapshot_utc = parse_utc(meta["fetched_utc"])
-        slot = str(meta.get("slot") or "unknown")
-        frames.append(parse_odds(store.get(raw_key), snapshot_utc, slot, raw_key))
+        try:
+            snapshot_utc = parse_utc(meta["fetched_utc"])
+            slot = str(meta.get("slot") or "unknown")
+            frames.append(parse_odds(store.get(raw_key), snapshot_utc, slot, raw_key))
+        except Exception as exc:  # any parse or validation failure of one response
+            failed.append(f"{raw_key}: {type(exc).__name__}")
     if not frames:
-        return pl.DataFrame(schema=ODDS_FRAME_SCHEMA)
-    return pl.concat(frames)
+        return pl.DataFrame(schema=ODDS_FRAME_SCHEMA), failed
+    return pl.concat(frames), failed
+
+
+def sync_ledgers(objects: Any, bucket: str, season: int) -> pl.DataFrame:
+    """Every ledger of the season written to R2 (ledger/live/), the canonical record: the lake's
+    paper_ledger is rebuilt from it, so a day whose lake copy failed is never missing from the
+    bankroll."""
+    import io
+
+    frames = []
+    token: dict[str, str] = {}
+    while True:
+        listed = objects.list_objects_v2(Bucket=bucket, Prefix=f"{LEDGER_PREFIX}/", **token)
+        for item in listed.get("Contents", []):
+            body = objects.get_object(Bucket=bucket, Key=item["Key"])["Body"].read()
+            frames.append(pl.read_parquet(io.BytesIO(body)))
+        if not listed.get("IsTruncated"):
+            break
+        token = {"ContinuationToken": listed["NextContinuationToken"]}
+    columns = dtypes(PaperLedger)
+    if not frames:
+        return pl.DataFrame(schema=columns)
+    every = pl.concat(frames).cast(columns)  # type: ignore[arg-type]
+    return PaperLedger.validate(every.filter(pl.col("season") == season)) if every.height else every
 
 
 def build_problems(

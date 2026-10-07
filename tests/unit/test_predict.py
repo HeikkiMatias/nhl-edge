@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import polars as pl
 import predict_fixtures as pf
@@ -235,3 +236,102 @@ def test_a_day_is_written_to_r2_once() -> None:
     with pytest.raises(ValueError):
         lp.write_once(fresh, "b", pf.DAY, rows.with_columns(start_utc=pl.lit(pf.DECISION)))
     assert fresh.objects == {}
+
+
+def test_a_refused_price_pair_costs_only_its_game() -> None:
+    # Both sides at plus money sum below 100%: de-vigging refuses it, for that game alone.
+    quotes = pl.concat(
+        [
+            pf.day_quotes().filter(
+                ~((pl.col("event_id") == "e2026020054") & (pl.col("snapshot_utc") == pf.MIDDAY))
+            ),
+            pf.quotes(pf.quote(pf.MIDDAY, 2026020054, "pinnacle", 2.1, 2.1)),
+        ]
+    )
+    status = dict(decided(quotes=quotes).select("game_id", "status").iter_rows())
+    assert status == {
+        2026020053: lp.PREDICTED,
+        2026020054: lp.NO_PRICE,
+        2026020055: lp.PREDICTED,
+    }
+
+
+def odds_body(home: str, away: str, start: str, prices: tuple[float, float]) -> bytes:
+    import json
+
+    market = {
+        "key": "h2h",
+        "last_update": "2026-10-07T16:45:10Z",
+        "outcomes": [{"name": home, "price": prices[0]}, {"name": away, "price": prices[1]}],
+    }
+    event = {
+        "id": "e1",
+        "home_team": home,
+        "away_team": away,
+        "commence_time": start,
+        "bookmakers": [
+            {"key": "pinnacle", "last_update": "2026-10-07T16:45:10Z", "markets": [market]}
+        ],
+    }
+    return json.dumps([event]).encode()
+
+
+def test_a_malformed_snapshot_is_left_out_and_reported(tmp_path: Any) -> None:
+    from nhl_edge.lake.raw import RawStore
+
+    store = RawStore(tmp_path)
+    good = odds_body(
+        "Washington Capitals", "Pittsburgh Penguins", "2026-10-07T23:30:00Z", (2.1, 1.8)
+    )
+    store.put(
+        "odds",
+        "2026-10-07/20261007T164530Z_midday_eu",
+        good,
+        {"fetched_utc": "2026-10-07T16:45:30+00:00", "slot": "midday"},
+    )
+    store.put(
+        "odds",
+        "2026-10-07/20261007T110600Z_morning_eu",
+        b"not json",
+        {"fetched_utc": "2026-10-07T11:06:00+00:00", "slot": "morning"},
+    )
+    quotes, failed = lp.day_quotes(store, pf.DAY)
+    assert set(quotes["slot"]) == {"midday"}
+    assert quotes.height == 2
+    assert len(failed) == 1 and failed[0].startswith("odds/2026-10-07/20261007T110600Z_morning_eu")
+
+
+def test_the_ledgers_in_r2_are_read_back_whole() -> None:
+    import io
+
+    from fakes import MemoryBucket
+
+    bucket = MemoryBucket(page_size=1)
+    first = decided()
+    second = decided(slate=pf.slate({2026020099: ("BOS", "TOR", pf.START)}), quotes=pf.day_quotes())
+    for day, frame in (
+        ("2026-10-07", first),
+        ("2026-10-08", second.with_columns(game_date=pl.lit(pf.DAY + timedelta(days=1)))),
+    ):
+        body = io.BytesIO()
+        frame.write_parquet(body)
+        bucket.objects[f"ledger/live/{day}.parquet"] = body.getvalue()
+    synced = lp.sync_ledgers(bucket, "b", 20262027)
+    assert synced.height == first.height + second.height
+    assert sorted(set(synced["game_date"].to_list())) == [pf.DAY, pf.DAY + timedelta(days=1)]
+    assert lp.sync_ledgers(MemoryBucket(), "b", 20262027).is_empty()
+
+
+def test_a_real_run_decides_today_from_the_committed_fit(monkeypatch: Any) -> None:
+    from typer.testing import CliRunner
+
+    from nhl_edge import cli
+    from nhl_edge.backtest import reports
+
+    monkeypatch.setattr(reports, "version", lambda component, now: f"{component}-20261007-abc1234")
+    runner = CliRunner()
+    other_day = runner.invoke(cli.app, ["predict", "--r2", "--date", "2000-01-01"])
+    assert other_day.exit_code == 2
+    assert "today's slate only" in " ".join(other_day.output.split())
+    other_fit = runner.invoke(cli.app, ["predict", "--r2", "--fit", "x.json"])
+    assert other_fit.exit_code == 2
