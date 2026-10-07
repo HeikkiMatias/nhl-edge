@@ -143,6 +143,13 @@ Every deliverable merged under its own task issue:
   - It reproduces the 2022-23 fold's fits exactly.
   - BLEND is a −0.065, b_m 0.710, b_x 0.492 and b_u 0.203, on 4,875 games.
   - `live/blend_fit.load` reads it back.
+- **Task 3 is in review** on `phase-5/predict`:
+  - ADR 0033 (accepted 2026-10-07): the decision window and 5-minute freshness, and the closing proxy's 5-minute freshness and 90-minute maximum lead;
+  - `nhl predict` and `live/predict.py`;
+  - the `PaperLedger` schema and its write-once R2 ledger;
+  - the Predict step in `odds-snapshots.yml`.
+
+  Its first live run comes the day after it merges, once that day's nightly has written the slate's rows to R2.
 - **Reminders** for the dated items fire into this session on 2026-10-13 and 2026-10-22 at 10:30 UTC.
 
 **Never change the frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and the CLV count restarts.

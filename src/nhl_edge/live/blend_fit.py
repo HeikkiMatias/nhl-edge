@@ -320,7 +320,8 @@ class LiveFit:
 
 
 def load(record: dict[str, Any]) -> LiveFit:
-    """A LiveFit from its artifact()."""
+    """A LiveFit from its artifact(), refused unless it is a fit of the live season under the
+    frozen policy, with all three blends, and every cutoff behind it before its fold start."""
     first = next(iter(record["fits"].values()))
     scale = uncertainty.Scale(
         means=tuple(first["u_scale"]["means"][p] for p in uncertainty.PARTS),
@@ -348,7 +349,7 @@ def load(record: dict[str, Any]) -> LiveFit:
         games=record["b1"]["games"],
         train_cutoff=datetime.fromisoformat(record["b1"]["train_cutoff"]),
     )
-    return LiveFit(
+    live = LiveFit(
         version=record["version"],
         blends=blends,
         scale=scale,
@@ -356,3 +357,19 @@ def load(record: dict[str, Any]) -> LiveFit:
         fold_start=datetime.fromisoformat(record["fold_start"]),
         train_cutoff=datetime.fromisoformat(record["train_cutoff"]),
     )
+    if record.get("season") != LIVE_SEASON or record.get("policy") != POLICY_VERSION:
+        raise ValueError(
+            f"{live.version} is a fit of {record.get('season')} under {record.get('policy')}, "
+            f"not of {LIVE_SEASON} under {POLICY_VERSION}"
+        )
+    if not set(blends) == set(blend_backtest.MODELS):
+        raise ValueError(
+            f"{live.version} lacks blends: {sorted(set(blend_backtest.MODELS) - set(blends))}"
+        )
+    cutoffs = [b.train_cutoff for b in blends.values()] + [scale.train_cutoff, b1.train_cutoff]
+    if max(cutoffs) >= live.fold_start:
+        raise ValueError(
+            f"{live.version} read a row known at {max(cutoffs)}, at or after its fold start "
+            f"{live.fold_start}"
+        )
+    return live

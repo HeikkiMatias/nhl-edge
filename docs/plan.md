@@ -500,7 +500,7 @@ Codex review needs no secret; it runs through the Codex GitHub integration.
 | `ci.yml` | Push and PR | uv sync, ruff, pyright, fast tests, leakage tests | About 150 |
 | `ingest-nightly.yml` | Daily 09:00 UTC | Yesterday's games, shifts and rosters to the lake; schema checks; rating refresh; keeps Supabase awake | About 300 |
 | `odds-snapshots.yml` | 5 times a day | Checks the NHL schedule first, then pulls the markets set for that slot (full set twice a day, moneyline near starts) into `odds_snapshots` | About 150 |
-| `predict-daily.yml` | Daily 16:00 UTC, then each odds slot | Projected lineups, goalie-start probabilities, predictions and paper bets; later runs pick up confirmed goalies (phase 9) | About 150 |
+| `odds-snapshots.yml`, its Predict step | The midday slot, 12:45 ET, after its snapshot (#164) | The day's predictions and paper bets, decided once in 12:45 to 13:15 ET and written once to R2 (ADR 0033). No later run: confirmed goalies are never read (ADR 0030) | About 20 (midday days) |
 | `backtest-weekly.yml` | Monday 06:00 UTC and manual | Full walk-forward backtest, report uploaded as an artifact, opens an issue if metrics regress | About 120 |
 | `claude.yml` (optional) | `@claude` in issues and PRs | [claude-code-action](https://github.com/anthropics/claude-code-action) v1 for questions and small fixes | Varies |
 | Codex code review (no file) | Every PR opened or updated | Automatic reviews turned on in Codex settings, following the Review guidelines in AGENTS.md ([Codex docs](https://developers.openai.com/codex/integrations/github)) | None |

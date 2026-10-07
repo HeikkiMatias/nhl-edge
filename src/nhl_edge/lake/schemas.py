@@ -424,6 +424,99 @@ class Slate(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("home") != pl.col("away"))
 
 
+class PaperLedger(pa.DataFrameModel):
+    """One slate game's paper decision (nhl predict, #164; ADRs 0028, 0030 and 0033): its
+    prediction and bet, or why it has none (status).
+
+    Every row carries the decision instant (prediction_utc, fixed when the run started; one per
+    date), the policy and the versions of the live fit, the feature build and the code. Every
+    model input was known before the decision snapshot, when the price bet was observed. A
+    predicted row adds
+    Pinnacle's prices at the decision snapshot with their last update, the best other EU book's
+    beside them, B0 to B3, u's parts, u and u_sd, and the blend and its twins. A picked row adds
+    the side, its price and expected return, the hurdle, the guard's move, and the stake: its
+    share of the day's bankroll times the bankroll. Bets settle on the full game, OT and shootout
+    included. Each date is written once to R2 (ledger/live/<date>.parquet), and every prediction
+    precedes its game's start.
+    """
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    prediction_utc: UtcDatetime
+    status: pl.String
+    event_id: pl.String = pa.Field(nullable=True)
+    decision_snapshot_utc: UtcDatetime = pa.Field(nullable=True)
+    home_price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    away_price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    last_update_utc: UtcDatetime = pa.Field(nullable=True)
+    best_home_price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    best_home_book: pl.String = pa.Field(nullable=True)
+    best_home_update_utc: UtcDatetime = pa.Field(nullable=True)
+    best_away_price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    best_away_book: pl.String = pa.Field(nullable=True)
+    best_away_update_utc: UtcDatetime = pa.Field(nullable=True)
+    p_b0: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_b1: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_b2: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_b3: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    goalie_doubt: pl.Float64 = pa.Field(nullable=True)
+    availability_doubt: pl.Float64 = pa.Field(nullable=True)
+    rookie_share: pl.Float64 = pa.Field(nullable=True)
+    u: pl.Float64 = pa.Field(nullable=True)
+    u_sd: pl.Float64 = pa.Field(nullable=True)
+    p_blend: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_blend_b2: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_blend_market: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    side: pl.String = pa.Field(isin=["home", "away"], nullable=True)
+    price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    p_side: pl.Float64 = pa.Field(nullable=True)
+    ev: pl.Float64 = pa.Field(nullable=True)
+    hurdle: pl.Float64 = pa.Field(nullable=True)
+    picked: pl.Boolean = pa.Field(nullable=True)
+    p_morning: pl.Float64 = pa.Field(nullable=True)
+    morning_utc: UtcDatetime = pa.Field(nullable=True)
+    p_decision: pl.Float64 = pa.Field(nullable=True)
+    guard_decision_utc: UtcDatetime = pa.Field(nullable=True)
+    moved_against: pl.Float64 = pa.Field(nullable=True)
+    guarded: pl.Boolean = pa.Field(nullable=True)
+    bet: pl.Boolean = pa.Field(nullable=True)
+    fraction: pl.Float64 = pa.Field(ge=0, le=0.015, nullable=True)
+    bankroll: pl.Float64 = pa.Field(nullable=True)
+    stake: pl.Float64 = pa.Field(ge=0, nullable=True)
+    policy_version: pl.String
+    blend_version: pl.String = pa.Field(str_matches=r"^blend-live-\d{8}-")
+    feature_build: pl.String = pa.Field(nullable=True)
+    code_version: pl.String
+    b2_train_cutoff: UtcDatetime = pa.Field(nullable=True)
+    b3_train_cutoff: UtcDatetime = pa.Field(nullable=True)
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        # A game postponed after its decision is decided again on its new date.
+        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def decided_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("status") != "predicted") | (pl.col("prediction_utc") < pl.col("start_utc"))
+        )
+
+    @pa.dataframe_check
+    def a_bet_only_on_a_prediction(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            ~pl.col("bet").fill_null(False) | (pl.col("status") == "predicted")
+        )
+
+    @pa.dataframe_check
+    def one_decision_a_day(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("prediction_utc").n_unique().over("game_date") == 1)
+
+
 class FeatureBuilds(pa.DataFrameModel):
     """One table a live feature build (nhl live features, #162) wrote for a game date's slate: the
     record a prediction checks before it reads the slate's feature rows (#170).

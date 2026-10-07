@@ -41,6 +41,7 @@ from nhl_edge.lake.schemas import (
     LakeOddsSnapshots,
     LineupReplacements,
     Lineups,
+    PaperLedger,
     Penalties,
     PenaltyRates,
     PlayerLeagueSeasons,
@@ -116,6 +117,8 @@ TABLES: dict[str, Table] = {
     # Phase 5's live path (#162): a game date's slate, and the record of its feature build.
     "slate": Table(Slate, ("game_id",), BY_DATE),
     "feature_builds": Table(FeatureBuilds, ("game_date", "table", "artifact_version"), BY_DATE),
+    # The paper ledger (#164): each date's decisions, as written once to R2.
+    "paper_ledger": Table(PaperLedger, ("game_date", "game_id"), BY_DATE),
 }
 # Partition columns replace_dates can replace a date at a time.
 DATE_PARTITIONS = ("game_date", "snapshot_date")

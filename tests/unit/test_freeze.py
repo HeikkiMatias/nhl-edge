@@ -46,3 +46,27 @@ def test_u_reads_no_starter_confirmations() -> None:
         "actual_lineups",
         "player_league_seasons",
     ]
+
+
+def test_live_b3_and_u_read_no_starter_confirmations() -> None:
+    # ADR 0030, as amended on 2026-10-05: a starter confirmed before the decision moves neither
+    # live p_b3 nor u. Live B2, B3 and u read the goalie-start model's likely starters only, so
+    # no table they read, and no table a decision pulls, holds a confirmation.
+    import inspect
+
+    from nhl_edge.game import b2, b3
+    from nhl_edge.live import predict
+
+    confirmations = {"pregame_goalies", "dailyfaceoff_goalies"}
+    for tables in (b2.Tables, b3.Tables, uncertainty.Tables):
+        assert not confirmations & {f.name for f in fields(tables)}
+    assert not confirmations & set(predict.LAKE_TABLES)
+    assert list(inspect.signature(predict.models).parameters) == [
+        "tables",
+        "b3_tables",
+        "u_tables",
+        "slate",
+        "moments",
+        "start",
+        "season",
+    ]

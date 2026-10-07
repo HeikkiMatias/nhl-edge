@@ -355,9 +355,224 @@ def rate() -> None:
 
 
 @app.command()
-def predict() -> None:
-    """Predict today's games against the market."""
-    _not_implemented("predict", "phase 5")
+def predict(
+    day: Annotated[
+        datetime | None,
+        typer.Option("--date", formats=["%Y-%m-%d"], help="The game date (default: today, ET)."),
+    ] = None,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="Pull the lake's tables and the day's odds from R2 first; without --dry-run, "
+            "write the day's ledger to R2, once.",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Write the ledger locally only, never to R2.")
+    ] = False,
+    at: Annotated[
+        datetime | None,
+        typer.Option(
+            formats=["%Y-%m-%dT%H:%M:%S%z"],
+            help="A dry run's decision instant, such as 2026-10-07T16:47:00+00:00 (default: now).",
+        ),
+    ] = None,
+    fit: Annotated[
+        Path | None,
+        typer.Option(help="The live fit to read (default: the season's under reports/live/)."),
+    ] = None,
+    out: Annotated[Path, typer.Option(help="Where a dry run writes the ledger.")] = Path(
+        "data/live/dry"
+    ),
+    cron: Annotated[
+        str | None,
+        typer.Option(
+            help="The odds workflow's fallback cron line: decide only if it is today's midday "
+            "slot, and otherwise do nothing."
+        ),
+    ] = None,
+) -> None:
+    """Decide the day's paper bets at the midday snapshot (#164, ADRs 0028, 0030 and 0033): every
+    slate game gets one ledger row, its prediction and bet or why it has none. The decision
+    instant is fixed when the run starts. A real run (--r2) writes the day once to R2
+    (ledger/live/<date>.parquet), every prediction before its game's start, and to the lake's
+    paper_ledger;
+    after the window it writes the day as skipped, so no late run can reconstruct it."""
+    import json
+    from datetime import UTC
+    from zoneinfo import ZoneInfo
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.backtest.walk_forward import outcomes
+    from nhl_edge.game import b2, uncertainty
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import blend_fit
+    from nhl_edge.live import features as lf
+    from nhl_edge.live import predict as lp
+    from nhl_edge.live.slate import of_day
+    from nhl_edge.settings import load_env
+
+    started = datetime.now(UTC)
+    if cron is not None:
+        from nhl_edge.ingest.odds import resolve_slot
+
+        today = started.astimezone(ZoneInfo("America/New_York")).date()
+        slot = resolve_slot("free-tier", cron, today)
+        if slot is None or slot.name != "midday":
+            typer.echo(f"{cron!r} is not today's midday slot: no decision")
+            return
+    if at is not None and not dry_run:
+        raise typer.BadParameter("only a dry run takes a decision instant", param_hint="--at")
+    if not dry_run and not r2:
+        raise typer.BadParameter("a real run writes to R2: pass --r2, or --dry-run")
+    decision = at.astimezone(UTC) if at is not None else started
+    game_date = day.date() if day is not None else decision.astimezone(ET).date()
+    code_version = reports.version("predict", started)
+    if not dry_run:
+        if code_version.endswith("-dirty"):
+            raise typer.BadParameter("commit first: a logged decision names its commit")
+        if game_date != decision.astimezone(ET).date():
+            raise typer.BadParameter(
+                "a real run decides today's slate only; check another day with --dry-run --at",
+                param_hint="--date",
+            )
+        if fit is not None:
+            raise typer.BadParameter(
+                "a real run reads the season's committed fit only", param_hint="--fit"
+            )
+        if not lp.in_window(decision) and not lp.after_window(decision):
+            raise typer.BadParameter(
+                "the decision window opens at 12:45 ET: a run before it writes nothing"
+            )
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    if r2:
+        pulled = sum(lake.pull(table) for table in lp.LAKE_TABLES)
+        restored = store.restore_from_r2(prefix=f"odds/{game_date.isoformat()}/")
+        typer.echo(f"pulled {pulled:,} table files and the day's odds ({restored}) from R2")
+    paths = [fit] if fit is not None else sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
+    if len(paths) != 1:
+        typer.echo(f"expected the season's one live fit, found {len(paths)}", err=True)
+        raise typer.Exit(code=1)
+    try:
+        live = blend_fit.load(json.loads(paths[0].read_text()))
+    except ValueError as exc:
+        typer.echo(f"{paths[0]}: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    slate = of_day(lake.read("slate"), game_date)
+    if slate.is_empty():
+        # Only a build that found no games makes an empty slate an off day; without its record
+        # the nightly build may have failed, which is an alert, never a quiet success.
+        marker = lake.read("feature_builds").filter(
+            pl.col("game_date") == game_date, pl.col("table") == "slate"
+        )
+        if marker.height and marker["slate_games"].max() == 0:
+            typer.echo(f"{game_date}: no games scheduled, nothing to decide")
+            return
+        typer.echo(f"{game_date}: no slate and no record of a build that found no games", err=True)
+        raise typer.Exit(code=1)
+    (season,) = slate["season"].unique().to_list()
+    record = lake.read("feature_builds", seasons=[season]).filter(pl.col("game_date") == game_date)
+    target_rows = {
+        name: lake.read(name, seasons=[season]).filter(pl.col("game_date") == game_date)
+        for name in lf.TARGET_TABLES
+    }
+    quotes, failed = lp.day_quotes(store, decision.date())
+    for problem in failed:
+        typer.echo(f"odds snapshot left out, it did not parse: {problem}", err=True)
+    # Model inputs are cut at the decision snapshot, when the price bet was observed.
+    cutoff = lp.input_cutoff(quotes, decision)
+    problems = lp.build_problems(record, slate, cutoff, target_rows, committed=not dry_run)
+    for problem in problems:
+        typer.echo(problem, err=True)
+    games = lake.read("games")
+    fitted = None
+    if not problems:
+        tables = b2.Tables(
+            games,
+            *(
+                lake.read(name)
+                for name in (
+                    "team_strength",
+                    "schedule_terms",
+                    "goalie_starts",
+                    "goalie_effects",
+                    "actual_lineups",
+                )
+            ),
+        )
+        b3_tables = _b3_tables(lake, tables)
+        u_tables = uncertainty.Tables(
+            games,
+            tables.goalie_starts,
+            b3_tables.lineups,
+            b3_tables.lineup_replacements,
+            tables.actual_lineups,
+            lake.read("player_league_seasons"),
+        )
+        moments = slate.select("game_id", prediction_utc=pl.lit(cutoff))
+        fitted = lp.models(tables, b3_tables, u_tables, slate, moments, live.fold_start)
+    if r2:
+        # The ledgers in R2 are the record: the lake's copy is rebuilt from them first, so a day
+        # whose lake copy failed after its R2 write still counts in the bankroll.
+        assert lake.objects is not None and lake.bucket is not None
+        synced = lp.sync_ledgers(lake.objects, lake.bucket, season)
+        if synced.height and not dry_run:
+            lake.replace_dates("paper_ledger", synced, synced["game_date"].unique().to_list())
+        earlier = synced.filter(pl.col("game_date") < game_date)
+    else:
+        earlier = lake.read("paper_ledger", seasons=[season]).filter(
+            pl.col("game_date") < game_date
+        )
+    inputs = lp.Day(
+        day=game_date,
+        decision_utc=decision,
+        slate=slate,
+        quotes=quotes,
+        fitted=fitted,
+        live=live,
+        bankroll=lp.bankroll(earlier, outcomes(games), decision),
+        versions={
+            "blend_version": live.version,
+            "feature_build": record["build_id"].first() if record.height else None,
+            "code_version": code_version,
+            "b2_train_cutoff": fitted.b2_cutoff if fitted else None,
+            "b3_train_cutoff": fitted.b3_cutoff if fitted else None,
+        },
+    )
+    try:
+        ledger = lp.ledger(lp.decide(inputs), inputs)
+        lp.pre_game(ledger)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    if dry_run:
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"{game_date.isoformat()}.parquet"
+        ledger.write_parquet(path)
+        where = str(path)
+    else:
+        assert lake.objects is not None and lake.bucket is not None
+        try:
+            # Written once: a second run, or a late one, can't replace the day (ADR 0033).
+            where = "R2 " + lp.write_once(lake.objects, lake.bucket, game_date, ledger)
+        except Exception as exc:
+            typer.echo(f"the {game_date} ledger was not written ({exc}): never rewritten", err=True)
+            raise typer.Exit(code=1) from None
+        lake.replace_dates("paper_ledger", ledger, [game_date])
+    counts = ledger.group_by("status").len().sort("status").iter_rows()
+    typer.echo(f"{where}: " + ", ".join(f"{n} {status}" for status, n in counts))
+    for row in ledger.filter(pl.col("bet").fill_null(False)).iter_rows(named=True):
+        typer.echo(
+            f"  bet {row['away']} at {row['home']}: {row['side']} at {row['price']:.2f}, "
+            f"EV {row['ev']:+.3f} (hurdle {row['hurdle']:.3f}), stake {row['stake']:.2f}"
+        )
 
 
 @app.command()
