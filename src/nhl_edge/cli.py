@@ -2085,11 +2085,21 @@ def live_blend_fit(
     load_env()
     now = datetime.now(UTC)
     version = reports.version(bf.COMPONENT, now)
-    if r2 and version.endswith("-dirty"):
+    if r2 and (version.endswith("-dirty") or not bf.committed()):
         raise typer.BadParameter(
-            "commit first: the season's one fit must be reproducible from its commit",
+            f"commit first: the season's one fit, and {bf.REFERENCE} that checks it, must be "
+            "reproducible from its commit",
             param_hint="--r2",
         )
+    where = None
+    if r2:
+        config = R2Config.require("--r2")
+        where = one_time.Places(LAKE_DIR, (bf.REPORTS,), config.client(), config.bucket, bf.CLAIM)
+        # An earlier fit is the first refusal, before any table is read.
+        earlier = one_time.records(where)
+        if earlier:
+            typer.echo(f"the season's live fit exists: {'; '.join(earlier)}", err=True)
+            raise typer.Exit(code=1)
     lake = Lake()
     games, sbr_odds = lake.read("games"), lake.read("sbr_odds")
     last = max(bf.TRAINING_SEASONS)
@@ -2143,7 +2153,7 @@ def live_blend_fit(
         counts = predicted.group_by("model").len().sort("model").iter_rows()
         typer.echo(f"  {season}: " + ", ".join(f"{m} {n:,}" for m, n in counts))
     rows = blend_backtest.rows(pl.concat(frames), {bf.EXPERIMENT.value: pl.concat(parts)}, games)
-    problems = bf.early(rows, starts)
+    problems = bf.early(rows, starts) + bf.short(rows, priced, bf.recorded_coverage())
     if problems:
         for problem in problems:
             typer.echo(problem, err=True)
@@ -2179,14 +2189,8 @@ def live_blend_fit(
         path = out / f"{version}.json"
         path.write_text(body)
     else:
-        config = R2Config.require("--r2")
-        objects = config.client()
-        where = one_time.Places(LAKE_DIR, (bf.REPORTS,), objects, config.bucket, bf.CLAIM)
-        key = f"{bf.R2_PREFIX}/{version}.json"
-        earlier = one_time.records(where)
-        if earlier:
-            typer.echo(f"the season's live fit exists: {'; '.join(earlier)}", err=True)
-            raise typer.Exit(code=1)
+        assert where is not None
+        objects, key = where.objects, f"{bf.R2_PREFIX}/{version}.json"
         # Written before the claim, so a refused upload leaves the fit to copy, not to refit.
         bf.REPORTS.mkdir(parents=True, exist_ok=True)
         path = bf.REPORTS / f"{version}.json"
@@ -2200,7 +2204,7 @@ def live_blend_fit(
             typer.echo(f"the live fit was not written: {exc}", err=True)
             raise typer.Exit(code=1) from None
         try:
-            objects.put_object(Bucket=config.bucket, Key=key, Body=body.encode(), IfNoneMatch="*")
+            objects.put_object(Bucket=where.bucket, Key=key, Body=body.encode(), IfNoneMatch="*")
         except Exception as exc:
             typer.echo(
                 f"claimed, but R2 refused {key} ({exc}): upload {path} there unchanged, "

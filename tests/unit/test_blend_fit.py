@@ -165,7 +165,7 @@ def test_the_dry_run_writes_only_its_fit(tmp_path: Any, monkeypatch: pytest.Monk
     monkeypatch.setattr(b2, "input_problems", lambda *a: [])
     monkeypatch.setattr(b3, "input_problems", lambda *a: [])
     monkeypatch.setattr(uncertainty, "Tables", lambda *a: None)
-    monkeypatch.setattr(bf, "market", lambda odds, games: None)
+    monkeypatch.setattr(bf, "market", lambda odds, games: ROWS.select("season", "game_id"))
     monkeypatch.setattr(
         bf, "fold_start", lambda odds, games, season: firsts.get(season, LIVE_START)
     )
@@ -173,6 +173,8 @@ def test_the_dry_run_writes_only_its_fit(tmp_path: Any, monkeypatch: pytest.Monk
     monkeypatch.setattr(bf, "season_predictions", lambda *a: (empty, empty))
     monkeypatch.setattr(blend_backtest, "rows", lambda *a: ROWS)
     monkeypatch.setattr(bf, "recorded", lambda: reference)
+    monkeypatch.setattr(bf, "recorded_coverage", lambda: {"b3_scored": 300})
+    monkeypatch.setattr(bf, "digest", lambda: "0" * 64)
     monkeypatch.setattr(bf, "b1_fit", lambda priced, start: B1)
     result = CliRunner().invoke(cli.app, ["live", "blend-fit", "--out", "dry"])
     assert result.exit_code == 0, result.output
@@ -185,3 +187,24 @@ def test_the_dry_run_writes_only_its_fit(tmp_path: Any, monkeypatch: pytest.Monk
     record = json.loads(next((tmp_path / "dry").iterdir()).read_text())
     assert record["training"]["games"] == ROWS.height
     assert "log_loss" not in json.dumps(record)
+
+
+def test_rows_short_of_the_priced_games_or_the_recorded_run_are_refused() -> None:
+    priced = ROWS.select("season", "game_id")
+    coverage = {"b3_scored": 300}
+    assert bf.short(ROWS, priced, coverage) == []
+    dropped = ROWS.filter(
+        pl.col("game_id") != ROWS.filter(pl.col("season") == 20222023)["game_id"][0]
+    )
+    assert bf.short(dropped, priced, coverage) == [
+        "20222023: 299 rows of 300 priced games",
+        "20222023: 299 rows, its one run scored 300",
+    ]
+    assert bf.short(ROWS, priced, {"b3_scored": 342}) == [
+        "20222023: 300 rows, its one run scored 342"
+    ]
+
+
+def test_the_recorded_run_covered_342_games_of_2022_23() -> None:
+    assert bf.recorded_coverage()["b3_scored"] == 342
+    assert bf.committed()
