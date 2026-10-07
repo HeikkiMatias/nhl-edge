@@ -395,7 +395,8 @@ def predict(
 ) -> None:
     """Decide the day's paper bets at the midday snapshot (#164, ADRs 0028, 0030 and 0033): every
     slate game gets one ledger row, its prediction and bet or why it has none. The decision
-    instant is fixed when the run starts. A real run (--r2) writes the day once to R2
+    instant is fixed when the run starts, and a game that starts before the ledger is published
+    gets no prediction. A real run (--r2) writes the day once to R2
     (ledger/live/<date>.parquet), every prediction before its game's start, and to the lake's
     paper_ledger;
     after the window it writes the day as skipped, so no late run can reconstruct it."""
@@ -545,6 +546,9 @@ def predict(
             "b2_train_cutoff": fitted.b2_cutoff if fitted else None,
             "b3_train_cutoff": fitted.b3_cutoff if fitted else None,
         },
+        # The clock as the ledger is built and written, seconds before the write (#170); a dry
+        # run with --at shifts it by the run's own time since its start.
+        published_utc=decision + (datetime.now(UTC) - started),
     )
     try:
         ledger = lp.ledger(lp.decide(inputs), inputs)
@@ -561,7 +565,9 @@ def predict(
         assert lake.objects is not None and lake.bucket is not None
         try:
             # Written once: a second run, or a late one, can't replace the day (ADR 0033).
-            where = "R2 " + lp.write_once(lake.objects, lake.bucket, game_date, ledger)
+            where = "R2 " + lp.write_once(
+                lake.objects, lake.bucket, game_date, ledger, datetime.now(UTC)
+            )
         except Exception as exc:
             typer.echo(f"the {game_date} ledger was not written ({exc}): never rewritten", err=True)
             raise typer.Exit(code=1) from None

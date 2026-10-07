@@ -293,17 +293,18 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
 
   Every model input must be known before the decision snapshot, when the price bet was observed, not merely before the run. It reads no table of confirmed starters (ADR 0030).
 - **Per game, in order:**
-  1. started before the decision;
+  1. started before the decision, or starts before the decision is published. The ledger reaches R2 minutes after the decision instant, once the lake is pulled and B2 and B3 are read, and a weekend matinee can start inside the window. `published_utc` is the actual clock as the ledger is built and written, and the write itself is refused if a predicted game has started by then (#170);
   2. no Pinnacle midday price;
   3. no fresh price: Pinnacle's quote more than 5 minutes old at the decision;
   4. a missing input;
   5. otherwise a prediction: B0 to B3, u, the blend and its twins.
 
   The frozen selection, guard and staking then decide the bet, and the best other EU book's prices are logged beside Pinnacle's.
+- **A paper bet assumes its price could be had.** It takes Pinnacle's quote at the decision snapshot, at most 5 minutes old at the decision, as available at the stake's size when the decision is published. The quote is not proof of a fill: the price may have moved by publication, and Pinnacle's limits are not checked. CLV against the closing proxy measures the price, not whether it was obtainable.
 - **The ledger:**
   - one row per slate game (`PaperLedger`), written once to R2 as `ledger/live/<date>.parquet` with `IfNoneMatch="*"`, and to the lake's `paper_ledger`;
   - each real run first rebuilds the lake's `paper_ledger` from the ledgers in R2, the record, before reading the bankroll from it;
-  - refused if any prediction is at or after its game's start;
+  - refused if any prediction is decided or published at or after its game's start;
   - `--dry-run` writes only to `data/live/dry/`, and with `--at` it decides at a past instant to check a day.
 
 ## Odds snapshots

@@ -2,12 +2,14 @@
 
 At about 12:47 ET, after the midday odds snapshot, every slate game gets one ledger row: its
 prediction and bet, or why it has none. The decision instant is fixed when the run starts, and
-everything read must be known before it.
+everything read must be known before it. The ledger is published minutes later, once the models
+are read: published_utc, the actual clock just before it is built and written (#170).
 
 - **The window (ADR 0033):** the midday snapshot and the decision both fall between 12:45 and
   13:15 ET, read from their times, not the slot's label. Outside it the day is skipped.
 - **Per game,** in order:
-  1. a game that started before the decision has no prediction;
+  1. a game that started before the decision, or that starts before the decision is published,
+     has no prediction: a weekend matinee can start inside the window;
   2. Pinnacle's h2h quote at the decision snapshot, at most 5 minutes old at the decision;
   3. B0, Pinnacle's price de-vigged (`market/devig.py`), and B1 its recalibration;
   4. B2 and B3 from the season's fits, mixing over the goalie-start model's likely starters, and
@@ -70,6 +72,7 @@ LAKE_TABLES = (
 
 PREDICTED = "predicted"
 STARTED = "started before the decision"
+STARTS_BEFORE_PUBLISHED = "starts before the decision is published"
 NO_PRICE = "no Pinnacle midday price"
 STALE = "no fresh price"
 MISSING = "missing input"
@@ -304,7 +307,8 @@ def bankroll(earlier: pl.DataFrame, results: pl.DataFrame, decision_utc: datetim
 
 @dataclass(frozen=True)
 class Day:
-    """What a day's decision reads, all known before decision_utc."""
+    """What a day's decision reads, all known before decision_utc, and when it is published
+    (published_utc, the actual clock; the decision instant if not given)."""
 
     day: date
     decision_utc: datetime
@@ -314,21 +318,30 @@ class Day:
     live: blend_fit.LiveFit
     bankroll: float
     versions: Mapping[str, object]
+    published_utc: datetime | None = None
 
 
-def skipped(slate: pl.DataFrame, decision_utc: datetime, reason: str) -> pl.DataFrame:
+def skipped(
+    slate: pl.DataFrame, decision_utc: datetime, published_utc: datetime, reason: str
+) -> pl.DataFrame:
     """Every slate game with the day's reason and nothing predicted."""
     return slate.select("game_id", "season", "game_date", "start_utc", "home", "away").with_columns(
-        prediction_utc=pl.lit(decision_utc), status=pl.lit(reason)
+        prediction_utc=pl.lit(decision_utc),
+        published_utc=pl.lit(published_utc),
+        status=pl.lit(reason),
     )
 
 
 def decide(inputs: Day) -> pl.DataFrame:
     """One row per slate game: its prediction and bet, or why it has none."""
     decision = inputs.decision_utc
+    published = inputs.published_utc or decision
+    if published < decision:
+        raise ValueError(f"published at {published}, before the decision at {decision}")
     slate = inputs.slate.select("game_id", "season", "game_date", "start_utc", "home", "away")
     if after_window(decision) or not in_window(decision):
-        return skipped(slate, decision, LATE if after_window(decision) else "before the window")
+        reason = LATE if after_window(decision) else "before the window"
+        return skipped(slate, decision, published, reason)
     # Only quotes known before the decision: snapshots taken before it, and of those, prices of
     # games not under way by then. A later snapshot never matches a quote to a game, and an
     # in-play price never prices a bet.
@@ -336,25 +349,40 @@ def decide(inputs: Day) -> pl.DataFrame:
     usable = usable_quotes(inputs.quotes, decision)
     snapshot = decision_snapshot(usable, decision)
     if snapshot is None:
-        return skipped(slate, decision, NO_SNAPSHOT)
+        return skipped(slate, decision, published, NO_SNAPSHOT)
     matched = match_games(usable, listings(inputs.slate))
-    # A game the odds already showed under way has started, whatever the slate's start says.
-    under_way = match_games(
-        known.filter(pl.col("commence_time_utc") <= decision), listings(inputs.slate)
-    )["game_id"].drop_nulls()
+
+    # A game the odds already showed under way has started, whatever the slate's start says; one
+    # they showed starting by the publication starts before it.
+    def commencing(by: datetime) -> pl.Series:
+        return match_games(known.filter(pl.col("commence_time_utc") <= by), listings(inputs.slate))[
+            "game_id"
+        ].drop_nulls()
+
+    under_way, starting = commencing(decision), commencing(published)
     quoted = pinnacle(matched, snapshot)
     rows = (
         slate.join(quoted, on="game_id", how="left")
         .join(best_other(matched, snapshot), on="game_id", how="left")
-        .with_columns(prediction_utc=pl.lit(decision), decision_snapshot_utc=pl.lit(snapshot))
+        .with_columns(
+            prediction_utc=pl.lit(decision),
+            published_utc=pl.lit(published),
+            decision_snapshot_utc=pl.lit(snapshot),
+        )
     )
     started = (pl.col("start_utc") <= pl.col("prediction_utc")) | pl.col("game_id").is_in(
         under_way.implode()
+    )
+    # The bet is placed when the decision is published: a game under way by then is no bet's.
+    starts_first = (pl.col("start_utc") <= pl.col("published_utc")) | pl.col("game_id").is_in(
+        starting.implode()
     )
     stale = (pl.col("prediction_utc") - pl.col("last_update_utc")) > MAX_QUOTE_AGE
     rows = rows.with_columns(
         status=pl.when(started)
         .then(pl.lit(STARTED))
+        .when(starts_first)
+        .then(pl.lit(STARTS_BEFORE_PUBLISHED))
         .when(pl.col("home_price").is_null())
         .then(pl.lit(NO_PRICE))
         .when(stale)
@@ -413,10 +441,15 @@ def stamp(ledger: pl.DataFrame, inputs: Day) -> pl.DataFrame:
     )
 
 
-def pre_game(ledger: pl.DataFrame) -> None:
-    """Refuse a ledger with any prediction at or after its game's start."""
+def pre_game(ledger: pl.DataFrame, now: datetime | None = None) -> None:
+    """Refuse a ledger with any prediction decided or published at or after its game's start, or,
+    given the clock (now), one whose game starts by then."""
+    published = pl.col("published_utc") if now is None else pl.lit(now)
     late = ledger.filter(
-        pl.col("status") == PREDICTED, pl.col("prediction_utc") >= pl.col("start_utc")
+        pl.col("status") == PREDICTED,
+        (pl.col("prediction_utc") >= pl.col("start_utc"))
+        | (pl.col("published_utc") >= pl.col("start_utc"))
+        | (published >= pl.col("start_utc")),
     )
     if late.height:
         raise ValueError(f"{late.height} predictions at or after their game's start")
@@ -515,12 +548,13 @@ def ledger_key(day: date) -> str:
     return f"{LEDGER_PREFIX}/{day.isoformat()}.parquet"
 
 
-def write_once(objects: Any, bucket: str, day: date, ledger: pl.DataFrame) -> str:
+def write_once(objects: Any, bucket: str, day: date, ledger: pl.DataFrame, now: datetime) -> str:
     """Write the day's ledger to R2 once, refused if the day exists (a second run, or a late one
-    after a skipped day), and only if every prediction precedes its game's start."""
+    after a skipped day), and only if every prediction precedes its game's start, by the clock at
+    the write (now) too."""
     import io
 
-    pre_game(ledger)
+    pre_game(ledger, now)
     body = io.BytesIO()
     ledger.write_parquet(body)
     key = ledger_key(day)

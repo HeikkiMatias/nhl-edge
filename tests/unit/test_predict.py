@@ -188,6 +188,55 @@ def test_a_prediction_at_or_after_the_start_is_refused() -> None:
         lp.ledger(lp.decide(pf.day()).with_columns(start_utc=pl.lit(pf.DECISION)), pf.day())
 
 
+def test_a_game_starting_before_the_decision_is_published_has_no_prediction() -> None:
+    # A 13:00 ET matinee, decided at 12:47 ET and published at 13:01 (#170): no prediction. The
+    # other games are decided as if it were not there.
+    matinee = datetime(2026, 10, 7, 17, tzinfo=UTC)
+    games = {**pf.GAMES, 2026020053: ("WSH", "PIT", matinee)}
+    on_time = decided(slate=pf.slate(games), published_utc=matinee - timedelta(minutes=1))
+    late = decided(slate=pf.slate(games), published_utc=matinee + timedelta(minutes=1))
+    status = dict(late.select("game_id", "status").iter_rows())
+    assert dict(on_time.select("game_id", "status").iter_rows())[2026020053] == lp.PREDICTED
+    assert status == {
+        2026020053: lp.STARTS_BEFORE_PUBLISHED,
+        2026020054: lp.PREDICTED,
+        2026020055: lp.PREDICTED,
+    }
+    assert late.filter(pl.col("game_id") == 2026020053)["p_blend"].to_list() == [None]
+    assert set(late["published_utc"]) == {matinee + timedelta(minutes=1)}
+    assert set(late["prediction_utc"]) == {pf.DECISION}
+    # The odds' own start counts too, as for a game under way at the decision.
+    quotes = pf.day_quotes().with_columns(
+        commence_time_utc=pl.when(pl.col("event_id") == "e2026020054")
+        .then(pl.lit(matinee))
+        .otherwise(pl.col("commence_time_utc"))
+    )
+    moved = decided(quotes=quotes, published_utc=matinee)
+    assert dict(moved.select("game_id", "status").iter_rows())[2026020054] == (
+        lp.STARTS_BEFORE_PUBLISHED
+    )
+    # Unset, the publication is the decision instant; never before it.
+    assert set(decided()["published_utc"]) == {pf.DECISION}
+    with pytest.raises(ValueError, match="before the decision"):
+        decided(published_utc=pf.DECISION - timedelta(seconds=1))
+
+
+def test_the_ledger_is_published_after_the_decision_and_before_each_start() -> None:
+    rows = decided()
+    with pytest.raises(SchemaError):
+        lp.ledger(
+            lp.decide(pf.day()).with_columns(published_utc=pl.lit(pf.DECISION - timedelta(1))),
+            pf.day(),
+        )
+    published_late = rows.with_columns(published_utc=pl.lit(pf.START))
+    with pytest.raises(ValueError, match="at or after their game's start"):
+        lp.pre_game(published_late)
+    # By the clock at the write, too.
+    lp.pre_game(rows, pf.START - timedelta(seconds=1))
+    with pytest.raises(ValueError, match="at or after their game's start"):
+        lp.pre_game(rows, pf.START)
+
+
 def test_the_feature_build_must_have_finished_before_the_decision_on_this_slate() -> None:
     slate = pf.slate()
     record = pl.DataFrame(
@@ -233,15 +282,21 @@ def test_a_day_is_written_to_r2_once() -> None:
 
     bucket = ConditionalBucket()
     rows = decided()
-    assert lp.write_once(bucket, "b", pf.DAY, rows) == "ledger/live/2026-10-07.parquet"
+    now = pf.DECISION + timedelta(minutes=8)
+    assert lp.write_once(bucket, "b", pf.DAY, rows, now) == "ledger/live/2026-10-07.parquet"
     assert pl.read_parquet(bucket.objects["ledger/live/2026-10-07.parquet"]).equals(rows)
     # A second run, or a late run after a skipped day, can't replace it.
     with pytest.raises(RuntimeError, match="PreconditionFailed"):
-        lp.write_once(bucket, "b", pf.DAY, decided(decision_utc=pf.DECISION + timedelta(minutes=1)))
+        lp.write_once(
+            bucket, "b", pf.DAY, decided(decision_utc=pf.DECISION + timedelta(minutes=1)), now
+        )
     # A ledger predicting a game at or after its start is never written.
     fresh = ConditionalBucket()
     with pytest.raises(ValueError):
-        lp.write_once(fresh, "b", pf.DAY, rows.with_columns(start_utc=pl.lit(pf.DECISION)))
+        lp.write_once(fresh, "b", pf.DAY, rows.with_columns(start_utc=pl.lit(pf.DECISION)), now)
+    # Nor one whose game has started by the write.
+    with pytest.raises(ValueError):
+        lp.write_once(fresh, "b", pf.DAY, rows, pf.START)
     assert fresh.objects == {}
 
 
