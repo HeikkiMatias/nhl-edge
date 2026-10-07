@@ -85,7 +85,8 @@ The policy was frozen on 2026-10-05 as **`policy-20261005-8ec5cf3`** (#144). It 
   - **Live B3** uses no confirmed starter either: it mixes over the goalie-start model's likely starters, as on history (ADR 0030, the owner's ruling of 2026-10-05).
   - **The blend:** its form and its unpenalized fit on earlier out-of-sample folds. Only its four weights are refit (ADR 0027).
     - Live bets use the E1 fit, learned against SBR's close. It trains on 2018-19 to 2021-22, plus 2022-23 once its one run has scored it, and is fed Pinnacle's 12:45 ET price (ADR 0030).
-    - **The live fit** (#163) is fitted once for 2026-27 by `nhl live blend-fit --r2`, claimed in R2 and committed under `reports/live/`. Live games never refit it.
+    - **The live fit** (#163) is `blend-live-20261007-89ec631`: BLEND a −0.065, b_m 0.710, b_x 0.492, b_u 0.203, and B1 intercept −0.034, slope 1.099.
+      - It was fitted once for 2026-27 by `nhl live blend-fit --r2` on 2026-10-07, claimed in R2 and committed under `reports/live/`. Live games never refit it.
       - **Its rows:** E1's out-of-sample rows of 2018-19 to 2022-23 are rebuilt per game. They give 4,875 training games, the last public on 2022-11-28.
       - **2022-23's 342 games** are predicted, never scored. By the owner's ruling of 2026-10-05, that is not a second run.
       - **The check:** before anything is written, the rebuilt rows of 2018-19 to 2021-22 must reproduce the 2022-23 fold's E1 fits that the one run recorded, to within 1e-9.

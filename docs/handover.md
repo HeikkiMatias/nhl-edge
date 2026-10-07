@@ -138,8 +138,11 @@ Every deliverable merged under its own task issue:
   - the nightly step.
 
   Its first nightly run, on 2026-10-08 at 09:00 UTC, writes that day's rows to R2. The check-in at 09:55 UTC reads them back. Opening nights are refused until #181.
-- **Task 2 is in review** on `phase-5/live-blend`: `nhl live blend-fit` and `live/blend_fit.py`. The dry run reproduces the one run's 2022-23 fold fits.
-  - **After merge:** run `nhl live blend-fit --r2` once from a clean checkout of main, with the lake up to R2. Commit its `reports/live/` files. A second run is refused.
+- **Task 2 is done** (#182): the season's one live fit is `reports/live/blend-live-20261007-89ec631.json`.
+  - It was claimed and copied to R2 on 2026-10-07 (`live/`, `ledger/live_blend_20262027.txt`), and a second fit is refused.
+  - It reproduces the 2022-23 fold's fits exactly.
+  - BLEND is a −0.065, b_m 0.710, b_x 0.492 and b_u 0.203, on 4,875 games.
+  - `live/blend_fit.load` reads it back.
 - **Reminders** for the dated items fire into this session on 2026-10-13 and 2026-10-22 at 10:30 UTC.
 
 **Never change the frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and the CLV count restarts.
