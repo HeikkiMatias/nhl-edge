@@ -65,7 +65,7 @@ SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
 
 GitHub Actions runs every job, but GitHub's own `schedule` started this repo's runs 3 to 6 hours late in September 2026, while a `workflow_dispatch` starts within seconds (#50). So the Cloudflare Worker in `infra/timer` fires every five minutes and dispatches the workflows due at that minute (`infra/timer/src/schedule.js`):
 
-- `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input.
+- `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input. After the midday snapshot, its Predict step runs `nhl predict --r2`, below.
 - `pregame-goalies.yml` at :50 of every hour from 12:50 to 02:50 UTC.
 - `ingest-nightly.yml` at 09:00 UTC. After the ingest, it runs `nhl recheck --recent 3 --r2` (#30, below), the odds and goalie replays, and `nhl live features` for today's slate (#162, below).
 
@@ -277,6 +277,33 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
 - **The rows:** a target row is the quantity history's rows are, at the same as-of time, the earlier of 10:00 ET and an hour before the start. `tests/leakage/test_live_targets.py` checks every builder: on a night's morning, the lake without that night's and later games, plus the night's slate, gives each game the row the whole season gives it. Once the games are played, the next night's run rewrites the date with history rows.
 - **The record:** `feature_builds` has one row for the slate, and one per target table and artifact version. Each gives the rows of D, the slate games they cover, the build's actual start and finish times, the schedule response and the commit. A table can hold another component's rows (`lineups` carries `goalie_starts`' goalies), but never two versions of one component. The build deletes D's record before it changes any table, and writes it last, so a record means the build finished (#170).
 - **When:** the nightly job runs it at 09:00 UTC with `--r2`, after the ingest and the replays. It pulls the lake's tables from R2 first, about 1.2 GB. On 2026-10-07 the whole build took about six minutes, with a peak of 2.7 GB of memory. The builders' reports go to `data/live/reports/`, never committed.
+
+## Paper decisions
+
+`nhl predict --r2` (#164, docs/plans/phase-5.md task 3) decides the day's paper bets once, at the midday slot.
+- **The window (ADR 0033):** the decision instant is fixed when the run starts. It and the midday snapshot must both fall between 12:45 and 13:15 ET, read from their times, not the slot's label.
+  - A run after the window writes the day as skipped, and so does a day without a midday snapshot in it.
+  - A run before the window writes nothing.
+- **Its inputs, all known before the decision:**
+  - the day's slate and its feature rows (`feature_builds` must show a build that finished before the decision, on the same slate);
+  - the season's live fit (`reports/live/`);
+  - B2 and B3 refit from history before the live fold start, read at the decision;
+  - the day's morning and midday odds, parsed from the raw responses and matched to the slate's games;
+  - the earlier ledgers, for the bankroll.
+
+  It reads no table of confirmed starters (ADR 0030).
+- **Per game, in order:**
+  1. started before the decision;
+  2. no Pinnacle midday price;
+  3. no fresh price: Pinnacle's quote more than 5 minutes old at the decision;
+  4. a missing input;
+  5. otherwise a prediction: B0 to B3, u, the blend and its twins.
+
+  The frozen selection, guard and staking then decide the bet, and the best other EU book's prices are logged beside Pinnacle's.
+- **The ledger:**
+  - one row per slate game (`PaperLedger`), written once to R2 as `ledger/live/<date>.parquet` with `IfNoneMatch="*"`, and to the lake's `paper_ledger`;
+  - refused if any prediction is at or after its game's start;
+  - `--dry-run` writes only to `data/live/dry/`, and with `--at` it decides at a past instant to check a day.
 
 ## Odds snapshots
 

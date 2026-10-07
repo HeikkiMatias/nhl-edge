@@ -38,7 +38,6 @@ COMMANDS = [
 ]
 STUBS = [
     ["rate"],
-    ["predict"],
     ["bets"],
     ["odds", "backfill"],
 ]

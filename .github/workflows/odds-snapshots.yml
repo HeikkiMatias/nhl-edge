@@ -36,7 +36,8 @@ jobs:
     # repository variable TIMER_ACTIVE is true and only its on-time dispatches start this job.
     if: github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The midday slot's decisions pull the lake and fit B2 and B3 (#164).
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -74,3 +75,19 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(--slot "$SLOT"); fi
           if [ "$SKIP" = "true" ]; then skip=--skip-if-no-games; else skip=--no-skip-if-no-games; fi
           uv run nhl odds snapshot --regions eu --slot-plan free-tier "$skip" --mirror-raw "${pick[@]}"
+      - name: Predict
+        # The day's paper decisions at the midday slot (#164, docs/plans/phase-5.md task 3, ADRs
+        # 0028, 0030 and 0033). It runs after the snapshot whatever its outcome, so a day without
+        # midday odds is logged as skipped. The decision instant is the run's start: outside
+        # 12:45 to 13:15 ET the day is logged as skipped, never reconstructed, and each day is
+        # written once to R2. A fallback cron line decides only when it is today's midday slot.
+        if: always() && (github.event_name == 'schedule' || inputs.slot == 'midday')
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
+          uv run nhl predict --r2 "${pick[@]}"
