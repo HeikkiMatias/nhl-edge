@@ -125,6 +125,25 @@ def season_predictions(
     return predictions, parts
 
 
+def early(rows: pl.DataFrame, starts: dict[int, datetime]) -> list[str]:
+    """Why rows break their own folds' point in time: a row whose B2, B3 or u inputs were cut off
+    at or after its season's fold start, or whose u read a row public at or after its prediction
+    time. The live fit checks only the live fold start, so each season's own is checked here."""
+    problems = []
+    for (season,), frame in rows.group_by("season", maintain_order=True):
+        start = starts[int(season)]  # type: ignore[call-overload]
+        cut = frame.select(pl.max_horizontal("p_b2_cutoff", "p_b3_cutoff", "parts_cutoff").max())
+        latest = cut.item()
+        if isinstance(latest, datetime) and latest >= start:
+            problems.append(
+                f"{season}: an input cut off at {latest}, after its fold starts {start}"
+            )
+        late = frame.filter(pl.col("parts_utc") >= pl.col("prediction_utc")).height
+        if late:
+            problems.append(f"{season}: {late} games whose u read a row public at the prediction")
+    return problems
+
+
 @dataclass(frozen=True)
 class Fold:
     """One fold's three blends, its u scale and the rows they learned from."""
@@ -264,11 +283,14 @@ def load(record: dict[str, Any]) -> LiveFit:
         train_cutoff=datetime.fromisoformat(record["train_cutoff"]),
         u_sd=first["u_scale"]["u_sd"],
     )
+    # By name: the file's keys are sorted, which is not the order the blend's terms are fitted in.
     blends = {
         name: blend.Blend(
             kind=Kind(entry["kind"]),
-            weights=tuple(entry["weights"].values()),
-            standard_errors=tuple(entry["standard_errors"].values()),
+            weights=tuple(entry["weights"][t] for t in blend.TERMS[Kind(entry["kind"])]),
+            standard_errors=tuple(
+                entry["standard_errors"][t] for t in blend.TERMS[Kind(entry["kind"])]
+            ),
             games=entry["games"],
             train_cutoff=datetime.fromisoformat(entry["train_cutoff"]),
         )

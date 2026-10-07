@@ -2143,6 +2143,11 @@ def live_blend_fit(
         counts = predicted.group_by("model").len().sort("model").iter_rows()
         typer.echo(f"  {season}: " + ", ".join(f"{m} {n:,}" for m, n in counts))
     rows = blend_backtest.rows(pl.concat(frames), {bf.EXPERIMENT.value: pl.concat(parts)}, games)
+    problems = bf.early(rows, starts)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        raise typer.Exit(code=1)
     try:
         reference = bf.fit(
             rows,

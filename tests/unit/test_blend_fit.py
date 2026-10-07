@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -30,7 +31,11 @@ def fitted() -> tuple[bf.Fold, dict[str, Any]]:
 
 def test_the_artifact_reads_back_as_the_fit_it_records() -> None:
     fold, record = fitted()
-    live = bf.load(json.loads(json.dumps(record)))
+    # Through the file exactly as nhl live blend-fit writes it, keys sorted.
+    live = bf.load(json.loads(json.dumps(record, indent=2, sort_keys=True)))
+    for name, entry in record["fits"].items():
+        assert live.blends[name].named() == entry["weights"]
+        assert live.blends[name].weights == fold.blends[name].weights
     assert live.version == "blend-live-20261007-abc1234"
     assert live.fold_start == LIVE_START
     assert live.train_cutoff < LIVE_START
@@ -127,3 +132,56 @@ def test_season_predictions_are_never_scored(monkeypatch: pytest.MonkeyPatch) ->
     assert sorted(set(predicted["model"].to_list())) == ["B0", "B2", "B3"]
     assert set(predicted.filter(pl.col("model") == "B0")["method"]) == {B1_METHOD.value}
     assert set(doubts["season"]) == {season}
+
+
+class FakeLake:
+    """A lake whose tables are empty, but for the SBR seasons the fit asks for."""
+
+    def read(self, table: str, seasons: Any = None) -> pl.DataFrame:
+        if table == "sbr_odds":
+            return pl.DataFrame({"season": SEASONS}, schema={"season": pl.Int32})
+        return pl.DataFrame({"season": []}, schema={"season": pl.Int32})
+
+
+def test_the_dry_run_writes_only_its_fit(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """nhl live blend-fit without --r2: one file under --out, nothing under reports/backtest/, no
+    claim. The rows and models are faked; the fit, the check and the artifact are the real ones."""
+    from typer.testing import CliRunner
+
+    from nhl_edge import cli
+    from nhl_edge.ingest import games as games_module
+    from nhl_edge.lake import tables
+
+    firsts = {s: ROWS.filter(pl.col("season") == s)["prediction_utc"].min() for s in SEASONS}
+    reference = bf.describe(bf.fit(ROWS, SEASONS[:4], firsts[20222023], 20222023))  # type: ignore[arg-type]
+    monkeypatch.chdir(tmp_path)
+    backtest = tmp_path / "reports" / "backtest"
+    backtest.mkdir(parents=True)
+    (backtest / "runs.csv").write_text("version,seasons\n")
+    monkeypatch.setattr(tables, "Lake", FakeLake)
+    monkeypatch.setattr(games_module, "EXPECTED_GAMES", dict.fromkeys(SEASONS, 0))
+    spare = SimpleNamespace(lineups=None, lineup_replacements=None)
+    monkeypatch.setattr(cli, "_b3_tables", lambda lake, t: spare)
+    monkeypatch.setattr(b2, "input_problems", lambda *a: [])
+    monkeypatch.setattr(b3, "input_problems", lambda *a: [])
+    monkeypatch.setattr(uncertainty, "Tables", lambda *a: None)
+    monkeypatch.setattr(bf, "market", lambda odds, games: None)
+    monkeypatch.setattr(
+        bf, "fold_start", lambda odds, games, season: firsts.get(season, LIVE_START)
+    )
+    empty = pl.DataFrame({"model": []}, schema={"model": pl.String})
+    monkeypatch.setattr(bf, "season_predictions", lambda *a: (empty, empty))
+    monkeypatch.setattr(blend_backtest, "rows", lambda *a: ROWS)
+    monkeypatch.setattr(bf, "recorded", lambda: reference)
+    monkeypatch.setattr(bf, "b1_fit", lambda priced, start: B1)
+    result = CliRunner().invoke(cli.app, ["live", "blend-fit", "--out", "dry"])
+    assert result.exit_code == 0, result.output
+    written = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*") if p.is_file())
+    assert [str(p) for p in written if "dry" in str(p)] == [
+        f"dry/{p.name}" for p in (tmp_path / "dry").iterdir()
+    ]
+    assert sorted(str(p) for p in written if "dry" not in str(p)) == ["reports/backtest/runs.csv"]
+    assert (backtest / "runs.csv").read_text() == "version,seasons\n"
+    record = json.loads(next((tmp_path / "dry").iterdir()).read_text())
+    assert record["training"]["games"] == ROWS.height
+    assert "log_loss" not in json.dumps(record)
