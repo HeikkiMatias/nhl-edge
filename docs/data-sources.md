@@ -264,7 +264,9 @@ The NHL's time-on-ice reports (TH for the home team, TV for the visitors) list t
 Every feature table lists final games only. `nhl live features --date D [--r2]` (#162, docs/plans/phase-5.md task 1) gives a game date's scheduled games the same rows, so a prediction can read them.
 
 - **The slate:** `GET /v1/schedule/{D}`, always fetched fresh and cached raw. A game can be postponed or re-timed up to its start. The `slate` table keeps D's regular-season games whose schedule state is OK, with venue and neutral site. Its `observed_utc` is the actual fetch time.
-- **Ready first:** every game of the seven days before D must be final and in `games`. Otherwise the command refuses, rather than leave a game out of its teams' histories.
+- **Ready first:** two checks, both before any table changes, so a refused run leaves the date's last build standing:
+  - every game of the seven days before D must be final and in `games`, or the command refuses rather than leave a game out of its teams' histories;
+  - only slate games fetched before their as-of time get target rows, since a late response never counts as an on-time input (#170). A game fetched later is reported and left without rows. A run that would rate no game on time refuses.
 - **The steps:** `xg` and `stints` for the slate's season, then every builder in order with `--targets D`:
   - team strength, goalie start, lineups and goalie effect;
   - schedule terms;

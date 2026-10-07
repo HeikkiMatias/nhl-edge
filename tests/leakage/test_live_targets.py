@@ -8,7 +8,7 @@ shots, penalties and result, and every later game, are absent from the live inpu
 reach a target row.
 """
 
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import finishing_fixtures as ff
@@ -28,7 +28,7 @@ from nhl_edge.lake.schemas import ExpectedPowerPlays, Finishing, GoalMultipliers
 from nhl_edge.lineup import goalie_start as gs
 from nhl_edge.lineup import minutes as mins
 from nhl_edge.lineup import projection as proj
-from nhl_edge.live.targets import rated, with_schedule_targets, with_targets
+from nhl_edge.live.targets import in_time, rated, with_schedule_targets, with_targets
 from nhl_edge.ratings import finishing as fn
 from nhl_edge.ratings import penalty_rates as pr
 from nhl_edge.ratings import rapm
@@ -46,8 +46,9 @@ def night_of(games: pl.DataFrame, season: int, k: int = 10) -> date:
     return games.filter(pl.col("season") == season)["game_date"].unique().sort()[k]
 
 
-def slate_of(games: pl.DataFrame, night: date) -> pl.DataFrame:
-    """The night's games as its slate lists them that morning: schedule columns, no result."""
+def slate_of(games: pl.DataFrame, night: date, fetched: datetime | None = None) -> pl.DataFrame:
+    """The night's games as its slate lists them that morning: schedule columns, no result. The
+    slate goes through in_time, as every builder's --targets does."""
     tonight = games.filter(pl.col("game_date") == night)
     columns = tonight.columns
     return tonight.select(
@@ -61,9 +62,9 @@ def slate_of(games: pl.DataFrame, night: date) -> pl.DataFrame:
         neutral_site=pl.col("neutral_site") if "neutral_site" in columns else pl.lit(False),
         limited_attendance=pl.lit(False),
         game_state=pl.lit("FUT"),
-        observed_utc=pl.lit(datetime.combine(night, FETCHED, UTC)),
+        observed_utc=pl.lit(fetched or datetime.combine(night, FETCHED, UTC)),
         raw_key=pl.lit("nhl/schedule/test"),
-    )
+    ).pipe(in_time)
 
 
 def before(frame: pl.DataFrame, games: pl.DataFrame, night: date) -> pl.DataFrame:
@@ -103,6 +104,8 @@ def test_team_strength() -> None:
     same(tonight(full, games, night), tonight(live, games, night), ["game_id"])
     # Not vacuous: each target read its teams' earlier games.
     assert (tonight(live, games, night)["home_history"] > 0).all()
+    # Targets leave every other game's row as it was.
+    same(strength(lake, lake["games"]), live.filter(pl.col("game_date") < night), ["game_id"])
 
 
 def test_goalie_starts() -> None:
@@ -200,6 +203,31 @@ def test_schedule_terms() -> None:
     live_terms = st.terms(live_schedule, before(games, games, night), settings, [season], ref)
     live = st.rows(live_terms, settings, version(st.COMPONENT))
     same(tonight(full, games, night), tonight(live, games, night), ["game_id"])
+    alone = st.terms(
+        before(schedule, games, night), before(games, games, night), settings, [season], ref
+    )
+    same(
+        st.rows(alone, settings, version(st.COMPONENT)),
+        live.filter(pl.col("game_date") < night),
+        ["game_id"],
+    )
+
+
+def test_a_game_fetched_after_its_as_of_time_is_no_target() -> None:
+    # Rated at the fetch time, a game fetched the next morning would read its own result and the
+    # rest it gave its teams (the leakage audit of #162). It gets no row instead.
+    league = sf.league()
+    games, schedule = league["games"], league["schedule"]
+    night = night_of(games, 20122013)
+    as_of = ts.as_of(pl.col("game_date"), pl.col("start_utc"))
+    times = schedule.filter(pl.col("game_date") == night).select(as_of_utc=as_of)["as_of_utc"]
+    first, last = times.min(), times.max()
+    assert isinstance(first, datetime) and isinstance(last, datetime)
+    next_morning = datetime.combine(night + timedelta(days=1), time(11), UTC)
+    assert slate_of(schedule, night, next_morning).is_empty()
+    # At the as-of time is too late; just before it is on time.
+    assert slate_of(schedule, night, last).is_empty()
+    assert slate_of(schedule, night, first - timedelta(microseconds=1)).height == times.len()
 
 
 def test_rapm_ratings_and_terms() -> None:

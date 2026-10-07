@@ -9,12 +9,14 @@ a target's missing boxscore:
 
 A builder rates each game only from history public before its as-of time, the earlier of 10:00 ET
 and an hour before the start, so a target's row is the quantity history's rows are
-(tests/leakage/test_live_targets.py). A slate game already in games is final: its history row is
-that row, so it is not added again.
+(tests/leakage/test_live_targets.py). Only a slate fetched before that time gives targets
+(in_time): a late response never counts as an on-time input (#170). A slate game already in games
+is final: its history row is that row, so it is not added again.
 """
 
 import polars as pl
 
+from nhl_edge.features.team_strength import as_of
 from nhl_edge.lake.schemas import SCHEDULE_LEAD
 
 SCHEDULE_COLUMNS = (
@@ -29,6 +31,13 @@ SCHEDULE_COLUMNS = (
     "limited_attendance",
     "raw_key",
 )
+
+
+def in_time(slate: pl.DataFrame) -> pl.DataFrame:
+    """The slate's games fetched before their as-of time. A game fetched at or after it gets no
+    target row: schedule terms would rate it at the fetch time, after results and rest that its
+    history row never sees."""
+    return slate.filter(pl.col("observed_utc") < as_of(pl.col("game_date"), pl.col("start_utc")))
 
 
 def unplayed(frame: pl.DataFrame, slate: pl.DataFrame) -> pl.DataFrame:

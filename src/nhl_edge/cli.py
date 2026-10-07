@@ -66,15 +66,16 @@ TargetsOption = Annotated[
 def _slate_targets(
     lake: "Lake", day: datetime | None, wanted: list[int], tune: bool = False
 ) -> "pl.DataFrame | None":
-    """The date's slate, to rate beside the seasons' games (#162); None without --targets. Its
-    games must be in the seasons rated."""
+    """The date's slate games fetched before their as-of time, to rate beside the seasons' games
+    (#162); None without --targets. They must be in the seasons rated."""
     if day is None:
         return None
     if tune:
         raise typer.BadParameter("--tune rates no slate", param_hint="--targets")
     from nhl_edge.live import slate
+    from nhl_edge.live.targets import in_time
 
-    games = slate.of_day(lake.read("slate"), day.date())
+    games = in_time(slate.of_day(lake.read("slate"), day.date()))
     outside = sorted(set(games["season"].to_list()) - set(wanted))
     if outside:
         raise typer.BadParameter(
@@ -1946,10 +1947,11 @@ def live_features(
         ),
     ] = False,
 ) -> None:
-    """Rate a game date's slate (#162). Fetch the date's schedule into the lake's slate, check
-    that every game of the week before it is final in the lake, bring the slate season's
-    played-game tables up to date (xg, stints, then each builder), with the slate games' target
-    rows beside them, and record the build in feature_builds once every step is done."""
+    """Rate a game date's slate (#162). Fetch the date's schedule, and refuse, before changing
+    anything, while a game of the week before is not final in the lake or no slate game was
+    fetched before its as-of time. Then write the slate, bring its season's played-game tables up
+    to date (xg, stints, then each builder) with the slate games' target rows beside them, and
+    record the build in feature_builds once every step is done."""
     from datetime import UTC
 
     import polars as pl
@@ -1961,6 +1963,7 @@ def live_features(
     from nhl_edge.lake.tables import TABLES, Lake
     from nhl_edge.live import features as lf
     from nhl_edge.live import slate as live_slate
+    from nhl_edge.live.targets import in_time
     from nhl_edge.settings import load_env
 
     load_env()
@@ -1971,13 +1974,28 @@ def live_features(
     if r2:
         pulled = sum(lake.pull(table) for table in lf.LAKE_TABLES)
         typer.echo(f"pulled {pulled:,} table files from R2")
-    # The record goes first, so a build cut short leaves none (#170).
-    lake.replace_dates("feature_builds", TABLES["feature_builds"].empty(), [game_date])
     api = NhlApi(store)
     fetched = live_slate.fetch(api, game_date)
     slate = fetched.games
-    lake.replace_dates("slate", slate, [game_date])
     typer.echo(f"slate {game_date}: {slate.height} games ({fetched.raw_key})")
+    # Checked before any table changes, so a refused run leaves the date's last build standing.
+    late = slate.join(in_time(slate), on="game_id", how="anti")
+    if late.height:
+        games = ", ".join(map(str, late["game_id"].to_list()))
+        typer.echo(f"fetched at or after their as-of time, so not rated: {games}", err=True)
+        if late.height == slate.height:
+            raise typer.Exit(code=1)
+    problems = (
+        live_slate.settled_problems(api, game_date, lake.read("games")) if slate.height else []
+    )
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl ingest for those dates, then this again", err=True)
+        raise typer.Exit(code=1)
+    # The record goes first, so a build cut short leaves none (#170).
+    lake.replace_dates("feature_builds", TABLES["feature_builds"].empty(), [game_date])
+    lake.replace_dates("slate", slate, [game_date])
     build_id = reports.version(lf.COMPONENT, started)
     build = {
         "build_id": build_id,
@@ -1993,12 +2011,6 @@ def live_features(
         )
         lake.replace_dates("feature_builds", empty, [game_date])
         return
-    problems = live_slate.settled_problems(api, game_date, lake.read("games"))
-    if problems:
-        for problem in problems:
-            typer.echo(problem, err=True)
-        typer.echo("run nhl ingest for those dates, then this again", err=True)
-        raise typer.Exit(code=1)
     (season,) = slate["season"].unique().to_list()
     seasons = str(season)
     xg(seasons=seasons, out=out / "xg", r2=r2)
