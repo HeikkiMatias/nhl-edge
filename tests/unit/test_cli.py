@@ -1361,3 +1361,44 @@ def test_stints_cuts_every_complete_game(tmp_path: Any, monkeypatch: pytest.Monk
     assert held_out.exit_code == 0, held_out.output
     assert "stints 20222023: written" in held_out.output
     assert "left out" not in held_out.output
+
+
+def test_targets_must_be_a_slate_of_the_seasons_rated(tmp_path: Any) -> None:
+    from datetime import UTC, date, datetime
+
+    import polars as pl
+    import typer
+
+    from nhl_edge.cli import _slate_targets
+    from nhl_edge.lake.schemas import Slate, dtypes
+    from nhl_edge.lake.tables import Lake
+
+    lake = Lake(tmp_path)
+    row = {
+        "game_id": 2026020060,
+        "season": 20262027,
+        "game_date": date(2026, 10, 7),
+        "start_utc": datetime(2026, 10, 7, 23, tzinfo=UTC),
+        "home": "BOS",
+        "away": "TOR",
+        "venue": "TD Garden",
+        "neutral_site": False,
+        "limited_attendance": False,
+        "game_state": "FUT",
+        "observed_utc": datetime(2026, 10, 7, 9, tzinfo=UTC),
+        "raw_key": "nhl/schedule/2026-10-07/x",
+    }
+    # A game fetched after its as-of time (10:00 ET, 14:00 UTC) is no target.
+    late = {**row, "game_id": 2026020061, "observed_utc": datetime(2026, 10, 7, 14, tzinfo=UTC)}
+    lake.write("slate", pl.DataFrame([row, late], schema=dtypes(Slate)))
+    day = datetime(2026, 10, 7)
+    assert _slate_targets(lake, None, [20262027]) is None
+    slate = _slate_targets(lake, day, [20262027])
+    assert slate is not None and slate["game_id"].to_list() == [2026020060]
+    # A date with no slate fetched has no targets.
+    other = _slate_targets(lake, datetime(2026, 10, 8), [20262027])
+    assert other is not None and other.is_empty()
+    with pytest.raises(typer.BadParameter, match="outside the seasons rated"):
+        _slate_targets(lake, day, [20252026])
+    with pytest.raises(typer.BadParameter, match="--tune"):
+        _slate_targets(lake, day, [20262027], tune=True)

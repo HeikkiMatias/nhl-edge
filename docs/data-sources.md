@@ -67,7 +67,7 @@ GitHub Actions runs every job, but GitHub's own `schedule` started this repo's r
 
 - `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input.
 - `pregame-goalies.yml` at :50 of every hour from 12:50 to 02:50 UTC.
-- `ingest-nightly.yml` at 09:00 UTC. After the ingest, it runs `nhl recheck --recent 3 --r2` (#30, below).
+- `ingest-nightly.yml` at 09:00 UTC. After the ingest, it runs `nhl recheck --recent 3 --r2` (#30, below), the odds and goalie replays, and `nhl live features` for today's slate (#162, below).
 
 The workflows keep their GitHub cron lines as a fallback. While the repository variable `TIMER_ACTIVE` is `true`, a scheduled run skips its job, so only the timer's dispatches run; set it to `false` to fall back to the late GitHub schedule, for example when the timer's token has expired. `infra/timer/README.md` covers setup. A failed dispatch shows as a failed cron event in the Cloudflare dashboard. Any workflow can also be started by hand from the Actions tab.
 
@@ -259,6 +259,25 @@ The NHL's time-on-ice reports (TH for the home team, TV for the visitors) list t
 - **Goalies:** their rows are copied from `goalie_starts` with its `train_cutoff` and `artifact_version`, so a goalie row's version starts `goalie-start-` and a skater row's `lineup-`. Goalies have no minutes.
 - **Timing:** as `team_strength`: 10:00 US Eastern on the game date, or an hour before its start if earlier, which is the rows' `observed_utc`.
 - **Commands:** `nhl lineups` writes the table and a report to `reports/lineups/<version>.md`: per season, the Brier score over each team-game's skaters (a newcomer counts as a candidate at probability 0) beside "dressed last game" as a reference, and the share of dressed skaters who were not candidates. The report also gives the ice time against "last game's minutes": the 5v5 minutes MAE per dressed candidate, and the power-play unit accuracy (the share of the actual top five by power-play minutes the projection named), each with weekly block bootstrap intervals and paired differences, and each season's figures from the season before. The development and held-out seasons show only counts until gate 2. Run it after `nhl goalie-start` and `nhl stints`. It refuses while a season is short of its games, a team-game has no skaters in its boxscore, a team-game it rates has no goalie-start probabilities, or a season it rates has no stints the season before. `--r2` mirrors both tables.
+## Live feature rows
+
+Every feature table lists final games only. `nhl live features --date D [--r2]` (#162, docs/plans/phase-5.md task 1) gives a game date's scheduled games the same rows, so a prediction can read them.
+
+- **The slate:** `GET /v1/schedule/{D}`, always fetched fresh and cached raw. A game can be postponed or re-timed up to its start. The `slate` table keeps D's regular-season games whose schedule state is OK, with venue and neutral site. Its `observed_utc` is the actual fetch time.
+- **Ready first:** three checks, all before any table changes, so a refused run leaves the date's last build standing:
+  - a game of the slate's season must be final: an opening night isn't rated yet (#181);
+  - every game of the seven days before D must be final and in `games`, or the command refuses rather than leave a game out of its teams' histories;
+  - only slate games fetched before their as-of time get target rows, since a late response never counts as an on-time input (#170). A game fetched later is reported and left without rows. A run that would rate no game on time refuses.
+- **The steps:** `xg` and `stints` for the slate's season, then every builder in order with `--targets D`:
+  - team strength, goalie start, lineups and goalie effect;
+  - schedule terms;
+  - RAPM, power plays and finishing.
+
+  Each command rates the season's played games as usual. It appends the slate's games after its input checks: to `games` with null results (`live/targets.py`), and to `schedule` for schedule terms, public at the later of the fetch and a day before the start. A builder reads another table's rows only for the games it rates, so a target row left by a postponed night is ignored.
+- **The rows:** a target row is the quantity history's rows are, at the same as-of time, the earlier of 10:00 ET and an hour before the start. `tests/leakage/test_live_targets.py` checks every builder: on a night's morning, the lake without that night's and later games, plus the night's slate, gives each game the row the whole season gives it. Once the games are played, the next night's run rewrites the date with history rows.
+- **The record:** `feature_builds` has one row for the slate, and one per target table and artifact version. Each gives the rows of D, the slate games they cover, the build's actual start and finish times, the schedule response and the commit. A table can hold another component's rows (`lineups` carries `goalie_starts`' goalies), but never two versions of one component. The build deletes D's record before it changes any table, and writes it last, so a record means the build finished (#170).
+- **When:** the nightly job runs it at 09:00 UTC with `--r2`, after the ingest and the replays. It pulls the lake's tables from R2 first, about 1.2 GB. On 2026-10-07 the whole build took about six minutes, with a peak of 2.7 GB of memory. The builders' reports go to `data/live/reports/`, never committed.
+
 ## Odds snapshots
 
 `nhl odds snapshot` runs from `.github/workflows/odds-snapshots.yml`, dispatched at each slot with the slot's name (see When jobs run). Slots are set in US Eastern time, so nothing changes by hand when DST starts or ends. The fallback cron has one line per slot for each UTC offset, and the CLI maps the line that fired to a slot for the current offset. A run first checks the NHL schedule and makes no Odds API call when the slot has no regular-season or playoff game.

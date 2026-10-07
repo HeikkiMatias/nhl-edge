@@ -32,6 +32,7 @@ from nhl_edge.lake.schemas import (
     DailyFaceoffGoalies,
     ExpectedPowerPlays,
     Faceoffs,
+    FeatureBuilds,
     Finishing,
     Games,
     GoalieEffects,
@@ -54,6 +55,7 @@ from nhl_edge.lake.schemas import (
     Shifts,
     Shots,
     ShotXg,
+    Slate,
     Stints,
     StrengthTime,
     TeamStrength,
@@ -111,6 +113,9 @@ TABLES: dict[str, Table] = {
     "pregame_goalies": Table(PregameGoalies, PREGAME_GOALIES_KEY, BY_DATE),
     "dailyfaceoff_goalies": Table(DailyFaceoffGoalies, DAILYFACEOFF_GOALIES_KEY, BY_DATE),
     "player_league_seasons": Table(PlayerLeagueSeasons, PLAYER_LEAGUE_SEASONS_KEY, ("season",)),
+    # Phase 5's live path (#162): a game date's slate, and the record of its feature build.
+    "slate": Table(Slate, ("game_id",), BY_DATE),
+    "feature_builds": Table(FeatureBuilds, ("game_date", "table", "artifact_version"), BY_DATE),
 }
 # Partition columns replace_dates can replace a date at a time.
 DATE_PARTITIONS = ("game_date", "snapshot_date")
