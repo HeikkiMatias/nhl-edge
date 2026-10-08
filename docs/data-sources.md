@@ -308,12 +308,23 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   - each real run first rebuilds the lake's `paper_ledger` from the ledgers in R2, the record, before reading the bankroll from it;
   - refused if any prediction is decided or published at or after its game's start;
   - `--dry-run` writes only to `data/live/dry/`, and with `--at` it decides at a past instant to check a day.
-- **The run bundle (#171),** written once after the ledger as `bundles/live/<date>/` in R2, or under `--out` for a dry run. The lake's partitions are rewritten once the games are final, so the bundle keeps what the decision read:
+- **The run bundle (#171),** written once as `bundles/live/<date>/` in R2, or under `--out` for a dry run: its rows and fits before the ledger, and its manifest, which names the publication time, after it (#188). The lake's partitions are rewritten once the games are final, so the bundle keeps what the decision read:
   - `inputs/<table>.parquet`: the slate, the date's `feature_builds` record and the day's parsed odds quotes; every row the models read for the slate's games, which are the feature tables by `game_id` and `rapm_terms` by the slate's dates; and for u's rookie share, the candidates' boxscores of the season and their league seasons. About 0.2 MB for a three-game day.
   - `fits.json`: B2's and B3's fitted weights, standardization and cutoffs.
   - `manifest.json`, written last: the run's identity, including its decision, publication and input-cutoff times and its bankroll; each file's sha256 and rows; and every odds response the run attempted, its body and metadata, with their sha256.
 
   Every object is written with `IfNoneMatch`. A write that failed part way is run again: an object already there with the same bytes counts as written. A reader refuses a bundle without its manifest or with a file that doesn't match it. If the bundle can't be written, the run exits non-zero and the ledger stands. A dry run into an `--out` that already holds the date's bundle is refused before anything is written.
+- **An unfinished bundle (#188).** The rows and fits go first, each written once, so a run that stops after its ledger leaves them.
+  - **The first write gets one try,** so a slow store never holds up the ledger; the write after the ledger tries again.
+  - **`nhl live bundle --check --r2`,** a nightly step, names each decision day whose bundle has no manifest, and fails the step.
+  - **`nhl live bundle --date <d> --finish --r2`** (or `--from <dry-run dir>`) completes one. It rebuilds the manifest from:
+    - the ledger's own columns: decision and publication times, versions, bankroll;
+    - the input cutoff, computed from the saved quotes as the run computed it;
+    - the stored objects' hashes;
+    - the day's raw odds responses, which are immutable;
+    - the committed live fit the ledger names.
+
+    The manifest marks itself `finished_later`, without the run's `uv.lock` hash. It never writes an input, and refuses a bundle missing any input the run writes.
 - **`nhl live replay --date <d> --r2`** (or `--from <dry-run dir>`) makes the day's decision again from the bundle alone and the committed live fit, whose sha256 must match. It covers B2, B3, u, the blend, the selection, the guard and the stakes, and compares the ledger with the day's, every column. On 2026-10-07's real slate the whole ledger was reproduced, floats within 1e-9.
 - **Settlement (#165).** `nhl live settle --r2` runs nightly, after the odds replay. It finds each close by the same rule as the flag, at its own clock, so a game that started after the replay still gets its close. It rebuilds `paper_settlements` from the ledgers in R2, the games and the odds, with one row per paper bet whose game is final:
   - **The result,** on the full game, OT and shootout included (hard rule 2). The profit is stake·(price − 1) for a win and −stake for a loss.

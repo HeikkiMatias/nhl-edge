@@ -152,7 +152,7 @@ Every deliverable merged under its own task issue:
 - **#170 (live data readiness) is closed:**
   - #184 records `published_utc` and refuses to predict a game that starts before publication, with the day decided again at the later clock.
   - #185 (#130) makes `nhl power-plays` refuse incomplete inputs.
-- **#171 (run bundles):** `phase-5/run-bundle` writes each decision day's run bundle once, to `bundles/live/<date>/`. It holds the rows the decision read, the B2 and B3 fits, and a hashed manifest. `nhl live replay` reproduces the day's predictions from the bundle alone.
+- **#171 (run bundles):** `phase-5/run-bundle` writes each decision day's run bundle once, to `bundles/live/<date>/`. It holds the rows the decision read, the B2 and B3 fits, and a hashed manifest. `nhl live replay` reproduces the day's predictions from the bundle alone. Since #188, the rows and fits are written before the ledger. The nightly's `nhl live bundle --check --r2` names a day whose manifest is missing, and `--finish` completes it.
   - Research run bundles are deferred to #186 (P6).
 - **Task 4 (#21), the closing proxy:**
   - `nhl odds replay` marks each started game's closing proxy under ADR 0033 (`market/closing.py`), and the nightly upserts the flag to Supabase.

@@ -264,3 +264,116 @@ def test_a_dry_run_into_a_directory_holding_the_days_bundle_is_refused(tmp_path:
     unstyled = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
     text = " ".join(re.sub(r"[│╭╮╰╯─]", " ", unstyled).split())
     assert "pass a fresh --out" in text, result.output
+
+
+def stopped_after_the_ledger(store: lb.Store) -> tuple[lp.Day, pl.DataFrame]:
+    """A day with bets whose run wrote its rows and fits, then its ledger, and stopped before the
+    manifest (#188)."""
+    inputs = pf.day(published_utc=pf.DECISION + timedelta(minutes=4), bankroll=98.5)
+    ledger = lp.ledger(lp.decide(inputs), inputs)
+    lb.write_files(store, pf.DAY, lb.inputs(inputs.slate, RECORD, inputs.quotes, None), {})
+    return inputs, ledger
+
+
+def test_a_run_stopped_after_its_ledger_is_finished_and_replays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The done-when: killed between the ledger and the manifest, the bundle is unreadable; finished
+    # from what is stored, it replays to the day's ledger.
+    store = lb.LocalStore(tmp_path)
+    inputs, ledger = stopped_after_the_ledger(store)
+    with pytest.raises(ValueError, match="no manifest"):
+        lb.read(store, pf.DAY)
+    assert lb.unfinished(store, [pf.DAY]) == [pf.DAY]
+    sha = lb.sha256(FIT.read_bytes())
+    lb.finish(store, pf.DAY, ledger, "R2 ledger/live/2026-10-07.parquet", {}, FIT.name, sha)
+    saved = lb.read(store, pf.DAY)
+    assert lb.unfinished(store, [pf.DAY]) == []
+    # The identity the run would have written, from the ledger and the saved quotes.
+    for name, value in day_identity(inputs).items():
+        assert saved.manifest[name] == value, name
+    assert saved.manifest["live_fit_sha256"] == sha and saved.manifest["finished_later"]
+    monkeypatch.setattr(lb, "models", lambda _: inputs.fitted)
+    replayed = lb.replay(saved, inputs.live)
+    assert lb.differences(replayed, ledger) == []
+    assert replayed["bet"].fill_null(False).any()
+    with pytest.raises(ValueError, match="complete already"):
+        lb.finish(store, pf.DAY, ledger, "x", {}, FIT.name, sha)
+
+
+def test_a_bundle_missing_an_input_is_never_finished(tmp_path: Path) -> None:
+    sha = lb.sha256(FIT.read_bytes())
+    _, ledger = stopped_after_the_ledger(lb.LocalStore(tmp_path / "none"))
+    # Nothing of the run's files was written.
+    with pytest.raises(ValueError, match="never written"):
+        lb.finish(lb.LocalStore(tmp_path / "empty"), pf.DAY, ledger, "x", {}, FIT.name, sha)
+    # The models were read, so their rows are needed too, and they aren't there.
+    store = lb.LocalStore(tmp_path / "fits")
+    stopped_after_the_ledger(store)
+    store.root.joinpath(lb.prefix(pf.DAY), lb.FITS).unlink()
+    store.put(f"{lb.prefix(pf.DAY)}/{lb.FITS}", b'{"b2": {}, "b3": {}}')
+    with pytest.raises(ValueError, match="missing team_strength"):
+        lb.finish(store, pf.DAY, ledger, "x", {}, FIT.name, sha)
+
+
+def test_the_inputs_a_decision_saves_are_the_ones_finish_requires() -> None:
+    games = fixture_slate()
+    rows = lb.inputs(games, RECORD, NO_QUOTES, (B2_TABLES, B3_TABLES, U_TABLES))
+    assert set(rows) == set(lb.BASE_INPUTS + lb.MODEL_INPUTS)
+    assert set(lb.inputs(games, RECORD, NO_QUOTES, None)) == set(lb.BASE_INPUTS)
+
+
+def test_nhl_live_bundle_finishes_a_day_and_checks_every_day(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fakes import MemoryBucket
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+    from nhl_edge.lake.r2 import R2Config
+
+    # A dry run's directory, stopped after its ledger: --finish completes it from there, and the
+    # replay reproduces the day.
+    live = blend_fit.load(json.loads(FIT.read_text()))
+    versions = {
+        "blend_version": live.version,
+        "feature_build": "live-features-20261007-abc1234",
+        "code_version": "predict-20261007-abc1234",
+        "b2_train_cutoff": None,
+        "b3_train_cutoff": None,
+    }
+    inputs = pf.day(
+        fitted=None, live=live, versions=versions, published_utc=pf.DECISION + timedelta(minutes=3)
+    )
+    ledger = lp.ledger(lp.decide(inputs), inputs)
+    out = tmp_path / "dry"
+    lb.write_files(
+        lb.LocalStore(out), pf.DAY, lb.inputs(inputs.slate, RECORD, inputs.quotes, None), {}
+    )
+    ledger.write_parquet(out / f"{pf.DAY.isoformat()}.parquet")
+    runner = CliRunner()
+    replay = ["live", "replay", "--date", pf.DAY.isoformat(), "--from", str(out)]
+    assert runner.invoke(app, replay).exit_code == 1
+    finish = ["live", "bundle", "--date", pf.DAY.isoformat(), "--finish", "--from", str(out)]
+    result = runner.invoke(app, finish)
+    assert result.exit_code == 0, result.output
+    assert "finished, its manifest rebuilt" in result.output
+    result = runner.invoke(app, replay)
+    assert result.exit_code == 0, result.output
+    assert "the ledger is reproduced" in result.output
+    # --check lists, from R2, each ledger day whose bundle has no manifest.
+    for name in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"):
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    r2 = lb.R2Store(bucket, "test")
+    for day in (pf.DAY, pf.DAY + timedelta(days=1)):
+        r2.put(lp.ledger_key(day), b"ledger")
+        lb.write_files(r2, day, lb.inputs(inputs.slate, RECORD, inputs.quotes, None), {})
+    lb.write_manifest(r2, pf.DAY, {"day": pf.DAY.isoformat()})
+    result = runner.invoke(app, ["live", "bundle", "--check", "--r2"])
+    assert result.exit_code == 1
+    later = pf.DAY + timedelta(days=1)
+    assert f"{later}: the run bundle has no manifest" in result.output
+    assert "1 of 2 decision days' bundles complete" in result.output

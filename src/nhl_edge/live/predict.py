@@ -515,6 +515,18 @@ def responses(store: RawStore, day: date) -> list[str]:
     return [key for key in dated_raw_keys(SOURCE, store).get(day, []) if is_complete(store, key)]
 
 
+def raw_responses(store: RawStore, day: date) -> dict[str, bytes]:
+    """Every odds response a decision on the day attempts (responses), and the metadata giving
+    its time, by raw key: what its run bundle records by sha256."""
+    import json
+
+    raw: dict[str, bytes] = {}
+    for key in responses(store, day):
+        raw[key] = store.get(key)
+        raw[f"{key}.meta"] = json.dumps(store.meta(key), sort_keys=True).encode()
+    return raw
+
+
 def day_quotes(store: RawStore, day: date) -> tuple[pl.DataFrame, list[str]]:
     """Every quote of the day's stored odds snapshots (odds/<day>/, by UTC date: the morning and
     midday slots fall on the ET date's own), parsed as the odds replay parses them, and the raw
