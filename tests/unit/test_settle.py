@@ -94,6 +94,13 @@ def test_a_game_not_final_is_not_settled() -> None:
     assert settled["game_id"].to_list() == [2026020053, 2026020054]
 
 
+def test_no_ledger_yet_settles_nothing() -> None:
+    # The nightly runs before the season's first decision too.
+    settled = ls.settle(ledger().clear(), games(), odds(), NOW, VERSIONS)
+    assert settled.is_empty()
+    assert settled.columns == list(ls.dtypes(ls.PaperSettlements))
+
+
 def test_a_postponed_game_voids_its_bet() -> None:
     settled = ls.settle(ledger(), games(g2026020054=timedelta(days=2)), odds(), NOW, VERSIONS)
     row = settled.filter(pl.col("game_id") == 2026020054).row(0, named=True)
