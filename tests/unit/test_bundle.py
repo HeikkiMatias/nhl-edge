@@ -132,6 +132,12 @@ def test_the_replay_decides_the_day_again_from_the_bundle(
     assert lb.differences(replayed, moved) == [
         f"stake differs for {ledger.filter(pl.col('stake') > 0)['game_id'].to_list()}"
     ]
+    # A NaN where the replay has a number differs too.
+    bet = ledger.filter(pl.col("bet").fill_null(False))["game_id"].to_list()
+    nan = ledger.with_columns(
+        stake=pl.when(pl.col("game_id").is_in(bet)).then(float("nan")).otherwise(pl.col("stake"))
+    )
+    assert lb.differences(replayed, nan) == [f"stake differs for {bet}"]
     relabelled = ledger.with_columns(status=pl.lit(lp.STALE))
     assert any(p.startswith("status differs") for p in lb.differences(replayed, relabelled))
     assert lb.differences(replayed, ledger.head(2))[0].startswith("games differ")

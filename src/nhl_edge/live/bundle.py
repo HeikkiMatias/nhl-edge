@@ -354,7 +354,11 @@ def differences(replayed: pl.DataFrame, ledger: pl.DataFrame) -> list[str]:
     for column in ledger.columns:
         a, b = ours[column], theirs[column]
         if a.dtype.is_float():
-            apart = (a.is_null() != b.is_null()) | ((a - b).abs() > TOLERANCE).fill_null(False)
+            # NaN is no number: one on either side differs, as a null does.
+            nan = (a.is_nan() != b.is_nan()).fill_null(False)
+            apart = (
+                (a.is_null() != b.is_null()) | nan | ((a - b).abs() > TOLERANCE).fill_null(False)
+            )
         else:
             apart = a.ne_missing(b)
         if apart.any():

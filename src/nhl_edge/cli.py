@@ -401,6 +401,7 @@ def predict(
     paper_ledger;
     after the window it writes the day as skipped, so no late run can reconstruct it."""
     import json
+    import time
     from datetime import UTC
     from zoneinfo import ZoneInfo
 
@@ -622,16 +623,18 @@ def predict(
         else:
             assert lake.objects is not None and lake.bucket is not None
             bundles = lb.R2Store(lake.objects, lake.bucket)
-        # A write that failed part way is run again: what is already there with the same bytes
-        # counts as written.
+        # A write that failed part way is run again, after a pause that rides out a brief R2
+        # outage: what is already there with the same bytes counts as written.
         written = ""
-        for attempt in range(3):
+        for attempt in range(4):
             try:
                 written = lb.write_once(bundles, game_date, rows, fits, identity, raw)
                 break
-            except Exception:
-                if attempt == 2:
+            except Exception as exc:
+                if attempt == 3:
                     raise
+                typer.echo(f"run bundle write failed ({exc}); trying again", err=True)
+                time.sleep(15 * (attempt + 1))
     except Exception as exc:
         typer.echo(
             f"the {game_date} run bundle was not written ({exc}); the ledger stands", err=True
