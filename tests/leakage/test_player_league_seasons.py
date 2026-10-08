@@ -195,3 +195,17 @@ def test_the_2021_playoffs_stay_hidden_until_july_9() -> None:
     frame = one_line(20202021, "NHL", 3)
     assert known_at(frame, datetime(2021, 7, 8, 12, tzinfo=UTC)).is_empty()
     hidden_until(frame, datetime(2021, 7, 9, tzinfo=UTC))
+
+
+def test_a_refetched_page_s_new_season_waits_for_july_1_not_the_refetch() -> None:
+    # #117: the yearly refresh fetches a page again once the season just played is public. Its new
+    # season's rows are dated by the season's public date, so the fetch time never moves them.
+    for fetched in (datetime(2012, 7, 1, 0, 0, 1, tzinfo=UTC), datetime(2013, 2, 1, tzinfo=UTC)):
+        frame = table(fetched, GOALIE)
+        season = frame.filter(pl.col("season") == 20112012)
+        assert not season.is_empty()
+        assert (season["observed_utc"] == datetime(2012, 7, 1, tzinfo=UTC)).all()
+        assert known_at(season, datetime(2012, 7, 1, tzinfo=UTC)).is_empty()
+    # A copy fetched before July 1 holds the season as partial, and leaves it out.
+    early = table(datetime(2012, 6, 30, 23, 59, tzinfo=UTC), GOALIE)
+    assert early.filter(pl.col("season") >= 20112012).is_empty()

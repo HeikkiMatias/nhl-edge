@@ -316,9 +316,12 @@ class NhlApi:
     def roster(self, team: str, season: int, reuse: Reuse) -> Response:
         return self.fetch("roster", f"{season}/{team}", f"/v1/roster/{team}/{season}", reuse)
 
-    def player_landing(self, player_id: int) -> Response:
+    def player_landing(self, player_id: int, reuse: Reuse = always) -> Response:
+        """A player's landing page: his bio and draft facts and every season line. The ingest
+        fetches it once and reuses it; the yearly refresh (#117) passes fetched_after the day a
+        season's lines are public, so its new season comes in once."""
         path = f"/v1/player/{player_id}/landing"
-        return self.fetch("player-landing", str(player_id), path, always)
+        return self.fetch("player-landing", str(player_id), path, reuse)
 
 
 def retry_after_s(value: str | None, now: datetime) -> float | None:
