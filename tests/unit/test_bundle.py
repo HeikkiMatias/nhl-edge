@@ -2,6 +2,7 @@
 back only whole, and replayed from its own rows to the day's ledger."""
 
 import json
+import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -253,4 +254,7 @@ def test_a_dry_run_into_a_directory_holding_the_days_bundle_is_refused(tmp_path:
     command = ["predict", "--date", "2026-10-07", "--dry-run", "--at", at, "--out", str(tmp_path)]
     result = CliRunner().invoke(app, command)
     assert result.exit_code == 2
-    assert "pass a fresh --out" in result.output
+    # Rich styles and boxes the message on CI runners, wrapping the long path.
+    unstyled = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    text = " ".join(re.sub(r"[│╭╮╰╯─]", " ", unstyled).split())
+    assert "pass a fresh --out" in text, result.output
