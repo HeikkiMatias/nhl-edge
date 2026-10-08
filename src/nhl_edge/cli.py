@@ -452,6 +452,11 @@ def predict(
             raise typer.BadParameter(
                 "the decision window opens at 12:45 ET: a run before it writes nothing"
             )
+    elif (out / lb.prefix(game_date)).exists():
+        # A dry run's bundle is written once too: refused before its ledger is overwritten.
+        raise typer.BadParameter(
+            f"{out} already holds {game_date}'s run bundle: pass a fresh --out", param_hint="--out"
+        )
     load_env()
     lake = Lake.from_env(mirror=r2)
     store = RawStore.from_env(mirror=r2, flag="--r2")
@@ -593,6 +598,7 @@ def predict(
             "decision_utc": decision.isoformat(),
             "published_utc": ledger["published_utc"][0].isoformat(),
             "input_cutoff": cutoff.isoformat(),
+            "bankroll": inputs.bankroll,
             "policy_version": POLICY_VERSION,
             "blend_version": live.version,
             "live_fit": paths[0].name,
@@ -605,18 +611,27 @@ def predict(
         fits = {}
         if fitted is not None and fitted.b2_model is not None and fitted.b3_model is not None:
             fits = {"b2": fitted.b2_model, "b3": fitted.b3_model}
-        rows = (
-            lb.inputs(slate, record, *read)
-            if read is not None
-            else {"slate": slate, "feature_builds": record}
-        )
-        raw = {key: store.get(key) for key in sorted(quotes["raw_key"].unique().to_list())}
+        rows = lb.inputs(slate, record, quotes, read)
+        # Every odds response the run attempted, parsed or not, and the metadata giving its time.
+        raw: dict[str, bytes] = {}
+        for key in lp.responses(store, decision.date()):
+            raw[key] = store.get(key)
+            raw[f"{key}.meta"] = json.dumps(store.meta(key), sort_keys=True).encode()
         if dry_run:
             bundles: lb.Store = lb.LocalStore(out)
         else:
             assert lake.objects is not None and lake.bucket is not None
             bundles = lb.R2Store(lake.objects, lake.bucket)
-        written = lb.write_once(bundles, game_date, rows, fits, identity, raw)
+        # A write that failed part way is run again: what is already there with the same bytes
+        # counts as written.
+        written = ""
+        for attempt in range(3):
+            try:
+                written = lb.write_once(bundles, game_date, rows, fits, identity, raw)
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
     except Exception as exc:
         typer.echo(
             f"the {game_date} run bundle was not written ({exc}); the ledger stands", err=True
@@ -2332,15 +2347,22 @@ def live_replay(
         Path | None,
         typer.Option("--from", help="Read them from a dry run's --out directory instead."),
     ] = None,
+    fit: Annotated[
+        Path | None,
+        typer.Option(help="The live fit the day was decided with (default: under reports/live/)."),
+    ] = None,
 ) -> None:
-    """Replay a decision day from its run bundle alone (#171): recompute p_B2, p_B3 and u's parts
-    from the rows and fits the decision saved, with the lake set aside, and compare them with the
-    day's ledger. Exits 1 if the bundle is incomplete or altered, or the two disagree."""
+    """Replay a decision day from its run bundle alone (#171): make the day's decision again from
+    the rows, quotes and fits it saved and the committed live fit, with the lake set aside, and
+    compare the ledger with the day's, every column. Exits 1 if the bundle is incomplete or
+    altered, the fit is not the one it names, or the two ledgers disagree."""
     import io
+    import json
 
     import polars as pl
 
     from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import blend_fit
     from nhl_edge.live import bundle as lb
     from nhl_edge.live import predict as lp
     from nhl_edge.settings import load_env
@@ -2358,20 +2380,26 @@ def live_replay(
         store = lb.R2Store(lake.objects, lake.bucket)
         ledger = pl.read_parquet(io.BytesIO(store.get(lp.ledger_key(game_date))))
     try:
-        replayed = lb.replay(lb.read(store, game_date))
-    except ValueError as exc:
+        saved = lb.read(store, game_date)
+        path = fit or blend_fit.REPORTS / saved.manifest["live_fit"]
+        body = path.read_bytes()
+        if lb.sha256(body) != saved.manifest["live_fit_sha256"]:
+            raise ValueError(f"{path} is not the live fit the day was decided with")
+        replayed = lb.replay(saved, blend_fit.load(json.loads(body)))
+    except (OSError, ValueError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
     problems = lb.differences(replayed, ledger)
+    predicted = ledger.filter(pl.col("status") == lp.PREDICTED).height
     typer.echo(
-        f"{game_date}: {replayed.height} games replayed from the bundle, "
-        f"{ledger.filter(pl.col('status') == lp.PREDICTED).height} predicted in the ledger"
+        f"{game_date}: {replayed.height} games decided again from the bundle, {predicted} "
+        f"predicted, {int(ledger['bet'].fill_null(False).sum())} bets in the ledger"
     )
     for problem in problems:
         typer.echo(problem, err=True)
     if problems:
         raise typer.Exit(code=1)
-    typer.echo(f"every prediction reproduced within {lb.TOLERANCE:g}")
+    typer.echo(f"the ledger is reproduced, every column, floats within {lb.TOLERANCE:g}")
 
 
 @live_app.command("blend-fit")

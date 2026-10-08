@@ -3,21 +3,24 @@ B3 fits it used, and a manifest of hashes, written once beside the day's ledger.
 partitions are mutable, and the nightly rewrites a date's rows once its games are final, so the
 bundle is what lets a logged decision be explained and reproduced afterwards.
 
-- **inputs/<table>.parquet:** the slate and the date's feature_builds record; every row of the
-  tables B2, B3 and u read for the slate's games (by game_id, and rapm_terms by the slate's
-  dates); and for u's rookie share the candidates' boxscores of the season and their league
-  seasons.
+- **inputs/<table>.parquet:** the slate, the date's feature_builds record and the day's parsed
+  odds quotes; every row of the tables B2, B3 and u read for the slate's games (by game_id, and
+  rapm_terms by the slate's dates); and for u's rookie share the candidates' boxscores of the
+  season and their league seasons.
 - **fits.json:** B2's and B3's fitted intercepts, weights, standardization, games and cutoffs.
 - **manifest.json,** written last as the completion mark: the run's identity (date, decision,
-  publication and input cutoff times, policy, live fit and its sha256, feature build, code,
-  uv.lock's sha256, the ledger's key), each file's sha256 and rows, and the raw odds responses
-  read, with their sha256.
+  publication and input cutoff times, bankroll, policy, live fit and its sha256, feature build,
+  code, uv.lock's sha256, the ledger's key), each file's sha256 and rows, and every odds response
+  the run attempted, its body and metadata, with their sha256.
 
-Every object is written once (IfNoneMatch in R2, exclusive creation locally). A reader refuses a
-bundle without its manifest, or with a file whose bytes don't match it. replay() recomputes p_B2,
-p_B3 and u's parts from the bundle alone: the half of b2.predictions and b3.predictions after
-the fit, with the saved fits, and uncertainty.parts itself. The blend, the selection and the
-stake then follow from the ledger's prices and the committed live fit.
+Every object is written once (IfNoneMatch in R2, exclusive creation locally). A write that failed
+part way can be run again: an object already there with the same bytes counts as written. A
+reader refuses a bundle without its manifest, or with a file whose bytes don't match it.
+
+replay() makes the day's decision again from the bundle alone and the committed live fit: B2, B3
+and u's parts through the half of b2.predictions and b3.predictions after the fit, with the saved
+fits, and uncertainty.parts itself; then predict.decide on the saved quotes, slate and bankroll,
+at the saved decision and publication times. Its ledger is compared with the day's, every column.
 """
 
 import hashlib
@@ -35,6 +38,8 @@ from nhl_edge.game import b2, b3, uncertainty
 from nhl_edge.game.b2 import B2Model
 from nhl_edge.game.b3 import B3Model
 from nhl_edge.lake.schemas import Games, dtypes
+from nhl_edge.live import blend_fit
+from nhl_edge.live import predict as lp
 from nhl_edge.live.targets import with_targets
 
 PREFIX = "bundles/live"
@@ -42,7 +47,6 @@ MANIFEST = "manifest.json"
 FITS = "fits.json"
 # Replay against the ledger: the same code on the same rows, up to the order of float sums.
 TOLERANCE = 1e-9
-COMPARED = ("p_b2", "p_b3", *uncertainty.PARTS)
 
 
 class Store(Protocol):
@@ -98,11 +102,15 @@ def prefix(day: date) -> str:
 def inputs(
     slate: pl.DataFrame,
     record: pl.DataFrame,
-    tables: b2.Tables,
-    b3_tables: b3.Tables,
-    u_tables: uncertainty.Tables,
+    quotes: pl.DataFrame,
+    models: tuple[b2.Tables, b3.Tables, uncertainty.Tables] | None,
 ) -> dict[str, pl.DataFrame]:
-    """The rows the day's models read for the slate's games, from the tables they were given."""
+    """The rows the day's decision read: the slate, its build record and the quotes, and, when the
+    models were read, the rows they read for the slate's games, from the tables they were given."""
+    read = {"slate": slate, "feature_builds": record, "quotes": quotes}
+    if models is None:
+        return read
+    tables, b3_tables, u_tables = models
     ids = slate["game_id"].implode()
     (season,) = slate["season"].unique().to_list()
 
@@ -111,9 +119,7 @@ def inputs(
 
     lineups = games_rows(b3_tables.lineups)
     skaters = lineups.filter(pl.col("role").is_in(uncertainty.SKATERS))["player_id"].implode()
-    return {
-        "slate": slate,
-        "feature_builds": record,
+    return read | {
         "team_strength": games_rows(tables.team_strength),
         "schedule_terms": games_rows(tables.schedule_terms),
         "goalie_starts": games_rows(tables.goalie_starts),
@@ -184,9 +190,23 @@ def write_once(
     }
     where = prefix(day)
     for name, body in files.items():
-        store.put(f"{where}/{name}", body)
-    store.put(f"{where}/{MANIFEST}", json.dumps(manifest, indent=1, default=str).encode())
+        put_once(store, f"{where}/{name}", body)
+    put_once(store, f"{where}/{MANIFEST}", json.dumps(manifest, indent=1, default=str).encode())
     return where
+
+
+def put_once(store: Store, key: str, body: bytes) -> None:
+    """Write an object once. If it is already there with the same bytes, as after a write that
+    failed part way, it counts as written; with other bytes, it is refused."""
+    try:
+        store.put(key, body)
+    except Exception as exc:
+        try:
+            held = store.get(key)
+        except Exception:
+            raise exc from None
+        if sha256(held) != sha256(body):
+            raise ValueError(f"{key} is already written, with other bytes") from exc
 
 
 def read(store: Store, day: date) -> Bundle:
@@ -220,11 +240,12 @@ def read(store: Store, day: date) -> Bundle:
     )
 
 
-def replay(bundle: Bundle) -> pl.DataFrame:
-    """p_b2, p_b3 and u's parts for each slate game that has them, from the bundle alone: the
-    frozen code's predict path after the fit, at the decision's input cutoff."""
+def models(bundle: Bundle) -> lp.Models | None:
+    """B2, B3 and u's parts for each slate game that has them, from the bundle alone: the frozen
+    code's predict path after the fit, with the saved fits, at the decision's input cutoff. None
+    when the day's models were never read."""
     if bundle.b2 is None or bundle.b3 is None:
-        raise ValueError("the bundle has no fits: its day's models were never read")
+        return None
     t = bundle.inputs
     slate = t["slate"]
     (season,) = slate["season"].unique().to_list()
@@ -281,28 +302,62 @@ def replay(bundle: Bundle) -> pl.DataFrame:
         ),
         moments.join(p_b3.select("game_id"), on="game_id", how="semi"),
     )
-    return (
-        p_b2.select("game_id", p_b2="p_home")
-        .join(p_b3.select("game_id", p_b3="p_home"), on="game_id")
-        .join(parts.select("game_id", *uncertainty.PARTS), on="game_id")
-        .sort("game_id")
+    return lp.Models(
+        p_b2.select("game_id", p_b2="p_home"),
+        p_b3.select("game_id", p_b3="p_home"),
+        parts.select("game_id", *uncertainty.PARTS),
+        bundle.b2.train_cutoff,
+        bundle.b3.train_cutoff,
+        bundle.b2,
+        bundle.b3,
     )
 
 
+def replay(bundle: Bundle, live: blend_fit.LiveFit) -> pl.DataFrame:
+    """The day's ledger made again from the bundle alone and the live fit: its models, then the
+    decision on the saved quotes, slate and bankroll, at the saved decision and publication
+    times."""
+    manifest = bundle.manifest
+    if live.version != manifest["blend_version"]:
+        decided = manifest["blend_version"]
+        raise ValueError(f"the bundle was decided with {decided}, not {live.version}")
+    fitted = models(bundle)
+    day = lp.Day(
+        day=date.fromisoformat(manifest["day"]),
+        decision_utc=datetime.fromisoformat(manifest["decision_utc"]),
+        slate=bundle.inputs["slate"],
+        quotes=bundle.inputs["quotes"],
+        fitted=fitted,
+        live=live,
+        bankroll=manifest["bankroll"],
+        versions={
+            "blend_version": manifest["blend_version"],
+            "feature_build": manifest["feature_build"],
+            "code_version": manifest["code_version"],
+            "b2_train_cutoff": fitted.b2_cutoff if fitted else None,
+            "b3_train_cutoff": fitted.b3_cutoff if fitted else None,
+        },
+        published_utc=datetime.fromisoformat(manifest["published_utc"]),
+    )
+    return lp.ledger(lp.decide(day), day)
+
+
 def differences(replayed: pl.DataFrame, ledger: pl.DataFrame) -> list[str]:
-    """Where the replay and the ledger's predicted games disagree beyond TOLERANCE, or cover
-    different games."""
-    predicted = ledger.filter(pl.col("status") == "predicted").select("game_id", *COMPARED)
+    """Where the replayed ledger and the day's disagree: other games, or a column that differs,
+    floats beyond TOLERANCE."""
+    if replayed.columns != ledger.columns:
+        return [f"columns differ: {sorted(set(replayed.columns) ^ set(ledger.columns))}"]
+    ours, theirs = replayed.sort("game_id"), ledger.sort("game_id")
+    if not ours["game_id"].equals(theirs["game_id"]):
+        return [f"games differ: {ours['game_id'].to_list()} against {theirs['game_id'].to_list()}"]
     problems = []
-    for label, frame in (
-        ("predicted but not replayed", predicted.join(replayed, on="game_id", how="anti")),
-        ("replayed but not predicted", replayed.join(predicted, on="game_id", how="anti")),
-    ):
-        if frame.height:
-            problems.append(f"{label}: {sorted(frame['game_id'].to_list())}")
-    both = predicted.join(replayed, on="game_id", suffix="_replayed")
-    for column in COMPARED:
-        gap = (both[column] - both[f"{column}_replayed"]).abs().max()
-        if gap is not None and float(gap) > TOLERANCE:  # type: ignore[arg-type]
-            problems.append(f"{column} differs by up to {float(gap):.3g}")  # type: ignore[arg-type]
+    for column in ledger.columns:
+        a, b = ours[column], theirs[column]
+        if a.dtype.is_float():
+            apart = (a.is_null() != b.is_null()) | ((a - b).abs() > TOLERANCE).fill_null(False)
+        else:
+            apart = a.ne_missing(b)
+        if apart.any():
+            games = ours.filter(apart)["game_id"].to_list()
+            problems.append(f"{column} differs for {games}")
     return problems
