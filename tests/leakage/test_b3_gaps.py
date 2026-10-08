@@ -44,3 +44,14 @@ def test_a_result_in_the_gaps_file_never_reaches_the_screen() -> None:
     )
     screened = b3_gaps.screen(LEAGUE, gaps, {TEST: START})
     assert not {"home_win", "home_score"} & set(screened.columns)
+
+
+def test_the_blend_check_never_reads_a_result() -> None:
+    # #156: the blend's recomputation reads prices, B3 and u's parts, never who won.
+    from gap_fixtures import blend_fixture
+
+    gaps, p_mkt, parts, fits = blend_fixture()
+    with_results = gaps.with_columns(home_win=pl.lit(1), home_score=pl.lit(9))
+    b3_gaps.blend_check(with_results, p_mkt, parts, fits)
+    wrong = with_results.with_columns(home_win=pl.lit(0), home_score=pl.lit(0))
+    b3_gaps.blend_check(wrong, p_mkt, parts, fits)

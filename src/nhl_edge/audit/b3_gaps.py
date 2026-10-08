@@ -20,6 +20,12 @@ For each gap game, as B3 saw it at the backtest's prediction time (the start for
 
 The manual review covers every flagged game, every gap above LARGE, and a seeded sample of SAMPLE
 more, stratified by season (#107).
+
+For the blend's gaps, the screen also recomputes each gap's blend probability from its fold's
+recorded fit (blend_check, #156): BLEND's weights and u's scale from the run's summary.json,
+applied to the market's de-vigged probability at the prediction time, the gap's B3 (which the
+refit checks) and u from its parts at the same time. A stale or wrong p_blend is refused even
+when its gap is consistent with it.
 """
 
 from collections.abc import Mapping
@@ -31,12 +37,16 @@ import polars as pl
 
 from nhl_edge.backtest.subsets import IN_LINEUP
 from nhl_edge.features import team_strength as ts
-from nhl_edge.game import b2, b3
+from nhl_edge.game import b2, b3, uncertainty
 from nhl_edge.lineup.goalie_start import team_goalie_games
+from nhl_edge.market import blend
 
 UTC = pl.Datetime("us", "UTC")
 # The gaps files round each probability and gap to 4 decimals.
 ROUNDING = 2e-4
+# How far a recomputed blend probability may differ from the gaps file's, which rounds p_blend and
+# p_b3 to 4 decimals: as far as B3's refit may (screen).
+BLEND_TOLERANCE = 1e-3
 JUMP = 0.08
 MISSED = 4
 UNSURE = 0.1
@@ -393,3 +403,76 @@ def markdown(marked: pl.DataFrame, source: str, version: str, model: str = "B3")
             f"{row['home_starter_p']:.2f}/{row['away_starter_p']:.2f} | {flags} | |"
         )
     return "\n".join(lines) + "\n"
+
+
+def fold_blends(
+    summary: Mapping[str, Any], name: str = "BLEND"
+) -> dict[tuple[str, int], tuple[blend.Blend, uncertainty.Scale]]:
+    """Each experiment's and season's fit of the blend name, and u's scale, from a backtest's
+    summary.json (experiments/<experiment>/models/<name>/fits/<season>)."""
+    fits = {}
+    for experiment, entry in summary["experiments"].items():
+        model = entry.get("models", {}).get(name)
+        if model is None:
+            continue
+        for season, fit in model["fits"].items():
+            kind = blend.Kind(fit["kind"])
+            cutoff = datetime.fromisoformat(fit["train_cutoff"])
+            scale = fit["u_scale"]
+            fits[(experiment, int(season))] = (
+                blend.Blend(
+                    kind=kind,
+                    weights=tuple(fit["weights"][t] for t in blend.TERMS[kind]),
+                    standard_errors=tuple(fit["standard_errors"][t] for t in blend.TERMS[kind]),
+                    games=fit["games"],
+                    train_cutoff=cutoff,
+                ),
+                uncertainty.Scale(
+                    means=tuple(scale["means"][p] for p in uncertainty.PARTS),
+                    sds=tuple(scale["sds"][p] for p in uncertainty.PARTS),
+                    games=fit["games"],
+                    train_cutoff=cutoff,
+                    u_sd=scale["u_sd"],
+                ),
+            )
+    return fits
+
+
+def blend_check(
+    gaps: pl.DataFrame,
+    p_mkt: pl.DataFrame,
+    u_parts: pl.DataFrame,
+    fits: Mapping[tuple[str, int], tuple[blend.Blend, uncertainty.Scale]],
+) -> None:
+    """Raise unless each blend gap's p_blend (gaps: experiment, season, game_id, p_blend, p_b3)
+    follows from its fold's fit within BLEND_TOLERANCE: the blend applied to the market's
+    de-vigged home probability at the gap's prediction time (p_mkt: experiment, game_id, p_mkt),
+    the gap's B3 and u from its parts at that time (u_parts: experiment, game_id and
+    uncertainty.PARTS) on the fold's scale. Prices and inputs only, never a result (#156)."""
+    keys = ["experiment", "game_id"]
+    rows = gaps.select("experiment", "season", "game_id", "p_blend", "p_b3")
+    known = rows.join(p_mkt.select(*keys, "p_mkt"), on=keys).join(
+        u_parts.select(*keys, *uncertainty.PARTS), on=keys
+    )
+    if known.height < rows.height:
+        missing = rows.join(known.select(keys), on=keys, how="anti")
+        raise ValueError(
+            f"{missing.height} blend gaps have no market price or u to recompute them from, e.g. "
+            f"game {missing['game_id'][0]}: rerun nhl backtest"
+        )
+    for (experiment, season), group in known.group_by("experiment", "season"):
+        fit = fits.get((str(experiment), int(season)))  # type: ignore[arg-type]
+        if fit is None:
+            raise ValueError(f"no {experiment} blend fit of {season} in the run's summary.json")
+        fitted, scale = fit
+        recomputed = fitted.predict(
+            group["p_mkt"].to_numpy(), group["p_b3"].to_numpy(), scale.score(group).to_numpy()
+        )
+        drift = np.abs(recomputed - group["p_blend"].to_numpy())
+        if drift.max() > BLEND_TOLERANCE:
+            worst = int(drift.argmax())
+            raise ValueError(
+                f"{int((drift > BLEND_TOLERANCE).sum())} {experiment} blend gaps of {season} "
+                f"don't follow from the fold's fit, e.g. game {group['game_id'][worst]} by "
+                f"{drift[worst]:.4f}: rerun nhl backtest"
+            )
