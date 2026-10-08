@@ -12,12 +12,19 @@ game types and upcoming games. An event matches the listing of the same home and
 start is nearest its commence time, within MATCH_WINDOW; the two sources can differ by minutes
 (MTL at TOR on 2026-09-29: 23:00 UTC by the NHL, 23:10 by the Odds API). Every listing counts, not
 only the newest, so an event priced before a postponement keeps the game it was priced for.
+
+is_closing_proxy is derived here, in the replay itself, since the replay rebuilds the table from
+the raw responses and would wipe a flag stored apart (#21, ADR 0033, market/closing.py). A game's
+snapshots span two UTC dates (the midday decision snapshot, then the evening's), and a postponed
+game's later snapshots give its new start, however late. So the flag is derived over the lake's
+whole odds history, the requested dates replayed into it, and any other date whose flags change
+is rewritten too (ReplayReport.reflagged).
 """
 
 from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import polars as pl
 
@@ -26,6 +33,7 @@ from nhl_edge.ingest.odds import SOURCE, parse_odds
 from nhl_edge.lake.raw import SUFFIX, RawStore
 from nhl_edge.lake.schemas import LakeOddsSnapshots, dtypes
 from nhl_edge.lake.tables import Lake
+from nhl_edge.market import closing
 
 MATCH_WINDOW = timedelta(hours=12)
 # A /v1/schedule/{date} response lists the seven days from its date.
@@ -52,6 +60,8 @@ class ReplayReport:
     incomplete: list[str] = field(default_factory=list)
     in_play: int = 0
     dates: list[date] = field(default_factory=list)
+    # Dates outside the replayed ones whose closing-proxy flags changed, and were rewritten.
+    reflagged: list[date] = field(default_factory=list)
 
 
 def dated_raw_keys(root_dir: str, store: RawStore) -> dict[date, list[str]]:
@@ -116,11 +126,19 @@ def match_games(quotes: pl.DataFrame, listings: pl.DataFrame) -> pl.DataFrame:
     return quotes.join(best, on="event_id", how="left")
 
 
-def replay_odds(store: RawStore, lake: Lake, dates: Collection[date] | None = None) -> ReplayReport:
+def replay_odds(
+    store: RawStore,
+    lake: Lake,
+    dates: Collection[date] | None = None,
+    now: datetime | None = None,
+) -> ReplayReport:
     """Parse the stored snapshots of the given UTC dates (all stored dates when None) into the
-    lake's odds_snapshots. Every requested date's partition is replaced, and deleted when the date
-    now has no quotes, so a parser fix leaves nothing stale. Never calls the Odds API."""
+    lake's odds_snapshots, with each game started by now (the clock by default) marked at its
+    closing proxy over the lake's whole history. Every requested date's partition is replaced, and
+    deleted when the date now has no quotes, so a parser fix leaves nothing stale; another date
+    whose flags change is rewritten too. Never calls the Odds API."""
     report = ReplayReport()
+    now = now or datetime.now(UTC)
     frames = []
     for day, keys in dated_raw_keys(SOURCE, store).items():
         if dates is not None and day not in dates:
@@ -137,28 +155,39 @@ def replay_odds(store: RawStore, lake: Lake, dates: Collection[date] | None = No
         report.dates.append(day)
     columns = list(dtypes(LakeOddsSnapshots))
     requested = sorted(dates) if dates is not None else report.dates
-    empty = pl.DataFrame(schema=dtypes(LakeOddsSnapshots))
-    if not frames:
-        lake.replace_dates("odds_snapshots", empty, requested)
-        return report
-    quotes = pl.concat(frames)
-    # The Odds API also lists games under way, with live prices that move with the score. The
-    # history keeps pre-game quotes only, as Supabase does, so no closing proxy can pick one up;
-    # the raw responses keep everything.
-    pre_game = pl.col("commence_time_utc") > pl.col("snapshot_utc")
-    report.in_play = quotes.filter(~pre_game).height
-    quotes = quotes.filter(pre_game)
-    if quotes.is_empty():
-        lake.replace_dates("odds_snapshots", empty, requested)
-        return report
-    commence = pl.col("commence_time_utc").dt.date()
-    first, last = quotes.select(commence.min().alias("first"), commence.max().alias("last")).row(0)
-    listings = nhl_listings(store, first - timedelta(days=1), last)
-    table = match_games(quotes, listings).with_columns(
-        snapshot_date=pl.col("snapshot_utc").dt.date()
-    )
-    table = LakeOddsSnapshots.validate(table.select(columns))
+    table = pl.DataFrame(schema=dtypes(LakeOddsSnapshots))
+    if frames:
+        quotes = pl.concat(frames)
+        # The Odds API also lists games under way, with live prices that move with the score.
+        # The history keeps pre-game quotes only, as Supabase does, so no closing proxy can pick
+        # one up; the raw responses keep everything.
+        pre_game = pl.col("commence_time_utc") > pl.col("snapshot_utc")
+        report.in_play = quotes.filter(~pre_game).height
+        quotes = quotes.filter(pre_game)
+        if quotes.height:
+            commence = pl.col("commence_time_utc").dt.date()
+            first, last = quotes.select(
+                commence.min().alias("first"), commence.max().alias("last")
+            ).row(0)
+            listings = nhl_listings(store, first - timedelta(days=1), last)
+            table = match_games(quotes, listings).with_columns(
+                snapshot_date=pl.col("snapshot_utc").dt.date()
+            )
+            table = table.select(columns).cast(dtypes(LakeOddsSnapshots))  # type: ignore[arg-type]
+    # The closing proxy over the whole history: the replayed dates among the lake's others.
+    # flag() keeps the rows' order, so the history's rows come first.
+    history = lake.read("odds_snapshots").filter(~pl.col("snapshot_date").is_in(requested))
+    flagged = closing.flag(pl.concat([history, table]), now)
+    others, table = flagged.head(history.height), flagged.slice(history.height)
+    table = LakeOddsSnapshots.validate(table)
     lake.replace_dates("odds_snapshots", table, requested)
+    moved = others.filter(pl.col("is_closing_proxy") != history["is_closing_proxy"])
+    report.reflagged = sorted(moved["snapshot_date"].unique().to_list())
+    if report.reflagged:
+        again = others.filter(pl.col("snapshot_date").is_in(report.reflagged))
+        lake.replace_dates("odds_snapshots", LakeOddsSnapshots.validate(again), report.reflagged)
+    if table.is_empty():
+        return report
 
     events = table.select("event_id", "home", "away", "commence_time_utc", "game_type").unique(
         "event_id", keep="first", maintain_order=True

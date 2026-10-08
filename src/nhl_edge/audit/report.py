@@ -6,7 +6,7 @@ reviewed.
 """
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -22,9 +22,11 @@ from nhl_edge.audit import stints as stint_audit
 from nhl_edge.audit import strength_time as strength_audit
 from nhl_edge.backtest.seasons import OPEN_SEASONS, SEASON_ROLES, SeasonRole
 from nhl_edge.ingest import shift_coverage
+from nhl_edge.ingest.odds import ET
 from nhl_edge.ingest.sbr import SBR_SEASONS
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import Lake
+from nhl_edge.market import closing
 from nhl_edge.reference import check_games
 
 DEFAULT_OUT = Path("reports/audit")
@@ -256,7 +258,12 @@ def _snapshot_section(lake: Lake, store: RawStore, listed: pl.DataFrame, as_of: 
             events,
         )
     )
+    # Pinnacle's closing proxy of each game started by the end of as_of (ET).
+    end = datetime.combine(as_of + timedelta(days=1), time(), ET)
+    closes = closing.pinnacle_closes(odds, end)
+    body += "\n\n" + snapshot_audit.closing_markdown(snapshot_audit.closing_report(closes))
     problems = snapshot_audit.problems(runs, due, events, as_of)
+    problems += snapshot_audit.closing_problems(closes)
     return Section("Live odds snapshots", body, problems)
 
 

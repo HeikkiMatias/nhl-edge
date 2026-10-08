@@ -57,8 +57,9 @@ jobs:
         # The last 14 days of stored odds snapshots, each event matched to its NHL game (issue
         # #20). Events are priced up to about ten days ahead and a schedule response lists seven
         # days, so a snapshot is replayed until the schedules cached since list all its games.
+        # Each started game's closing proxy is marked, and the flag upserted to Supabase (#21).
         if: always()
-        run: uv run nhl odds replay --recent 14 --r2
+        run: uv run nhl odds replay --recent 14 --r2 --supabase
       - name: Pre-game goalies into the lake
         # Pre-game goalie polls, NHL and Daily Faceoff (#42, #48), rebuilt from the raw copies:
         # today, which the evening slots poll ahead, and the three game dates before it, so two

@@ -156,6 +156,10 @@ Every deliverable merged under its own task issue:
   - #185 (#130) makes `nhl power-plays` refuse incomplete inputs.
 - **#171 (run bundles):** `phase-5/run-bundle` writes each decision day's run bundle once, to `bundles/live/<date>/`. It holds the rows the decision read, the B2 and B3 fits, and a hashed manifest. `nhl live replay` reproduces the day's predictions from the bundle alone.
   - Research run bundles are deferred to #186 (P6).
+- **Task 4 (#21), the closing proxy:**
+  - `nhl odds replay` marks each started game's closing proxy under ADR 0033 (`market/closing.py`), and the nightly upserts the flag to Supabase.
+  - `nhl audit report` gives Pinnacle's proxy lead per ET start time, and why a game has none.
+  - Next is task 5 (#165), settlement and CLV.
 - **Reminders** for the dated items fire into this session on 2026-10-13 and 2026-10-22 at 10:30 UTC.
 
 **Never change the frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and the CLV count restarts.

@@ -333,11 +333,30 @@ At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<da
 - Each event gets the NHL `game_id` and `game_type` of the schedule listing with the same home and away teams whose start is nearest its commence time, within 12 hours. The two sources can differ by minutes (MTL at TOR on 2026-09-29: 23:00 UTC by the NHL, 23:10 by the Odds API).
 - The listings come from every raw NHL schedule response in the cache, since the odds job stores the schedule it checks on every run. Every listing counts, so an event priced before a postponement keeps the game it was priced for.
 - An event no listing covers yet, such as a game more than a week ahead at the time, keeps null ids until a later replay.
-- `game_id` and `game_type` are keys, not observed facts. Anything joined through them still goes through its own point-in-time selector. A closing proxy keys on the event and its commence time, because quotes priced before a postponement carry the rescheduled game's id.
+- `game_id` and `game_type` are keys, not observed facts. Anything joined through them still goes through its own point-in-time selector. A closing proxy keys on the event, with the start its latest snapshot gives, because quotes priced before a postponement carry the rescheduled game's id.
 - The nightly workflow runs `nhl odds replay --recent 14 --r2`: it restores the window's snapshots and schedules from R2, replays the last 14 days and mirrors the table. The report lists matches by game type and every unmatched event.
 - The Odds API historical endpoint is paid. The `guard-bash` hook blocks it unless Claude Code starts with `ALLOW_PAID_ODDS=1`.
 - MoneyPuck data is free for non-commercial use with attribution and must not be scraped. It is a sanity check, not a backtest input.
 - Daily Faceoff's starting-goalies page is fetched at the goalie polls only (#48), about one request a date per run; its other pages stay manual references. RotoWire's terms forbid automated access, so it is never fetched.
+
+
+**The closing proxy (`is_closing_proxy`, #21, ADR 0033).** It is the quote CLV is measured against, since the Odds API gives no true close. `nhl odds replay` derives it from the raw responses itself, so a rebuilt table keeps it (`market/closing.py`).
+- **The rule:** for each started game, book and market (h2h only), the proxy is the quote from the latest snapshot that meets all of these:
+  - it was taken after the day's decision snapshot, the last snapshot between 12:45 and 13:15 ET on the game's ET date (`nhl predict` decides on one no later, and a retry in the window only makes the rule stricter);
+  - it was taken before the start, and at most 90 minutes before it;
+  - both sides are at most 5 minutes old at that snapshot.
+
+  Both sides of that pair are marked.
+- **Games and starts:** a game is its Odds API event, and its start is the commence time its latest snapshot gives, in any market. The day's decision snapshot is likewise read from every market and book.
+- **The whole history:** a game's snapshots span two UTC dates, and a postponed game's new start can come weeks later. So the replay derives the flag over the lake's whole `odds_snapshots`, with the requested dates replayed into it, and rewrites any other date whose flags change. With `--r2` it pulls the table from R2 first.
+- **Started games only:** only games started by the replay's clock are marked.
+- **Supabase:** the nightly runs `nhl odds replay --recent 14 --r2 --supabase`, which upserts the flags of the replayed and rewritten dates' h2h rows of started games that Supabase holds. `--supabase` needs `--r2`, since a local lake may lack part of a game's history.
+- **No Pinnacle proxy:** `nhl audit report` gives Pinnacle's proxy lead per ET start time, and why a game has none:
+  - no pre-game slot within 90 minutes of the start the decision snapshot showed (matinees and 21:30 starts), which is outside ADR 0032's coverage floor. A start moved later can't make a game ineligible, and a delayed run that leaves such a game a proxy can't make it eligible: its quote is still flagged, but the game counts as "no pre-game snapshot";
+  - stale: Pinnacle's pair in the span, never fresh;
+  - missing: no pair in the span (a lone side is none), or a game Pinnacle never priced while another book did.
+
+  A stale or missing proxy where a slot was due is listed as a problem.
 
 ## Pre-game goalies
 

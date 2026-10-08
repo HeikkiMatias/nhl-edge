@@ -2748,9 +2748,18 @@ def replay(
             help="Restore the raw snapshots and schedules from R2 first, and mirror the table.",
         ),
     ] = False,
+    supabase: Annotated[
+        bool,
+        typer.Option(
+            "--supabase",
+            help="Upsert the replayed dates' h2h quotes of started games that Supabase holds, with "
+            "their closing-proxy flag. Needs --r2, so the flag is derived over the whole history.",
+        ),
+    ] = False,
 ) -> None:
     """Rebuild the lake's odds_snapshots from the stored raw snapshots, matching each event to its
-    NHL game. Never calls the Odds API. Without a window, every stored snapshot is replayed."""
+    NHL game and marking each started game's closing proxy (#21, ADR 0033). Never calls the Odds
+    API. Without a window, every stored snapshot is replayed."""
     from datetime import UTC, timedelta
 
     from nhl_edge.ingest.odds_lake import SCHEDULE_DAYS, SCHEDULE_PREFIX, replay_odds
@@ -2762,6 +2771,9 @@ def replay(
         raise typer.BadParameter("pass at most one of --start and --recent")
     if end is not None and start is None:
         raise typer.BadParameter("--end needs --start")
+    if supabase and not r2:
+        # A local lake may lack part of a game's history, and its flags would reach production.
+        raise typer.BadParameter("--supabase needs --r2: the flag is derived over R2's history")
     dates = None
     if start is not None:
         first, last = start.date(), (end or start).date()
@@ -2787,7 +2799,30 @@ def replay(
             ]
         restored = sum(store.restore_from_r2(prefix).copied for prefix in prefixes)
         typer.echo(f"restored {restored} raw responses from R2")
-    report = replay_odds(store, Lake.from_env(mirror=r2), dates)
+    lake = Lake.from_env(mirror=r2)
+    if r2:
+        # The whole history, over which each closing proxy is derived (#21).
+        typer.echo(f"pulled {lake.pull('odds_snapshots'):,} odds_snapshots files from R2")
+    now = datetime.now(UTC)
+    report = replay_odds(store, lake, dates, now=now)
+    if supabase:
+        import polars as pl
+
+        from nhl_edge.ingest.odds import supabase_window
+        from nhl_edge.lake.schemas import ODDS_KEY, OddsSnapshots, dtypes
+        from nhl_edge.lake.supabase import Supabase
+
+        # The rows the snapshot job inserted (supabase_window) of games started by now: the flag
+        # is final for them. Upserted on the quote's key, the rest of the row unchanged.
+        replayed = lake.read("odds_snapshots").filter(
+            pl.col("snapshot_date").is_in([*report.dates, *report.reflagged]),
+            pl.col("market") == "h2h",
+            pl.col("commence_time_utc") <= now,
+        )
+        rows = supabase_window(replayed).select(list(dtypes(OddsSnapshots)))
+        sent = Supabase.from_env().upsert("odds_snapshots", rows, ODDS_KEY)
+        pairs = rows.filter("is_closing_proxy").select(*ODDS_KEY[:4]).unique().height
+        typer.echo(f"supabase odds_snapshots: {sent:,} h2h quotes upserted, {pairs:,} proxies")
     matched = ", ".join(f"{kind} {n}" for kind, n in sorted(report.matched.items())) or "none"
     window = f"{report.dates[0]}..{report.dates[-1]}" if report.dates else "no snapshots"
     typer.echo(
@@ -2798,6 +2833,9 @@ def replay(
         typer.echo(f"  unmatched {event_id}: {away} at {home}, {commence:%Y-%m-%d %H:%M} UTC")
     if report.in_play:
         typer.echo(f"  left out {report.in_play:,} quotes on games already under way")
+    if report.reflagged:
+        days = ", ".join(str(day) for day in report.reflagged)
+        typer.echo(f"  closing proxies moved on other dates, rewritten: {days}")
     for raw_key in report.incomplete:
         typer.echo(f"warning: {raw_key} has no sidecar (an interrupted write), skipped")
 
