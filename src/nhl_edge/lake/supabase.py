@@ -67,10 +67,25 @@ class Supabase:
         idle long enough to pause, even in the off-season."""
         self._request(f"read from {table}", "GET", table, params={"select": column, "limit": "1"})
 
+    def upsert_records(
+        self, table: str, records: Sequence[Mapping[str, Any]], key: Sequence[str]
+    ) -> int:
+        """upsert for rows already JSON-ready, such as one holding a whole document (jsonb)."""
+        return self._send(table, list(records), key, "merge-duplicates", "upsert into")
+
     def _post(
         self, table: str, frame: pl.DataFrame, key: Sequence[str], resolution: str, action: str
     ) -> int:
-        rows = json_rows(frame)
+        return self._send(table, json_rows(frame), key, resolution, action)
+
+    def _send(
+        self,
+        table: str,
+        rows: list[Any],
+        key: Sequence[str],
+        resolution: str,
+        action: str,
+    ) -> int:
         for start in range(0, len(rows), BATCH_SIZE):
             self._request(
                 f"{action} {table}",

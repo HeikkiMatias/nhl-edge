@@ -738,6 +738,18 @@ def markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def record(result: dict[str, Any], code_version: str) -> dict[str, Any]:
+    """The report as a live_reports row for the dashboard (#168): its JSON, as write() stores it,
+    under its date, kind and policy."""
+    return {
+        "as_of": result["as_of"],
+        "kind": result["kind"],
+        "policy_version": result["policy_version"],
+        "report": json.loads(json.dumps(result, default=str)),
+        "code_version": code_version,
+    }
+
+
 def write(result: dict[str, Any], out: Path) -> tuple[Path, Path]:
     """The report as out/report-<as_of>.json and .md."""
     out.mkdir(parents=True, exist_ok=True)

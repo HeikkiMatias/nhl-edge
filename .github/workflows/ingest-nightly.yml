@@ -84,6 +84,12 @@ jobs:
         # the lake, so a missing game never drops out of its teams' histories unnoticed.
         if: always()
         run: uv run nhl live features --date "$(TZ=America/New_York date +%F)" --r2
+      - name: Live report to Supabase
+        # The live report as of today for the dashboard (#168), with its intervals, interim until
+        # the formal review, after the feature rows so it never holds them up. The weekly committed
+        # copy under reports/live/ stays the record.
+        if: always() && vars.SUPABASE_LEDGER == 'true'
+        run: uv run nhl live report --r2 --supabase --out data/live/reports
       - name: Contract test on a golden game
         # One golden game read live must parse as its frozen copy does (issue #6). A failure
         # means the NHL API changed under the parsers.
