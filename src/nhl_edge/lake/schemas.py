@@ -90,8 +90,10 @@ class LakeOddsSnapshots(OddsSnapshots):
     and start (other NHL types, such as 4 for the All-Star game, are kept as they are); they are
     null for an event no listing matches. They are keys, not observed facts:
     anything joined through game_id still goes through its own point-in-time selector, and a
-    closing proxy keys on the event and its commence time, since quotes priced before a
-    postponement carry the rescheduled game's id.
+    closing proxy keys on the event, its start the commence time of its latest snapshot, since
+    quotes priced before a postponement carry the rescheduled game's id. is_closing_proxy marks
+    both sides of each started game's closing proxy per book, h2h only (#21, ADR 0033,
+    market/closing.py).
     """
 
     snapshot_date: pl.Date

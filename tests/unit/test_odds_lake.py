@@ -167,3 +167,42 @@ def test_other_nhl_game_types_are_kept_and_named(tmp_path: Path) -> None:
     assert dict(report.matched) == {"regular season": 1, "game type 4": 1}
     table = Lake(tmp_path / "lake").read("odds_snapshots")
     assert set(table["game_type"]) == {2, 4}
+
+
+def priced(commence: datetime, snapshot: datetime) -> bytes:
+    """The fixture's first event at Pinnacle alone, starting at commence, its prices updated a
+    minute before snapshot."""
+    event = json.loads(ODDS)[0]
+    updated = (snapshot - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    event["commence_time"] = commence.strftime("%Y-%m-%dT%H:%M:%SZ")
+    event["bookmakers"] = [b for b in event["bookmakers"] if b["key"] == "pinnacle"]
+    for book in event["bookmakers"]:
+        book["last_update"] = updated
+        for market in book["markets"]:
+            market["last_update"] = updated
+    return json.dumps([event]).encode()
+
+
+def test_the_closing_proxy_reads_the_next_dates_snapshots(tmp_path: Path) -> None:
+    # A 20:00 EST game (01:00 UTC next day): its pre7 snapshot is on 2026-12-07 and its later
+    # pre8 one on 2026-12-08 (#21). Replaying 12-07 alone must still see 12-08's, so the earlier
+    # snapshot is no close.
+    commence = datetime(2026, 12, 8, 1, tzinfo=UTC)
+    pre7 = datetime(2026, 12, 7, 23, 45, 30, tzinfo=UTC)
+    pre8 = datetime(2026, 12, 8, 0, 45, 30, tzinfo=UTC)
+    store = RawStore(tmp_path / "raw")
+    for when in (pre7, pre8):
+        store_snapshot(store, priced(commence, when), when)
+    lake = Lake(tmp_path / "lake")
+    after = commence + timedelta(hours=3)
+    replay_odds(store, lake, [date(2026, 12, 7)], now=after)
+    table = lake.read("odds_snapshots")
+    assert set(table["snapshot_utc"]) == {pre7}
+    assert not table.filter(pl.col("market") == "h2h")["is_closing_proxy"].any()
+    replay_odds(store, lake, [date(2026, 12, 8)], now=after)
+    flagged = lake.read("odds_snapshots").filter("is_closing_proxy")
+    assert set(flagged["snapshot_utc"]) == {pre8}
+    assert sorted(flagged["side"].to_list()) == ["away", "home"]
+    # Before the game starts, nothing is marked: a later snapshot could still replace it.
+    replay_odds(store, lake, now=commence - timedelta(minutes=1))
+    assert not lake.read("odds_snapshots")["is_closing_proxy"].any()

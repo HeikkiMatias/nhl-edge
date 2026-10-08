@@ -12,12 +12,17 @@ game types and upcoming games. An event matches the listing of the same home and
 start is nearest its commence time, within MATCH_WINDOW; the two sources can differ by minutes
 (MTL at TOR on 2026-09-29: 23:00 UTC by the NHL, 23:10 by the Odds API). Every listing counts, not
 only the newest, so an event priced before a postponement keeps the game it was priced for.
+
+is_closing_proxy is derived here, in the replay itself, since the replay rebuilds the table from
+the raw responses and would wipe a flag stored apart (#21, ADR 0033, market/closing.py). A game's
+snapshots span two UTC dates (the midday decision snapshot, then the evening's), so the dates
+next to the requested ones are read too, for the flag only, and never written.
 """
 
 from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import polars as pl
 
@@ -26,6 +31,7 @@ from nhl_edge.ingest.odds import SOURCE, parse_odds
 from nhl_edge.lake.raw import SUFFIX, RawStore
 from nhl_edge.lake.schemas import LakeOddsSnapshots, dtypes
 from nhl_edge.lake.tables import Lake
+from nhl_edge.market import closing
 
 MATCH_WINDOW = timedelta(hours=12)
 # A /v1/schedule/{date} response lists the seven days from its date.
@@ -116,25 +122,38 @@ def match_games(quotes: pl.DataFrame, listings: pl.DataFrame) -> pl.DataFrame:
     return quotes.join(best, on="event_id", how="left")
 
 
-def replay_odds(store: RawStore, lake: Lake, dates: Collection[date] | None = None) -> ReplayReport:
+def replay_odds(
+    store: RawStore,
+    lake: Lake,
+    dates: Collection[date] | None = None,
+    now: datetime | None = None,
+) -> ReplayReport:
     """Parse the stored snapshots of the given UTC dates (all stored dates when None) into the
-    lake's odds_snapshots. Every requested date's partition is replaced, and deleted when the date
-    now has no quotes, so a parser fix leaves nothing stale. Never calls the Odds API."""
+    lake's odds_snapshots, with each game started by now (the clock by default) marked at its
+    closing proxy. Every requested date's partition is replaced, and deleted when the date now has
+    no quotes, so a parser fix leaves nothing stale. Never calls the Odds API."""
     report = ReplayReport()
+    now = now or datetime.now(UTC)
+    stored = dated_raw_keys(SOURCE, store)
+    wanted = set(stored) if dates is None else set(dates)
+    # The dates next to the requested ones hold the rest of their games' snapshots.
+    near = {day + timedelta(days=d) for day in wanted for d in (-1, 1)} - wanted
     frames = []
-    for day, keys in dated_raw_keys(SOURCE, store).items():
-        if dates is not None and day not in dates:
+    for day, keys in stored.items():
+        if day not in wanted and day not in near:
             continue
         for raw_key in keys:
             if not is_complete(store, raw_key):
-                report.incomplete.append(raw_key)
+                if day in wanted:
+                    report.incomplete.append(raw_key)
                 continue
             meta = store.meta(raw_key)
             snapshot_utc = parse_utc(meta["fetched_utc"])
             slot = str(meta.get("slot") or "unknown")
             frames.append(parse_odds(store.get(raw_key), snapshot_utc, slot, raw_key))
-            report.snapshots += 1
-        report.dates.append(day)
+            report.snapshots += day in wanted
+        if day in wanted:
+            report.dates.append(day)
     columns = list(dtypes(LakeOddsSnapshots))
     requested = sorted(dates) if dates is not None else report.dates
     empty = pl.DataFrame(schema=dtypes(LakeOddsSnapshots))
@@ -146,8 +165,9 @@ def replay_odds(store: RawStore, lake: Lake, dates: Collection[date] | None = No
     # history keeps pre-game quotes only, as Supabase does, so no closing proxy can pick one up;
     # the raw responses keep everything.
     pre_game = pl.col("commence_time_utc") > pl.col("snapshot_utc")
-    report.in_play = quotes.filter(~pre_game).height
-    quotes = quotes.filter(pre_game)
+    written = pl.col("snapshot_utc").dt.date().is_in(sorted(wanted))
+    report.in_play = quotes.filter(~pre_game, written).height
+    quotes = closing.flag(quotes.filter(pre_game), now).filter(written)
     if quotes.is_empty():
         lake.replace_dates("odds_snapshots", empty, requested)
         return report

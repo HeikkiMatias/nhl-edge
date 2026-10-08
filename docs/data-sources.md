@@ -339,6 +339,25 @@ At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<da
 - MoneyPuck data is free for non-commercial use with attribution and must not be scraped. It is a sanity check, not a backtest input.
 - Daily Faceoff's starting-goalies page is fetched at the goalie polls only (#48), about one request a date per run; its other pages stay manual references. RotoWire's terms forbid automated access, so it is never fetched.
 
+
+**The closing proxy (`is_closing_proxy`, #21, ADR 0033).** It is the quote CLV is measured against, since the Odds API gives no true close. `nhl odds replay` derives it from the raw responses itself, so a rebuilt table keeps it (`market/closing.py`).
+- **The rule:** for each started game, book and market (h2h only), the proxy is the quote from the latest snapshot that meets all of these:
+  - it was taken after the day's decision snapshot, the first snapshot between 12:45 and 13:15 ET on the game's ET date;
+  - it was taken before the start, and at most 90 minutes before it;
+  - both sides are at most 5 minutes old at that snapshot.
+
+  Both sides of that pair are marked.
+- **Games and starts:** a game is its Odds API event, and its start is the commence time its latest snapshot gives.
+- **Neighbouring dates:** the replay reads the dates next to the requested ones, since a game's snapshots span two UTC dates, but writes only the requested ones.
+- **Started games only:** only games started by the replay's clock are marked.
+- **Supabase:** the nightly runs `nhl odds replay --recent 14 --r2 --supabase`, which upserts the flagged h2h rows of started games that Supabase holds.
+- **No Pinnacle proxy:** `nhl audit report` gives Pinnacle's proxy lead per ET start time, and why a game has none:
+  - no pre-game slot within 90 minutes of the start (matinees and 21:30 starts), which is outside ADR 0032's coverage floor;
+  - a stale quote;
+  - no quote at all.
+
+  A missing proxy where a slot was due is listed as a problem.
+
 ## Pre-game goalies
 
 `nhl goalies poll` records what the NHL API says about each team's starting goalie before puck drop (#42), so the audit (#9, plan section 10) can tell whether and how early starters are confirmed. The ingest reads boxscores only after a game is final, and a pre-game state cannot be fetched after the fact, so this poll is the only record of it.

@@ -623,6 +623,28 @@ def test_odds_replay_reports_its_matches(tmp_path: Any, monkeypatch: pytest.Monk
     assert "odds replay 2026-09-28..2026-09-28: 1 snapshots" in result.output
     assert "2 events; matched: regular season 2; unmatched 0" in result.output
     assert runner.invoke(app, ["odds", "replay", "--end", "2026-09-28"]).exit_code == 2
+    # With --supabase, the h2h quotes of started games Supabase holds are upserted on their key,
+    # with the closing-proxy flag (#21): the fixture's games started in September.
+    from nhl_edge.lake import supabase as sb
+    from nhl_edge.lake.schemas import ODDS_KEY, OddsSnapshots, dtypes
+
+    sent: list[tuple[str, Any, tuple[str, ...]]] = []
+
+    class Fake:
+        project_ref = "test"
+
+        def upsert(self, table: str, frame: Any, key: Any) -> int:
+            sent.append((table, frame, tuple(key)))
+            return frame.height
+
+    monkeypatch.setattr(sb.Supabase, "from_env", classmethod(lambda cls: Fake()))
+    result = runner.invoke(app, ["odds", "replay", "--supabase"])
+    assert result.exit_code == 0, result.output
+    ((table, frame, key),) = sent
+    assert (table, key) == ("odds_snapshots", ODDS_KEY)
+    assert frame.columns == list(dtypes(OddsSnapshots))
+    assert set(frame["market"]) == {"h2h"} and frame.height > 0
+    assert f"{frame.height:,} h2h quotes upserted, 0 proxies" in result.output
 
 
 def test_status_sends_odds_drift_to_the_odds_replay(

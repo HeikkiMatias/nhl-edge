@@ -2748,9 +2748,18 @@ def replay(
             help="Restore the raw snapshots and schedules from R2 first, and mirror the table.",
         ),
     ] = False,
+    supabase: Annotated[
+        bool,
+        typer.Option(
+            "--supabase",
+            help="Upsert the replayed dates' h2h quotes of started games that Supabase holds, with "
+            "their closing-proxy flag.",
+        ),
+    ] = False,
 ) -> None:
     """Rebuild the lake's odds_snapshots from the stored raw snapshots, matching each event to its
-    NHL game. Never calls the Odds API. Without a window, every stored snapshot is replayed."""
+    NHL game and marking each started game's closing proxy (#21, ADR 0033). Never calls the Odds
+    API. Without a window, every stored snapshot is replayed."""
     from datetime import UTC, timedelta
 
     from nhl_edge.ingest.odds_lake import SCHEDULE_DAYS, SCHEDULE_PREFIX, replay_odds
@@ -2787,7 +2796,27 @@ def replay(
             ]
         restored = sum(store.restore_from_r2(prefix).copied for prefix in prefixes)
         typer.echo(f"restored {restored} raw responses from R2")
-    report = replay_odds(store, Lake.from_env(mirror=r2), dates)
+    lake = Lake.from_env(mirror=r2)
+    now = datetime.now(UTC)
+    report = replay_odds(store, lake, dates, now=now)
+    if supabase:
+        import polars as pl
+
+        from nhl_edge.ingest.odds import supabase_window
+        from nhl_edge.lake.schemas import ODDS_KEY, OddsSnapshots, dtypes
+        from nhl_edge.lake.supabase import Supabase
+
+        # The rows the snapshot job inserted (supabase_window) of games started by now: the flag
+        # is final for them. Upserted on the quote's key, the rest of the row unchanged.
+        replayed = lake.read("odds_snapshots").filter(
+            pl.col("snapshot_date").is_in(report.dates),
+            pl.col("market") == "h2h",
+            pl.col("commence_time_utc") <= now,
+        )
+        rows = supabase_window(replayed).select(list(dtypes(OddsSnapshots)))
+        sent = Supabase.from_env().upsert("odds_snapshots", rows, ODDS_KEY)
+        flagged = int(rows["is_closing_proxy"].sum())
+        typer.echo(f"supabase odds_snapshots: {sent:,} h2h quotes upserted, {flagged:,} proxies")
     matched = ", ".join(f"{kind} {n}" for kind, n in sorted(report.matched.items())) or "none"
     window = f"{report.dates[0]}..{report.dates[-1]}" if report.dates else "no snapshots"
     typer.echo(
