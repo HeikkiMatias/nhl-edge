@@ -18,12 +18,16 @@ API moves a start by minutes between snapshots, and a postponed game keeps its e
 before a postponement are then far more than MAX_LEAD before the new start, and never its close.
 Only started games are marked: until the start, a later snapshot can still replace the proxy.
 
-When Pinnacle has no proxy for a game, the reason counts for ADR 0032's coverage floor:
+For ADR 0032's coverage floor, Pinnacle's status of each game is:
 - NO_PREGAME when no pre-game slot is scheduled within MAX_LEAD before the start the decision
-  snapshot showed (matinees and 21:30 starts), outside the floor: eligibility is fixed before the
-  bet, never by a later move of the start;
-- STALE when a snapshot in that span holds both sides of Pinnacle's quote but never fresh, and
-  MISSING when none does (a lone side is no quote): both count against it.
+  snapshot showed (matinees and 21:30 starts), outside the floor, even if a delayed run left a
+  proxy: eligibility is fixed before the bet from the slot schedule, never by a later move of the
+  start or by which runs happened;
+- otherwise PROXY, or STALE when a snapshot in that span holds both sides of Pinnacle's quote
+  but never fresh, and MISSING when none does (a lone side is no quote): both count against it.
+
+Starts and decision snapshots are read from every market and book: a snapshot whose h2h lacks
+an event still gives its commence time.
 
 A day without a decision snapshot made no decision, so its games have no close.
 
@@ -83,14 +87,17 @@ def starts(quotes: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _span(quotes: pl.DataFrame, now: datetime) -> pl.DataFrame:
-    """Each game started by now, its quotes in the proxy's span: after its day's decision
-    snapshot, before its start and at most MAX_LEAD before it, one row per snapshot, book and
-    market, with how many sides it has and the older side's age."""
-    h2h = quotes.filter(pl.col("market").is_in(MARKETS))
-    started = starts(h2h).filter(pl.col("start_utc") <= _at(now))
+def _span(quotes: pl.DataFrame, now: datetime, book: str | None = None) -> pl.DataFrame:
+    """Each game started by now, its h2h quotes (at one book, or every book) in the proxy's
+    span: after its day's decision snapshot, before its start and at most MAX_LEAD before it, one
+    row per snapshot, book and market, with how many sides it has and the older side's age. The
+    starts and the decision snapshots come from every market and book of quotes."""
+    started = starts(quotes).filter(pl.col("start_utc") <= _at(now))
+    candidates = quotes.filter(pl.col("market").is_in(MARKETS))
+    if book is not None:
+        candidates = candidates.filter(pl.col("book") == book)
     pairs = (
-        h2h.join(started, on="event_id")
+        candidates.join(started, on="event_id")
         .group_by("snapshot_utc", *QUOTE, "start_utc")
         .agg(
             sides=pl.col("side").n_unique(),
@@ -107,10 +114,10 @@ def _span(quotes: pl.DataFrame, now: datetime) -> pl.DataFrame:
     )
 
 
-def proxies(quotes: pl.DataFrame, now: datetime) -> pl.DataFrame:
-    """The closing proxy of each game started by now, per book and market: its snapshot_utc, and
-    the game's start_utc."""
-    fresh = _span(quotes, now).filter(pl.col("sides") == 2, pl.col("age") <= MAX_AGE)
+def proxies(quotes: pl.DataFrame, now: datetime, book: str | None = None) -> pl.DataFrame:
+    """The closing proxy of each game started by now, per book (or at one book) and market: its
+    snapshot_utc, and the game's start_utc."""
+    fresh = _span(quotes, now, book).filter(pl.col("sides") == 2, pl.col("age") <= MAX_AGE)
     return (
         fresh.group_by(*QUOTE, "start_utc")
         .agg(pl.col("snapshot_utc").max())
@@ -147,13 +154,15 @@ def scheduled_pregame(starts: pl.DataFrame, plan: str = PLAN) -> pl.Series:
 def pinnacle_closes(quotes: pl.DataFrame, now: datetime, plan: str = PLAN) -> pl.DataFrame:
     """Each game started by now that any book priced (h2h) in the lake's odds_snapshots, with its
     NHL game_id, its start, Pinnacle's closing proxy (proxy_utc), how long before the start it
-    was taken (lead), and its status: PROXY, or why there is none (NO_PREGAME, STALE, MISSING).
-    A game Pinnacle never priced is missing."""
-    h2h = quotes.filter(pl.col("market").is_in(MARKETS))
-    started = starts(h2h).filter(pl.col("start_utc") <= _at(now))
-    # The start the day's decision snapshot showed decides whether a pre-game slot was due.
+    was taken (lead), and its status: PROXY, or why it counts without one (NO_PREGAME, STALE,
+    MISSING). A game Pinnacle never priced is missing. A game with no pre-game slot due is
+    NO_PREGAME even when a delayed run left it a proxy: ADR 0032 fixes eligibility from the slot
+    schedule alone, never from which runs happened."""
+    started = starts(quotes).filter(pl.col("start_utc") <= _at(now))
+    # The start the day's decision snapshot showed, in any market, decides whether a pre-game
+    # slot was due.
     shown = (
-        h2h.join(started, on="event_id")
+        quotes.join(started, on="event_id")
         .with_columns(et_date=_et("start_utc").dt.date())
         .join(decision_snapshots(quotes), on="et_date")
         .filter(pl.col("snapshot_utc") == pl.col("decision_utc"))
@@ -161,17 +170,20 @@ def pinnacle_closes(quotes: pl.DataFrame, now: datetime, plan: str = PLAN) -> pl
         .agg(shown_utc=pl.col("commence_time_utc").max())
     )
     games = (
-        h2h.group_by("event_id")
+        quotes.filter(pl.col("market").is_in(MARKETS))
+        .group_by("event_id")
         .agg(game_id=pl.col("game_id").drop_nulls().first())
         .join(started, on="event_id")
         .join(shown, on="event_id", how="left")
     )
     eligible = games.select(start_utc=pl.coalesce("shown_utc", "start_utc"))
-    pinnacle = h2h.filter(pl.col("book") == BOOK)
-    proxy = proxies(pinnacle, now).select("event_id", proxy_utc="snapshot_utc")
+    proxy = proxies(quotes, now, BOOK).select("event_id", proxy_utc="snapshot_utc")
     # Stale: a whole pair in the span, never fresh. A lone side is no quote: missing.
     seen = (
-        _span(pinnacle, now).filter(pl.col("sides") == 2).group_by("event_id").agg(in_span=pl.len())
+        _span(quotes, now, BOOK)
+        .filter(pl.col("sides") == 2)
+        .group_by("event_id")
+        .agg(in_span=pl.len())
     )
     return (
         games.with_columns(scheduled=scheduled_pregame(eligible, plan))
@@ -179,10 +191,10 @@ def pinnacle_closes(quotes: pl.DataFrame, now: datetime, plan: str = PLAN) -> pl
         .join(seen, on="event_id", how="left")
         .with_columns(
             lead=pl.col("start_utc") - pl.col("proxy_utc"),
-            status=pl.when(pl.col("proxy_utc").is_not_null())
-            .then(pl.lit(PROXY))
-            .when(~pl.col("scheduled"))
+            status=pl.when(~pl.col("scheduled"))
             .then(pl.lit(NO_PREGAME))
+            .when(pl.col("proxy_utc").is_not_null())
+            .then(pl.lit(PROXY))
             .when(pl.col("in_span").is_not_null())
             .then(pl.lit(STALE))
             .otherwise(pl.lit(MISSING)),

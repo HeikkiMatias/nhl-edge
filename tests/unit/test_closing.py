@@ -80,6 +80,7 @@ def test_without_a_proxy_pinnacle_says_why() -> None:
     # the decision moved to 21:30 later stays eligible: missing, never "no pre-game snapshot".
     unpriced_start = START + 5 * day
     moved_start = START + 6 * day + timedelta(hours=2, minutes=30)
+    late_moved = moved_start + day
     frame = quotes(
         pair(MIDDAY + 5 * day, unpriced_start, book="bet365", event="unpriced"),
         pair(MIDDAY + 5 * day, unpriced_start, event="other"),
@@ -93,10 +94,21 @@ def test_without_a_proxy_pinnacle_says_why() -> None:
         pair(MIDDAY + 2 * day, missing_start, event="missing"),
         pair(datetime(2026, 10, 10, 16, 45, 30, tzinfo=UTC), matinee, event="matinee"),
         pair(late - 6 * timedelta(hours=1), late, event="late"),
+        # A delayed run 75 minutes before a 21:30 start left a fresh pair: still no pre-game
+        # slot was due, so the game stays outside the floor (Codex on #189).
+        pair(late - 75 * MINUTE, late, event="late"),
+        # The decision snapshot priced only spreads for this 19:00 game, then h2h came back
+        # after a move to 21:30: eligible from the start the decision showed (Codex's P0 on #189).
+        pair(MIDDAY + 7 * day, START + 7 * day, event="spreads", market="spreads"),
+        pair(PRE7 + 7 * day + timedelta(hours=3), late_moved, event="spreads", book="bet365"),
+        # Pinnacle pulled its line at the decision snapshot, which another book priced, and came
+        # back before the start: the day's decision snapshot still stands (Codex on #189).
+        pair(MIDDAY + 8 * day, START + 8 * day, event="pulled", book="bet365"),
+        pair(PRE7 + 8 * day, START + 8 * day, event="pulled"),
         pair(MIDDAY + 4 * day, lone_start, event="lone"),
         pair(lone_start - 15 * MINUTE, lone_start, event="lone", sides=("home",)),
     ).with_columns(game_id=pl.lit(None, pl.Int64))
-    closes = closing.pinnacle_closes(frame, NOW + timedelta(days=7))
+    closes = closing.pinnacle_closes(frame, NOW + timedelta(days=9))
     status = dict(closes.select("event_id", "status").iter_rows())
     assert status == {
         "proxy": closing.PROXY,
@@ -108,9 +120,13 @@ def test_without_a_proxy_pinnacle_says_why() -> None:
         "unpriced": closing.MISSING,
         "other": closing.PROXY,
         "moved": closing.MISSING,
+        "spreads": closing.MISSING,
+        "pulled": closing.PROXY,
     }
     lead = closes.filter(pl.col("event_id") == "proxy")["lead"].item()
     assert lead == START - PRE7
+    # The late game's pair is still its flagged closing proxy, though it counts outside the floor.
+    assert closes.filter(pl.col("event_id") == "late")["proxy_utc"].item() == late - 75 * MINUTE
 
 
 def test_a_start_moved_between_snapshots_is_one_game_at_its_latest_start() -> None:
@@ -128,6 +144,13 @@ def test_a_start_moved_between_snapshots_is_one_game_at_its_latest_start() -> No
     later = START + timedelta(days=1)
     postponed = quotes(pair(PRE7, START), pair(later - 2 * timedelta(hours=1), later))
     assert closing.proxies(postponed, later + timedelta(hours=3)).is_empty()
+    # The new start counts in any market: a snapshot with totals only still moves the game, so
+    # the old pair is no close (Codex on #189).
+    totals = quotes(
+        pair(MIDDAY), pair(PRE7), pair(later - 2 * timedelta(hours=1), later, market="totals")
+    )
+    assert closing.proxies(totals, START + timedelta(hours=3)).is_empty()
+    assert proxy_of(totals.filter(pl.col("market") == "h2h"), now=START + timedelta(hours=3))
 
 
 def test_a_pregame_slot_is_scheduled_within_90_minutes_of_evening_starts() -> None:

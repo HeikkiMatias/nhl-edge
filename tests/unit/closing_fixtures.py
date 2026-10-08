@@ -22,6 +22,7 @@ def pair(
     age: timedelta = MINUTE,
     event: str = "e1",
     sides: tuple[str, ...] = ("home", "away"),
+    market: str = "h2h",
 ) -> list[dict[str, object]]:
     return [
         {
@@ -32,7 +33,7 @@ def pair(
             "home": "WSH",
             "away": "PIT",
             "book": book,
-            "market": "h2h",
+            "market": market,
             "side": side,
             "line": None,
             "price_decimal": 1.9,

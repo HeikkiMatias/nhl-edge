@@ -251,7 +251,8 @@ def closing_report(closes: pl.DataFrame) -> pl.DataFrame:
     """Pinnacle's closing proxies (market.closing.pinnacle_closes) by ET start time: games, how
     many have a proxy, how long before the start it was taken, and the games without one by
     reason (ADR 0033)."""
-    minutes = pl.col("lead").dt.total_seconds() / 60
+    # The lead of the games that count a proxy: an ineligible game's incidental one is left out.
+    minutes = (pl.col("lead").dt.total_seconds() / 60).filter(pl.col("status") == closing.PROXY)
     return (
         closes.with_columns(
             start_et=pl.col("start_utc").dt.convert_time_zone(ET.key).dt.strftime("%H:%M")

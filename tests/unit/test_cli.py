@@ -638,7 +638,17 @@ def test_odds_replay_reports_its_matches(tmp_path: Any, monkeypatch: pytest.Monk
             return frame.height
 
     monkeypatch.setattr(sb.Supabase, "from_env", classmethod(lambda cls: Fake()))
-    result = runner.invoke(app, ["odds", "replay", "--supabase"])
+    # Without --r2 the local lake may lack part of a game's history (Codex on #189): refused.
+    assert runner.invoke(app, ["odds", "replay", "--supabase"]).exit_code == 2
+    assert not sent
+    from fakes import MemoryBucket
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    result = runner.invoke(app, ["odds", "replay", "--r2", "--supabase"])
     assert result.exit_code == 0, result.output
     ((table, frame, key),) = sent
     assert (table, key) == ("odds_snapshots", ODDS_KEY)

@@ -347,12 +347,12 @@ At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<da
   - both sides are at most 5 minutes old at that snapshot.
 
   Both sides of that pair are marked.
-- **Games and starts:** a game is its Odds API event, and its start is the commence time its latest snapshot gives.
+- **Games and starts:** a game is its Odds API event, and its start is the commence time its latest snapshot gives, in any market. The day's decision snapshot is likewise read from every market and book.
 - **The whole history:** a game's snapshots span two UTC dates, and a postponed game's new start can come weeks later. So the replay derives the flag over the lake's whole `odds_snapshots`, with the requested dates replayed into it, and rewrites any other date whose flags change. With `--r2` it pulls the table from R2 first.
 - **Started games only:** only games started by the replay's clock are marked.
-- **Supabase:** the nightly runs `nhl odds replay --recent 14 --r2 --supabase`, which upserts the flags of the replayed and rewritten dates' h2h rows of started games that Supabase holds.
+- **Supabase:** the nightly runs `nhl odds replay --recent 14 --r2 --supabase`, which upserts the flags of the replayed and rewritten dates' h2h rows of started games that Supabase holds. `--supabase` needs `--r2`, since a local lake may lack part of a game's history.
 - **No Pinnacle proxy:** `nhl audit report` gives Pinnacle's proxy lead per ET start time, and why a game has none:
-  - no pre-game slot within 90 minutes of the start the decision snapshot showed (matinees and 21:30 starts), which is outside ADR 0032's coverage floor. A start moved later can't make a game ineligible;
+  - no pre-game slot within 90 minutes of the start the decision snapshot showed (matinees and 21:30 starts), which is outside ADR 0032's coverage floor. A start moved later can't make a game ineligible, and a delayed run that leaves such a game a proxy can't make it eligible: its quote is still flagged, but the game counts as "no pre-game snapshot";
   - stale: Pinnacle's pair in the span, never fresh;
   - missing: no pair in the span (a lone side is none), or a game Pinnacle never priced while another book did.
 

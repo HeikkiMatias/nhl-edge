@@ -352,10 +352,10 @@ def test_audit_report_needs_games_and_a_date(
 def closes_frame() -> pl.DataFrame:
     """Pinnacle's closes of five games (market.closing.pinnacle_closes' columns): two 19:00 ET
     games with a proxy 15 and 45 minutes before, a stale and a missing one, and a 13:00 matinee
-    with no pre-game slot."""
+    with no pre-game slot, though a delayed run left it a pair 30 minutes before."""
     evening = datetime(2026, 10, 7, 23, tzinfo=UTC)
     matinee = datetime(2026, 10, 11, 17, tzinfo=UTC)
-    minutes = [15, 45, None, None, None]
+    minutes = [15, 45, None, None, 30]
     return pl.DataFrame(
         {
             "event_id": ["a", "b", "c", "d", "e"],
@@ -380,7 +380,8 @@ def closes_frame() -> pl.DataFrame:
 
 
 def test_the_closing_report_gives_the_proxy_lead_by_start_time_and_why_none() -> None:
-    # Codex's P0 on #189: the audit's lead-time output, every status, and its problems.
+    # Codex's P0 on #189: the audit's lead-time output, every status, and its problems. The
+    # matinee's incidental pair is no lead: it counts outside the floor.
     closes = closes_frame()
     report = snapshot_audit.closing_report(closes)
     assert report.rows(named=True) == [

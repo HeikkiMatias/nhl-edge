@@ -2753,7 +2753,7 @@ def replay(
         typer.Option(
             "--supabase",
             help="Upsert the replayed dates' h2h quotes of started games that Supabase holds, with "
-            "their closing-proxy flag.",
+            "their closing-proxy flag. Needs --r2, so the flag is derived over the whole history.",
         ),
     ] = False,
 ) -> None:
@@ -2771,6 +2771,9 @@ def replay(
         raise typer.BadParameter("pass at most one of --start and --recent")
     if end is not None and start is None:
         raise typer.BadParameter("--end needs --start")
+    if supabase and not r2:
+        # A local lake may lack part of a game's history, and its flags would reach production.
+        raise typer.BadParameter("--supabase needs --r2: the flag is derived over R2's history")
     dates = None
     if start is not None:
         first, last = start.date(), (end or start).date()
@@ -2818,8 +2821,8 @@ def replay(
         )
         rows = supabase_window(replayed).select(list(dtypes(OddsSnapshots)))
         sent = Supabase.from_env().upsert("odds_snapshots", rows, ODDS_KEY)
-        flagged = int(rows["is_closing_proxy"].sum())
-        typer.echo(f"supabase odds_snapshots: {sent:,} h2h quotes upserted, {flagged:,} proxies")
+        pairs = rows.filter("is_closing_proxy").select(*ODDS_KEY[:4]).unique().height
+        typer.echo(f"supabase odds_snapshots: {sent:,} h2h quotes upserted, {pairs:,} proxies")
     matched = ", ".join(f"{kind} {n}" for kind, n in sorted(report.matched.items())) or "none"
     window = f"{report.dates[0]}..{report.dates[-1]}" if report.dates else "no snapshots"
     typer.echo(
