@@ -34,6 +34,7 @@ from typing import Any, Protocol
 
 import polars as pl
 
+from nhl_edge.backtest import e3
 from nhl_edge.game import b2, b3, uncertainty
 from nhl_edge.game.b2 import B2Model
 from nhl_edge.game.b3 import B3Model
@@ -240,6 +241,46 @@ def read(store: Store, day: date) -> Bundle:
     )
 
 
+def _slate(bundle: Bundle) -> tuple[pl.DataFrame, pl.DataFrame, int]:
+    """The slate's games as targets, each at the decision's input cutoff, and its season."""
+    slate = bundle.inputs["slate"]
+    (season,) = slate["season"].unique().to_list()
+    cutoff = datetime.fromisoformat(bundle.manifest["input_cutoff"])
+    games = with_targets(pl.DataFrame(schema=dtypes(Games)), slate)
+    moments = slate.select("game_id", prediction_utc=pl.lit(cutoff, dtype=pl.Datetime("us", "UTC")))
+    return games, moments, int(season)
+
+
+def _b3_tables(bundle: Bundle, games: pl.DataFrame, season: int) -> b3.Tables:
+    """The rows B3 read, through the season."""
+    t = bundle.inputs
+    return b3.through(
+        b3.Tables(
+            games,
+            t["schedule_terms"],
+            t["goalie_starts"],
+            t["actual_lineups"],
+            t["lineups"],
+            t["lineup_replacements"],
+            t["player_ratings"],
+            t["rapm_terms"],
+            t["expected_power_plays"],
+            t["goal_multipliers"],
+        ),
+        season,
+    )
+
+
+def b3_parts(bundle: Bundle) -> pl.DataFrame | None:
+    """B3's log-odds in parts at the decision for each slate game it predicted (e3.b3_parts:
+    game_id, intercept and each input), from the bundle alone: the saved fit and rows at the
+    input cutoff. None when the day's models were never read (#193)."""
+    if bundle.b3 is None:
+        return None
+    games, moments, season = _slate(bundle)
+    return e3.b3_parts(moments, _b3_tables(bundle, games, season), bundle.b3, season)
+
+
 def models(bundle: Bundle) -> lp.Models | None:
     """B2, B3 and u's parts for each slate game that has them, from the bundle alone: the frozen
     code's predict path after the fit, with the saved fits, at the decision's input cutoff. None
@@ -247,11 +288,7 @@ def models(bundle: Bundle) -> lp.Models | None:
     if bundle.b2 is None or bundle.b3 is None:
         return None
     t = bundle.inputs
-    slate = t["slate"]
-    (season,) = slate["season"].unique().to_list()
-    cutoff = datetime.fromisoformat(bundle.manifest["input_cutoff"])
-    games = with_targets(pl.DataFrame(schema=dtypes(Games)), slate)
-    moments = slate.select("game_id", prediction_utc=pl.lit(cutoff, dtype=pl.Datetime("us", "UTC")))
+    games, moments, season = _slate(bundle)
     # B2: b2.predictions after its fit.
     b2_tables = b2.Tables(
         games,
@@ -269,21 +306,7 @@ def models(bundle: Bundle) -> lp.Models | None:
     )
     p_b2 = bundle.b2.predict(usable, b2.scenarios(usable.select("game_id", "home", "away"), ready))
     # B3: b3.predictions after its fit.
-    b3_tables = b3.through(
-        b3.Tables(
-            games,
-            t["schedule_terms"],
-            t["goalie_starts"],
-            t["actual_lineups"],
-            t["lineups"],
-            t["lineup_replacements"],
-            t["player_ratings"],
-            t["rapm_terms"],
-            t["expected_power_plays"],
-            t["goal_multipliers"],
-        ),
-        season,
-    )
+    b3_tables = _b3_tables(bundle, games, season)
     pool = b3_tables.goalie_starts.select("game_id", "team", "goalie_id", "p_start", "observed_utc")
     usable, ready = b2.known_before(
         b3.game_inputs(b3_tables).filter(pl.col("season") == season), pool, moments, "observed_utc"

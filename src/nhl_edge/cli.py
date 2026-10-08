@@ -2710,7 +2710,8 @@ def live_slate(
     ] = None,
 ) -> None:
     """The day's ledger for the daily-slate review (#166): each game's status, B1, B3, the blend,
-    the gap, u and the bet, the flags for hand review, and the lineup gaps."""
+    the gap, u and the bet, the flags for hand review, and the lineup gaps; then each bet's driver
+    and parts from the day's run bundle (#193), with --r2 or --from."""
     import io
     from datetime import UTC
 
@@ -2759,6 +2760,139 @@ def live_slate(
     )
     typer.echo(f"# Slate, {game_date}\n")
     typer.echo(lr.slate_markdown(ledger, replacements))
+    from nhl_edge.live import attribution as la
+    from nhl_edge.live import bundle as lb
+
+    # Each bet's driver and parts, from the day's run bundle (#193): R2's, or a dry run's beside
+    # its ledger.
+    store: lb.Store | None = None
+    if source is not None:
+        store = lb.LocalStore(source.parent)
+    elif r2:
+        assert lake.objects is not None and lake.bucket is not None
+        store = lb.R2Store(lake.objects, lake.bucket)
+    typer.echo(la.slate_section(store, game_date, ledger))
+
+
+@live_app.command("attribution-levels")
+def live_attribution_levels(
+    write: Annotated[
+        bool,
+        typer.Option(
+            "--write",
+            help="Fix them: written once to reports/live/ to commit, beside the live fit. "
+            "Refused once written, or from uncommitted code.",
+        ),
+    ] = False,
+    out: Annotated[Path, typer.Option(help="Where a dry run writes them, beside the lake.")] = Path(
+        "data/live/attribution"
+    ),
+    fit: Annotated[
+        Path | None,
+        typer.Option(help="The live fit (default: the one under reports/live/)."),
+    ] = None,
+) -> None:
+    """The usual level of each B3 input part at a market price, for attributing the live bets
+    (#193): its least-squares line on logit p_mkt over the live fit's training games, E1's rows of
+    2018-19 to 2022-23 rebuilt as nhl live blend-fit rebuilds them, each with its own fold's B3
+    parts. Inputs and prices only, never a result. Fixed once with --write; without it, a dry
+    run to --out."""
+    import json
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.game import b2, b3, uncertainty
+    from nhl_edge.ingest.games import EXPECTED_GAMES
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import attribution as la
+    from nhl_edge.live import blend_fit as bf
+    from nhl_edge.settings import load_env
+
+    load_env()
+    now = datetime.now(UTC)
+    version = reports.version(la.COMPONENT, now)
+    if write and version.endswith("-dirty"):
+        raise typer.BadParameter(
+            "commit first: the usual levels are fixed once, reproducible from their commit",
+            param_hint="--write",
+        )
+    fits = [fit] if fit is not None else sorted(bf.REPORTS.glob(f"{bf.COMPONENT}-*.json"))
+    if len(fits) != 1:
+        raise typer.BadParameter(f"one live fit needed, found {len(fits)}: pass --fit")
+    record = json.loads(fits[0].read_text())
+    live = bf.load(record)
+    if write and la.path_for(live.version) is not None:
+        typer.echo(f"the usual levels of {live.version} are fixed already", err=True)
+        raise typer.Exit(code=1)
+    lake = Lake()
+    games, sbr_odds = lake.read("games"), lake.read("sbr_odds")
+    last = max(bf.TRAINING_SEASONS)
+    tables = b2.Tables(
+        games,
+        *(
+            lake.read(name)
+            for name in (
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        ),
+    )
+    b3_tables = _b3_tables(lake, tables)
+    problems = [
+        f"{season}: {height:,} of {EXPECTED_GAMES[season]:,} games"
+        for season in bf.TRAINING_SEASONS
+        if (height := games.filter(pl.col("season") == season).height) != EXPECTED_GAMES[season]
+    ]
+    problems += b2.input_problems(tables, last, EXPECTED_GAMES)
+    problems += b3.input_problems(b3_tables, last)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl ingest, nhl odds sbr and the feature commands first", err=True)
+        raise typer.Exit(code=1)
+    u_tables = uncertainty.Tables(
+        games,
+        tables.goalie_starts,
+        b3_tables.lineups,
+        b3_tables.lineup_replacements,
+        tables.actual_lineups,
+        lake.read("player_league_seasons"),
+    )
+    priced = bf.market(sbr_odds, games)
+    starts = {s: bf.fold_start(sbr_odds, games, s) for s in bf.TRAINING_SEASONS}
+    history = la.training_history(tables, b3_tables, u_tables, priced, starts)
+    problems = la.count_problems(history, record)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo(f"the rebuilt games are not {live.version}'s: nothing written", err=True)
+        raise typer.Exit(code=1)
+    try:
+        training, cutoffs = la.levels(b3_tables, history, starts)
+        levels = la.artifact(version, live.version, live.fold_start, training, cutoffs, now)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    body = json.dumps(levels, indent=2, sort_keys=True) + "\n"
+    if write:
+        path = bf.REPORTS / f"{version}.json"
+        with path.open("x") as handle:
+            handle.write(body)
+    else:
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"{version}.json"
+        path.write_text(body)
+    typer.echo(
+        f"{path}: {levels['training']['games']:,} training games of {live.version}, "
+        f"train_cutoff {levels['train_cutoff']}"
+    )
+    for part, line in levels["lines"].items():
+        typer.echo(f"  {part}: {line['intercept']:+.4f} {line['slope']:+.4f}·logit p_mkt")
 
 
 @live_app.command("blend-fit")
