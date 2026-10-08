@@ -3,8 +3,8 @@
 The paper-trading dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.js app that runs in the browser and reads Supabase. It shows:
 
 - **The slate:** the latest game day's decisions, with B1, the blend, their gap (above 8 points it goes to hand review), and each bet's side, price and stake.
-- **The paper bets:** newest first, with their settlement, closing proxy status, CLV and fair move.
-- **Cumulative CLV per bet:** each nightly report's CLV per bet to its date, with its weekly block bootstrap interval.
+- **The paper bets:** all of them, newest first, with their settlement, closing proxy status, CLV and fair move.
+- **Cumulative CLV per bet:** each nightly report's CLV per bet to its date under the current policy, with its weekly block bootstrap interval.
 - **The latest live report** (`nhl live report`), with coverage, CLV with the floor and bound, the model comparisons, the blend's calibration band, gaps for hand review, and the operational alerts.
 
 Every figure is the report's own. The dashboard computes none and gives no verdict before the formal review (ADR 0032).
@@ -55,8 +55,17 @@ Without them the build still succeeds, and the page says it isn't configured.
 npm ci
 npm run dev        # http://localhost:3000, with the two variables in web/.env.local
 npm run typecheck
-npm test           # node --test, Node 22.18 or later
+npm test           # vitest: lib/ in Node, the page's states in jsdom
 npm run build
 ```
+
+The tests run the real supabase-js client against a stand-in for PostgREST (`lib/testing.ts`) that applies row-level security by token, paging and the policy filter. `lib/load.test.ts` covers the reads, and `app/dashboard.test.tsx` covers the page's states:
+- not configured;
+- the sign-in form;
+- an owner's board, and a non-owner's denial;
+- a failed read;
+- a session that changes, or signs out.
+
+The report fixture (`lib/fixtures/live-report.json`) is `nhl live report`'s output on the Python tests' synthetic season.
 
 CI's `web` job runs `npm ci`, the typecheck, the tests and the build without the variables.
