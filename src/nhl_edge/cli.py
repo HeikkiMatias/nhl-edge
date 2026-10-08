@@ -1039,9 +1039,9 @@ def _check_blend_gaps(
     b3_tables: "b3.Tables",
     lake: "Lake",
 ) -> None:
-    """Recompute each blend gap's probability from its fold's fit, recorded in the run's
-    summary.json beside the gaps file (#156), from the market's de-vigged probability and u's
-    parts at the gap's prediction time. Raises when one doesn't follow."""
+    """Recompute each blend gap's probability from its fold's fit, recorded in the run's report
+    (b3_gaps.run_summary, #156), from the market's de-vigged probability and u's parts at the
+    gap's prediction time. Raises when one doesn't follow."""
     import json
 
     import polars as pl
@@ -1051,10 +1051,9 @@ def _check_blend_gaps(
     from nhl_edge.backtest.walk_forward import B1_METHOD, b0
     from nhl_edge.game import uncertainty
 
-    summary = gaps.parent / "summary.json"
-    if not summary.exists():
-        raise ValueError(f"no summary.json beside {gaps}: the blend's fits are needed to check it")
-    fits = b3_gaps.fold_blends(json.loads(summary.read_text()))
+    if rows.is_empty():
+        return
+    fits = b3_gaps.fold_blends(json.loads(b3_gaps.run_summary(gaps).read_text()))
     u_tables = uncertainty.Tables(
         games,
         tables.goalie_starts,

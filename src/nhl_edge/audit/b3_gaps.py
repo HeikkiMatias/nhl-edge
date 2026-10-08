@@ -30,6 +30,7 @@ when its gap is consistent with it.
 
 from collections.abc import Mapping
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -403,6 +404,22 @@ def markdown(marked: pl.DataFrame, source: str, version: str, model: str = "B3")
             f"{row['home_starter_p']:.2f}/{row['away_starter_p']:.2f} | {flags} | |"
         )
     return "\n".join(lines) + "\n"
+
+
+def run_summary(gaps: Path) -> Path:
+    """The backtest report a gaps file came with: summary.json beside it for a development run,
+    or <run version>.json beside the run's own directory for a market-validation run, which
+    writes its gaps under <out>/<run version>/ (#156)."""
+    for candidate in (
+        gaps.parent / "summary.json",
+        gaps.parent.parent / f"{gaps.parent.name}.json",
+    ):
+        if candidate.exists():
+            return candidate
+    raise ValueError(
+        f"no backtest report beside {gaps} (summary.json, or {gaps.parent.name}.json above it): "
+        "the blend's fits are needed to check its gaps"
+    )
 
 
 def fold_blends(

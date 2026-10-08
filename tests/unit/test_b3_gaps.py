@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 import polars as pl
 import pytest
@@ -253,3 +255,40 @@ def test_the_fold_fits_come_from_the_runs_summary() -> None:
     recorded = summary["experiments"]["E2"]["models"]["BLEND"]["fits"]["20212022"]
     assert fit.named() == pytest.approx(recorded["weights"])
     assert scale.u_sd == recorded["u_scale"]["u_sd"]
+
+
+def test_the_runs_report_is_found_for_either_layout(tmp_path: Any) -> None:
+    from pathlib import Path
+
+    # A development run writes summary.json beside its gaps.
+    (tmp_path / "summary.json").write_text("{}")
+    assert b3_gaps.run_summary(tmp_path / "gaps_blend.csv") == tmp_path / "summary.json"
+    # A market-validation run writes <version>.json beside its own directory (Codex on #195).
+    run = tmp_path / "mv" / "market-validation-20261005-6ec331b"
+    run.mkdir(parents=True)
+    (tmp_path / "mv" / "market-validation-20261005-6ec331b.json").write_text("{}")
+    found = b3_gaps.run_summary(run / "gaps_blend.csv")
+    assert found == tmp_path / "mv" / "market-validation-20261005-6ec331b.json"
+    with pytest.raises(ValueError, match="no backtest report beside"):
+        b3_gaps.run_summary(tmp_path / "elsewhere" / "gaps_blend.csv")
+    # The committed one-time run resolves to its report.
+    committed = Path("reports/backtest/market-validation-20261005-6ec331b/gaps_blend.csv")
+    assert b3_gaps.run_summary(committed).name == "market-validation-20261005-6ec331b.json"
+
+
+def test_a_blend_gaps_file_without_gaps_needs_no_recomputation() -> None:
+    from typing import cast
+
+    from nhl_edge import cli
+
+    # Codex on #195: a clean run with no gap above 8 points is no failure.
+    empty = pl.DataFrame(
+        schema={
+            "experiment": pl.String,
+            "season": pl.Int64,
+            "game_id": pl.Int64,
+            "p_blend": pl.Float64,
+        }
+    )
+    unused = cast(Any, None)
+    cli._check_blend_gaps(empty, unused, unused, unused, unused, unused, unused)  # pyright: ignore[reportPrivateUsage]
