@@ -3155,7 +3155,8 @@ def goalies_replay(
     )
     typer.echo(
         f"daily faceoff lines replay {window}: {team_pages.pages} team pages, "
-        f"{team_pages.rows} rows; {len(team_pages.incomplete)} incomplete"
+        f"{team_pages.rows} rows; {len(team_pages.incomplete)} incomplete, "
+        f"{len(team_pages.wrong_team)} another team's page"
     )
 
 

@@ -125,18 +125,23 @@ class DailyFaceoff:
     def starting_goalies(self, day: date) -> Page:
         return self._get(f"/{PAGES}/{day.isoformat()}", f"{PAGES}/{day.isoformat()}")
 
-    def line_combinations(self, team: str, game_date: date) -> Page:
-        """The team's line-combinations page, stored under its game's ET date and the team."""
+    def line_combinations(self, team: str, game_date: date, timeout: float | None = None) -> Page:
+        """The team's line-combinations page, stored under its game's ET date and the team; the
+        request gives up after timeout seconds when one is given."""
         return self._get(
-            f"/teams/{TEAM_SLUGS[team]}/{LINES}", f"{LINES}/{game_date.isoformat()}/{team}"
+            f"/teams/{TEAM_SLUGS[team]}/{LINES}",
+            f"{LINES}/{game_date.isoformat()}/{team}",
+            timeout,
         )
 
-    def _get(self, path: str, key: str) -> Page:
+    def _get(self, path: str, key: str, timeout: float | None = None) -> Page:
         if self._fetched:
             self.sleep(self.min_interval_s)
         self._fetched = True
         try:
-            response = self.client.get(path)
+            response = self.client.get(
+                path, timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout
+            )
         except httpx.HTTPError as exc:
             raise DailyFaceoffError(f"GET {path} failed: {type(exc).__name__}") from None
         fetched_utc = self.now()
@@ -227,6 +232,8 @@ class ReplayReport:
     pages: int = 0
     rows: int = 0
     incomplete: list[str] = field(default_factory=list)
+    # Team pages whose team isn't the one stored under: refused, as the poll refused them.
+    wrong_team: list[str] = field(default_factory=list)
     dates: list[date] = field(default_factory=list)
 
 
@@ -317,13 +324,16 @@ def run_lines_poll(
     failed: list[str] = []
     frames = []
     skipped = 0
-    started = dfo.now()
+    deadline = dfo.now() + LINES_BUDGET
     for team, game_date in sorted(teams):
-        if dfo.now() - started >= LINES_BUDGET:
+        # Each request gets only the time left, so no page outlasts the budget by more than its
+        # store (one small object).
+        left = (deadline - dfo.now()).total_seconds() - dfo.min_interval_s
+        if left < 1:
             skipped += 1
             continue
         try:
-            page = dfo.line_combinations(team, game_date)
+            page = dfo.line_combinations(team, game_date, timeout=left)
             rows = parse_line_combinations(page.body, page.fetched_utc, page.raw_key, game_date)
             if set(rows["team"]) - {team}:
                 raise DailyFaceoffError(f"the page is {sorted(set(rows['team']))}'s, not {team}'s")
@@ -369,7 +379,12 @@ def replay_line_combinations(
                 report.incomplete.append(raw_key)
                 continue
             observed_utc = parse_utc(store.meta(raw_key)["fetched_utc"])
-            frames.append(parse_line_combinations(store.get(raw_key), observed_utc, raw_key, day))
+            rows = parse_line_combinations(store.get(raw_key), observed_utc, raw_key, day)
+            # Stored under the team asked for: another team's page was refused by the poll.
+            if set(rows["team"]) != {path.parent.name}:
+                report.wrong_team.append(raw_key)
+                continue
+            frames.append(rows)
             report.pages += 1
     table = pl.concat(frames) if frames else pl.DataFrame(schema=dtypes(DailyFaceoffLines))
     report.rows = table.height
