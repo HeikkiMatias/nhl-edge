@@ -23,16 +23,18 @@ def test_the_proxy_is_the_latest_fresh_pair_in_the_last_90_minutes() -> None:
     stale = pair(later, age=6 * MINUTE)
     assert proxy_of(quotes(pair(MIDDAY), pair(PRE7), stale)) == PRE7
     # Exactly 5 minutes old still counts.
-    assert proxy_of(quotes(pair(PRE7, age=5 * MINUTE))) == PRE7
+    assert proxy_of(quotes(pair(MIDDAY), pair(PRE7, age=5 * MINUTE))) == PRE7
     # A pair with one side is no quote.
-    assert proxy_of(quotes(pair(PRE7, sides=("home",)))) is None
+    assert proxy_of(quotes(pair(MIDDAY), pair(PRE7, sides=("home",)))) is None
     # More than 90 minutes before the start is too early; exactly 90 is not.
-    assert proxy_of(quotes(pair(START - 91 * MINUTE))) is None
-    assert proxy_of(quotes(pair(START - 90 * MINUTE))) == START - 90 * MINUTE
+    assert proxy_of(quotes(pair(MIDDAY), pair(START - 91 * MINUTE))) is None
+    assert proxy_of(quotes(pair(MIDDAY), pair(START - 90 * MINUTE))) == START - 90 * MINUTE
     # Each book has its own proxy.
     other = pair(later, book="bet365")
-    found = quotes(pair(PRE7), other)
+    found = quotes(pair(MIDDAY), pair(PRE7), other)
     assert (proxy_of(found), proxy_of(found, "bet365")) == (PRE7, later)
+    # A day without a decision snapshot made no decision, and has no close (Codex on #189).
+    assert proxy_of(quotes(pair(PRE7))) is None
 
 
 def test_the_decision_snapshot_is_never_a_close() -> None:
@@ -51,7 +53,7 @@ def test_the_decision_snapshot_is_never_a_close() -> None:
 
 
 def test_only_started_games_are_marked() -> None:
-    frame = quotes(pair(PRE7))
+    frame = quotes(pair(MIDDAY), pair(PRE7))
     assert closing.proxies(frame, START - MINUTE).is_empty()
     assert closing.proxies(frame, START).height == 1
     flagged = closing.flag(quotes(pair(MIDDAY), pair(PRE7)), NOW)
@@ -66,14 +68,21 @@ def test_without_a_proxy_pinnacle_says_why() -> None:
     # 13:00 ET and 21:30 ET: no pre-game slot within 90 minutes of either start.
     matinee = datetime(2026, 10, 10, 17, tzinfo=UTC)
     late = datetime(2026, 10, 11, 1, 30, tzinfo=UTC)
+    # A lone fresh side in the span is no quote: missing, not stale (Codex on #189).
+    lone_start = START + timedelta(days=4)
+    day = timedelta(days=1)
     frame = quotes(
+        pair(MIDDAY, event="proxy"),
         pair(PRE7, event="proxy"),
+        pair(MIDDAY + day, stale_start, event="stale"),
         pair(stale_start - 15 * MINUTE, stale_start, age=20 * MINUTE, event="stale"),
-        pair(missing_start - 6 * timedelta(hours=1), missing_start, event="missing"),
+        pair(MIDDAY + 2 * day, missing_start, event="missing"),
         pair(datetime(2026, 10, 10, 16, 45, 30, tzinfo=UTC), matinee, event="matinee"),
         pair(late - 6 * timedelta(hours=1), late, event="late"),
+        pair(MIDDAY + 4 * day, lone_start, event="lone"),
+        pair(lone_start - 15 * MINUTE, lone_start, event="lone", sides=("home",)),
     ).with_columns(game_id=pl.lit(None, pl.Int64))
-    closes = closing.pinnacle_closes(frame, NOW + timedelta(days=4))
+    closes = closing.pinnacle_closes(frame, NOW + timedelta(days=5))
     status = dict(closes.select("event_id", "status").iter_rows())
     assert status == {
         "proxy": closing.PROXY,
@@ -81,6 +90,7 @@ def test_without_a_proxy_pinnacle_says_why() -> None:
         "missing": closing.MISSING,
         "matinee": closing.NO_PREGAME,
         "late": closing.NO_PREGAME,
+        "lone": closing.MISSING,
     }
     lead = closes.filter(pl.col("event_id") == "proxy")["lead"].item()
     assert lead == START - PRE7

@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,7 @@ from nhl_edge.audit import snapshots as snapshot_audit
 from nhl_edge.cli import app
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import Lake
+from nhl_edge.market import closing
 
 FIXTURES = Path(__file__).parent / "fixtures" / "nhl_api"
 WEEK_2010 = (FIXTURES / "schedule_2010-10-07.json").read_bytes()
@@ -346,3 +347,97 @@ def test_audit_report_needs_games_and_a_date(
     Lake().write("games", OPENING)
     bad = runner.invoke(app, ["audit", "report", "--as-of", "yesterday"])
     assert bad.exit_code == 2
+
+
+def closes_frame() -> pl.DataFrame:
+    """Pinnacle's closes of five games (market.closing.pinnacle_closes' columns): two 19:00 ET
+    games with a proxy 15 and 45 minutes before, a stale and a missing one, and a 13:00 matinee
+    with no pre-game slot."""
+    evening = datetime(2026, 10, 7, 23, tzinfo=UTC)
+    matinee = datetime(2026, 10, 11, 17, tzinfo=UTC)
+    minutes = [15, 45, None, None, None]
+    return pl.DataFrame(
+        {
+            "event_id": ["a", "b", "c", "d", "e"],
+            "game_id": [1, 2, 3, 4, 5],
+            "start_utc": [evening, evening, evening, evening, matinee],
+            "proxy_utc": [None if m is None else evening - timedelta(minutes=m) for m in minutes],
+            "lead": [None if m is None else timedelta(minutes=m) for m in minutes],
+            "status": [
+                closing.PROXY,
+                closing.PROXY,
+                closing.STALE,
+                closing.MISSING,
+                closing.NO_PREGAME,
+            ],
+        },
+        schema_overrides={
+            "start_utc": pl.Datetime("us", "UTC"),
+            "proxy_utc": pl.Datetime("us", "UTC"),
+            "lead": pl.Duration("us"),
+        },
+    )
+
+
+def test_the_closing_report_gives_the_proxy_lead_by_start_time_and_why_none() -> None:
+    # Codex's P0 on #189: the audit's lead-time output, every status, and its problems.
+    closes = closes_frame()
+    report = snapshot_audit.closing_report(closes)
+    assert report.rows(named=True) == [
+        {
+            "start_et": "13:00",
+            "games": 1,
+            "proxy": 0,
+            "lead_median_min": None,
+            "lead_max_min": None,
+            "no_pregame": 1,
+            "stale": 0,
+            "missing": 0,
+        },
+        {
+            "start_et": "19:00",
+            "games": 4,
+            "proxy": 2,
+            "lead_median_min": 30.0,
+            "lead_max_min": 45.0,
+            "no_pregame": 0,
+            "stale": 1,
+            "missing": 1,
+        },
+    ]
+    text = snapshot_audit.closing_markdown(report)
+    assert "| 13:00 | 1 | 0 |  |  | 1 | 0 | 0 |" in text
+    assert "| 19:00 | 4 | 2 | 30 | 45 | 0 | 1 | 1 |" in text
+    assert snapshot_audit.closing_problems(closes) == [
+        "game 4 (2026-10-07 23:00 UTC): no closing proxy, no Pinnacle quote in its last 90 "
+        "minutes though a pre-game slot was due"
+    ]
+
+
+def test_the_snapshot_section_reports_each_started_games_closing_proxy(tmp_path: Path) -> None:
+    from closing_fixtures import MIDDAY, PRE7, START, pair, quotes
+
+    from nhl_edge.audit import report
+    from nhl_edge.lake.schemas import LakeOddsSnapshots, dtypes
+
+    store = RawStore(tmp_path / "raw")
+    keys = {
+        MIDDAY: put_run(store, "midday", MIDDAY, 3, 480),
+        PRE7: put_run(store, "pre7", PRE7, 1, 479),
+    }
+    rows = (
+        quotes(pair(MIDDAY), pair(PRE7))
+        .with_columns(
+            raw_key=pl.col("snapshot_utc").replace_strict(keys, return_dtype=pl.String),
+            snapshot_date=pl.col("snapshot_utc").dt.date(),
+            game_id=pl.lit(2026020001, pl.Int64),
+            game_type=pl.lit(2, pl.Int8),
+        )
+        .select(list(dtypes(LakeOddsSnapshots)))
+    )
+    lake = Lake(tmp_path / "lake")
+    lake.write("odds_snapshots", rows)
+    section = report._snapshot_section(lake, store, schedule(START), date(2026, 10, 7))
+    assert "Pinnacle's closing proxy (ADR 0033)" in section.body
+    assert "| 19:00 | 1 | 1 | 14 | 14 | 0 | 0 | 0 |" in section.body
+    assert not [p for p in section.problems if "closing proxy" in p]

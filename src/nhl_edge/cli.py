@@ -2762,7 +2762,12 @@ def replay(
     API. Without a window, every stored snapshot is replayed."""
     from datetime import UTC, timedelta
 
-    from nhl_edge.ingest.odds_lake import SCHEDULE_DAYS, SCHEDULE_PREFIX, replay_odds
+    from nhl_edge.ingest.odds_lake import (
+        FLAG_CONTEXT,
+        SCHEDULE_DAYS,
+        SCHEDULE_PREFIX,
+        replay_odds,
+    )
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
@@ -2790,7 +2795,9 @@ def replay(
             # Snapshots of the window, and the schedules that can list their games: events are
             # priced up to about ten days ahead, and a schedule response covers seven days.
             span = range(-SCHEDULE_DAYS - 1, (dates[-1] - dates[0]).days + 3 * SCHEDULE_DAYS)
-            prefixes = [f"odds/{day.isoformat()}/" for day in dates]
+            # The days around the window too, which the closing proxy reads (#21).
+            around = range(-FLAG_CONTEXT, (dates[-1] - dates[0]).days + FLAG_CONTEXT + 1)
+            prefixes = [f"odds/{(dates[0] + timedelta(days=d)).isoformat()}/" for d in around]
             prefixes += [
                 f"{SCHEDULE_PREFIX}/{(dates[0] + timedelta(days=d)).isoformat()}/" for d in span
             ]

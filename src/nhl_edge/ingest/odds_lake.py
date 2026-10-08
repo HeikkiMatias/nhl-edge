@@ -15,8 +15,9 @@ only the newest, so an event priced before a postponement keeps the game it was 
 
 is_closing_proxy is derived here, in the replay itself, since the replay rebuilds the table from
 the raw responses and would wipe a flag stored apart (#21, ADR 0033, market/closing.py). A game's
-snapshots span two UTC dates (the midday decision snapshot, then the evening's), so the dates
-next to the requested ones are read too, for the flag only, and never written.
+snapshots span two UTC dates (the midday decision snapshot, then the evening's), and a postponed
+game's later snapshots give its new start, so the FLAG_CONTEXT days on either side of the
+requested dates are read too, for the flag only, and never written.
 """
 
 from collections import Counter
@@ -37,6 +38,9 @@ MATCH_WINDOW = timedelta(hours=12)
 # A /v1/schedule/{date} response lists the seven days from its date.
 SCHEDULE_DAYS = 7
 SCHEDULE_PREFIX = "nhl/schedule"
+# Days read on either side of a replay's dates to derive the closing proxy: the next date's
+# snapshots, and a postponed game's later start.
+FLAG_CONTEXT = 7
 LISTINGS_SCHEMA = {
     "game_id": pl.Int64,
     "game_type": pl.Int8,
@@ -136,8 +140,9 @@ def replay_odds(
     now = now or datetime.now(UTC)
     stored = dated_raw_keys(SOURCE, store)
     wanted = set(stored) if dates is None else set(dates)
-    # The dates next to the requested ones hold the rest of their games' snapshots.
-    near = {day + timedelta(days=d) for day in wanted for d in (-1, 1)} - wanted
+    # The dates around the requested ones hold the rest of their games' snapshots.
+    span = range(-FLAG_CONTEXT, FLAG_CONTEXT + 1)
+    near = {day + timedelta(days=d) for day in wanted for d in span} - wanted
     frames = []
     for day, keys in stored.items():
         if day not in wanted and day not in near:

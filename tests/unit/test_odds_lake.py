@@ -188,16 +188,17 @@ def test_the_closing_proxy_reads_the_next_dates_snapshots(tmp_path: Path) -> Non
     # pre8 one on 2026-12-08 (#21). Replaying 12-07 alone must still see 12-08's, so the earlier
     # snapshot is no close.
     commence = datetime(2026, 12, 8, 1, tzinfo=UTC)
+    midday = datetime(2026, 12, 7, 17, 45, 30, tzinfo=UTC)  # 12:45 EST, the decision snapshot
     pre7 = datetime(2026, 12, 7, 23, 45, 30, tzinfo=UTC)
     pre8 = datetime(2026, 12, 8, 0, 45, 30, tzinfo=UTC)
     store = RawStore(tmp_path / "raw")
-    for when in (pre7, pre8):
+    for when in (midday, pre7, pre8):
         store_snapshot(store, priced(commence, when), when)
     lake = Lake(tmp_path / "lake")
     after = commence + timedelta(hours=3)
     replay_odds(store, lake, [date(2026, 12, 7)], now=after)
     table = lake.read("odds_snapshots")
-    assert set(table["snapshot_utc"]) == {pre7}
+    assert set(table["snapshot_utc"]) == {midday, pre7}
     assert not table.filter(pl.col("market") == "h2h")["is_closing_proxy"].any()
     replay_odds(store, lake, [date(2026, 12, 8)], now=after)
     flagged = lake.read("odds_snapshots").filter("is_closing_proxy")

@@ -19,8 +19,10 @@ Only started games are marked: until the start, a later snapshot can still repla
 When Pinnacle has no proxy for a game, the reason counts for ADR 0032's coverage floor:
 - NO_PREGAME when no pre-game slot is scheduled within MAX_LEAD before the start (matinees and
   21:30 starts), outside the floor;
-- STALE when a snapshot in that span holds Pinnacle's quote but never fresh, and MISSING when
-  none does: both count against it.
+- STALE when a snapshot in that span holds both sides of Pinnacle's quote but never fresh, and
+  MISSING when none does (a lone side is no quote): both count against it.
+
+A day without a decision snapshot made no decision, so its games have no close.
 
 These read quote ages, snapshot times and the slot schedule only, never a result or a CLV.
 """
@@ -94,8 +96,9 @@ def _span(quotes: pl.DataFrame, now: datetime) -> pl.DataFrame:
         .with_columns(et_date=_et("start_utc").dt.date())
         .join(decision_snapshots(quotes), on="et_date", how="left")
     )
+    # A day without a decision snapshot made no decision, and has no close after one.
     return pairs.filter(
-        pl.col("decision_utc").is_null() | (pl.col("snapshot_utc") > pl.col("decision_utc")),
+        pl.col("snapshot_utc") > pl.col("decision_utc"),
         pl.col("snapshot_utc") < pl.col("start_utc"),
         pl.col("start_utc") - pl.col("snapshot_utc") <= MAX_LEAD,
     )
@@ -151,7 +154,10 @@ def pinnacle_closes(quotes: pl.DataFrame, now: datetime, plan: str = PLAN) -> pl
         .filter(pl.col("start_utc") <= _at(now))
     )
     proxy = proxies(pinnacle, now).select("event_id", proxy_utc="snapshot_utc")
-    seen = _span(pinnacle, now).group_by("event_id").agg(in_span=pl.len())
+    # Stale: a whole pair in the span, never fresh. A lone side is no quote: missing.
+    seen = (
+        _span(pinnacle, now).filter(pl.col("sides") == 2).group_by("event_id").agg(in_span=pl.len())
+    )
     return (
         games.with_columns(scheduled=scheduled_pregame(games, plan))
         .join(proxy, on="event_id", how="left")
