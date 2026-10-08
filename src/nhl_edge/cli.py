@@ -382,9 +382,9 @@ def predict(
         Path | None,
         typer.Option(help="The live fit to read (default: the season's under reports/live/)."),
     ] = None,
-    out: Annotated[Path, typer.Option(help="Where a dry run writes the ledger.")] = Path(
-        "data/live/dry"
-    ),
+    out: Annotated[
+        Path, typer.Option(help="Where a dry run writes the ledger and its run bundle, once.")
+    ] = Path("data/live/dry"),
     cron: Annotated[
         str | None,
         typer.Option(
@@ -408,11 +408,13 @@ def predict(
 
     from nhl_edge.backtest import reports
     from nhl_edge.backtest.walk_forward import outcomes
-    from nhl_edge.game import b2, uncertainty
+    from nhl_edge.betting.selection import POLICY_VERSION
+    from nhl_edge.game import b2, b3, uncertainty
     from nhl_edge.ingest.odds import ET
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.tables import Lake
     from nhl_edge.live import blend_fit
+    from nhl_edge.live import bundle as lb
     from nhl_edge.live import features as lf
     from nhl_edge.live import predict as lp
     from nhl_edge.live.slate import of_day
@@ -494,6 +496,7 @@ def predict(
         typer.echo(problem, err=True)
     games = lake.read("games")
     fitted = None
+    read: tuple[b2.Tables, b3.Tables, uncertainty.Tables] | None = None
     if not problems:
         tables = b2.Tables(
             games,
@@ -519,6 +522,7 @@ def predict(
         )
         moments = slate.select("game_id", prediction_utc=pl.lit(cutoff))
         fitted = lp.models(tables, b3_tables, u_tables, slate, moments, live.fold_start)
+        read = (tables, b3_tables, u_tables)
     if r2:
         # The ledgers in R2 are the record: the lake's copy is rebuilt from them first, so a day
         # whose lake copy failed after its R2 write still counts in the bankroll.
@@ -580,6 +584,45 @@ def predict(
             f"  bet {row['away']} at {row['home']}: {row['side']} at {row['price']:.2f}, "
             f"EV {row['ev']:+.3f} (hurdle {row['hurdle']:.3f}), stake {row['stake']:.2f}"
         )
+    # The day's run bundle (#171), written once after the ledger, which stands whatever happens
+    # here: the rows the decision read, the fits, and a manifest of hashes.
+    try:
+        lock = Path("uv.lock")
+        identity = {
+            "day": game_date.isoformat(),
+            "decision_utc": decision.isoformat(),
+            "published_utc": ledger["published_utc"][0].isoformat(),
+            "input_cutoff": cutoff.isoformat(),
+            "policy_version": POLICY_VERSION,
+            "blend_version": live.version,
+            "live_fit": paths[0].name,
+            "live_fit_sha256": lb.sha256(paths[0].read_bytes()),
+            "feature_build": inputs.versions["feature_build"],
+            "code_version": code_version,
+            "uv_lock_sha256": lb.sha256(lock.read_bytes()) if lock.exists() else None,
+            "ledger": where,
+        }
+        fits = {}
+        if fitted is not None and fitted.b2_model is not None and fitted.b3_model is not None:
+            fits = {"b2": fitted.b2_model, "b3": fitted.b3_model}
+        rows = (
+            lb.inputs(slate, record, *read)
+            if read is not None
+            else {"slate": slate, "feature_builds": record}
+        )
+        raw = {key: store.get(key) for key in sorted(quotes["raw_key"].unique().to_list())}
+        if dry_run:
+            bundles: lb.Store = lb.LocalStore(out)
+        else:
+            assert lake.objects is not None and lake.bucket is not None
+            bundles = lb.R2Store(lake.objects, lake.bucket)
+        written = lb.write_once(bundles, game_date, rows, fits, identity, raw)
+    except Exception as exc:
+        typer.echo(
+            f"the {game_date} run bundle was not written ({exc}); the ledger stands", err=True
+        )
+        raise typer.Exit(code=1) from None
+    typer.echo(f"run bundle: {written}")
 
 
 @app.command()
@@ -2275,6 +2318,60 @@ def live_features(
 def bets() -> None:
     """Show the paper bet ledger and CLV."""
     _not_implemented("bets", "phase 5")
+
+
+@live_app.command("replay")
+def live_replay(
+    day: Annotated[
+        datetime, typer.Option("--date", formats=["%Y-%m-%d"], help="The decision day to replay.")
+    ],
+    r2: Annotated[
+        bool, typer.Option("--r2", help="Read the day's run bundle and ledger from R2.")
+    ] = False,
+    source: Annotated[
+        Path | None,
+        typer.Option("--from", help="Read them from a dry run's --out directory instead."),
+    ] = None,
+) -> None:
+    """Replay a decision day from its run bundle alone (#171): recompute p_B2, p_B3 and u's parts
+    from the rows and fits the decision saved, with the lake set aside, and compare them with the
+    day's ledger. Exits 1 if the bundle is incomplete or altered, or the two disagree."""
+    import io
+
+    import polars as pl
+
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import predict as lp
+    from nhl_edge.settings import load_env
+
+    game_date = day.date()
+    if r2 == (source is not None):
+        raise typer.BadParameter("pass --r2 or --from, one of them")
+    if source is not None:
+        store: lb.Store = lb.LocalStore(source)
+        ledger = pl.read_parquet(source / f"{game_date.isoformat()}.parquet")
+    else:
+        load_env()
+        lake = Lake.from_env(mirror=True)
+        assert lake.objects is not None and lake.bucket is not None
+        store = lb.R2Store(lake.objects, lake.bucket)
+        ledger = pl.read_parquet(io.BytesIO(store.get(lp.ledger_key(game_date))))
+    try:
+        replayed = lb.replay(lb.read(store, game_date))
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    problems = lb.differences(replayed, ledger)
+    typer.echo(
+        f"{game_date}: {replayed.height} games replayed from the bundle, "
+        f"{ledger.filter(pl.col('status') == lp.PREDICTED).height} predicted in the ledger"
+    )
+    for problem in problems:
+        typer.echo(problem, err=True)
+    if problems:
+        raise typer.Exit(code=1)
+    typer.echo(f"every prediction reproduced within {lb.TOLERANCE:g}")
 
 
 @live_app.command("blend-fit")

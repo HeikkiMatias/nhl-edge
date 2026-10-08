@@ -306,6 +306,12 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   - each real run first rebuilds the lake's `paper_ledger` from the ledgers in R2, the record, before reading the bankroll from it;
   - refused if any prediction is decided or published at or after its game's start;
   - `--dry-run` writes only to `data/live/dry/`, and with `--at` it decides at a past instant to check a day.
+- **The run bundle (#171),** written once after the ledger as `bundles/live/<date>/` in R2, or under `--out` for a dry run. The lake's partitions are rewritten once the games are final, so the bundle keeps what the decision read:
+  - `inputs/<table>.parquet`: the slate, the date's `feature_builds` record, and every row the models read for the slate's games. These are the feature tables by `game_id`, `rapm_terms` by the slate's dates, and for u's rookie share the candidates' boxscores of the season and their league seasons. About 0.2 MB for a three-game day.
+  - `fits.json`: B2's and B3's fitted weights, standardization and cutoffs.
+  - `manifest.json`, written last: the run's identity, each file's sha256 and rows, and the raw odds responses read, with their sha256.
+
+  Every object is written with `IfNoneMatch`, and a reader refuses a bundle without its manifest or with a file that doesn't match it. If the bundle fails to write, the run exits non-zero and the ledger stands. `nhl live replay --date <d> --r2` (or `--from <dry-run dir>`) recomputes p_B2, p_B3 and u's parts from the bundle alone and compares them with the ledger. On 2026-10-07's real slate every prediction was reproduced within 1e-9.
 
 ## Odds snapshots
 

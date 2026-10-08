@@ -129,8 +129,8 @@ Every deliverable merged under its own task issue:
    - task 3, #164: `nhl predict` and the ledger.
 3. **Then** tasks 4 to 9, and #173 after #30.
 
-**State on 2026-10-07:**
-- **No live prediction is logged yet.** Every game from 2026-10-06 until the first logged slate is lost to the live test and is never reconstructed.
+**State on 2026-10-08:**
+- **No live prediction is logged yet.** The first live decision is 2026-10-08's, at the 12:45 ET midday dispatch. Every game from 2026-10-06 until the first logged slate is lost to the live test and is never reconstructed.
 - **Task 1 is merged** (#180):
   - the `slate` table;
   - `--targets` on every builder;
@@ -143,13 +143,19 @@ Every deliverable merged under its own task issue:
   - It reproduces the 2022-23 fold's fits exactly.
   - BLEND is a −0.065, b_m 0.710, b_x 0.492 and b_u 0.203, on 4,875 games.
   - `live/blend_fit.load` reads it back.
-- **Task 3 is in review** on `phase-5/predict`:
-  - ADR 0033 (accepted 2026-10-07): the decision window and 5-minute freshness, and the closing proxy's 5-minute freshness and 90-minute maximum lead;
+- **Task 3 is merged** (#183):
   - `nhl predict` and `live/predict.py`;
-  - the `PaperLedger` schema and its write-once R2 ledger;
-  - the Predict step in `odds-snapshots.yml`.
+  - the `PaperLedger` schema and its write-once R2 ledger, `ledger/live/<date>.parquet`;
+  - the Predict step in `odds-snapshots.yml`, run on the midday dispatch.
 
-  Its first live run comes the day after it merges, once that day's nightly has written the slate's rows to R2.
+  #164 closes once the first live run's ledger is in R2. The check-in at 17:10 UTC on 2026-10-08 reads it.
+- **ADR 0033** (accepted 2026-10-07) sets the decision window and the quote's 5-minute freshness at the decision. It also sets the closing proxy's 5-minute freshness and 90-minute maximum lead.
+  - **Its amendment,** accepted by the owner on 2026-10-07 after Codex's P0 on #184: the quote must also be at most 15 minutes old at publication.
+- **#170 (live data readiness) is closed:**
+  - #184 records `published_utc` and refuses to predict a game that starts before publication, with the day decided again at the later clock.
+  - #185 (#130) makes `nhl power-plays` refuse incomplete inputs.
+- **#171 (run bundles):** `phase-5/run-bundle` writes each decision day's run bundle once, to `bundles/live/<date>/`. It holds the rows the decision read, the B2 and B3 fits, and a hashed manifest. `nhl live replay` reproduces the day's predictions from the bundle alone.
+  - Research run bundles are deferred to #186 (P6).
 - **Reminders** for the dated items fire into this session on 2026-10-13 and 2026-10-22 at 10:30 UTC.
 
 **Never change the frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and the CLV count restarts.

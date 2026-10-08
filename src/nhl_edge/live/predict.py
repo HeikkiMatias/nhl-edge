@@ -38,6 +38,8 @@ from nhl_edge.betting import guard as market_guard
 from nhl_edge.betting import selection, staking
 from nhl_edge.betting.selection import POLICY, POLICY_VERSION
 from nhl_edge.game import b2, b3, uncertainty
+from nhl_edge.game.b2 import B2Model
+from nhl_edge.game.b3 import B3Model
 from nhl_edge.ingest.nhl_api import parse_utc
 from nhl_edge.ingest.odds import ET, ODDS_FRAME_SCHEMA, SOURCE, available_at, parse_odds
 from nhl_edge.ingest.odds_lake import dated_raw_keys, is_complete, match_games
@@ -205,13 +207,15 @@ def best_other(quotes: pl.DataFrame, snapshot_utc: datetime) -> pl.DataFrame:
 @dataclass(frozen=True)
 class Models:
     """B2's and B3's predictions and u's parts for the games that have them, with the fits'
-    cutoffs."""
+    cutoffs, and the fits themselves for the day's run bundle (#171)."""
 
     b2: pl.DataFrame
     b3: pl.DataFrame
     parts: pl.DataFrame
     b2_cutoff: datetime | None
     b3_cutoff: datetime | None
+    b2_model: B2Model | None = None
+    b3_model: B3Model | None = None
 
 
 def models(
@@ -245,6 +249,8 @@ def models(
         parts.select("game_id", *uncertainty.PARTS),
         b2_fit.train_cutoff,
         b3_fit.train_cutoff,
+        b2_fit,
+        b3_fit,
     )
 
 
