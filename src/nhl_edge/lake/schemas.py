@@ -429,15 +429,16 @@ class PaperLedger(pa.DataFrameModel):
     prediction and bet, or why it has none (status).
 
     Every row carries the decision instant (prediction_utc, fixed when the run started; one per
-    date), the policy and the versions of the live fit, the feature build and the code. Every
-    model input was known before the decision snapshot, when the price bet was observed. A
-    predicted row adds
+    date), when the decision was published (published_utc: the actual clock as the ledger was
+    built and written, minutes later once the models were read; #170), the policy and the
+    versions of the live fit, the feature build and the code. Every model input was known before
+    the decision snapshot, when the price bet was observed. A predicted row adds
     Pinnacle's prices at the decision snapshot with their last update, the best other EU book's
     beside them, B0 to B3, u's parts, u and u_sd, and the blend and its twins. A picked row adds
     the side, its price and expected return, the hurdle, the guard's move, and the stake: its
     share of the day's bankroll times the bankroll. Bets settle on the full game, OT and shootout
     included. Each date is written once to R2 (ledger/live/<date>.parquet), and every prediction
-    precedes its game's start.
+    is decided and published before its game's start.
     """
 
     game_date: pl.Date
@@ -447,6 +448,7 @@ class PaperLedger(pa.DataFrameModel):
     home: pl.String = pa.Field(str_matches=TRI_CODE)
     away: pl.String = pa.Field(str_matches=TRI_CODE)
     prediction_utc: UtcDatetime
+    published_utc: UtcDatetime
     status: pl.String
     event_id: pl.String = pa.Field(nullable=True)
     decision_snapshot_utc: UtcDatetime = pa.Field(nullable=True)
@@ -501,10 +503,18 @@ class PaperLedger(pa.DataFrameModel):
         unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
 
     @pa.dataframe_check
-    def decided_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+    def decided_and_published_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(
-            (pl.col("status") != "predicted") | (pl.col("prediction_utc") < pl.col("start_utc"))
+            (pl.col("status") != "predicted")
+            | (
+                (pl.col("prediction_utc") < pl.col("start_utc"))
+                & (pl.col("published_utc") < pl.col("start_utc"))
+            )
         )
+
+    @pa.dataframe_check
+    def published_after_the_decision(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("published_utc") >= pl.col("prediction_utc"))
 
     @pa.dataframe_check
     def a_bet_only_on_a_prediction(cls, data: pa.PolarsData) -> pl.LazyFrame:
@@ -514,7 +524,10 @@ class PaperLedger(pa.DataFrameModel):
 
     @pa.dataframe_check
     def one_decision_a_day(cls, data: pa.PolarsData) -> pl.LazyFrame:
-        return data.lazyframe.select(pl.col("prediction_utc").n_unique().over("game_date") == 1)
+        return data.lazyframe.select(
+            (pl.col("prediction_utc").n_unique().over("game_date") == 1)
+            & (pl.col("published_utc").n_unique().over("game_date") == 1)
+        )
 
 
 class FeatureBuilds(pa.DataFrameModel):

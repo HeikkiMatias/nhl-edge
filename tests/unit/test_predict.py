@@ -188,6 +188,140 @@ def test_a_prediction_at_or_after_the_start_is_refused() -> None:
         lp.ledger(lp.decide(pf.day()).with_columns(start_utc=pl.lit(pf.DECISION)), pf.day())
 
 
+def test_a_game_starting_before_the_decision_is_published_has_no_prediction() -> None:
+    # A matinee at 12:55 ET, decided at 12:47 ET and published at 12:56 (#170): no prediction.
+    # The other games are decided as if it were not there.
+    matinee = datetime(2026, 10, 7, 16, 55, tzinfo=UTC)
+    games = {**pf.GAMES, 2026020053: ("WSH", "PIT", matinee)}
+    on_time = decided(slate=pf.slate(games), published_utc=matinee - timedelta(minutes=1))
+    late = decided(slate=pf.slate(games), published_utc=matinee + timedelta(minutes=1))
+    status = dict(late.select("game_id", "status").iter_rows())
+    assert dict(on_time.select("game_id", "status").iter_rows())[2026020053] == lp.PREDICTED
+    assert status == {
+        2026020053: lp.STARTS_BEFORE_PUBLISHED,
+        2026020054: lp.PREDICTED,
+        2026020055: lp.PREDICTED,
+    }
+    assert late.filter(pl.col("game_id") == 2026020053)["p_blend"].to_list() == [None]
+    assert set(late["published_utc"]) == {matinee + timedelta(minutes=1)}
+    assert set(late["prediction_utc"]) == {pf.DECISION}
+    # The odds' own start counts too, as for a game under way at the decision.
+    quotes = pf.day_quotes().with_columns(
+        commence_time_utc=pl.when(pl.col("event_id") == "e2026020054")
+        .then(pl.lit(matinee))
+        .otherwise(pl.col("commence_time_utc"))
+    )
+    moved = decided(quotes=quotes, published_utc=matinee)
+    assert dict(moved.select("game_id", "status").iter_rows())[2026020054] == (
+        lp.STARTS_BEFORE_PUBLISHED
+    )
+    # Unset, the publication is the decision instant; never before it.
+    assert set(decided()["published_utc"]) == {pf.DECISION}
+    with pytest.raises(ValueError, match="before the decision"):
+        decided(published_utc=pf.DECISION - timedelta(seconds=1))
+
+
+def test_the_ledger_is_published_after_the_decision_and_before_each_start() -> None:
+    rows = decided()
+    with pytest.raises(SchemaError):
+        lp.ledger(
+            lp.decide(pf.day()).with_columns(published_utc=pl.lit(pf.DECISION - timedelta(1))),
+            pf.day(),
+        )
+    published_late = rows.with_columns(published_utc=pl.lit(pf.START))
+    with pytest.raises(ValueError, match="at or after their game's start"):
+        lp.pre_game(published_late)
+    # By the clock at the write, too: a start, or a quote aged past the limit.
+    inputs = pf.day()
+    limit = pf.MIDDAY + lp.MAX_PUBLISHED_AGE
+    assert lp.outdated(rows, inputs, limit).is_empty()
+    assert lp.outdated(rows, inputs, limit + timedelta(seconds=1)).height == rows.height
+    fresh = rows.with_columns(last_update_utc=pl.lit(pf.START - timedelta(minutes=1)))
+    assert lp.outdated(fresh, inputs, pf.START - timedelta(seconds=1)).is_empty()
+    assert set(lp.outdated(fresh, inputs, pf.START)["game_id"]) == {2026020053, 2026020054}
+
+
+def clock(*times: datetime) -> Any:
+    """A clock reading the given times in turn, then the last one."""
+    readings = iter(times)
+    last: list[datetime] = []
+
+    def read() -> datetime:
+        last[:] = [next(readings, last[0] if last else times[-1])]
+        return last[0]
+
+    return read
+
+
+def test_a_game_starting_while_the_ledger_is_built_is_decided_again_as_started() -> None:
+    # Codex's P1 on #184: the matinee starts at 13:00 ET between the publication clock and the
+    # check after the ledger is built. The day is decided again at the later clock: the matinee
+    # has no prediction, and the other games keep theirs.
+    matinee = datetime(2026, 10, 7, 17, tzinfo=UTC)
+    games = {**pf.GAMES, 2026020053: ("WSH", "PIT", matinee)}
+    inputs = pf.day(slate=pf.slate(games))
+    second = timedelta(seconds=1)
+    rows = lp.publish(inputs, clock(matinee - second, matinee + second, matinee + 2 * second))
+    status = dict(rows.select("game_id", "status").iter_rows())
+    assert status[2026020053] == lp.STARTS_BEFORE_PUBLISHED
+    assert status[2026020054] == status[2026020055] == lp.PREDICTED
+    # Stamped with the clock that last checked it (Codex's P1 on #184).
+    assert set(rows["published_utc"]) == {matinee + 2 * second}
+    # Nothing starts while it is built: one pass, stamped at the check after it.
+    once = lp.publish(inputs, clock(matinee - 2 * second, matinee - second))
+    assert set(once["published_utc"]) == {matinee - second}
+    assert dict(once.select("game_id", "status").iter_rows())[2026020053] == lp.PREDICTED
+
+
+def test_a_quote_older_than_the_limit_at_publication_is_no_fresh_price() -> None:
+    # ADR 0033's amendment: the quote is at most 15 minutes old at publication.
+    limit = pf.MIDDAY + lp.MAX_PUBLISHED_AGE
+    on_time = decided(published_utc=limit)
+    assert set(on_time["status"]) == {lp.PREDICTED}
+    stalled = decided(published_utc=limit + timedelta(seconds=1))
+    assert set(stalled["status"]) == {lp.STALE}
+    assert not stalled["bet"].fill_null(False).any()
+    # A run that ages past the limit while it builds is decided again at the later clock.
+    times = clock(limit - timedelta(seconds=1), limit + timedelta(seconds=1), limit)
+    assert set(lp.publish(pf.day(), times)["status"]) == {lp.STALE}
+
+
+def test_the_odds_start_counts_when_the_day_is_checked_again() -> None:
+    # Codex's P1 on #184: the odds put a game's start earlier than the slate. It crosses that
+    # start while the ledger is built, so the day is decided again with it started.
+    early = datetime(2026, 10, 7, 17, tzinfo=UTC)
+    quotes = pf.day_quotes().with_columns(
+        commence_time_utc=pl.when(pl.col("event_id") == "e2026020054")
+        .then(pl.lit(early))
+        .otherwise(pl.col("commence_time_utc"))
+    )
+    inputs = pf.day(quotes=quotes)
+    second = timedelta(seconds=1)
+    rows = lp.publish(inputs, clock(early - second, early + second, early + 2 * second))
+    status = dict(rows.select("game_id", "status").iter_rows())
+    assert status[2026020054] == lp.STARTS_BEFORE_PUBLISHED
+    assert status[2026020053] == status[2026020055] == lp.PREDICTED
+
+
+def test_a_game_starting_before_the_write_has_the_day_decided_again() -> None:
+    from fakes import ConditionalBucket
+
+    matinee = datetime(2026, 10, 7, 17, tzinfo=UTC)
+    games = {**pf.GAMES, 2026020053: ("WSH", "PIT", matinee)}
+    inputs = pf.day(slate=pf.slate(games))
+    second = timedelta(seconds=1)
+    bucket = ConditionalBucket()
+    # Built before the start, but the clock at the write is past it: decided again, then written.
+    times = clock(matinee - 2 * second, matinee - second, matinee, matinee + second, matinee)
+    rows, key = lp.write_published(bucket, "b", inputs, times)
+    assert key == "ledger/live/2026-10-07.parquet"
+    written = pl.read_parquet(bucket.objects[key])
+    assert written.equals(rows)
+    assert dict(written.select("game_id", "status").iter_rows())[2026020053] == (
+        lp.STARTS_BEFORE_PUBLISHED
+    )
+
+
 def test_the_feature_build_must_have_finished_before_the_decision_on_this_slate() -> None:
     slate = pf.slate()
     record = pl.DataFrame(
@@ -232,16 +366,27 @@ def test_a_day_is_written_to_r2_once() -> None:
     from fakes import ConditionalBucket
 
     bucket = ConditionalBucket()
+    inputs = pf.day()
     rows = decided()
-    assert lp.write_once(bucket, "b", pf.DAY, rows) == "ledger/live/2026-10-07.parquet"
-    assert pl.read_parquet(bucket.objects["ledger/live/2026-10-07.parquet"]).equals(rows)
+    put = pf.DECISION + timedelta(minutes=8)
+    now = clock(put)
+    key, written = lp.write_once(bucket, "b", inputs, rows, now)
+    assert key == "ledger/live/2026-10-07.parquet"
+    # Stamped with the clock read at the write, its publication.
+    assert set(written["published_utc"]) == {put}
+    assert written.drop("published_utc").equals(rows.drop("published_utc"))
+    assert pl.read_parquet(bucket.objects[key]).equals(written)
     # A second run, or a late run after a skipped day, can't replace it.
+    later = pf.day(decision_utc=pf.DECISION + timedelta(minutes=1))
     with pytest.raises(RuntimeError, match="PreconditionFailed"):
-        lp.write_once(bucket, "b", pf.DAY, decided(decision_utc=pf.DECISION + timedelta(minutes=1)))
+        lp.write_once(bucket, "b", later, lp.ledger(lp.decide(later), later), now)
     # A ledger predicting a game at or after its start is never written.
     fresh = ConditionalBucket()
     with pytest.raises(ValueError):
-        lp.write_once(fresh, "b", pf.DAY, rows.with_columns(start_utc=pl.lit(pf.DECISION)))
+        lp.write_once(fresh, "b", inputs, rows.with_columns(start_utc=pl.lit(pf.DECISION)), now)
+    # Nor one whose game has started by the clock at the put, read after serializing.
+    with pytest.raises(lp.Republish):
+        lp.write_once(fresh, "b", inputs, rows, clock(pf.START))
     assert fresh.objects == {}
 
 

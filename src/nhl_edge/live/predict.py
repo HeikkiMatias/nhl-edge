@@ -2,13 +2,18 @@
 
 At about 12:47 ET, after the midday odds snapshot, every slate game gets one ledger row: its
 prediction and bet, or why it has none. The decision instant is fixed when the run starts, and
-everything read must be known before it.
+everything read must be known before it. The ledger is published minutes later, once the models
+are read: published_utc, the actual clock read at the write and stamped on the ledger, also read
+after the ledger is built, with the day decided again if a game starts or its quote ages
+past the limit meanwhile (#170, ADR 0033's amendment).
 
 - **The window (ADR 0033):** the midday snapshot and the decision both fall between 12:45 and
   13:15 ET, read from their times, not the slot's label. Outside it the day is skipped.
 - **Per game,** in order:
-  1. a game that started before the decision has no prediction;
-  2. Pinnacle's h2h quote at the decision snapshot, at most 5 minutes old at the decision;
+  1. a game that started before the decision, or that starts before the decision is published,
+     has no prediction: a weekend matinee can start inside the window;
+  2. Pinnacle's h2h quote at the decision snapshot, at most 5 minutes old at the decision and at
+     most 15 minutes old at publication;
   3. B0, Pinnacle's price de-vigged (`market/devig.py`), and B1 its recalibration;
   4. B2 and B3 from the season's fits, mixing over the goalie-start model's likely starters, and
      u's parts from the same model: never a confirmed starter (ADR 0030);
@@ -20,8 +25,8 @@ everything read must be known before it.
 The functions here are pure: the CLI loads the inputs and writes the ledger once.
 """
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
@@ -44,6 +49,9 @@ from nhl_edge.market.devig import fair_probabilities
 
 WINDOW = (time(12, 45), time(13, 15))
 MAX_QUOTE_AGE = timedelta(minutes=5)
+# A quote's age at publication: a stalled run can't log a bet at a price long gone (ADR 0033's
+# amendment).
+MAX_PUBLISHED_AGE = timedelta(minutes=15)
 BOOK = market_guard.BOOK
 LEDGER_PREFIX = "ledger/live"
 # The tables a run reads, pulled from R2 first on a fresh machine: B2's and B3's history and the
@@ -70,6 +78,7 @@ LAKE_TABLES = (
 
 PREDICTED = "predicted"
 STARTED = "started before the decision"
+STARTS_BEFORE_PUBLISHED = "starts before the decision is published"
 NO_PRICE = "no Pinnacle midday price"
 STALE = "no fresh price"
 MISSING = "missing input"
@@ -304,7 +313,8 @@ def bankroll(earlier: pl.DataFrame, results: pl.DataFrame, decision_utc: datetim
 
 @dataclass(frozen=True)
 class Day:
-    """What a day's decision reads, all known before decision_utc."""
+    """What a day's decision reads, all known before decision_utc, and when it is published
+    (published_utc, the actual clock; the decision instant if not given)."""
 
     day: date
     decision_utc: datetime
@@ -314,47 +324,70 @@ class Day:
     live: blend_fit.LiveFit
     bankroll: float
     versions: Mapping[str, object]
+    published_utc: datetime | None = None
 
 
-def skipped(slate: pl.DataFrame, decision_utc: datetime, reason: str) -> pl.DataFrame:
+def skipped(
+    slate: pl.DataFrame, decision_utc: datetime, published_utc: datetime, reason: str
+) -> pl.DataFrame:
     """Every slate game with the day's reason and nothing predicted."""
     return slate.select("game_id", "season", "game_date", "start_utc", "home", "away").with_columns(
-        prediction_utc=pl.lit(decision_utc), status=pl.lit(reason)
+        prediction_utc=pl.lit(decision_utc),
+        published_utc=pl.lit(published_utc),
+        status=pl.lit(reason),
     )
+
+
+def starting(inputs: Day, by: datetime) -> pl.Series:
+    """The slate's games that start by the instant by: by the slate's start, or by the commence
+    time of the odds known before the decision, which can be earlier."""
+    known = inputs.quotes.filter(pl.col("snapshot_utc") < inputs.decision_utc)
+    odds = match_games(known.filter(pl.col("commence_time_utc") <= by), listings(inputs.slate))
+    return pl.concat(
+        [inputs.slate.filter(pl.col("start_utc") <= by)["game_id"], odds["game_id"].drop_nulls()]
+    ).unique()
 
 
 def decide(inputs: Day) -> pl.DataFrame:
     """One row per slate game: its prediction and bet, or why it has none."""
     decision = inputs.decision_utc
+    published = inputs.published_utc or decision
+    if published < decision:
+        raise ValueError(f"published at {published}, before the decision at {decision}")
     slate = inputs.slate.select("game_id", "season", "game_date", "start_utc", "home", "away")
     if after_window(decision) or not in_window(decision):
-        return skipped(slate, decision, LATE if after_window(decision) else "before the window")
+        reason = LATE if after_window(decision) else "before the window"
+        return skipped(slate, decision, published, reason)
     # Only quotes known before the decision: snapshots taken before it, and of those, prices of
     # games not under way by then. A later snapshot never matches a quote to a game, and an
     # in-play price never prices a bet.
-    known = inputs.quotes.filter(pl.col("snapshot_utc") < decision)
     usable = usable_quotes(inputs.quotes, decision)
     snapshot = decision_snapshot(usable, decision)
     if snapshot is None:
-        return skipped(slate, decision, NO_SNAPSHOT)
+        return skipped(slate, decision, published, NO_SNAPSHOT)
     matched = match_games(usable, listings(inputs.slate))
     # A game the odds already showed under way has started, whatever the slate's start says.
-    under_way = match_games(
-        known.filter(pl.col("commence_time_utc") <= decision), listings(inputs.slate)
-    )["game_id"].drop_nulls()
+    under_way = starting(inputs, decision)
+    # The bet is placed when the decision is published: a game under way by then is no bet's.
+    starts_first = starting(inputs, published)
     quoted = pinnacle(matched, snapshot)
     rows = (
         slate.join(quoted, on="game_id", how="left")
         .join(best_other(matched, snapshot), on="game_id", how="left")
-        .with_columns(prediction_utc=pl.lit(decision), decision_snapshot_utc=pl.lit(snapshot))
+        .with_columns(
+            prediction_utc=pl.lit(decision),
+            published_utc=pl.lit(published),
+            decision_snapshot_utc=pl.lit(snapshot),
+        )
     )
-    started = (pl.col("start_utc") <= pl.col("prediction_utc")) | pl.col("game_id").is_in(
-        under_way.implode()
+    stale = ((pl.col("prediction_utc") - pl.col("last_update_utc")) > MAX_QUOTE_AGE) | (
+        (pl.col("published_utc") - pl.col("last_update_utc")) > MAX_PUBLISHED_AGE
     )
-    stale = (pl.col("prediction_utc") - pl.col("last_update_utc")) > MAX_QUOTE_AGE
     rows = rows.with_columns(
-        status=pl.when(started)
+        status=pl.when(pl.col("game_id").is_in(under_way.implode()))
         .then(pl.lit(STARTED))
+        .when(pl.col("game_id").is_in(starts_first.implode()))
+        .then(pl.lit(STARTS_BEFORE_PUBLISHED))
         .when(pl.col("home_price").is_null())
         .then(pl.lit(NO_PRICE))
         .when(stale)
@@ -413,13 +446,53 @@ def stamp(ledger: pl.DataFrame, inputs: Day) -> pl.DataFrame:
     )
 
 
+class Republish(ValueError):
+    """A predicted row no longer holds by the clock at the write: decide the day again."""
+
+
 def pre_game(ledger: pl.DataFrame) -> None:
-    """Refuse a ledger with any prediction at or after its game's start."""
+    """Refuse a ledger with any prediction decided or published at or after its game's start."""
     late = ledger.filter(
-        pl.col("status") == PREDICTED, pl.col("prediction_utc") >= pl.col("start_utc")
+        pl.col("status") == PREDICTED,
+        (pl.col("prediction_utc") >= pl.col("start_utc"))
+        | (pl.col("published_utc") >= pl.col("start_utc")),
     )
     if late.height:
         raise ValueError(f"{late.height} predictions at or after their game's start")
+
+
+def outdated(built: pl.DataFrame, inputs: Day, now: datetime) -> pl.DataFrame:
+    """The predicted rows that would not be predictions if published at now: their game starts by
+    then, by the slate or the odds, or their quote is older than MAX_PUBLISHED_AGE."""
+    return built.filter(
+        pl.col("status") == PREDICTED,
+        pl.col("game_id").is_in(starting(inputs, now).implode())
+        | ((pl.lit(now) - pl.col("last_update_utc")) > MAX_PUBLISHED_AGE),
+    )
+
+
+def stamped(built: pl.DataFrame, now: datetime) -> pl.DataFrame:
+    """built with published_utc set to now, a clock no predicted row is outdated by: every
+    prediction and bet is the one the day decided at now would hold."""
+    published = pl.lit(now).cast(built.schema["published_utc"])
+    return PaperLedger.validate(built.with_columns(published_utc=published))  # type: ignore[return-value]
+
+
+def publish(inputs: Day, clock: Callable[[], datetime], tries: int = 5) -> pl.DataFrame:
+    """The day's ledger, decided against the publication clock (#170, ADR 0033's amendment).
+    The ledger is built at a clock reading and the clock read again: while a predicted row no
+    longer holds by then (outdated), the day is decided again at the later clock. That game gets
+    its row, and the others keep their predictions, the stakes rescaled without it. The ledger
+    returned is stamped with the last reading."""
+    published = clock()
+    for _ in range(tries):
+        day = replace(inputs, published_utc=published)
+        built = ledger(decide(day), day)
+        now = clock()
+        if outdated(built, inputs, now).is_empty():
+            return stamped(built, now)
+        published = now
+    raise ValueError(f"games kept changing while the ledger was built ({tries} tries)")
 
 
 def day_quotes(store: RawStore, day: date) -> tuple[pl.DataFrame, list[str]]:
@@ -515,14 +588,37 @@ def ledger_key(day: date) -> str:
     return f"{LEDGER_PREFIX}/{day.isoformat()}.parquet"
 
 
-def write_once(objects: Any, bucket: str, day: date, ledger: pl.DataFrame) -> str:
+def write_once(
+    objects: Any, bucket: str, inputs: Day, ledger: pl.DataFrame, clock: Callable[[], datetime]
+) -> tuple[str, pl.DataFrame]:
     """Write the day's ledger to R2 once, refused if the day exists (a second run, or a late one
-    after a skipped day), and only if every prediction precedes its game's start."""
+    after a skipped day), and only if every prediction precedes its game's start. The clock is
+    read at the write: a predicted row outdated by then is refused (Republish), never written;
+    otherwise the ledger is stamped with that reading, its publication, and put milliseconds
+    later. Returns the key and the ledger written."""
     import io
 
     pre_game(ledger)
+    if (late := outdated(ledger, inputs, now := clock())).height:
+        raise Republish(f"{late.height} predictions outdated by {now}")
+    written = stamped(ledger, now)
     body = io.BytesIO()
-    ledger.write_parquet(body)
-    key = ledger_key(day)
+    written.write_parquet(body)
+    key = ledger_key(inputs.day)
     objects.put_object(Bucket=bucket, Key=key, Body=body.getvalue(), IfNoneMatch="*")
-    return key
+    return key, written
+
+
+def write_published(
+    objects: Any, bucket: str, inputs: Day, clock: Callable[[], datetime], tries: int = 3
+) -> tuple[pl.DataFrame, str]:
+    """publish() the day and write it once. A row outdated between the ledger and the write has
+    the day decided again at the later clock, never the whole day refused (#170)."""
+    for _ in range(tries):
+        built = publish(inputs, clock)
+        try:
+            key, written = write_once(objects, bucket, inputs, built, clock)
+        except Republish:
+            continue
+        return written, key
+    raise ValueError(f"games kept changing before the ledger was written ({tries} tries)")

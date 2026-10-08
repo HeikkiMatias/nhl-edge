@@ -1,6 +1,7 @@
 # 0033. Fresh prices live: the decision quote, and the closing proxy's freshness and lead time
 
 - Status: Accepted (by the owner, 2026-10-07)
+- Amended: 2026-10-07, the quote's age at publication (accepted by the owner, 2026-10-07)
 - Date: 2026-10-07
 
 ## Context
@@ -64,3 +65,19 @@ None: history has no Pinnacle quotes or timestamps. The ages and counts above co
 
 - The eligible share of bets falls well short of 81%. More snapshot slots would be a new decision, made before the games they cover.
 - Or stale quotes become common in a slot, which would show Pinnacle's feed behaving differently from these first ten days.
+
+## Amendment, 2026-10-07: the quote's age at publication
+
+**Context.** The decision instant is fixed when the run starts, but the ledger is published minutes later, once the lake is pulled and B2 and B3 are read. Since #184 the ledger records that time as `published_utc`, the actual clock. Codex's P0 on #184 pointed out the gap: a run that stalled would still log a bet at a midday quote that was no longer on offer when the decision was published.
+
+**Options:** a limit of 15 or 10 minutes on the quote's age at publication; or none, freshness at the decision only, with the gap recorded and reported.
+
+**Decision,** chosen by the owner on 2026-10-07:
+- Pinnacle's quote is also at most **15 minutes** old at publication: `published_utc − last_update_utc`.
+- A game whose quote is older gets the same "no fresh price" row, with no prediction or bet.
+- The 5-minute limit at the decision stands.
+- The clock is read again after the ledger is built and just before the write. If a game has started by then, or its quote has aged past the limit, the day is decided again at the later clock: that game gets its row, and the other games keep theirs.
+
+**Why 15 minutes.** The gap between the decision and publication is expected to be about 3 to 5 minutes on CI, for the lake pull and the B2 and B3 fits. The limit catches a stall without costing an ordinary day. The first live runs' `published_utc` will show the actual gap.
+
+The limit reads clock times and quote ages only. No live close, CLV or result informed it.
