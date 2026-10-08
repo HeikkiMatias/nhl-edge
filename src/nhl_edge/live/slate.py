@@ -83,14 +83,11 @@ def unsettled(body: bytes, days: Collection[date], games: pl.DataFrame) -> list[
     return problems
 
 
-def opening(slate: pl.DataFrame, games: pl.DataFrame) -> list[str]:
-    """The slate's seasons with no final game in games yet: the builders cut a season's fold at
-    its first game, and RAPM needs the season's stints, so an opening night is not rated (#181)."""
-    unplayed = sorted(set(slate["season"].to_list()) - set(games["season"].to_list()))
-    return [
-        f"no game of {season} is final yet: its opening slate is not rated (#181)"
-        for season in unplayed
-    ]
+def opening(slate: pl.DataFrame, games: pl.DataFrame) -> list[int]:
+    """The slate's seasons with no final game in games yet, whose opening night it is (#181):
+    they have no shots to score or stints to build, and the other builders rate the slate from
+    the earlier seasons and the season's start alone, as history rates its first night."""
+    return sorted(set(slate["season"].to_list()) - set(games["season"].to_list()))
 
 
 def settled_problems(api: NhlApi, day: date, games: pl.DataFrame) -> list[str]:

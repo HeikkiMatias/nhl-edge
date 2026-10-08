@@ -44,7 +44,7 @@ sums. A defenseman's power-play sd adds the defensemen term's variance and its c
 his own column. `hours` is the decayed ice time behind the rating.
 """
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, cast
@@ -667,10 +667,7 @@ def rate(
     # from it.
     reference: float | None = None
     seen: set[int] = set()
-    for stints in stint_seasons:
-        if stints.is_empty():
-            continue
-        (season,) = stints["season"].unique().to_list()
+    for season, stints in _by_season(stint_seasons, wanted, games):
         if season < FIRST_SEASON or season > last:
             continue
         if seen and season <= max(seen):
@@ -736,6 +733,31 @@ def rate(
         else pl.DataFrame(schema=dtypes(RapmTerms)),
         fits,
     )
+
+
+def _by_season(
+    stint_seasons: Iterable[pl.DataFrame], wanted: pl.DataFrame, games: pl.DataFrame
+) -> Iterator[tuple[int, pl.DataFrame]]:
+    """Each season's stints with its season, in order, skipping a season without any; then, with
+    no stints, each wanted season after the last of them whose games in games are all targets
+    (observed_utc null). That is a season's opening night, rated before any of its games is final
+    (#181): from the season-start fit alone, as history rates its first night, when none of the
+    season's stints is public yet."""
+    last: int | None = None
+    shape: pl.DataFrame | None = None
+    for stints in stint_seasons:
+        shape = stints.clear()
+        if stints.is_empty():
+            continue
+        (season,) = stints["season"].unique().to_list()
+        last = season
+        yield season, stints
+    if shape is None:
+        return
+    for season in sorted(wanted["season"].unique().to_list()):
+        rows = games.filter(pl.col("season") == season)
+        if (last is None or season > last) and rows["observed_utc"].is_null().all():
+            yield season, shape
 
 
 def _concat(frames: Sequence[pl.DataFrame]) -> pl.DataFrame:

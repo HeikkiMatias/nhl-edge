@@ -5,6 +5,7 @@ once beside the live fit."""
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -48,7 +49,7 @@ def ledger(rows: list[dict]) -> pl.DataFrame:
     """Ledger rows, the given columns set and the rest empty."""
     full = []
     for row in rows:
-        base = {name: None for name in dtypes(PaperLedger)}
+        base: dict[str, Any] = dict.fromkeys(dtypes(PaperLedger))
         base.update(status=lp.PREDICTED, bet=True, away="PIT", home="WSH", price=2.0, ev=0.03)
         base.update(p_blend=row.get("p_b0"))
         base.update(row)
@@ -167,7 +168,8 @@ def test_the_levels_record_their_lines_and_refuse_a_row_known_after_the_live_sta
     record = la.artifact("attribution-levels-x", LIVE.version, LIVE.fold_start, rows, cutoffs, now)
     assert record["live_fit"] == LIVE.version and record["policy"] == POLICY_VERSION
     assert record["training"]["per_season"] == {"20182019": 20, "20192020": 20}
-    assert record["train_cutoff"] == rows["prediction_utc"].max().isoformat()
+    last = rows["prediction_utc"].max()
+    assert isinstance(last, datetime) and record["train_cutoff"] == last.isoformat()
     # Which games they stand on, to check against later.
     assert record["training"]["games_sha256"] == la.games_digest(rows)
     assert la.games_digest(rows.head(39)) != la.games_digest(rows)

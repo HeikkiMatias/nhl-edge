@@ -6,6 +6,9 @@ give every one of the night's games the row the history path gives it from the w
 So a target row is the quantity B3 was trained and tested on. The game's own boxscore, stints,
 shots, penalties and result, and every later game, are absent from the live inputs: they can't
 reach a target row.
+
+Each builder is tested on a later night and on a season's opening night (#181), when the lake
+holds no game of the season: its rows come from the earlier seasons and the season's start alone.
 """
 
 from datetime import UTC, date, datetime, time, timedelta
@@ -16,6 +19,7 @@ import goalie_fixtures as gf
 import lineup_fixtures as lf
 import penalty_fixtures as pf
 import polars as pl
+import pytest
 import rapm_fixtures as rf
 import schedule_fixtures as sf
 import team_fixtures as tf
@@ -42,8 +46,14 @@ def version(component: str) -> str:
     return f"{component}-20261007-abc1234"
 
 
-def night_of(games: pl.DataFrame, season: int, k: int = 10) -> date:
-    return games.filter(pl.col("season") == season)["game_date"].unique().sort()[k]
+# Each builder's test runs on a later night and on the season's opening night (#181).
+NIGHTS = pytest.mark.parametrize("opening", [False, True], ids=["later", "opening"])
+
+
+def night_of(games: pl.DataFrame, season: int, k: int = 10, opening: bool = False) -> date:
+    """The season's k-th night, or its first with opening."""
+    nights = games.filter(pl.col("season") == season)["game_date"].unique().sort()
+    return nights[0 if opening else k]
 
 
 def slate_of(games: pl.DataFrame, night: date, fetched: datetime | None = None) -> pl.DataFrame:
@@ -83,10 +93,11 @@ def same(history: pl.DataFrame, live: pl.DataFrame, keys: list[str]) -> None:
     assert_frame_equal(live.sort(keys), history.sort(keys), check_column_order=False)
 
 
-def test_team_strength() -> None:
+@NIGHTS
+def test_team_strength(opening: bool) -> None:
     league = tf.league()
     games, season = league["games"], tf.SEASONS[1]
-    night = night_of(games, season)
+    night = night_of(games, season, opening=opening)
     settings = ts.Settings(half_life=20, prior_games=10)
 
     def strength(frames: dict[str, pl.DataFrame], rated_games: pl.DataFrame) -> pl.DataFrame:
@@ -104,14 +115,16 @@ def test_team_strength() -> None:
     same(tonight(full, games, night), tonight(live, games, night), ["game_id"])
     # Not vacuous: each target read its teams' earlier games.
     assert (tonight(live, games, night)["home_history"] > 0).all()
-    # Targets leave every other game's row as it was.
-    same(strength(lake, lake["games"]), live.filter(pl.col("game_date") < night), ["game_id"])
+    # Targets leave every other game's row as it was; an opening night has no other.
+    if not opening:
+        same(strength(lake, lake["games"]), live.filter(pl.col("game_date") < night), ["game_id"])
 
 
-def test_goalie_starts() -> None:
+@NIGHTS
+def test_goalie_starts(opening: bool) -> None:
     league = gf.league()
     games, lineups, season = league["games"], league["lineups"], gf.SEASONS[2]
-    night = night_of(games, season)
+    night = night_of(games, season, opening=opening)
     full, _, _ = gs.score(lineups, games, [season], version(gs.COMPONENT))
     live_games = with_targets(before(games, games, night), slate_of(games, night))
     live, _, _ = gs.score(
@@ -124,10 +137,11 @@ def test_goalie_starts() -> None:
     )
 
 
-def test_lineups_and_replacements() -> None:
+@NIGHTS
+def test_lineups_and_replacements(opening: bool) -> None:
     league = lf.league()
     games, boxscores, season = league["games"], league["lineups"], lf.SEASONS[2]
-    night = night_of(games, season, 20)
+    night = night_of(games, season, 20, opening)
     minutes = lf.minutes_frame(boxscores)
 
     def tables(
@@ -166,10 +180,11 @@ def test_lineups_and_replacements() -> None:
     assert (skaters["exp_5v5"] > 0).any()
 
 
-def test_goalie_effects() -> None:
+@NIGHTS
+def test_goalie_effects(opening: bool) -> None:
     league = gf.with_shots(gf.league())
     games, season = league["games"], gf.SEASONS[2]
-    night = night_of(games, season)
+    night = night_of(games, season, opening=opening)
     settings = ge.Settings(half_life=20, prior_shots=200)
 
     def effects(frames: dict[str, pl.DataFrame], games: pl.DataFrame) -> pl.DataFrame:
@@ -192,10 +207,11 @@ def test_goalie_effects() -> None:
     )
 
 
-def test_schedule_terms() -> None:
+@NIGHTS
+def test_schedule_terms(opening: bool) -> None:
     league = sf.league()
     games, schedule, season = league["games"], league["schedule"], 20122013
-    night = night_of(games, season)
+    night = night_of(games, season, opening=opening)
     settings, ref = st.Settings(prior_games=100), Reference.load()
     terms = st.terms(schedule, games, settings, [season], ref)
     full = st.rows(terms, settings, version(st.COMPONENT))
@@ -203,6 +219,8 @@ def test_schedule_terms() -> None:
     live_terms = st.terms(live_schedule, before(games, games, night), settings, [season], ref)
     live = st.rows(live_terms, settings, version(st.COMPONENT))
     same(tonight(full, games, night), tonight(live, games, night), ["game_id"])
+    if opening:
+        return  # no other game of the season to leave as it was
     alone = st.terms(
         before(schedule, games, night), before(games, games, night), settings, [season], ref
     )
@@ -230,10 +248,11 @@ def test_a_game_fetched_after_its_as_of_time_is_no_target() -> None:
     assert slate_of(schedule, night, first - timedelta(microseconds=1)).height == times.len()
 
 
-def test_rapm_ratings_and_terms() -> None:
+@NIGHTS
+def test_rapm_ratings_and_terms(opening: bool) -> None:
     league = rf.league()
     games, season = league["games"], rf.SEASONS[1]
-    night = night_of(games, season)
+    night = night_of(games, season, opening=opening)
     settings = rapm.Settings(half_life_days=20.0, pull_hours=2.0)
 
     def ratings(
@@ -290,10 +309,11 @@ def _live_frames(
     return frames, live_games
 
 
-def test_expected_power_plays() -> None:
+@NIGHTS
+def test_expected_power_plays(opening: bool) -> None:
     league = pf.league()
     games, season = league["games"], pf.SEASONS[1]
-    night = night_of(games, season)
+    night = night_of(games, season, opening=opening)
 
     def tables(f: dict[str, Any], games: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
         # The order nhl power-plays runs them in.
@@ -340,10 +360,11 @@ def test_expected_power_plays() -> None:
     )
 
 
-def test_goal_multipliers() -> None:
+@NIGHTS
+def test_goal_multipliers(opening: bool) -> None:
     league = ff.league()
     games, season = league["games"], ff.SEASONS[1]
-    night = night_of(games, season)
+    night = night_of(games, season, opening=opening)
 
     def tables(f: dict[str, Any], games: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
         # The order nhl finishing runs them in.
