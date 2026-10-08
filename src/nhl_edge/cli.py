@@ -957,12 +957,15 @@ def backtest(
     # E3 on history (#143): the bets' closing line value against SBR's close, and each bet's
     # driver among the blend's parts.
     e2 = bets.EXPERIMENT
+    # Each input part is measured against its usual level at the market price, learnt on the
+    # earlier blend-training seasons with their own folds' fits (#154).
     settled = e3.attribution(
         e3.closing_value(settled, e3.sbr_closes(sbr_odds)),
         b3_tables,
-        b3_fits.get(e2, {}),
+        every_b3_fit.get(e2, {}),
         {season: by_name["BLEND"] for season, by_name in blend_fits.get(e2, {}).items()},
         e3.market_inputs(blend_input, blend_scales.get(e2, {}), e2),
+        e3.market_history(blend_input, e2),
     )
     groups = blend_backtest.groups(blend_input, games).filter(pl.col("experiment") == e2)
     report["e3"] = e3.report(settled, groups.drop("experiment"))

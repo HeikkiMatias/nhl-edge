@@ -13,13 +13,22 @@ opener's margin is what CLV must overcome (ADR 0030). SBR's close is not Pinnacl
 unknown, and from 2018-19 it differs from the opener's (#51, #65). §1's criterion against the
 Pinnacle closing proxy can only be judged live (phase 5).
 
-**Attribution.** The blend moves away from the market by
-    (a + (b_m - 1)·logit p_mkt) + (b_x + b_u·u)·logit p_B3,
-the first part the market's own recalibration and the second B3's, which splits further into
-its log-odds terms (audit/b3_gaps.explained): the skaters' share of Δĝ (with every goalie at
-gamma 1), the goalies' share (the rest of Δĝ under the start mixture), the home term h_s, the
-schedule terms and B3's intercept. Each part is signed toward the bet's side, and the largest is
-the bet's driver.
+**Attribution** (#154). The blend moves away from the market by
+    D = logit p_blend - logit p_mkt = a + (b_m - 1)·L + w·logit p_B3,
+with L = logit p_mkt and w = b_x + b_u·u. B3's log-odds splits into its terms
+(audit/b3_gaps.explained): its intercept, and the inputs' parts INPUTS: the skaters' share of Δĝ
+(with every goalie at gamma 1), the goalies' share (the rest of Δĝ under the start mixture), the
+home term h_s and the schedule terms. Those parts mostly restate what the market already prices,
+so splitting D by them would set the blend's shrinkage of the market against B3's agreement with
+it, and the driver would mark favourite against underdog. Instead each input part c_k is measured
+against its usual level at the game's market price, m_k + s_k·L: a least-squares line of the part
+on L over the fold's earlier blend-training seasons, every game's part from its own fold's fit
+at its prediction time (inputs only, no result). Then
+    D = [a + (b_m - 1)·L + w·(intercept + Σ_k (m_k + s_k·L))] + Σ_k w·(c_k - m_k - s_k·L),
+the first part the market's (the blend's reshaping of the market price, given what B3's inputs
+usually say at it) and each other the input's departure from its usual level. Each part is
+signed toward the bet's side, and the largest is the bet's driver. A season without an earlier
+blend-training season has no driver.
 """
 
 from collections.abc import Sequence
@@ -40,7 +49,8 @@ from nhl_edge.market.recalibration import logit
 SEED = 20261004
 DRAWS = 2000
 # The parts of the blend's move from the market, as columns part_<name>.
-PARTS = ("market", "skaters", "goalies", "home_ice", "schedule", "intercept")
+PARTS = ("market", "skaters", "goalies", "home_ice", "schedule")
+INPUTS = PARTS[1:]
 
 
 def sbr_closes(sbr_odds: pl.DataFrame) -> pl.DataFrame:
@@ -119,70 +129,131 @@ def _summary(frame: pl.DataFrame) -> dict[str, Any]:
     }
 
 
+def b3_parts(
+    rows: pl.DataFrame, b3_tables: b3.Tables, model: b3.B3Model, season: int
+) -> pl.DataFrame:
+    """Per game of rows (game_id, prediction_utc), B3's log-odds in parts from the season's fit
+    at the prediction time: its intercept and each of INPUTS. They are at the start mixture's
+    expected Δĝ, as audit/b3_gaps reads them, so they explain B3's log-odds closely but not
+    exactly."""
+    through = b3.through(b3_tables, season)
+    inputs = b3.game_inputs(through)
+    pool = through.goalie_starts.select("game_id", "team", "goalie_id", "p_start", "observed_utc")
+    usable, ready = b2.known_before(
+        inputs.filter(pl.col("season") == season),
+        pool,
+        rows.select("game_id", "prediction_utc"),
+        "observed_utc",
+    )
+    _, gammas = b3.multipliers(through)
+    terms = explained(model, usable, b3.scenarios(usable, ready, gammas))
+    delta = b3.INPUTS.index("delta_g_hat")
+    weight, mean, scale = model.weights[delta], model.means[delta], model.scales[delta]
+    skaters = usable.select(
+        "game_id",
+        skater_delta=pl.col("home_raw") * pl.col("home_base")
+        - pl.col("away_raw") * pl.col("away_base"),
+    )
+    schedule = [f"term_{name}" for name in b3.INPUTS if name != "delta_g_hat"]
+    return terms.join(skaters, on="game_id").select(
+        "game_id",
+        "intercept",
+        skaters=weight * (pl.col("skater_delta") - mean) / scale,
+        goalies=weight * (pl.col("delta_g_hat") - pl.col("skater_delta")) / scale,
+        home_ice="offset",
+        schedule=pl.sum_horizontal(*schedule),
+    )
+
+
+def usual(training: pl.DataFrame) -> dict[str, tuple[float, float]]:
+    """Each input part's usual level at a market price: the least-squares line m + s·L of the
+    part on L (logit_mkt) over the training games."""
+    x = np.column_stack([np.ones(training.height), training["logit_mkt"].to_numpy()])
+    lines = {}
+    for part in INPUTS:
+        alpha, beta = np.linalg.lstsq(x, training[part].to_numpy(), rcond=None)[0]
+        lines[part] = (float(alpha), float(beta))
+    return lines
+
+
 def attribution(
     bets: pl.DataFrame,
     b3_tables: b3.Tables,
     b3_fits: dict[int, b3.B3Model],
     blend_fits: dict[int, Blend],
     p_market: pl.DataFrame,
+    history: pl.DataFrame,
 ) -> pl.DataFrame:
     """Each bet (season, game_id, prediction_utc, side) with the parts of the blend's move from
     the market (part_<name> for each of PARTS, in log-odds, signed toward the bet's side) and its
-    driver, the largest. B3's terms are at the start mixture's expected Δĝ, as audit/b3_gaps reads
-    them, so they explain its log-odds closely but not exactly. B3's terms
-    come from the fold's own fit at the bet's prediction time. p_market holds each game's
-    de-vigged market probability (game_id, p_mkt) and the blend's u (game_id, u)."""
+    driver, the largest. p_market holds each bet's game's logit p_mkt and u (game_id, logit_mkt,
+    u). history holds every game of the experiment's blend rows (season, game_id, prediction_utc,
+    logit_mkt), whose earlier seasons give each input's usual level; b3_fits holds every season's
+    fit, those seasons' included."""
     frames = []
     for (season,), rows in bets.group_by("season", maintain_order=True):
-        model = b3_fits[int(season)]  # type: ignore[arg-type]
-        fit = blend_fits[int(season)]  # type: ignore[arg-type]
-        a, b_m, b_x, b_u = fit.weights
-        through = b3.through(b3_tables, int(season))  # type: ignore[arg-type]
-        inputs = b3.game_inputs(through)
-        pool = through.goalie_starts.select(
-            "game_id", "team", "goalie_id", "p_start", "observed_utc"
+        season = int(season)  # type: ignore[arg-type]
+        earlier = sorted(s for s in set(history["season"].to_list()) if s < season and s in b3_fits)
+        if not earlier:
+            frames.append(
+                rows.with_columns(pl.lit(None, pl.Float64).alias(f"part_{p}") for p in PARTS)
+            )
+            continue
+        training = pl.concat(
+            [
+                b3_parts(past, b3_tables, b3_fits[s], s).join(
+                    past.select("game_id", "logit_mkt"), on="game_id"
+                )
+                for s in earlier
+                for past in [history.filter(pl.col("season") == s)]
+            ]
         )
-        moments = rows.select("game_id", "prediction_utc")
-        usable, ready = b2.known_before(
-            inputs.filter(pl.col("season") == season), pool, moments, "observed_utc"
+        lines = usual(training)
+        a, b_m, b_x, b_u = blend_fits[season].weights
+        w = pl.lit(b_x) + pl.lit(b_u) * pl.col("u")
+        level = sum(
+            (pl.lit(alpha) + pl.lit(beta) * pl.col("logit_mkt") for alpha, beta in lines.values()),
+            pl.lit(0.0),
         )
-        _, gammas = b3.multipliers(through)
-        terms = explained(model, usable, b3.scenarios(usable, ready, gammas))
-        delta = b3.INPUTS.index("delta_g_hat")
-        weight, mean, scale = model.weights[delta], model.means[delta], model.scales[delta]
-        skaters = usable.select(
-            "game_id",
-            skater_delta=pl.col("home_raw") * pl.col("home_base")
-            - pl.col("away_raw") * pl.col("away_base"),
-        )
-        schedule = [f"term_{name}" for name in b3.INPUTS if name != "delta_g_hat"]
-        model_weight = pl.lit(b_x) + pl.lit(b_u) * pl.col("u")
         sign = pl.when(pl.col("side") == HOME).then(1.0).otherwise(-1.0)
         parts = (
-            rows.join(terms, on="game_id", how="left")
-            .join(skaters, on="game_id", how="left")
+            rows.join(b3_parts(rows, b3_tables, b3_fits[season], season), on="game_id", how="left")
             .join(p_market, on="game_id", how="left")
             .with_columns(
-                part_market=pl.lit(a) + pl.lit(b_m - 1) * pl.col("logit_mkt"),
-                part_skaters=model_weight * weight * (pl.col("skater_delta") - mean) / scale,
-                part_goalies=model_weight
-                * weight
-                * (pl.col("delta_g_hat") - pl.col("skater_delta"))
-                / scale,
-                part_home_ice=model_weight * pl.col("offset"),
-                part_schedule=model_weight * pl.sum_horizontal(*schedule),
-                part_intercept=model_weight * pl.col("intercept"),
+                part_market=pl.lit(a)
+                + pl.lit(b_m - 1) * pl.col("logit_mkt")
+                + w * (pl.col("intercept") + level),
+                **{
+                    f"part_{part}": w
+                    * (pl.col(part) - pl.lit(alpha) - pl.lit(beta) * pl.col("logit_mkt"))
+                    for part, (alpha, beta) in lines.items()
+                },
             )
             .with_columns(*(pl.col(f"part_{p}") * sign for p in PARTS))
+            .drop("intercept", *INPUTS)
         )
         frames.append(parts)
     if not frames:
         return bets.with_columns(driver=pl.lit(None, pl.String))
-    out = pl.concat(frames, how="diagonal_relaxed")
+    out = pl.concat(frames, how="diagonal_relaxed").with_columns(
+        *(pl.col(f"part_{p}").cast(pl.Float64) for p in PARTS)
+    )
     biggest = pl.concat_list([pl.col(f"part_{p}") for p in PARTS]).list.arg_max()
     found = pl.all_horizontal(*(pl.col(f"part_{p}").is_not_null() for p in PARTS))
     return out.with_columns(
         driver=pl.when(found).then(pl.lit(list(PARTS)).list.get(biggest)).otherwise(None)
+    )
+
+
+def market_history(every: pl.DataFrame, experiment: str) -> pl.DataFrame:
+    """Every game of the experiment's blend rows (season, game_id, prediction_utc, logit_mkt):
+    the earlier seasons' give each input part's usual level at a market price."""
+    rows = every.filter(pl.col("experiment") == experiment)
+    return rows.select(
+        "season",
+        "game_id",
+        "prediction_utc",
+        logit_mkt=pl.Series(logit(rows["p_mkt"].to_numpy()), dtype=pl.Float64),
     )
 
 
