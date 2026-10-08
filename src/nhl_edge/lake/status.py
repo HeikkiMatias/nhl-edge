@@ -23,6 +23,9 @@ PREGAME_RAW = (
     "nhl/pregame-right-rail/",
     "dailyfaceoff/",
 )
+# The NHL's time-on-ice reports of the 57 games of 2024-25 whose shift chart is empty (#68). The
+# owner allowed one fetch, so only the copies here and in R2 keep them (#114).
+TOI_RAW = ("nhl/toi-home/", "nhl/toi-visitor/")
 
 
 def partition_dates(keys: Iterable[str]) -> list[str]:

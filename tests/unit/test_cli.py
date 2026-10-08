@@ -514,6 +514,55 @@ def test_status_shows_pregame_polls_missing_here(
     assert "up to date with R2" not in result.output
 
 
+def test_status_compares_the_time_on_ice_reports_with_r2(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #114: the reports of 2024-25's empty shift charts (#68) were fetched once, by the owner's
+    # leave, so a page missing on either side is shown, as a pre-game poll is.
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.raw import RawStore
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    runner_store = RawStore(tmp_path / "runner", "test", bucket)
+    runner_store.put("nhl", "toi-home/20242025/2024021235", b"<html/>", {})
+    runner_store.put("nhl", "toi-visitor/20242025/2024021235", b"<html/>", {})
+    monkeypatch.chdir(tmp_path)
+    # This machine lacks the home page and holds a visitor page R2 lacks.
+    RawStore().put("nhl", "toi-visitor/20242025/2024021235", b"<html/>", {})
+    RawStore().put("nhl", "toi-visitor/20242025/2024021236", b"<html/>", {})
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "raw/nhl/toi-home/: 1 pages only in R2, 0 only here" in result.output
+    assert "raw/nhl/toi-visitor/: 0 pages only in R2, 1 only here" in result.output
+    assert "time-on-ice reports are behind R2: nhl lake restore-raw copies them" in result.output
+    assert "R2 lacks time-on-ice reports here: nhl lake sync-raw copies them" in result.output
+    assert "up to date with R2" not in result.output
+
+
+def test_status_says_nothing_of_time_on_ice_reports_in_step(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.raw import RawStore
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    monkeypatch.chdir(tmp_path)
+    RawStore.from_env(mirror=True).put("nhl", "toi-home/20242025/2024021235", b"<html/>", {})
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "time-on-ice" not in result.output and "raw/nhl/toi-" not in result.output
+
+
 def test_status_notices_a_file_that_differs_from_r2(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
