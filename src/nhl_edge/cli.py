@@ -286,7 +286,8 @@ def player_seasons(
         typer.Option(
             "--refresh",
             help="First fetch again the landing page of every player with a boxscore in the "
-            "latest season whose lines are public (July 1 after it), once (#117).",
+            "latest season whose lines are public (July 1 after it) or in the two seasons "
+            "before, once (#117, #199).",
         ),
     ] = False,
 ) -> None:
@@ -324,7 +325,7 @@ def player_seasons(
     if refresh:
         from nhl_edge.ingest.nhl_api import NhlApi, utc_now
         from nhl_edge.ingest.player_seasons import refresh as refresh_pages
-        from nhl_edge.ingest.player_seasons import refresh_season
+        from nhl_edge.ingest.player_seasons import refresh_season, refresh_seasons
 
         season = refresh_season(lineups, utc_now())
         if season is None:
@@ -332,12 +333,14 @@ def player_seasons(
                 "no season with boxscores has public lines yet: nothing to refresh", err=True
             )
             raise typer.Exit(code=1)
-        if season not in EXPECTED_GAMES:
-            # Without its game count the check above can't tell the season's boxscores are all
+        played = set(lineups["season"].unique().to_list())
+        uncounted = [s for s in refresh_seasons(season) if s in played and s not in EXPECTED_GAMES]
+        if uncounted:
+            # Without its game count the check above can't tell a season's boxscores are all
             # here, and a missing game would leave its players out of the refresh.
             typer.echo(
-                f"{season} has no expected game count (ingest/games.py EXPECTED_GAMES), so its "
-                "boxscores can't be checked complete: add it first",
+                f"{', '.join(map(str, uncounted))} has no expected game count (ingest/games.py "
+                "EXPECTED_GAMES), so its boxscores can't be checked complete: add it first",
                 err=True,
             )
             raise typer.Exit(code=1)
@@ -346,9 +349,10 @@ def player_seasons(
         api = NhlApi(store)
         done = refresh_pages(api, lineups, season, set(players["player_id"].to_list()))
         typer.echo(
-            f"refreshed {season}: {done.players:,} players with a boxscore, {done.fetched:,} "
-            f"landing pages fetched in {api.requests:,} requests, {done.reused:,} already fetched "
-            f"after its lines were public, {len(done.missing):,} not found"
+            f"refreshed {season}: {done.players:,} players with a boxscore in it or the "
+            f"{len(done.seasons) - 1} seasons before, {done.fetched:,} landing pages fetched in "
+            f"{api.requests:,} requests, {done.reused:,} already fetched after its lines were "
+            f"public, {len(done.missing):,} not found"
         )
         if done.missing:
             typer.echo(

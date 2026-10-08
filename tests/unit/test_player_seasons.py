@@ -302,8 +302,10 @@ MID_SEASON = datetime(2012, 3, 1, tzinfo=UTC)
 REFETCHED = datetime(2012, 7, 2, 9, 0, tzinfo=UTC)
 
 
-def refresh_api(store: RawStore, served: dict[int, bytes]) -> tuple[NhlApi, list[str]]:
-    """An NHL client whose landing pages come from served, fetched at REFETCHED; any other
+def refresh_api(
+    store: RawStore, served: dict[int, bytes], now: datetime = REFETCHED
+) -> tuple[NhlApi, list[str]]:
+    """An NHL client whose landing pages come from served, fetched at now (REFETCHED); any other
     player's page is a 404."""
     import httpx
 
@@ -319,7 +321,7 @@ def refresh_api(store: RawStore, served: dict[int, bytes]) -> tuple[NhlApi, list
         return httpx.Response(200, content=served[player_id])
 
     client = httpx.Client(transport=httpx.MockTransport(handler), base_url=nhl_api.BASE_URL)
-    api = NhlApi(store, client, min_interval_s=0.0, now=lambda: REFETCHED)
+    api = NhlApi(store, client, min_interval_s=0.0, now=lambda: now)
     return api, paths
 
 
@@ -401,3 +403,53 @@ def test_a_player_missing_from_players_comes_back_as_a_players_row(tmp_path: Pat
     assert row["player_id"] == GOALIE and row["fetched_utc"] == REFETCHED
     assert row["raw_key"] == f"nhl/player-landing/{GOALIE}/20120702T090000Z"
     assert refresh(api, boxscores(GOALIE), 20112012, {GOALIE}).recovered == []
+
+
+# #199: the goalie's only NHL season is 2011-12, and he spends 2012-13 in Germany and the ECHL.
+# Should he return in 2013-14, his prior reads 2012-13's lines, fixed when 2013-14 starts.
+AWAY_REFETCHED = datetime(2013, 7, 2, 9, 0, tzinfo=UTC)
+
+
+def test_the_refresh_covers_a_player_who_spent_the_season_outside_the_nhl(tmp_path: Path) -> None:
+    from nhl_edge.ingest.player_seasons import refresh
+
+    store = RawStore(tmp_path)
+    # His page as the refresh after 2011-12 left it: 2012-13 still under way.
+    meta = {"fetched_utc": REFETCHED.isoformat(), "status": 200}
+    store.put("nhl", f"player-landing/{GOALIE}/20120702T090000Z", page(GOALIE), meta)
+    before, _ = build(store, players(GOALIE), boxscores(GOALIE))
+    assert before["season"].max() == 20112012
+    # No boxscore of his in 2012-13, but one in the season before: the refresh after 2012-13
+    # fetches his page too.
+    api, paths = refresh_api(store, {GOALIE: page(GOALIE)}, now=AWAY_REFETCHED)
+    done = refresh(api, boxscores(GOALIE), 20122013, {GOALIE})
+    assert done.seasons == [20122013, 20112012, 20102011]
+    assert (done.players, done.fetched, done.reused) == (1, 1, 0)
+    assert paths == [f"/v1/player/{GOALIE}/landing"]
+    after, _ = build(store, players(GOALIE), boxscores(GOALIE))
+    away = after.filter(pl.col("season") == 20122013)
+    assert set(away["league"]) == {"DEL", "ECHL"}
+    assert set(away["raw_key"]) == {f"nhl/player-landing/{GOALIE}/20130702T090000Z"}
+    # Public from July 1 after the season, as any season's lines: never from the refetch.
+    assert (away["observed_utc"] == datetime(2013, 7, 1, tzinfo=UTC)).all()
+    assert after.filter(pl.col("season") < 20122013).drop("raw_key").equals(before.drop("raw_key"))
+
+
+def test_the_refresh_leaves_out_a_player_last_seen_three_seasons_before(tmp_path: Path) -> None:
+    from nhl_edge.ingest.player_seasons import refresh, refresh_seasons
+
+    assert refresh_seasons(20142015) == [20142015, 20132014, 20122013]
+    store = RawStore(tmp_path)
+    api, paths = refresh_api(store, {GOALIE: page(GOALIE)}, now=datetime(2015, 7, 2, tzinfo=UTC))
+    done = refresh(api, boxscores(GOALIE), 20142015, {GOALIE})  # his boxscore is of 2011-12
+    assert (done.players, done.fetched, paths) == (0, 0, [])
+
+
+def test_the_refresh_window_spans_the_seasons_a_prior_reads() -> None:
+    # The refresh after season s covers the players of s and the seasons before it, so that the
+    # next season's priors, which read the NHLE_SEASONS seasons before it, have every line of a
+    # player away for that long.
+    from nhl_edge.ingest.player_seasons import REFRESH_SEASONS
+    from nhl_edge.ratings.priors import NHLE_SEASONS
+
+    assert REFRESH_SEASONS == NHLE_SEASONS + 1
