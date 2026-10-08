@@ -2565,22 +2565,30 @@ def live_slate(
     if r2 and source is not None:
         raise typer.BadParameter("pass at most one of --r2 and --from")
     load_env()
-    game_date = day.date() if day is not None else datetime.now(UTC).astimezone(ET).date()
     lake = Lake.from_env(mirror=r2)
     season = [blend_fit.LIVE_SEASON]
     if source is not None:
         ledger = pl.read_parquet(source)
-    elif r2:
-        assert lake.objects is not None and lake.bucket is not None
-        lake.pull("lineup_replacements", seasons=season)
-        try:
-            body = lake.objects.get_object(Bucket=lake.bucket, Key=lp.ledger_key(game_date))
-        except Exception:
-            typer.echo(f"no ledger for {game_date} in R2", err=True)
-            raise typer.Exit(code=1) from None
-        ledger = pl.read_parquet(io.BytesIO(body["Body"].read()))
+        dates = ledger["game_date"].unique().to_list()
+        # A dry run's ledger holds one date: its own, unless --date picks another.
+        if day is None and len(dates) != 1:
+            raise typer.BadParameter(f"{source} holds {len(dates)} dates: pass --date")
+        game_date = day.date() if day is not None else dates[0]
     else:
-        ledger = lake.read("paper_ledger", seasons=season)
+        game_date = day.date() if day is not None else datetime.now(UTC).astimezone(ET).date()
+        if r2:
+            assert lake.objects is not None and lake.bucket is not None
+            lake.pull("lineup_replacements", seasons=season)
+            key = lp.ledger_key(game_date)
+            listed = lake.objects.list_objects_v2(Bucket=lake.bucket, Prefix=key)
+            # Only an absent ledger is "no ledger": any other storage error surfaces as it is.
+            if not any(item["Key"] == key for item in listed.get("Contents", [])):
+                typer.echo(f"no ledger for {game_date} in R2", err=True)
+                raise typer.Exit(code=1)
+            body = lake.objects.get_object(Bucket=lake.bucket, Key=key)
+            ledger = pl.read_parquet(io.BytesIO(body["Body"].read()))
+        else:
+            ledger = lake.read("paper_ledger", seasons=season)
     ledger = ledger.filter(pl.col("game_date") == game_date)
     if ledger.is_empty():
         typer.echo(f"no ledger rows for {game_date}", err=True)

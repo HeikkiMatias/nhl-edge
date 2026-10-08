@@ -117,10 +117,25 @@ def estimate(frame: pl.DataFrame, value: str) -> dict[str, Any]:
     return bootstrap(frame, value).to_dict()
 
 
+def scoreable(rows: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
+    """The predicted rows, but a decision on a game later played more than POSTPONED from the
+    start it was decided for: that forecast is void, as its bet is (live/settle.py), and the game
+    is decided again on its new date."""
+    played = games.select("game_id", played_utc="start_utc")
+    return (
+        rows.filter(pl.col("status") == lp.PREDICTED)
+        .join(played, on="game_id", how="left")
+        .filter(
+            pl.col("played_utc").is_null()
+            | ((pl.col("played_utc") - pl.col("start_utc")).abs() <= ls.POSTPONED)
+        )
+        .drop("played_utc")
+    )
+
+
 def with_results(rows: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
-    """The predicted rows whose game's result is known, with it (home_win)."""
-    predicted = rows.filter(pl.col("status") == lp.PREDICTED)
-    return predicted.join(outcomes(games).select("game_id", "home_win"), on="game_id")
+    """The scoreable predicted rows whose game's result is known, with it (home_win)."""
+    return scoreable(rows, games).join(outcomes(games).select("game_id", "home_win"), on="game_id")
 
 
 def bets_of(rows: pl.DataFrame, settlements: pl.DataFrame) -> pl.DataFrame:
@@ -140,10 +155,13 @@ def bets_of(rows: pl.DataFrame, settlements: pl.DataFrame) -> pl.DataFrame:
     return rows.filter(pl.col("bet").fill_null(False)).join(settled, on=keys, how="left")
 
 
-def coverage(rows: pl.DataFrame, bets: pl.DataFrame) -> dict[str, Any]:
+def coverage(rows: pl.DataFrame, bets: pl.DataFrame, games: pl.DataFrame) -> dict[str, Any]:
     """ADR 0032's denominators: the slate games, those predicted and why the others weren't, the
-    bets, and how many are eligible and have a valid proxy, with every exclusion by reason."""
+    predicted games still without a result, the bets, and how many are eligible and have a valid
+    proxy, with every exclusion by reason."""
     not_predicted = rows.filter(pl.col("status") != lp.PREDICTED)
+    scoring = scoreable(rows, games)
+    awaiting = scoring.height - scoring.join(games.select("game_id"), on="game_id").height
     settled = bets.filter(pl.col("settled") == ls.SETTLED)
     eligible = settled.filter(pl.col("close_status") != closing.NO_PREGAME)
     proxy = eligible.filter(pl.col("close_status") == closing.PROXY)
@@ -151,6 +169,7 @@ def coverage(rows: pl.DataFrame, bets: pl.DataFrame) -> dict[str, Any]:
         "slate_games": rows.height,
         "predicted": rows.height - not_predicted.height,
         "not_predicted": _counts(not_predicted, "status"),
+        "awaiting_result": awaiting,
         "bets": bets.height,
         "awaiting_settlement": bets.filter(pl.col("settled").is_null()).height,
         "void_postponed": bets.filter(pl.col("settled") == ls.VOID).height,
@@ -469,13 +488,19 @@ def report(
     formal = as_of >= REVIEW_DATE
     value = closing_value(bets)
     calibration = calibration_band(scored)
+    cover = coverage(rows, bets, games)
+    # The formal review covers every bet and game: with any still unsettled or without a
+    # result, its verdicts can only be insufficient evidence.
+    incomplete = {
+        name: cover[name] for name in ("awaiting_settlement", "awaiting_result") if cover[name]
+    }
     result: dict[str, Any] = {
         "as_of": as_of.isoformat(),
         "policy_version": POLICY_VERSION,
         "blend_versions": sorted(set(rows["blend_version"].to_list())),
         "review_date": REVIEW_DATE.isoformat(),
         "kind": "formal review" if formal else "interim",
-        "coverage": coverage(rows, bets),
+        "coverage": cover,
         "freshness": freshness(rows, bets, odds),
         "closing_value": value,
         "comparisons": comparisons(scored),
@@ -488,8 +513,17 @@ def report(
         },
         "market_timing": market_timing(scored, history),
         "verdicts": {
-            "closing_value": clv_verdict(value) if formal else INTERIM,
-            "calibration": band_verdict(calibration) if formal else INTERIM,
+            "closing_value": INTERIM
+            if not formal
+            else INSUFFICIENT
+            if incomplete
+            else clv_verdict(value),
+            "calibration": INTERIM
+            if not formal
+            else INSUFFICIENT
+            if incomplete
+            else band_verdict(calibration),
+            "incomplete": incomplete if formal else {},
         },
     }
     if formal:
@@ -547,6 +581,7 @@ def markdown(result: dict[str, Any]) -> str:
         f"- Slate games: {cover['slate_games']}, predicted {cover['predicted']}.",
     ]
     lines += [f"  - not predicted, {reason}: {n}" for reason, n in cover["not_predicted"].items()]
+    lines.append(f"  - predicted, awaiting a result: {cover['awaiting_result']}")
     lines += [
         f"- Bets: {cover['bets']}: {cover['settled']} settled, "
         f"{cover['awaiting_settlement']} awaiting a result, {cover['void_postponed']} void "
@@ -587,7 +622,20 @@ def markdown(result: dict[str, Any]) -> str:
             f"{bound['imputed']} eligible bets without a proxy): "
             f"{_fmt(bound['clv_per_bet'], 'bets')}"
         )
-    lines += [f"- Verdict: {result['verdicts']['closing_value']}.", "", "## Model comparisons", ""]
+    incomplete = result["verdicts"]["incomplete"]
+    unfinished = (
+        " The evidence is incomplete: "
+        + ", ".join(f"{n} {name.replace('_', ' ')}" for name, n in incomplete.items())
+        + "."
+        if incomplete
+        else ""
+    )
+    lines += [
+        f"- Verdict: {result['verdicts']['closing_value']}.{unfinished}",
+        "",
+        "## Model comparisons",
+        "",
+    ]
     lines.append(
         "Mean log loss difference per game, paired on the same games: negative favours the first."
     )
@@ -613,7 +661,7 @@ def markdown(result: dict[str, Any]) -> str:
         ]
     else:
         lines.append(_fmt(calibration) + ".")
-    lines += ["", f"Verdict: {result['verdicts']['calibration']}.", ""]
+    lines += ["", f"Verdict: {result['verdicts']['calibration']}.{unfinished}", ""]
     lines += [f"## Gaps above {GAP * 100:.0f} points for hand review (hard rule 8)", ""]
     if result["gaps"]:
         lines += [
@@ -728,7 +776,7 @@ def slate_markdown(day: pl.DataFrame, replacements: pl.DataFrame) -> str:
         )
         if abs(gap) > GAP:
             flags.append(f"{game}: the blend is {gap:+.3f} from B1, review by hand (hard rule 8)")
-        if row["guarded"]:
+        if row["picked"] and row["guarded"]:
             flags.append(
                 f"{game}: the guard stopped the {row['side']} pick, its side moved "
                 f"{row['moved_against']:+.3f} since the morning"

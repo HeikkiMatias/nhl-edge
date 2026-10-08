@@ -104,6 +104,7 @@ class Season:
             games.append(
                 {
                     "game_id": game_id,
+                    "start_utc": start,
                     "home_score": 3 if home_win else 1,
                     "away_score": 1 if home_win else 3,
                     "observed_utc": result_utc,
@@ -174,7 +175,11 @@ def test_an_interim_report_gives_no_verdict_and_the_review_does() -> None:
     season = Season(n_weeks=8)
     interim = season.report(as_of=date(2027, 4, 11))
     assert interim["kind"] == "interim"
-    assert interim["verdicts"] == {"closing_value": lr.INTERIM, "calibration": lr.INTERIM}
+    assert interim["verdicts"] == {
+        "closing_value": lr.INTERIM,
+        "calibration": lr.INTERIM,
+        "incomplete": {},
+    }
     # The interim report shows no return, nor the drawdown's size (plan §11).
     assert "returns" not in interim and "max_drawdown" not in interim["alerts"]["drawdown"]
     assert "Interim report" in lr.markdown(interim)
@@ -419,3 +424,95 @@ def test_nhl_live_report_and_slate(tmp_path: Any, monkeypatch: pytest.MonkeyPatc
     assert slate.exit_code == 0, slate.output
     assert f"# Slate, {FIRST}" in slate.output and "Lineup gaps" in slate.output
     assert runner.invoke(app, ["live", "slate", "--date", "2026-09-01"]).exit_code == 1
+
+
+def test_the_review_needs_every_bet_settled_and_every_game_scored() -> None:
+    # Codex on #191: at the formal review, a bet still unsettled or a game still without a
+    # result leaves insufficient evidence, whatever the rest shows.
+    season = Season(n_weeks=8)
+    unsettled = season.settlements.filter(pl.col("game_id") != 2026020001)
+    review = season.report(as_of=lr.REVIEW_DATE, settlements=unsettled)
+    assert review["closing_value"]["clv_per_bet"]["low"] > 0
+    assert review["verdicts"]["closing_value"] == lr.INSUFFICIENT
+    assert review["verdicts"]["calibration"] == lr.INSUFFICIENT
+    assert review["verdicts"]["incomplete"] == {"awaiting_settlement": 1}
+    assert "The evidence is incomplete: 1 awaiting settlement." in lr.markdown(review)
+    season.games = season.games.filter(pl.col("game_id") != 2026020002)
+    review = season.report(as_of=lr.REVIEW_DATE)
+    assert review["coverage"]["awaiting_result"] == 1
+    assert review["verdicts"]["incomplete"] == {"awaiting_result": 1}
+
+
+def test_a_postponed_games_first_forecast_is_not_scored() -> None:
+    # Codex on #191: decided for its first date, played two days later and decided again; only
+    # the forecast for the date it was played is scored, once.
+    season = Season(n_weeks=6)
+    moved = 2026020005
+    first = season.ledger.filter(pl.col("game_id") == moved)
+    again = first.with_columns(
+        game_date=pl.col("game_date") + timedelta(days=2),
+        start_utc=pl.col("start_utc") + timedelta(days=2),
+    )
+    season.games = season.games.with_columns(
+        start_utc=pl.when(pl.col("game_id") == moved)
+        .then(pl.col("start_utc") + timedelta(days=2))
+        .otherwise("start_utc")
+    )
+    ledger = pl.concat([season.ledger, again])
+    rows = lr.counted(ledger, date(2026, 12, 31))
+    scored = lr.with_results(rows, season.games)
+    assert scored.filter(pl.col("game_id") == moved)["game_date"].to_list() == [
+        again["game_date"].item()
+    ]
+    compared = season.report(ledger=ledger)["comparisons"]
+    assert compared["BLEND - B1"]["difference"]["games"] == 180
+
+
+def test_the_slate_reads_a_dry_runs_date_and_flags_only_stopped_picks(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+    from nhl_edge.lake.schemas import LineupReplacements
+    from nhl_edge.lake.tables import Lake
+
+    season = Season(n_weeks=1)
+    day = FIRST + timedelta(days=2)
+    dry = season.ledger.filter(pl.col("game_date") == day).with_columns(
+        ev=pl.when(pl.col("bet")).then(0.03),
+        moved_against=pl.lit(0.05),
+        # The guard's move is logged on every prediction; only a pick can be stopped.
+        guarded=pl.lit(True),
+    )
+    path = tmp_path / f"{day}.parquet"
+    dry.write_parquet(path)
+    monkeypatch.setattr(
+        Lake,
+        "read",
+        lambda self, table, seasons=None: pl.DataFrame(schema=dtypes(LineupReplacements)),
+    )
+    result = CliRunner().invoke(app, ["live", "slate", "--from", str(path)])
+    assert result.exit_code == 0, result.output
+    assert f"# Slate, {day}" in result.output
+    stopped = result.output.count("the guard stopped")
+    assert stopped == dry.filter(pl.col("picked")).height > 0
+
+
+def test_the_slate_says_when_r2_has_no_ledger(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fakes import MemoryBucket
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+    from nhl_edge.lake.r2 import R2_ENV, R2Config
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    monkeypatch.setattr(R2Config, "client", lambda self: MemoryBucket())
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(app, ["live", "slate", "--date", "2026-10-12", "--r2"])
+    assert result.exit_code == 1
+    assert "no ledger for 2026-10-12 in R2" in result.output
