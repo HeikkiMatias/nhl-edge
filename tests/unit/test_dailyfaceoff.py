@@ -153,21 +153,23 @@ def test_schema_rejects_lines_updated_after_the_fetch() -> None:
 def fake_lines(
     store: RawStore,
     page: bytes = LINES,
-    clock: list[datetime] | None = None,
+    takes: timedelta = timedelta(0),
     timeouts: list[float] | None = None,
 ) -> tuple[DailyFaceoff, list[str]]:
+    """A Daily Faceoff answering every team page with page, each request taking takes on a clock
+    that starts at LINES_FETCHED, with each request's read timeout kept in timeouts."""
     paths: list[str] = []
+    clock = [LINES_FETCHED]
 
     def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
         if timeouts is not None:
             timeouts.append(request.extensions["timeout"]["read"])
+        clock[0] += takes
         return httpx.Response(200, content=page)
 
     client = httpx.Client(transport=httpx.MockTransport(handler), base_url=dailyfaceoff.BASE_URL)
-    times = iter(clock) if clock is not None else None
-    now = (lambda: next(times)) if times is not None else (lambda: LINES_FETCHED)
-    return DailyFaceoff(store, client, now=now, sleep=lambda _: None), paths
+    return DailyFaceoff(store, client, now=lambda: clock[0], sleep=lambda _: None), paths
 
 
 def test_lines_poll_stores_each_team_page_raw_and_replay_rebuilds_the_table(
@@ -202,18 +204,31 @@ def test_another_teams_page_is_a_failure(tmp_path: Path) -> None:
 
 
 def test_the_lines_poll_stops_when_its_time_runs_out(tmp_path: Path) -> None:
-    # Each read of the clock moves it 40 seconds on. Each request may take only the time left
-    # (Codex on #194), less the pause before it.
-    clock = [LINES_FETCHED + timedelta(seconds=40 * i) for i in range(20)]
+    # Each request takes 50 seconds of the 2-minute budget. Each gets the time left as its
+    # timeout, a page still arriving at the deadline is cut off, and no team starts after it
+    # (Codex on #194).
     timeouts: list[float] = []
-    dfo, paths = fake_lines(RawStore(tmp_path / "raw"), clock=clock, timeouts=timeouts)
+    dfo, paths = fake_lines(
+        RawStore(tmp_path / "raw"), takes=timedelta(seconds=50), timeouts=timeouts
+    )
     messages: list[str] = []
-    teams = {("WSH", GAME_DAY), ("PIT", GAME_DAY), ("BOS", GAME_DAY), ("TOR", GAME_DAY)}
-    run_lines_poll(dfo=dfo, teams=teams, echo=messages.append)
-    # The deadline is read at 0 s; the first team's request at 40 s gets 120 - 40 - 1 = 79 s,
-    # its fetch is stamped at 80 s, and at 120 s no time is left for the other three.
-    assert timeouts == [79.0] and len(paths) == 1
-    assert "3 skipped after 2 minutes" in messages[-1]
+    teams = {("BOS", GAME_DAY), ("PIT", GAME_DAY), ("TOR", GAME_DAY), ("WSH", GAME_DAY)}
+    failed = run_lines_poll(dfo=dfo, teams=teams, echo=messages.append)
+    assert timeouts == [120.0, 70.0, 20.0]
+    assert any("TOR" in m and "ran past the poll's deadline" in m for m in messages)
+    assert "TOR" in failed and len(paths) == 3
+    assert "1 skipped after 2 minutes" in messages[-1]
+
+
+def test_replay_skips_a_page_that_does_not_parse(tmp_path: Path) -> None:
+    # The poll stores every page before parsing it: one that doesn't parse is skipped and
+    # counted, never the end of the replay (Codex on #194).
+    store = RawStore(tmp_path / "raw")
+    broken = LINES.replace(b'"name":"Matt Roy"', b'"name":null')
+    dfo, _ = fake_lines(store, page=broken)
+    run_lines_poll(dfo=dfo, teams={("WSH", GAME_DAY)}, echo=lambda _: None)
+    report = replay_line_combinations(store, Lake(tmp_path / "lake"))
+    assert (report.pages, report.rows, len(report.unparsed)) == (0, 0, 1)
 
 
 def test_every_team_has_a_page() -> None:

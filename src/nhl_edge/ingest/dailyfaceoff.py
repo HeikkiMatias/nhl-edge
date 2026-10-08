@@ -125,32 +125,42 @@ class DailyFaceoff:
     def starting_goalies(self, day: date) -> Page:
         return self._get(f"/{PAGES}/{day.isoformat()}", f"{PAGES}/{day.isoformat()}")
 
-    def line_combinations(self, team: str, game_date: date, timeout: float | None = None) -> Page:
-        """The team's line-combinations page, stored under its game's ET date and the team; the
-        request gives up after timeout seconds when one is given."""
+    def line_combinations(
+        self, team: str, game_date: date, deadline: datetime | None = None
+    ) -> Page:
+        """The team's line-combinations page, stored under its game's ET date and the team. With
+        a deadline, the request gives up when it passes."""
         return self._get(
             f"/teams/{TEAM_SLUGS[team]}/{LINES}",
             f"{LINES}/{game_date.isoformat()}/{team}",
-            timeout,
+            deadline,
         )
 
-    def _get(self, path: str, key: str, timeout: float | None = None) -> Page:
+    def _get(self, path: str, key: str, deadline: datetime | None = None) -> Page:
         if self._fetched:
             self.sleep(self.min_interval_s)
         self._fetched = True
+        timeout: float | Any = httpx.USE_CLIENT_DEFAULT
+        if deadline is not None:
+            timeout = max((deadline - self.now()).total_seconds(), 0.001)
         try:
-            response = self.client.get(
-                path, timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout
-            )
+            with self.client.stream("GET", path, timeout=timeout) as response:
+                chunks = []
+                # A read timeout bounds each wait, not the whole page: the deadline does.
+                for chunk in response.iter_bytes():
+                    if deadline is not None and self.now() >= deadline:
+                        raise DailyFaceoffError(f"GET {path} ran past the poll's deadline")
+                    chunks.append(chunk)
         except httpx.HTTPError as exc:
             raise DailyFaceoffError(f"GET {path} failed: {type(exc).__name__}") from None
+        body = b"".join(chunks)
         fetched_utc = self.now()
         if response.status_code != 200:
             raise DailyFaceoffError(f"GET {path} returned {response.status_code}")
         raw_key = self.store.put(
             SOURCE,
             f"{key}/{fetched_utc:%Y%m%dT%H%M%SZ}",
-            response.content,
+            body,
             {
                 "url": str(response.request.url),
                 "status": response.status_code,
@@ -158,7 +168,7 @@ class DailyFaceoff:
                 "fetched_utc": fetched_utc.isoformat(),
             },
         )
-        return Page(response.content, raw_key, fetched_utc)
+        return Page(body, raw_key, fetched_utc)
 
 
 def season_of(day: date) -> int:
@@ -232,8 +242,10 @@ class ReplayReport:
     pages: int = 0
     rows: int = 0
     incomplete: list[str] = field(default_factory=list)
-    # Team pages whose team isn't the one stored under: refused, as the poll refused them.
+    # Team pages whose team isn't the one stored under, or that don't parse: refused, as the
+    # poll refused them.
     wrong_team: list[str] = field(default_factory=list)
+    unparsed: list[str] = field(default_factory=list)
     dates: list[date] = field(default_factory=list)
 
 
@@ -326,14 +338,13 @@ def run_lines_poll(
     skipped = 0
     deadline = dfo.now() + LINES_BUDGET
     for team, game_date in sorted(teams):
-        # Each request gets only the time left, so no page outlasts the budget by more than its
+        # Each request ends by the deadline, so no page outlasts the budget by more than its
         # store (one small object).
-        left = (deadline - dfo.now()).total_seconds() - dfo.min_interval_s
-        if left < 1:
+        if (deadline - dfo.now()).total_seconds() < dfo.min_interval_s + 1:
             skipped += 1
             continue
         try:
-            page = dfo.line_combinations(team, game_date, timeout=left)
+            page = dfo.line_combinations(team, game_date, deadline=deadline)
             rows = parse_line_combinations(page.body, page.fetched_utc, page.raw_key, game_date)
             if set(rows["team"]) - {team}:
                 raise DailyFaceoffError(f"the page is {sorted(set(rows['team']))}'s, not {team}'s")
@@ -379,7 +390,11 @@ def replay_line_combinations(
                 report.incomplete.append(raw_key)
                 continue
             observed_utc = parse_utc(store.meta(raw_key)["fetched_utc"])
-            rows = parse_line_combinations(store.get(raw_key), observed_utc, raw_key, day)
+            try:
+                rows = parse_line_combinations(store.get(raw_key), observed_utc, raw_key, day)
+            except (DailyFaceoffError, KeyError, TypeError, ValueError, SchemaError):
+                report.unparsed.append(raw_key)
+                continue
             # Stored under the team asked for: another team's page was refused by the poll.
             if set(rows["team"]) != {path.parent.name}:
                 report.wrong_team.append(raw_key)
