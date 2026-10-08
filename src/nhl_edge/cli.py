@@ -2454,9 +2454,9 @@ def live_settle(
     lake.replace("paper_settlements", settled)
     bets = int(ledger["bet"].fill_null(False).sum()) if ledger.height else 0
     valued = settled.filter(pl.col("clv").is_not_null())
+    # Counts only: CLV is reported with its interval by the live report (hard rule 7).
     typer.echo(
         f"paper_settlements: {settled.height} of {bets} bets settled, {valued.height} with a CLV"
-        + (f" (mean {valued['clv'].mean():+.4f})" if valued.height else "")
     )
     for (status,), rows in settled.group_by("close_status", maintain_order=True):
         typer.echo(f"  {status}: {rows.height}")
