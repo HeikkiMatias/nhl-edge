@@ -2708,6 +2708,10 @@ def live_slate(
         Path | None,
         typer.Option("--from", help="A dry run's ledger file (nhl predict --dry-run) instead."),
     ] = None,
+    fit: Annotated[
+        Path | None,
+        typer.Option(help="The live fit a dry run was decided with, if not under reports/live/."),
+    ] = None,
 ) -> None:
     """The day's ledger for the daily-slate review (#166): each game's status, B1, B3, the blend,
     the gap, u and the bet, the flags for hand review, and the lineup gaps; then each bet's driver
@@ -2771,7 +2775,7 @@ def live_slate(
     elif r2:
         assert lake.objects is not None and lake.bucket is not None
         store = lb.R2Store(lake.objects, lake.bucket)
-    typer.echo(la.slate_section(store, game_date, ledger))
+    typer.echo(la.slate_section(store, game_date, ledger, fit=fit))
 
 
 @live_app.command("attribution-levels")
@@ -2865,8 +2869,8 @@ def live_attribution_levels(
     )
     priced = bf.market(sbr_odds, games)
     starts = {s: bf.fold_start(sbr_odds, games, s) for s in bf.TRAINING_SEASONS}
-    history = la.training_history(tables, b3_tables, u_tables, priced, starts)
-    problems = la.count_problems(history, record)
+    rows, history = la.training_history(tables, b3_tables, u_tables, priced, starts)
+    problems = la.identity_problems(rows, history, record)
     if problems:
         for problem in problems:
             typer.echo(problem, err=True)

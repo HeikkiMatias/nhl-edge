@@ -50,6 +50,7 @@ def ledger(rows: list[dict]) -> pl.DataFrame:
     for row in rows:
         base = {name: None for name in dtypes(PaperLedger)}
         base.update(status=lp.PREDICTED, bet=True, away="PIT", home="WSH", price=2.0, ev=0.03)
+        base.update(p_blend=row.get("p_b0"))
         base.update(row)
         full.append(base)
     return pl.DataFrame(full, schema=dtypes(PaperLedger))
@@ -90,10 +91,30 @@ def test_the_parts_add_up_to_the_blends_move_from_the_market() -> None:
     p_b3 = 1 / (1 + np.exp(-(parts["intercept"] + sum(parts[p] for p in e3.INPUTS))))
     p_blend = LIVE.blends["BLEND"].predict(np.array([p_b0]), np.array([p_b3]), np.array([u]))[0]
     for side, sign in (("home", 1.0), ("away", -1.0)):
-        bets = ledger([{"game_id": 7, "side": side, "p_b0": p_b0, "u": u}])
+        bets = ledger([{"game_id": 7, "side": side, "p_b0": p_b0, "u": u, "p_blend": p_blend}])
         row = la.bet_parts(bets, pl.DataFrame([parts]), LINES, LIVE).to_dicts()[0]
         total = sum(row[f"part_{p}"] for p in e3.PARTS)
         assert total == pytest.approx(sign * (logit(p_blend) - logit(p_b0)), abs=1e-9)
+        assert row["rest"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_what_the_parts_leave_of_the_logged_move_is_shown_apart() -> None:
+    # Codex on #203: the logged B3 mixes each starter's prediction, which the parts, read at the
+    # mixture's expected effect, don't quite reach. The rest is shown, and never the driver.
+    p_b0, u = 0.5, 0.0
+    parts = at_usual(8, p_b0, goalies=0.05)
+    logged_b3 = 1 / (1 + np.exp(-(parts["intercept"] + sum(parts[p] for p in e3.INPUTS) + 0.3)))
+    p_blend = LIVE.blends["BLEND"].predict(np.array([p_b0]), np.array([logged_b3]), np.array([u]))[
+        0
+    ]
+    bets = ledger([{"game_id": 8, "side": "home", "p_b0": p_b0, "u": u, "p_blend": p_blend}])
+    row = la.bet_parts(bets, pl.DataFrame([parts]), LINES, LIVE).to_dicts()[0]
+    _, _, b_x, _ = LIVE.blends["BLEND"].weights
+    assert row["rest"] == pytest.approx(b_x * 0.3, abs=1e-9)
+    total = sum(row[f"part_{p}"] for p in e3.PARTS) + row["rest"]
+    assert total == pytest.approx(logit(p_blend) - logit(p_b0), abs=1e-9)
+    assert row["driver"] == "goalies"
+    assert "| Rest |" in la.markdown(la.bet_parts(bets, pl.DataFrame([parts]), LINES, LIVE))
 
 
 def test_only_bets_are_attributed_and_one_without_b3_parts_has_no_driver() -> None:
@@ -147,6 +168,9 @@ def test_the_levels_record_their_lines_and_refuse_a_row_known_after_the_live_sta
     assert record["live_fit"] == LIVE.version and record["policy"] == POLICY_VERSION
     assert record["training"]["per_season"] == {"20182019": 20, "20192020": 20}
     assert record["train_cutoff"] == rows["prediction_utc"].max().isoformat()
+    # Which games they stand on, to check against later.
+    assert record["training"]["games_sha256"] == la.games_digest(rows)
+    assert la.games_digest(rows.head(39)) != la.games_digest(rows)
     loaded = la.load(record, LIVE.version)
     for part, (alpha, beta) in LINES.items():
         assert loaded[part] == pytest.approx((alpha, beta), abs=1e-9)
@@ -157,7 +181,7 @@ def test_the_levels_record_their_lines_and_refuse_a_row_known_after_the_live_sta
         la.artifact("attribution-levels-x", LIVE.version, LIVE.fold_start, late, cutoffs, now)
 
 
-def test_the_levels_stand_on_exactly_the_live_fits_games() -> None:
+def test_the_levels_stand_on_exactly_the_live_fits_games(monkeypatch: pytest.MonkeyPatch) -> None:
     record = json.loads(FIT.read_text())
     seasons = [int(s) for s, n in record["training"]["per_season"].items() for _ in range(n)]
     history = pl.DataFrame({"season": seasons})
@@ -165,6 +189,17 @@ def test_the_levels_stand_on_exactly_the_live_fits_games() -> None:
     short = history.filter(pl.int_range(pl.len()) > 0)
     [problem] = la.count_problems(short, record)
     assert "games rebuilt" in problem
+    # Codex on #203: equal counts aren't enough. The live fit refitted from the rebuilt rows must
+    # give back its recorded fits, so a changed game shows.
+    monkeypatch.setattr(blend_fit, "fit", lambda *args: None)
+    monkeypatch.setattr(blend_fit, "describe", lambda fold: record["fits"])
+    rows = pl.DataFrame()
+    assert la.identity_problems(rows, history, record) == []
+    moved = json.loads(json.dumps(record["fits"]))
+    moved["BLEND"]["weights"]["b_m"] += 1e-6
+    monkeypatch.setattr(blend_fit, "describe", lambda fold: moved)
+    assert any("BLEND" in problem for problem in la.identity_problems(rows, history, record))
+    assert la.identity_problems(rows, short, record) == [problem]
 
 
 def test_the_levels_are_fixed_once_per_live_fit(tmp_path: Path) -> None:
@@ -226,6 +261,13 @@ def test_the_slate_section_attributes_the_days_bets(tmp_path: Path) -> None:
     (reports / "attribution-levels-x.json").write_text(json.dumps(levels))
     section = la.slate_section(store, day, bets, reports)
     assert section.startswith("Attribution of each bet")
+    # A dry run decided with a fit kept elsewhere names it (Codex on #203).
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / FIT.name).write_bytes(FIT.read_bytes())
+    (reports / FIT.name).unlink()
+    assert "No such file" in la.slate_section(store, day, bets, reports)
+    assert la.slate_section(store, day, bets, reports, elsewhere / FIT.name) == section
     table = [line for line in section.splitlines() if line.startswith("| PIT at WSH")]
     assert len(table) == 2
     assert all("no B3 parts" not in line for line in table)

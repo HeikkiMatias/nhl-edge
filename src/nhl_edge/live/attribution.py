@@ -42,10 +42,11 @@ def training_history(
     u_tables: uncertainty.Tables,
     priced: pl.DataFrame,
     starts: dict[int, datetime],
-) -> pl.DataFrame:
-    """The live fit's training games (season, game_id, prediction_utc, logit_mkt): E1's rows of
-    each of its seasons, rebuilt as nhl live blend-fit rebuilds them (blend_fit.season_predictions
-    and the blend's rows), with logit p_mkt at each game's prediction time."""
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """The live fit's training rows, E1's rows of each of its seasons rebuilt as nhl live
+    blend-fit rebuilds them (blend_fit.season_predictions and the blend's rows); and its games
+    (season, game_id, prediction_utc, logit_mkt), with logit p_mkt at each game's prediction
+    time."""
     frames, parts = [], []
     for season in blend_fit.TRAINING_SEASONS:
         predicted, doubts = blend_fit.season_predictions(
@@ -55,7 +56,28 @@ def training_history(
         parts.append(doubts)
     experiment = blend_fit.EXPERIMENT.value
     rows = blend_backtest.rows(pl.concat(frames), {experiment: pl.concat(parts)}, tables.games)
-    return e3.market_history(rows, experiment)
+    return rows, e3.market_history(rows, experiment)
+
+
+def identity_problems(
+    rows: pl.DataFrame, history: pl.DataFrame, live_record: dict[str, Any]
+) -> list[str]:
+    """Where the rebuilt training rows are not the live fit's own: their count per season, and
+    the live fit refitted from them, which must give back its recorded blends and u scale
+    (blend_fit.differences). Equal counts alone would let a changed game through."""
+    problems = count_problems(history, live_record)
+    if problems:
+        return problems
+    start = datetime.fromisoformat(live_record["fold_start"])
+    fold = blend_fit.fit(rows, list(blend_fit.TRAINING_SEASONS), start, blend_fit.LIVE_SEASON)
+    return blend_fit.differences(blend_fit.describe(fold), live_record["fits"])
+
+
+def games_digest(training: pl.DataFrame) -> str:
+    """The sha256 of the training games, season:game_id sorted, one per line: which games the
+    levels stand on, to check them against later."""
+    keys = sorted(f"{s}:{g}" for s, g in training.select("season", "game_id").iter_rows())
+    return lb.sha256("\n".join(keys).encode())
 
 
 def levels(
@@ -116,6 +138,7 @@ def artifact(
             "seasons": list(blend_fit.TRAINING_SEASONS),
             "games": training.height,
             "per_season": {str(s): n for s, n in per_season.iter_rows()},
+            "games_sha256": games_digest(training),
         },
         "lines": {
             part: {"intercept": alpha, "slope": beta}
@@ -173,7 +196,7 @@ def bet_parts(
     (part_<name> for each of e3.PARTS, in log-odds toward its side) and its driver. parts holds
     B3's parts at the decision (e3.b3_parts: game_id, intercept and each input)."""
     bets = ledger.filter(pl.col("status") == lp.PREDICTED, pl.col("bet").fill_null(False))
-    p = bets["p_b0"].to_numpy()
+    p, q = bets["p_b0"].to_numpy(), bets["p_blend"].to_numpy()
     rows = bets.select(
         "game_id",
         "away",
@@ -183,8 +206,18 @@ def bet_parts(
         "ev",
         "u",
         logit_mkt=pl.Series(np.log(p / (1 - p)), dtype=pl.Float64),
+        move=pl.Series(np.log(q / (1 - q)) - np.log(p / (1 - p)), dtype=pl.Float64),
     ).join(parts, on="game_id", how="left")
-    return e3.with_driver(e3.decompose(rows, lines, live.blends["BLEND"].weights))
+    attributed = e3.with_driver(e3.decompose(rows, lines, live.blends["BLEND"].weights))
+    # B3's parts are read at the goalie mixture's expected effect, as on history, while its
+    # logged probability mixes each starter's: what the parts leave of the logged move is shown
+    # apart (rest), never a driver.
+    sign = pl.when(pl.col("side") == "home").then(1.0).otherwise(-1.0)
+    total = pl.sum_horizontal(*(pl.col(f"part_{p}") for p in e3.PARTS))
+    found = pl.all_horizontal(*(pl.col(f"part_{p}").is_not_null() for p in e3.PARTS))
+    return attributed.with_columns(
+        rest=pl.when(found).then(sign * pl.col("move") - total).otherwise(None)
+    ).drop("move")
 
 
 def markdown(attributed: pl.DataFrame) -> str:
@@ -193,13 +226,12 @@ def markdown(attributed: pl.DataFrame) -> str:
         return "No bets to attribute.\n"
     names = list(e3.PARTS)
     lines = [
-        "| Game | Bet | Driver | " + " | ".join(n.replace("_", " ") for n in names) + " |",
-        "| --- | --- | --- | " + " | ".join("---:" for _ in names) + " |",
+        "| Game | Bet | Driver | " + " | ".join(n.replace("_", " ") for n in names) + " | Rest |",
+        "| --- | --- | --- | " + " | ".join("---:" for _ in names) + " | ---: |",
     ]
     for row in attributed.sort("game_id").iter_rows(named=True):
-        values = " | ".join(
-            "" if row[f"part_{n}"] is None else f"{row[f'part_{n}']:+.3f}" for n in names
-        )
+        cells = [row[f"part_{n}"] for n in names] + [row["rest"]]
+        values = " | ".join("" if x is None else f"{x:+.3f}" for x in cells)
         lines.append(
             f"| {row['away']} at {row['home']} | {row['side']} at {row['price']:.2f} | "
             f"{row['driver'] or 'no B3 parts'} | {values} |"
@@ -212,15 +244,17 @@ def slate_section(
     day: date,
     ledger: pl.DataFrame,
     reports: Path = blend_fit.REPORTS,
+    fit: Path | None = None,
 ) -> str:
     """The daily slate's attribution of the day's bets, from its run bundle, the live fit the day
-    names and that fit's usual levels under reports; or why there is none."""
+    names (under reports, or fit for a dry run's own) and that fit's usual levels under reports;
+    or why there is none. The rest is what the parts leave of the logged move."""
     header = "Attribution of each bet, in log-odds toward its side (#193):"
     if store is None:
         return f"{header} it needs the day's run bundle, so pass --r2 or --from.\n"
     try:
         saved = lb.read(store, day)
-        path = reports / saved.manifest["live_fit"]
+        path = fit or reports / saved.manifest["live_fit"]
         body = path.read_bytes()
         if lb.sha256(body) != saved.manifest["live_fit_sha256"]:
             raise ValueError(f"{path} is not the live fit the day was decided with")
