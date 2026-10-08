@@ -306,6 +306,13 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   - each real run first rebuilds the lake's `paper_ledger` from the ledgers in R2, the record, before reading the bankroll from it;
   - refused if any prediction is decided or published at or after its game's start;
   - `--dry-run` writes only to `data/live/dry/`, and with `--at` it decides at a past instant to check a day.
+- **The run bundle (#171),** written once after the ledger as `bundles/live/<date>/` in R2, or under `--out` for a dry run. The lake's partitions are rewritten once the games are final, so the bundle keeps what the decision read:
+  - `inputs/<table>.parquet`: the slate, the date's `feature_builds` record and the day's parsed odds quotes; every row the models read for the slate's games, which are the feature tables by `game_id` and `rapm_terms` by the slate's dates; and for u's rookie share, the candidates' boxscores of the season and their league seasons. About 0.2 MB for a three-game day.
+  - `fits.json`: B2's and B3's fitted weights, standardization and cutoffs.
+  - `manifest.json`, written last: the run's identity, including its decision, publication and input-cutoff times and its bankroll; each file's sha256 and rows; and every odds response the run attempted, its body and metadata, with their sha256.
+
+  Every object is written with `IfNoneMatch`. A write that failed part way is run again: an object already there with the same bytes counts as written. A reader refuses a bundle without its manifest or with a file that doesn't match it. If the bundle can't be written, the run exits non-zero and the ledger stands. A dry run into an `--out` that already holds the date's bundle is refused before anything is written.
+- **`nhl live replay --date <d> --r2`** (or `--from <dry-run dir>`) makes the day's decision again from the bundle alone and the committed live fit, whose sha256 must match. It covers B2, B3, u, the blend, the selection, the guard and the stakes, and compares the ledger with the day's, every column. On 2026-10-07's real slate the whole ledger was reproduced, floats within 1e-9.
 
 ## Odds snapshots
 

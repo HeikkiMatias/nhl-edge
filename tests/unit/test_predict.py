@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -512,3 +513,20 @@ def test_a_season_of_ledgers_validates_one_decision_per_date() -> None:
                 ["game_date", "game_id", "prediction_utc"]
             )
         )
+
+
+def test_the_published_ledger_is_the_day_decided_at_its_stamp() -> None:
+    # Every row a later clock would change counts, not only predictions (Codex on #187): a
+    # missing-input row whose quote ages past the limit is decided again as stale, so the
+    # ledger stamped with that clock is the day decided at it.
+    limit = pf.MIDDAY + lp.MAX_PUBLISHED_AGE
+    inputs = pf.day(fitted=None)
+    second = timedelta(seconds=1)
+    rows = lp.publish(inputs, clock(limit - second, limit + second, limit + 2 * second))
+    assert set(rows["status"]) == {lp.STALE}
+    stamp = rows["published_utc"][0]
+    again = replace(inputs, published_utc=stamp)
+    assert lp.ledger(lp.decide(again), again).equals(rows)
+    # A skipped day changes with no clock: published in one pass.
+    late = pf.day(decision_utc=datetime(2026, 10, 7, 17, 20, tzinfo=UTC))
+    assert set(lp.publish(late, clock(late.decision_utc))["status"]) == {lp.LATE}
