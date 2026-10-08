@@ -320,6 +320,17 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   - **Without a proxy,** `close_status` says why: no pre-game snapshot, stale or missing (ADR 0033). A game with no pre-game slot due has no CLV even when a delayed run left it a proxy (ADR 0032).
 
   Nothing in a decision reads the table: the bankroll reads the ledgers and the games itself.
+- **The live report (#166, ADR 0032).** `nhl live report --r2` writes `reports/live/report-<date>.md` and `.json`, committed weekly. It reads the ledgers in R2, the settlements, the games, the odds and SBR's 2018-19 to 2021-22 prices, and covers the frozen policy's regular-season decisions only.
+  - **Intervals:** every figure has its 95% weekly block bootstrap interval. A figure over fewer than 4 weeks of games gives only its counts, no value.
+  - **Interim until the formal review on 2027-04-12:** no verdict before it, and the return at the taken price, and the drawdown's size, only from then on (plan §11).
+  - **Coverage:** the slate games, those predicted, the bets, the eligible bets and those with a valid proxy, every exclusion by reason, and the quotes' freshness apart from their lead before the start.
+  - **The primary measure:** CLV per bet, with stake-weighted CLV and the fair move beside it. Then the 90% coverage floor, and the bound at the 10th and 90th percentiles of the observed CLV.
+  - **The model comparisons:** BLEND − B1, B3 − B2, BLEND − BLEND_B2 and BLEND − BLEND_MARKET, by log loss, paired on the same games.
+  - **Calibration:** the blend's band at 35%, 50% and 65%.
+  - **Gaps above 8 points,** listed for hand review.
+  - **Operational alerts:** skipped days, missing and stale prices, the guard's firing rate, u beyond 2 and 3 training standard deviations, and whether the 20% drawdown review is triggered.
+  - **ADR 0030's market check:** B0's log loss at Pinnacle's 12:45 price against SBR's opener and close.
+- **The daily slate.** `nhl live slate --date <d> --r2`, or `--from <dry-run ledger>`, prints one day's ledger for the `daily-slate` skill: each game's status, B1, B3, the blend, the gap, u and the bet, then the flags for hand review and the lineup gaps.
 
 ## Odds snapshots
 
