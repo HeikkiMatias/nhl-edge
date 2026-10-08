@@ -58,26 +58,48 @@ def test_valuing_against_the_close_never_moves_a_bet() -> None:
     assert valued["clv"].is_null().to_list() == [False, True]
 
 
+def _attributed(tables: b3.Tables) -> tuple[pl.DataFrame, ...]:
+    """Bets on 2019-20 with the fits and market rows of 2018-19 and 2019-20."""
+    fits, history = {}, []
+    for season in (20182019, 20192020):
+        start = fold_start(tables.games.select("season", "start_utc"), season)
+        games = tables.games.filter(pl.col("season") == season).head(20)
+        moments = games.select("game_id", prediction_utc="start_utc")
+        _, fits[season] = b3.predictions(tables, moments, season, start)
+        history.append(
+            moments.with_columns(
+                season=pl.lit(season, pl.Int32),
+                logit_mkt=(pl.col("game_id") % 7 - 3) / 5,
+            )
+        )
+    market = pl.concat(history)
+    bets = market.filter(pl.col("season") == 20192020).select(
+        "game_id", "prediction_utc", "season", side=pl.lit("away")
+    )
+    return bets, market, fits  # type: ignore[return-value]
+
+
 def test_the_attribution_never_reads_the_result() -> None:
-    tables = league()
-    season = 20182019
-    start = fold_start(tables.games.select("season", "start_utc"), season)
-    games = tables.games.filter(pl.col("season") == season).head(20)
-    _, model = b3.predictions(
-        tables, games.select("game_id", prediction_utc="start_utc"), season, start
-    )
-    bets = games.select("game_id", prediction_utc="start_utc").with_columns(
-        season=pl.lit(season), side=pl.lit("away")
-    )
-    fit = Blend(Kind.MODEL, (0.0, 0.5, 0.7, 0.1), (0.1,) * 4, 1000, start)
-    market = games.select("game_id", logit_mkt=pl.lit(-0.3), u=pl.lit(0.5))
+    tables = league(seasons=(20162017, 20172018, 20182019, 20192020))
+    bets, market, fits = _attributed(tables)
+    fit = Blend(Kind.MODEL, (0.0, 0.5, 0.7, 0.1), (0.1,) * 4, 1000, datetime(2019, 10, 1))
+    inputs = market.select("game_id", "logit_mkt", u=pl.lit(0.5))
     flipped = tables.games.with_columns(
         home_score=pl.col("away_score"), away_score=pl.col("home_score")
     )
     swapped = b3.Tables(**{**tables.__dict__, "games": flipped})
-    left = e3.attribution(bets, tables, {season: model}, {season: fit}, market)
-    right = e3.attribution(bets, swapped, {season: model}, {season: fit}, market)
+    left = e3.attribution(bets, tables, fits, {20192020: fit}, inputs, market)  # type: ignore[arg-type]
+    right = e3.attribution(bets, swapped, fits, {20192020: fit}, inputs, market)  # type: ignore[arg-type]
     parts = [f"part_{p}" for p in e3.PARTS]
     assert_frame_equal(
         left.select("game_id", *parts, "driver"), right.select("game_id", *parts, "driver")
     )
+    # Each input's usual level is learnt from earlier seasons only (#154): the bet season's own
+    # market rows, or a later season's, never move it.
+    later = market.with_columns(
+        logit_mkt=pl.when(pl.col("season") >= 20192020)
+        .then(pl.col("logit_mkt") * 3 + 1)
+        .otherwise("logit_mkt")
+    )
+    moved = e3.attribution(bets, tables, fits, {20192020: fit}, inputs, later)  # type: ignore[arg-type]
+    assert_frame_equal(left.select("game_id", *parts), moved.select("game_id", *parts))
