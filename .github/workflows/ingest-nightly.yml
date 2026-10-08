@@ -91,11 +91,13 @@ jobs:
         # The live report as of today for the dashboard (#168), with its intervals, interim until
         # the formal review, after the feature rows so it never holds them up. The weekly committed
         # copy under reports/live/ stays the record. Only from a night whose results, closing
-        # proxies and settlements all came in: a report from stale inputs would stay in the
+        # proxies and settlements all came in, and never from a dispatch over an earlier window
+        # (start set), which ingests other nights: a report from stale inputs would stay in the
         # dashboard's CLV history under today's date.
         if: >-
-          always() && vars.SUPABASE_LEDGER == 'true' && steps.ingest.outcome == 'success' &&
-          steps.odds.outcome == 'success' && steps.settle.outcome == 'success'
+          always() && vars.SUPABASE_LEDGER == 'true' && !inputs.start &&
+          steps.ingest.outcome == 'success' && steps.odds.outcome == 'success' &&
+          steps.settle.outcome == 'success'
         run: uv run nhl live report --r2 --supabase --out data/live/reports
       - name: Contract test on a golden game
         # One golden game read live must parse as its frozen copy does (issue #6). A failure
