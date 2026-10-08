@@ -31,7 +31,7 @@ signed toward the bet's side, and the largest is the bet's driver. A season with
 blend-training season has no driver.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -208,36 +208,52 @@ def attribution(
                 for past in [history.filter(pl.col("season") == s)]
             ]
         )
-        lines = usual(training)
-        a, b_m, b_x, b_u = blend_fits[season].weights
-        w = pl.lit(b_x) + pl.lit(b_u) * pl.col("u")
-        level = sum(
-            (pl.lit(alpha) + pl.lit(beta) * pl.col("logit_mkt") for alpha, beta in lines.values()),
-            pl.lit(0.0),
-        )
-        sign = pl.when(pl.col("side") == HOME).then(1.0).otherwise(-1.0)
-        parts = (
-            rows.join(b3_parts(rows, b3_tables, b3_fits[season], season), on="game_id", how="left")
-            .join(p_market, on="game_id", how="left")
-            .with_columns(
-                part_market=pl.lit(a)
-                + pl.lit(b_m - 1) * pl.col("logit_mkt")
-                + w * (pl.col("intercept") + level),
-                **{
-                    f"part_{part}": w
-                    * (pl.col(part) - pl.lit(alpha) - pl.lit(beta) * pl.col("logit_mkt"))
-                    for part, (alpha, beta) in lines.items()
-                },
-            )
-            .with_columns(*(pl.col(f"part_{p}") * sign for p in PARTS))
-            .drop("intercept", *INPUTS)
-        )
-        frames.append(parts)
+        joined = rows.join(
+            b3_parts(rows, b3_tables, b3_fits[season], season), on="game_id", how="left"
+        ).join(p_market, on="game_id", how="left")
+        frames.append(decompose(joined, usual(training), blend_fits[season].weights))
     if not frames:
         return bets.with_columns(driver=pl.lit(None, pl.String))
-    out = pl.concat(frames, how="diagonal_relaxed").with_columns(
-        *(pl.col(f"part_{p}").cast(pl.Float64) for p in PARTS)
+    return with_driver(pl.concat(frames, how="diagonal_relaxed"))
+
+
+def decompose(
+    rows: pl.DataFrame,
+    lines: Mapping[str, tuple[float, float]],
+    weights: tuple[float, ...],
+) -> pl.DataFrame:
+    """The blend's move from the market in parts, for rows holding side, logit_mkt, u and B3's
+    parts (intercept and each of INPUTS, from b3_parts): part_<name> for each of PARTS, in
+    log-odds, signed toward the side. The market's part is the blend's reshaping of the market
+    price with each input at its usual level there (lines, from usual); each input's part is its
+    departure from that level, weighted as the blend weights B3 at the game's u (weights: BLEND's
+    a, b_m, b_x, b_u). The live slate (#193) splits each live bet the same way."""
+    a, b_m, b_x, b_u = weights
+    w = pl.lit(b_x) + pl.lit(b_u) * pl.col("u")
+    level = sum(
+        (pl.lit(alpha) + pl.lit(beta) * pl.col("logit_mkt") for alpha, beta in lines.values()),
+        pl.lit(0.0),
     )
+    sign = pl.when(pl.col("side") == HOME).then(1.0).otherwise(-1.0)
+    return (
+        rows.with_columns(
+            part_market=pl.lit(a)
+            + pl.lit(b_m - 1) * pl.col("logit_mkt")
+            + w * (pl.col("intercept") + level),
+            **{
+                f"part_{part}": w
+                * (pl.col(part) - pl.lit(alpha) - pl.lit(beta) * pl.col("logit_mkt"))
+                for part, (alpha, beta) in lines.items()
+            },
+        )
+        .with_columns(*(pl.col(f"part_{p}") * sign for p in PARTS))
+        .drop("intercept", *INPUTS)
+    )
+
+
+def with_driver(parts: pl.DataFrame) -> pl.DataFrame:
+    """Each row's driver: the largest of its parts toward its side, or null without them all."""
+    out = parts.with_columns(*(pl.col(f"part_{p}").cast(pl.Float64) for p in PARTS))
     biggest = pl.concat_list([pl.col(f"part_{p}") for p in PARTS]).list.arg_max()
     found = pl.all_horizontal(*(pl.col(f"part_{p}").is_not_null() for p in PARTS))
     return out.with_columns(

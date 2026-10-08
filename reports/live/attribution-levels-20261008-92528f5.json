@@ -1,0 +1,46 @@
+{
+  "experiment": "E1",
+  "fitted_utc": "2026-10-08T15:19:11.433851+00:00",
+  "lines": {
+    "goalies": {
+      "intercept": -0.012613499797681714,
+      "slope": 0.07907859918980775
+    },
+    "home_ice": {
+      "intercept": 0.17251197260796322,
+      "slope": 0.0020119703226355768
+    },
+    "schedule": {
+      "intercept": -0.007974941125897878,
+      "slope": 0.0228775505626558
+    },
+    "skaters": {
+      "intercept": -0.11989682537490283,
+      "slope": 0.6577083882836153
+    }
+  },
+  "live_fit": "blend-live-20261007-89ec631",
+  "note": "Fixed once for the live fit's bets (#193): each B3 input part's least-squares line on logit p_mkt over the live fit's training games, inputs and prices only. 2022-23's rows were predicted, never scored (the owner's ruling, 2026-10-05).",
+  "policy": "policy-20261005-8ec5cf3",
+  "season": 20262027,
+  "train_cutoff": "2022-11-28T03:30:00+00:00",
+  "training": {
+    "games": 4875,
+    "games_sha256": "b7de1ff09b845b660ec29e5cb6b83c65f1a03101ae39932baecdd549e89fb4d6",
+    "per_season": {
+      "20182019": 1271,
+      "20192020": 1082,
+      "20202021": 868,
+      "20212022": 1312,
+      "20222023": 342
+    },
+    "seasons": [
+      20182019,
+      20192020,
+      20202021,
+      20212022,
+      20222023
+    ]
+  },
+  "version": "attribution-levels-20261008-92528f5"
+}

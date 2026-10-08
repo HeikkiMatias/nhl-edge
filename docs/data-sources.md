@@ -345,6 +345,12 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   - **Operational alerts:** skipped days, missing and stale prices, the guard's firing rate, u beyond 2 and 3 training standard deviations, and whether the 20% drawdown review is triggered.
   - **ADR 0030's market check:** B0's log loss at Pinnacle's 12:45 price against SBR's opener and close.
 - **The daily slate.** `nhl live slate --date <d> --r2`, or `--from <dry-run ledger>` (its own date by default), prints one day's ledger for the `daily-slate` skill: each game's status, B1, B3, the blend, the gap, u and the bet, then the flags for hand review and the lineup gaps.
+- **Attribution of the live bets (#193).** After the flags, the slate splits each bet's move from Pinnacle's fair price as history's bets are split (`backtest/e3.attribution`, #154).
+  - **The parts:** the market's part, the blend's reshaping of the price, and each B3 input's part (skaters, goalies, home ice, schedule), its departure from its usual level at that price. They are in log-odds toward the bet's side, with the largest as the driver. B3's parts are read at the goalie mixture's expected effect, as on history, so what they leave of the logged move is shown apart as the rest, never a driver.
+  - **B3's parts** come from the day's run bundle: the saved fit and rows at the decision's input cutoff (`bundle.b3_parts`). The price, u and the weights come from the ledger and the live fit.
+  - **The usual levels** are each input part's least-squares line on logit p_mkt over the live fit's training games: E1's rows of 2018-19 to 2022-23, each game's parts from its own fold's B3 fit. Inputs and prices only, never a result.
+  - **`nhl live attribution-levels --write`** fixes them once, from a committed checkout, in `reports/live/attribution-levels-<version>.json` beside the live fit, with their own version and `train_cutoff`. It refuses unless the rebuilt games are the live fit's own: the same count per season, and the live fit refitted from them gives back its recorded blends and u scale (to 1e-9). The record keeps a sha256 of the games. Without `--write` it is a dry run.
+  - Nothing in the policy reads them.
 
 ## Odds snapshots
 
