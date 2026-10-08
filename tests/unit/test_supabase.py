@@ -102,3 +102,18 @@ def test_failed_ping_raises() -> None:
     _, client = capture(status=503)
     with pytest.raises(SupabaseError, match="read from games returned 503"):
         Supabase(URL, SECRET_KEY, client).ping("games", "game_id")
+
+
+def test_update_patches_the_matching_rows_only() -> None:
+    requests, client = capture(204)
+    Supabase(URL, SECRET_KEY, client).update(
+        "paper_bets",
+        {"game_date": date(2026, 10, 8), "game_id": 2026020053},
+        {"won": True, "settled_utc": datetime(2026, 10, 9, 9, 7, tzinfo=UTC)},
+    )
+    (request,) = requests
+    assert request.method == "PATCH"
+    assert request.url.params["game_date"] == "eq.2026-10-08"
+    assert request.url.params["game_id"] == "eq.2026020053"
+    assert request.headers["Prefer"] == "return=minimal"
+    assert json.loads(request.content) == {"won": True, "settled_utc": "2026-10-09T09:07:00Z"}

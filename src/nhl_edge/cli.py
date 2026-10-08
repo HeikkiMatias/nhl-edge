@@ -2509,6 +2509,41 @@ def live_settle(
         typer.echo(f"  {status}: {rows.height}")
 
 
+@live_app.command("supabase")
+def live_supabase(
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2", help="Read the ledgers from R2 and pull the settlements first (the record)."
+        ),
+    ] = False,
+) -> None:
+    """Copy the paper ledger to Supabase for the dashboard (#167): every new prediction and bet,
+    inserted once, then every settlement onto its bet. A rerun sends nothing new, so the same
+    command backfills the season. Needs the paper ledger migration applied."""
+    from nhl_edge.lake.supabase import Supabase
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import blend_fit, serving
+    from nhl_edge.live import predict as lp
+    from nhl_edge.settings import load_env
+
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    if r2:
+        assert lake.objects is not None and lake.bucket is not None
+        lake.pull("paper_settlements")
+        ledger = lp.sync_ledgers(lake.objects, lake.bucket, blend_fit.LIVE_SEASON)
+    else:
+        ledger = lake.read("paper_ledger", seasons=[blend_fit.LIVE_SEASON])
+    supabase = Supabase.from_env()
+    sent = serving.sync(supabase, ledger, lake.read("paper_settlements"))
+    typer.echo(
+        f"supabase {supabase.project_ref}: {sent[serving.PREDICTIONS]} predictions and "
+        f"{sent[serving.PAPER_BETS]} bets sent (new ones inserted), "
+        f"{sent['settlements']} settlements set"
+    )
+
+
 @live_app.command("report")
 def live_report(
     as_of: Annotated[

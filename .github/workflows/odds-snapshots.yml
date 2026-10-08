@@ -92,3 +92,18 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
           uv run nhl predict --r2 "${pick[@]}"
+      - name: Paper ledger to Supabase
+        # The day's decisions onto the dashboard (#167), once the owner has applied the paper
+        # ledger migration and set the repository variable SUPABASE_LEDGER to true. The R2 ledger
+        # stays the record; a rerun inserts nothing twice.
+        if: >-
+          always() && vars.SUPABASE_LEDGER == 'true'
+          && (github.event_name == 'schedule' || inputs.slot == 'midday')
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: uv run nhl live supabase --r2
