@@ -117,3 +117,16 @@ def test_update_patches_the_matching_rows_only() -> None:
     assert request.url.params["game_id"] == "eq.2026020053"
     assert request.headers["Prefer"] == "return=minimal"
     assert json.loads(request.content) == {"won": True, "settled_utc": "2026-10-09T09:07:00Z"}
+
+
+def test_upsert_records_sends_documents_as_they_are() -> None:
+    # #168: the live report goes to a jsonb column whole, nested as written.
+    requests, client = capture()
+    record = {"as_of": "2026-12-31", "report": {"coverage": {"bets": 75}, "gaps": []}}
+    sent = Supabase(URL, SECRET_KEY, client).upsert_records("live_reports", [record], ["as_of"])
+    assert sent == 1
+    request = requests[0]
+    assert request.method == "POST"
+    assert str(request.url) == f"{URL}/rest/v1/live_reports?on_conflict=as_of"
+    assert request.headers["Prefer"] == "resolution=merge-duplicates,return=minimal"
+    assert json.loads(request.content) == [record]

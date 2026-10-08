@@ -426,6 +426,60 @@ def test_nhl_live_report_and_slate(tmp_path: Any, monkeypatch: pytest.MonkeyPatc
     assert runner.invoke(app, ["live", "slate", "--date", "2026-09-01"]).exit_code == 1
 
 
+def test_nhl_live_report_upserts_the_report_into_supabase(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Codex on #197: `--supabase` sends the day's report, whole, to live_reports keyed on as_of.
+    import json
+
+    import httpx
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+    from nhl_edge.lake.supabase import Supabase
+    from nhl_edge.lake.tables import TABLES, Lake
+
+    season = Season(n_weeks=5)
+    tables = {
+        "paper_ledger": season.ledger,
+        "paper_settlements": season.settlements,
+        "games": season.games,
+        "odds_snapshots": TABLES["odds_snapshots"].empty(),
+        "sbr_odds": TABLES["sbr_odds"].empty(),
+    }
+    monkeypatch.setattr(Lake, "read", lambda self, table, seasons=None: tables[table])
+    monkeypatch.setattr(lr, "sbr_history", lambda sbr, games: pl.DataFrame(schema=HISTORY))
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(201)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    url = "https://abcdefghijklmnop.supabase.co"
+    monkeypatch.setattr(
+        Supabase, "from_env", classmethod(lambda cls: Supabase(url, "sb_secret_x", client))
+    )
+    out = tmp_path / "live"
+    result = CliRunner().invoke(
+        app, ["live", "report", "--as-of", "2026-12-31", "--out", str(out), "--supabase"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "supabase live_reports: the 2026-12-31 report upserted" in result.output
+    [request] = requests
+    assert request.method == "POST"
+    assert str(request.url) == f"{url}/rest/v1/live_reports?on_conflict=as_of"
+    assert request.headers["Prefer"] == "resolution=merge-duplicates,return=minimal"
+    [row] = json.loads(request.content)
+    assert row["as_of"] == "2026-12-31" and row["kind"] == "interim"
+    assert row["policy_version"] == POLICY_VERSION
+    assert row["code_version"].startswith("live-report-")
+    # The report as the committed JSON file has it, nested figures and all.
+    assert row["report"] == json.loads((out / "report-2026-12-31.json").read_text())
+    assert row["report"]["coverage"]["slate_games"] == 150
+    assert "low" in row["report"]["closing_value"]["clv_per_bet"]
+
+
 def test_the_review_needs_every_bet_settled_and_every_game_scored() -> None:
     # Codex on #191: at the formal review, a bet still unsettled or a game still without a
     # result leaves insufficient evidence, whatever the rest shows.

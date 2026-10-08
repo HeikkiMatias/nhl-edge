@@ -4,32 +4,10 @@ import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { type FormEvent, useEffect, useState } from "react";
 
 import { easternDate } from "@/lib/format";
+import { load, type Data } from "@/lib/load";
 import { supabase } from "@/lib/supabase";
-import type { Bet, Figure, LiveReport, Prediction, ReportRow } from "@/lib/types";
 
 import { ClvHistory, Ledger, Report, Slate } from "./sections";
-
-const PREDICTION_COLUMNS =
-  "game_date, game_id, start_utc, home, away, status, home_price, away_price, p_b1, p_b3, " +
-  "p_blend, bet";
-// Never won or profit: no result-based figure shows before the season's end (plan §11).
-const BET_COLUMNS =
-  "game_date, game_id, start_utc, home, away, side, price, p_side, ev, stake, settlement, " +
-  "close_status, clv, fair_move";
-// A day's slate is at most 16 games, so the latest 40 decisions hold the latest day's.
-const LATEST_DECISIONS = 40;
-const BETS_SHOWN = 200;
-// The nightly reports' CLV per bet to date, newest first.
-const CLV_HISTORY = 60;
-
-type Data = {
-  owner: boolean;
-  day: string | null;
-  slate: Prediction[];
-  bets: Bet[];
-  report: LiveReport | null;
-  history: { as_of: string; clv: Figure }[];
-};
 
 export default function Dashboard() {
   const client = supabase();
@@ -180,50 +158,4 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
       <Report report={data.report} />
     </>
   );
-}
-
-async function load(client: SupabaseClient): Promise<Data> {
-  const owner = await client.rpc("is_dashboard_owner");
-  if (owner.error) throw owner.error;
-  if (!owner.data)
-    return { owner: false, day: null, slate: [], bets: [], report: null, history: [] };
-  const [decisions, bets, reports, history] = await Promise.all([
-    client
-      .from("predictions")
-      .select(PREDICTION_COLUMNS)
-      .order("game_date", { ascending: false })
-      .order("start_utc")
-      .limit(LATEST_DECISIONS)
-      .overrideTypes<Prediction[], { merge: false }>(),
-    client
-      .from("paper_bets")
-      .select(BET_COLUMNS)
-      .order("game_date", { ascending: false })
-      .order("start_utc")
-      .limit(BETS_SHOWN)
-      .overrideTypes<Bet[], { merge: false }>(),
-    client
-      .from("live_reports")
-      .select("as_of, kind, policy_version, report, code_version")
-      .order("as_of", { ascending: false })
-      .limit(1)
-      .overrideTypes<ReportRow[], { merge: false }>(),
-    client
-      .from("live_reports")
-      .select("as_of, clv:report->closing_value->clv_per_bet")
-      .order("as_of", { ascending: false })
-      .limit(CLV_HISTORY)
-      .overrideTypes<{ as_of: string; clv: Figure }[], { merge: false }>(),
-  ]);
-  for (const result of [decisions, bets, reports, history]) if (result.error) throw result.error;
-  const rows = decisions.data ?? [];
-  const day = rows[0]?.game_date ?? null;
-  return {
-    owner: true,
-    day,
-    slate: rows.filter((r) => r.game_date === day),
-    bets: bets.data ?? [],
-    report: reports.data?.[0]?.report ?? null,
-    history: history.data ?? [],
-  };
 }
