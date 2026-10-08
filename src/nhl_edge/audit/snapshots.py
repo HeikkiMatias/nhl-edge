@@ -291,10 +291,15 @@ def closing_markdown(report: pl.DataFrame) -> str:
 
 
 def closing_problems(closes: pl.DataFrame) -> list[str]:
-    """A game whose pre-game slots were due but left Pinnacle no quote in its last 90 minutes:
-    each costs ADR 0032's coverage floor a bet, and points at a missed or late slot."""
+    """A game whose pre-game slots were due but left no fresh Pinnacle quote in its last 90
+    minutes: each costs ADR 0032's coverage floor a bet. Missing points at a missed or late slot,
+    or a game Pinnacle didn't price; stale at Pinnacle's feed."""
+    reasons = {
+        closing.MISSING: "no Pinnacle quote in its last 90 minutes though a pre-game slot was due",
+        closing.STALE: "Pinnacle's quotes in its last 90 minutes were never fresh",
+    }
     return [
-        f"game {row['game_id']} ({row['start_utc']:%Y-%m-%d %H:%M} UTC): no closing "
-        "proxy, no Pinnacle quote in its last 90 minutes though a pre-game slot was due"
-        for row in closes.filter(pl.col("status") == closing.MISSING).iter_rows(named=True)
+        f"game {row['game_id']} ({row['start_utc']:%Y-%m-%d %H:%M} UTC): no closing proxy, "
+        + reasons[row["status"]]
+        for row in closes.filter(pl.col("status").is_in(list(reasons))).iter_rows(named=True)
     ]

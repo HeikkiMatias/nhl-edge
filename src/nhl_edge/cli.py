@@ -2762,12 +2762,7 @@ def replay(
     API. Without a window, every stored snapshot is replayed."""
     from datetime import UTC, timedelta
 
-    from nhl_edge.ingest.odds_lake import (
-        FLAG_CONTEXT,
-        SCHEDULE_DAYS,
-        SCHEDULE_PREFIX,
-        replay_odds,
-    )
+    from nhl_edge.ingest.odds_lake import SCHEDULE_DAYS, SCHEDULE_PREFIX, replay_odds
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
@@ -2795,15 +2790,16 @@ def replay(
             # Snapshots of the window, and the schedules that can list their games: events are
             # priced up to about ten days ahead, and a schedule response covers seven days.
             span = range(-SCHEDULE_DAYS - 1, (dates[-1] - dates[0]).days + 3 * SCHEDULE_DAYS)
-            # The days around the window too, which the closing proxy reads (#21).
-            around = range(-FLAG_CONTEXT, (dates[-1] - dates[0]).days + FLAG_CONTEXT + 1)
-            prefixes = [f"odds/{(dates[0] + timedelta(days=d)).isoformat()}/" for d in around]
+            prefixes = [f"odds/{day.isoformat()}/" for day in dates]
             prefixes += [
                 f"{SCHEDULE_PREFIX}/{(dates[0] + timedelta(days=d)).isoformat()}/" for d in span
             ]
         restored = sum(store.restore_from_r2(prefix).copied for prefix in prefixes)
         typer.echo(f"restored {restored} raw responses from R2")
     lake = Lake.from_env(mirror=r2)
+    if r2:
+        # The whole history, over which each closing proxy is derived (#21).
+        typer.echo(f"pulled {lake.pull('odds_snapshots'):,} odds_snapshots files from R2")
     now = datetime.now(UTC)
     report = replay_odds(store, lake, dates, now=now)
     if supabase:
@@ -2816,7 +2812,7 @@ def replay(
         # The rows the snapshot job inserted (supabase_window) of games started by now: the flag
         # is final for them. Upserted on the quote's key, the rest of the row unchanged.
         replayed = lake.read("odds_snapshots").filter(
-            pl.col("snapshot_date").is_in(report.dates),
+            pl.col("snapshot_date").is_in([*report.dates, *report.reflagged]),
             pl.col("market") == "h2h",
             pl.col("commence_time_utc") <= now,
         )
@@ -2834,6 +2830,9 @@ def replay(
         typer.echo(f"  unmatched {event_id}: {away} at {home}, {commence:%Y-%m-%d %H:%M} UTC")
     if report.in_play:
         typer.echo(f"  left out {report.in_play:,} quotes on games already under way")
+    if report.reflagged:
+        days = ", ".join(str(day) for day in report.reflagged)
+        typer.echo(f"  closing proxies moved on other dates, rewritten: {days}")
     for raw_key in report.incomplete:
         typer.echo(f"warning: {raw_key} has no sidecar (an interrupted write), skipped")
 

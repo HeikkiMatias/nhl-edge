@@ -408,9 +408,12 @@ def test_the_closing_report_gives_the_proxy_lead_by_start_time_and_why_none() ->
     text = snapshot_audit.closing_markdown(report)
     assert "| 13:00 | 1 | 0 |  |  | 1 | 0 | 0 |" in text
     assert "| 19:00 | 4 | 2 | 30 | 45 | 0 | 1 | 1 |" in text
+    # A stale close counts against the coverage floor too (Codex on #189).
     assert snapshot_audit.closing_problems(closes) == [
+        "game 3 (2026-10-07 23:00 UTC): no closing proxy, Pinnacle's quotes in its last 90 "
+        "minutes were never fresh",
         "game 4 (2026-10-07 23:00 UTC): no closing proxy, no Pinnacle quote in its last 90 "
-        "minutes though a pre-game slot was due"
+        "minutes though a pre-game slot was due",
     ]
 
 

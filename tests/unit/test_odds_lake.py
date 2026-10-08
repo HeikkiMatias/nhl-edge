@@ -183,10 +183,14 @@ def priced(commence: datetime, snapshot: datetime) -> bytes:
     return json.dumps([event]).encode()
 
 
-def test_the_closing_proxy_reads_the_next_dates_snapshots(tmp_path: Path) -> None:
+def flagged_at(lake: Lake) -> set[datetime]:
+    return set(lake.read("odds_snapshots").filter("is_closing_proxy")["snapshot_utc"])
+
+
+def test_the_closing_proxy_is_derived_over_the_whole_history(tmp_path: Path) -> None:
     # A 20:00 EST game (01:00 UTC next day): its pre7 snapshot is on 2026-12-07 and its later
-    # pre8 one on 2026-12-08 (#21). Replaying 12-07 alone must still see 12-08's, so the earlier
-    # snapshot is no close.
+    # pre8 one on 2026-12-08 (#21). Replaying 12-07 before 12-08 is in the lake marks pre7;
+    # replaying 12-08 then moves the close to pre8 and rewrites 12-07 (Codex on #189).
     commence = datetime(2026, 12, 8, 1, tzinfo=UTC)
     midday = datetime(2026, 12, 7, 17, 45, 30, tzinfo=UTC)  # 12:45 EST, the decision snapshot
     pre7 = datetime(2026, 12, 7, 23, 45, 30, tzinfo=UTC)
@@ -197,13 +201,42 @@ def test_the_closing_proxy_reads_the_next_dates_snapshots(tmp_path: Path) -> Non
     lake = Lake(tmp_path / "lake")
     after = commence + timedelta(hours=3)
     replay_odds(store, lake, [date(2026, 12, 7)], now=after)
-    table = lake.read("odds_snapshots")
-    assert set(table["snapshot_utc"]) == {midday, pre7}
-    assert not table.filter(pl.col("market") == "h2h")["is_closing_proxy"].any()
-    replay_odds(store, lake, [date(2026, 12, 8)], now=after)
-    flagged = lake.read("odds_snapshots").filter("is_closing_proxy")
-    assert set(flagged["snapshot_utc"]) == {pre8}
-    assert sorted(flagged["side"].to_list()) == ["away", "home"]
+    assert set(lake.read("odds_snapshots")["snapshot_utc"]) == {midday, pre7}
+    assert flagged_at(lake) == {pre7}
+    report = replay_odds(store, lake, [date(2026, 12, 8)], now=after)
+    assert report.reflagged == [date(2026, 12, 7)]
+    assert flagged_at(lake) == {pre8}
+    sides = lake.read("odds_snapshots").filter("is_closing_proxy")["side"]
+    assert sorted(sides.to_list()) == ["away", "home"]
+    # Replaying 12-07 again reads 12-08 from the lake: pre8 stays the close.
+    assert replay_odds(store, lake, [date(2026, 12, 7)], now=after).reflagged == []
+    assert flagged_at(lake) == {pre8}
     # Before the game starts, nothing is marked: a later snapshot could still replace it.
     replay_odds(store, lake, now=commence - timedelta(minutes=1))
-    assert not lake.read("odds_snapshots")["is_closing_proxy"].any()
+    assert flagged_at(lake) == set()
+
+
+def test_a_game_postponed_for_weeks_loses_its_old_close(tmp_path: Path) -> None:
+    # A postponed game keeps its event, however late its new start (Codex on #189): replaying
+    # the new date moves its start, and the old date's quotes are no close any more.
+    first = datetime(2026, 12, 8, tzinfo=UTC)  # 19:00 EST on 12-07
+    later = datetime(2026, 12, 21, tzinfo=UTC)  # 19:00 EST on 12-20, thirteen days on
+    old = [
+        datetime(2026, 12, 7, 17, 45, 30, tzinfo=UTC),
+        datetime(2026, 12, 7, 23, 45, 30, tzinfo=UTC),
+    ]
+    new = [
+        datetime(2026, 12, 20, 17, 45, 30, tzinfo=UTC),
+        datetime(2026, 12, 20, 23, 45, 30, tzinfo=UTC),
+    ]
+    store = RawStore(tmp_path / "raw")
+    for when in old:
+        store_snapshot(store, priced(first, when), when)
+    lake = Lake(tmp_path / "lake")
+    replay_odds(store, lake, [date(2026, 12, 7)], now=first + timedelta(hours=3))
+    assert flagged_at(lake) == {old[1]}
+    for when in new:
+        store_snapshot(store, priced(later, when), when)
+    report = replay_odds(store, lake, [date(2026, 12, 20)], now=later + timedelta(hours=3))
+    assert report.reflagged == [date(2026, 12, 7)]
+    assert flagged_at(lake) == {new[1]}

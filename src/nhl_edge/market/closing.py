@@ -6,10 +6,12 @@ latest snapshot that:
 - was taken at most MAX_LEAD before the start.
 
 A snapshot that fails the freshness limit is skipped, and an earlier one stands in if it
-qualifies. The day's decision snapshot is the first snapshot in the decision window (12:45 to
-13:15 ET) on the game's ET date: the midday slot's, which nhl predict decides on as soon as it
-lands, so a later one in the window was taken after the decision. It is never a game's close:
-CLV against a bet's own price would measure only the margin.
+qualifies. The day's decision snapshot is taken as the last snapshot in the decision window
+(12:45 to 13:15 ET) on the game's ET date. nhl predict decides on the latest one before its run,
+which is never later, so a close is always taken after the price bet: CLV against a bet's own
+price would measure only the margin. A later run in the window (a retry) only makes the rule
+stricter. Settlement (#165) is to check each bet's close against its own ledger's decision
+snapshot too.
 
 A game is its Odds API event, and its start the commence time its latest snapshot gives: the Odds
 API moves a start by minutes between snapshots, and a postponed game keeps its event. Quotes taken
@@ -17,8 +19,9 @@ before a postponement are then far more than MAX_LEAD before the new start, and 
 Only started games are marked: until the start, a later snapshot can still replace the proxy.
 
 When Pinnacle has no proxy for a game, the reason counts for ADR 0032's coverage floor:
-- NO_PREGAME when no pre-game slot is scheduled within MAX_LEAD before the start (matinees and
-  21:30 starts), outside the floor;
+- NO_PREGAME when no pre-game slot is scheduled within MAX_LEAD before the start the decision
+  snapshot showed (matinees and 21:30 starts), outside the floor: eligibility is fixed before the
+  bet, never by a later move of the start;
 - STALE when a snapshot in that span holds both sides of Pinnacle's quote but never fresh, and
   MISSING when none does (a lone side is no quote): both count against it.
 
@@ -59,7 +62,7 @@ def _et(column: str) -> pl.Expr:
 
 
 def decision_snapshots(quotes: pl.DataFrame) -> pl.DataFrame:
-    """Each ET date's decision snapshot (et_date, decision_utc): its first snapshot in the
+    """Each ET date's decision snapshot (et_date, decision_utc): its last snapshot in the
     window."""
     local = _et("snapshot_utc")
     return (
@@ -67,7 +70,7 @@ def decision_snapshots(quotes: pl.DataFrame) -> pl.DataFrame:
         .unique()
         .filter(local.dt.time().is_between(*WINDOW))
         .group_by(et_date=local.dt.date())
-        .agg(decision_utc=pl.col("snapshot_utc").min())
+        .agg(decision_utc=pl.col("snapshot_utc").max())
     )
 
 
@@ -121,7 +124,7 @@ def flag(quotes: pl.DataFrame, now: datetime) -> pl.DataFrame:
     keys = ["snapshot_utc", *QUOTE]
     marked = proxies(quotes, now).select(keys).with_columns(proxy=pl.lit(True))
     return (
-        quotes.join(marked, on=keys, how="left")
+        quotes.join(marked, on=keys, how="left", maintain_order="left")
         .with_columns(is_closing_proxy=pl.col("proxy").fill_null(False))
         .drop("proxy")
         .select(quotes.columns)
@@ -142,24 +145,36 @@ def scheduled_pregame(starts: pl.DataFrame, plan: str = PLAN) -> pl.Series:
 
 
 def pinnacle_closes(quotes: pl.DataFrame, now: datetime, plan: str = PLAN) -> pl.DataFrame:
-    """Each game started by now that Pinnacle priced (h2h) in the lake's odds_snapshots, with its
-    NHL game_id, its start, its closing proxy's snapshot (proxy_utc), how long before the start
-    it was taken (lead), and its status: PROXY, or why there is none (NO_PREGAME, STALE,
-    MISSING)."""
-    pinnacle = quotes.filter(pl.col("book") == BOOK, pl.col("market").is_in(MARKETS))
-    games = (
-        pinnacle.group_by("event_id")
-        .agg(game_id=pl.col("game_id").drop_nulls().first())
-        .join(starts(pinnacle), on="event_id")
-        .filter(pl.col("start_utc") <= _at(now))
+    """Each game started by now that any book priced (h2h) in the lake's odds_snapshots, with its
+    NHL game_id, its start, Pinnacle's closing proxy (proxy_utc), how long before the start it
+    was taken (lead), and its status: PROXY, or why there is none (NO_PREGAME, STALE, MISSING).
+    A game Pinnacle never priced is missing."""
+    h2h = quotes.filter(pl.col("market").is_in(MARKETS))
+    started = starts(h2h).filter(pl.col("start_utc") <= _at(now))
+    # The start the day's decision snapshot showed decides whether a pre-game slot was due.
+    shown = (
+        h2h.join(started, on="event_id")
+        .with_columns(et_date=_et("start_utc").dt.date())
+        .join(decision_snapshots(quotes), on="et_date")
+        .filter(pl.col("snapshot_utc") == pl.col("decision_utc"))
+        .group_by("event_id")
+        .agg(shown_utc=pl.col("commence_time_utc").max())
     )
+    games = (
+        h2h.group_by("event_id")
+        .agg(game_id=pl.col("game_id").drop_nulls().first())
+        .join(started, on="event_id")
+        .join(shown, on="event_id", how="left")
+    )
+    eligible = games.select(start_utc=pl.coalesce("shown_utc", "start_utc"))
+    pinnacle = h2h.filter(pl.col("book") == BOOK)
     proxy = proxies(pinnacle, now).select("event_id", proxy_utc="snapshot_utc")
     # Stale: a whole pair in the span, never fresh. A lone side is no quote: missing.
     seen = (
         _span(pinnacle, now).filter(pl.col("sides") == 2).group_by("event_id").agg(in_span=pl.len())
     )
     return (
-        games.with_columns(scheduled=scheduled_pregame(games, plan))
+        games.with_columns(scheduled=scheduled_pregame(eligible, plan))
         .join(proxy, on="event_id", how="left")
         .join(seen, on="event_id", how="left")
         .with_columns(

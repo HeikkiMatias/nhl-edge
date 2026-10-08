@@ -39,17 +39,22 @@ def test_the_proxy_is_the_latest_fresh_pair_in_the_last_90_minutes() -> None:
 
 def test_the_decision_snapshot_is_never_a_close() -> None:
     # A 13:00 ET matinee: the midday snapshot falls in its last 90 minutes, but it is the day's
-    # decision snapshot, the price bet. A later snapshot in the window can be its close.
+    # decision snapshot, the price bet.
     matinee = datetime(2026, 10, 10, 17, tzinfo=UTC)
     midday = datetime(2026, 10, 10, 16, 45, 30, tzinfo=UTC)
     after = matinee + timedelta(hours=1)
     assert proxy_of(quotes(pair(midday, matinee)), now=after) is None
-    again = datetime(2026, 10, 10, 16, 58, tzinfo=UTC)  # 12:58 ET, a second run in the window
-    assert proxy_of(quotes(pair(midday, matinee), pair(again, matinee)), now=after) == again
-    # The decision snapshot is the day's, whatever book or game it priced.
+    # A second run in the window (a retry after a failed decision, Codex's P0 on #189) may have
+    # been the one decided on: no snapshot in the window is a close.
+    again = datetime(2026, 10, 10, 16, 58, tzinfo=UTC)  # 12:58 ET
+    assert proxy_of(quotes(pair(midday, matinee), pair(again, matinee)), now=after) is None
+    later = datetime(2026, 10, 10, 16, 59, 30, tzinfo=UTC)  # 12:59:30 ET, still in the window
+    closes = quotes(pair(midday, matinee), pair(again, matinee), pair(later, matinee))
+    assert proxy_of(closes, now=after) is None
+    # The decision snapshot is the day's last in the window, whatever book or game it priced.
     assert closing.decision_snapshots(quotes(pair(again, matinee), pair(midday, START)))[
         "decision_utc"
-    ].to_list() == [midday]
+    ].to_list() == [again]
 
 
 def test_only_started_games_are_marked() -> None:
@@ -71,7 +76,16 @@ def test_without_a_proxy_pinnacle_says_why() -> None:
     # A lone fresh side in the span is no quote: missing, not stale (Codex on #189).
     lone_start = START + timedelta(days=4)
     day = timedelta(days=1)
+    # Codex on #189: a game Pinnacle never priced is missing, not left out; and a 19:00 start at
+    # the decision moved to 21:30 later stays eligible: missing, never "no pre-game snapshot".
+    unpriced_start = START + 5 * day
+    moved_start = START + 6 * day + timedelta(hours=2, minutes=30)
     frame = quotes(
+        pair(MIDDAY + 5 * day, unpriced_start, book="bet365", event="unpriced"),
+        pair(MIDDAY + 5 * day, unpriced_start, event="other"),
+        pair(unpriced_start - 15 * MINUTE, unpriced_start, event="other"),
+        pair(MIDDAY + 6 * day, START + 6 * day, event="moved"),
+        pair(PRE7 + 6 * day + timedelta(hours=3), moved_start, event="moved", book="bet365"),
         pair(MIDDAY, event="proxy"),
         pair(PRE7, event="proxy"),
         pair(MIDDAY + day, stale_start, event="stale"),
@@ -82,7 +96,7 @@ def test_without_a_proxy_pinnacle_says_why() -> None:
         pair(MIDDAY + 4 * day, lone_start, event="lone"),
         pair(lone_start - 15 * MINUTE, lone_start, event="lone", sides=("home",)),
     ).with_columns(game_id=pl.lit(None, pl.Int64))
-    closes = closing.pinnacle_closes(frame, NOW + timedelta(days=5))
+    closes = closing.pinnacle_closes(frame, NOW + timedelta(days=7))
     status = dict(closes.select("event_id", "status").iter_rows())
     assert status == {
         "proxy": closing.PROXY,
@@ -91,6 +105,9 @@ def test_without_a_proxy_pinnacle_says_why() -> None:
         "matinee": closing.NO_PREGAME,
         "late": closing.NO_PREGAME,
         "lone": closing.MISSING,
+        "unpriced": closing.MISSING,
+        "other": closing.PROXY,
+        "moved": closing.MISSING,
     }
     lead = closes.filter(pl.col("event_id") == "proxy")["lead"].item()
     assert lead == START - PRE7
