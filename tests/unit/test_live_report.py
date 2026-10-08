@@ -441,6 +441,14 @@ def test_the_review_needs_every_bet_settled_and_every_game_scored() -> None:
     review = season.report(as_of=lr.REVIEW_DATE)
     assert review["coverage"]["awaiting_result"] == 1
     assert review["verdicts"]["incomplete"] == {"awaiting_result": 1}
+    # A slate game never predicted counts too (Codex on #191): every game, not only the scored.
+    skipped = season.ledger.with_columns(
+        status=pl.when(pl.col("game_id") == 2026020002).then(pl.lit(lp.STALE)).otherwise("status"),
+        bet=pl.when(pl.col("game_id") == 2026020002).then(False).otherwise("bet"),
+    )
+    review = season.report(as_of=lr.REVIEW_DATE, ledger=skipped)
+    assert review["verdicts"]["incomplete"] == {"awaiting_result": 1}
+    assert review["verdicts"]["closing_value"] == lr.INSUFFICIENT
 
 
 def test_a_postponed_games_first_forecast_is_not_scored() -> None:
@@ -516,3 +524,43 @@ def test_the_slate_says_when_r2_has_no_ledger(
     result = CliRunner().invoke(app, ["live", "slate", "--date", "2026-10-12", "--r2"])
     assert result.exit_code == 1
     assert "no ledger for 2026-10-12 in R2" in result.output
+
+
+def test_sbr_history_scores_the_opener_and_close_of_its_seasons_only() -> None:
+    # Codex's P0 on #191: the history ADR 0030's check reads, built from SBR's rows. 2017-18
+    # only bounds 2018-19's openers (ADR 0007), and 2022-23 is never read.
+    from market_history import season as sbr_season
+
+    from nhl_edge.backtest.metrics import EPSILON
+    from nhl_edge.market.devig import fair_probabilities
+
+    built = [sbr_season(s, 40, seed) for seed, s in enumerate((20172018, 20182019, 20222023))]
+    odds = pl.concat([b[0] for b in built])
+    games = pl.concat([b[1] for b in built])
+    planted = 2018020005
+    odds = odds.with_columns(
+        price_decimal=pl.when((pl.col("game_id") == planted) & (pl.col("quote") == "open"))
+        .then(pl.when(pl.col("side") == "home").then(1.099).otherwise(8.05))
+        .otherwise("price_decimal")
+    )
+    history = lr.sbr_history(odds, games)
+    assert set(history["season"]) == {20182019}
+    # The planted opener, Edmonton -1010 against Minnesota 705 (#56), is refused with its game.
+    assert history.height == 39 and planted not in set(history["game_id"])
+
+    def loss(game_id: int, quote: str) -> float:
+        rows = odds.filter(pl.col("game_id") == game_id, pl.col("quote") == quote)
+        pair = [
+            [
+                rows.filter(pl.col("side") == side)["price_decimal"].item()
+                for side in ("home", "away")
+            ]
+        ]
+        p = min(max(float(fair_probabilities(pair)[0, 0]), EPSILON), 1 - EPSILON)
+        won = games.filter(pl.col("game_id") == game_id)
+        y = int(won["home_score"].item() > won["away_score"].item())
+        return -(y * np.log(p) + (1 - y) * np.log(1 - p))
+
+    row = history.filter(pl.col("game_id") == 2018020001).row(0, named=True)
+    assert row["opener_loss"] == pytest.approx(loss(2018020001, "open"))
+    assert row["close_loss"] == pytest.approx(loss(2018020001, "close"))

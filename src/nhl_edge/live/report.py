@@ -157,11 +157,11 @@ def bets_of(rows: pl.DataFrame, settlements: pl.DataFrame) -> pl.DataFrame:
 
 def coverage(rows: pl.DataFrame, bets: pl.DataFrame, games: pl.DataFrame) -> dict[str, Any]:
     """ADR 0032's denominators: the slate games, those predicted and why the others weren't, the
-    predicted games still without a result, the bets, and how many are eligible and have a valid
+    slate games still without a result, the bets, and how many are eligible and have a valid
     proxy, with every exclusion by reason."""
     not_predicted = rows.filter(pl.col("status") != lp.PREDICTED)
-    scoring = scoreable(rows, games)
-    awaiting = scoring.height - scoring.join(games.select("game_id"), on="game_id").height
+    # Every slate game, predicted or not: the formal review waits for all their results.
+    awaiting = rows.join(games.select("game_id"), on="game_id", how="anti").height
     settled = bets.filter(pl.col("settled") == ls.SETTLED)
     eligible = settled.filter(pl.col("close_status") != closing.NO_PREGAME)
     proxy = eligible.filter(pl.col("close_status") == closing.PROXY)
@@ -581,7 +581,7 @@ def markdown(result: dict[str, Any]) -> str:
         f"- Slate games: {cover['slate_games']}, predicted {cover['predicted']}.",
     ]
     lines += [f"  - not predicted, {reason}: {n}" for reason, n in cover["not_predicted"].items()]
-    lines.append(f"  - predicted, awaiting a result: {cover['awaiting_result']}")
+    lines.append(f"- Slate games awaiting a result: {cover['awaiting_result']}.")
     lines += [
         f"- Bets: {cover['bets']}: {cover['settled']} settled, "
         f"{cover['awaiting_settlement']} awaiting a result, {cover['void_postponed']} void "
