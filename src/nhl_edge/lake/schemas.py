@@ -1196,6 +1196,10 @@ class ScheduleTerms(pa.DataFrameModel):
         unique: str | list[str] | None = ["game_id"]  # noqa: RUF012 (pandera config)
 
     @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
     def known_no_earlier_than_its_cutoffs(cls, data: pa.PolarsData) -> pl.LazyFrame:
         observed = pl.col("observed_utc")
         return data.lazyframe.select(
@@ -1337,6 +1341,10 @@ class Lineups(pa.DataFrameModel):
         unique: str | list[str] | None = ["game_id", "team", "player_id"]  # noqa: RUF012 (pandera config)
 
     @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
     def skaters_dress_and_goalies_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
         goalie = pl.col("role") == "G"
         return data.lazyframe.select(
@@ -1405,6 +1413,10 @@ class LineupReplacements(pa.DataFrameModel):
         strict = True
         ordered = True
         unique: str | list[str] | None = ["game_id", "team", "role"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
 
     @pa.dataframe_check
     def model_predates_the_game(cls, data: pa.PolarsData) -> pl.LazyFrame:

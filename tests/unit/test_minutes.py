@@ -324,3 +324,13 @@ def test_input_problems_name_a_complete_chart_without_stints() -> None:
     assert (
         mins.input_problems(coverage, MINUTES.filter(pl.col("game_id") != dropped), 20112012) == []
     )
+
+
+def test_lineup_rows_of_another_season_s_game_are_refused() -> None:
+    # #131: B3 trusts season to keep each fold to its own rows and cutoffs.
+    table, replacements = lineup_table()
+    shifted = pl.col("season") + 10_001
+    with pytest.raises(Exception, match="regular_season_id_of_its_season"):
+        Lineups.validate(table.head(1).with_columns(season=shifted))
+    with pytest.raises(Exception, match="regular_season_id_of_its_season"):
+        LineupReplacements.validate(replacements.head(1).with_columns(season=shifted))
