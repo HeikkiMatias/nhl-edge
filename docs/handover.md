@@ -1,4 +1,4 @@
-# Handover, 2026-10-07
+# Handover, 2026-10-08
 
 This file says where the build stands after the cloud sessions of 2026-09-29 to 10-07, and how a fresh session picks it up. CLAUDE.md holds the rules; this file holds the state. Update it, or delete it, when it goes stale.
 
@@ -128,14 +128,18 @@ Every deliverable merged under its own task issue:
 3. **Then** tasks 4 to 9, and #173 after #30.
 
 **State on 2026-10-08:**
-- **No live prediction is logged yet.** The first live decision is 2026-10-08's, at the 12:45 ET midday dispatch. Every game from 2026-10-06 until the first logged slate is lost to the live test and is never reconstructed.
+- **The first live decision ran on 2026-10-08** at the 12:45 ET midday dispatch, and #164 is closed.
+  - All 10 games were predicted, with 6 bets totalling the 5% daily cap, and none was lost. The games of 2026-10-06 and 10-07 were lost to the live test and are never reconstructed.
+  - `nhl live replay --r2` reproduced the ledger from its run bundle, and the slate review flagged nothing.
+  - The decision was published 10m46s after the snapshot, 10m41s of it the R2 pull of 30,674 files. Pinnacle's quotes were then 11m03s old, under ADR 0033's 15 minutes. #207 (PR #208) gives the pull a connection per thread, which cut a test pull 4 to 5 times; measure it on the next midday run.
+  - Daily Faceoff's line-combinations poll (#121, step 2) ran for the first time in the same dispatch: 20 teams, 43 injured players, 0 failed, in 48s. It took the goalie step to 2m14s, just over its 2-minute budget.
 - **Task 1 is merged** (#180):
   - the `slate` table;
   - `--targets` on every builder;
   - `nhl live features` with its `feature_builds` record;
   - the nightly step.
 
-  Its first nightly run, on 2026-10-08 at 09:00 UTC, writes that day's rows to R2. The check-in at 09:55 UTC reads them back. Opening nights are refused until #181.
+  Its first nightly run, on 2026-10-08 at 09:00 UTC, wrote that day's rows to R2. A season's opening night is rated too since #181: `xg` and `stints` wait for its first final game.
 - **Task 2 is done** (#182): the season's one live fit is `reports/live/blend-live-20261007-89ec631.json`.
   - It was claimed and copied to R2 on 2026-10-07 (`live/`, `ledger/live_blend_20262027.txt`), and a second fit is refused.
   - It reproduces the 2022-23 fold's fits exactly.
@@ -146,13 +150,13 @@ Every deliverable merged under its own task issue:
   - the `PaperLedger` schema and its write-once R2 ledger, `ledger/live/<date>.parquet`;
   - the Predict step in `odds-snapshots.yml`, run on the midday dispatch.
 
-  #164 closes once the first live run's ledger is in R2. The check-in at 17:10 UTC on 2026-10-08 reads it.
+  #164 closed with the first live run (above).
 - **ADR 0033** (accepted 2026-10-07) sets the decision window and the quote's 5-minute freshness at the decision. It also sets the closing proxy's 5-minute freshness and 90-minute maximum lead.
   - **Its amendment,** accepted by the owner on 2026-10-07 after Codex's P0 on #184: the quote must also be at most 15 minutes old at publication.
 - **#170 (live data readiness) is closed:**
   - #184 records `published_utc` and refuses to predict a game that starts before publication, with the day decided again at the later clock.
   - #185 (#130) makes `nhl power-plays` refuse incomplete inputs.
-- **#171 (run bundles):** `phase-5/run-bundle` writes each decision day's run bundle once, to `bundles/live/<date>/`. It holds the rows the decision read, the B2 and B3 fits, and a hashed manifest. `nhl live replay` reproduces the day's predictions from the bundle alone. Since #188, the rows and fits are written before the ledger. The nightly's `nhl live bundle --check --r2` names a day whose manifest is missing, and `--finish` completes it.
+- **#171 (run bundles):** `phase-5/run-bundle` writes each decision day's run bundle once, to `bundles/live/<date>/`. It holds the rows the decision read, the B2 and B3 fits, and a hashed manifest. `nhl live replay` reproduces the day's predictions from the bundle alone. Since #188 (#204), the rows and fits are written before the ledger, and a run that finds another run's files with other bytes stops before its ledger. The nightly's `nhl live bundle --check --r2` names a day whose manifest is missing, and `--finish` completes it once its stored files replay the ledger.
   - Research run bundles are deferred to #186 (P6).
 - **Task 4 (#21), the closing proxy:**
   - `nhl odds replay` marks each started game's closing proxy under ADR 0033 (`market/closing.py`), and the nightly upserts the flag to Supabase.
@@ -160,7 +164,7 @@ Every deliverable merged under its own task issue:
 - **Task 5 (#165), settlement and CLV:** `nhl live settle --r2` runs nightly after the odds replay. It rebuilds `paper_settlements`: each final game's bet with its result on the full game, its profit, and its CLV against Pinnacle's closing proxy, or why it has none.
 - **Task 6 (#166), the live report:** `nhl live report --r2` writes `reports/live/report-<date>.md` and `.json` under ADR 0032's rules, committed weekly. It is interim, with no verdict, until the formal review on 2027-04-12. `nhl live slate` and the `daily-slate` skill review each day's ledger. Closing #166 also completes #172.
 - **Task 8 (#167), the Supabase paper ledger:** `nhl live supabase --r2` copies the ledgers and settlements into insert-only `predictions` and `paper_bets` tables that only the dashboard's owner can read. The owner applies `supabase/migrations/20261008120000_paper_ledger.sql`, adds their auth user id to `dashboard_owners`, and sets the repository variable `SUPABASE_LEDGER=true`. The next midday or nightly run then backfills the season.
-- **Task 8 (#168), the dashboard:** `web/` (Next.js, client-rendered, anon key only) shows the latest slate, the paper bets without result or profit, each night's CLV per bet to date, and the latest live report. The nightly upserts the report into `live_reports` (`nhl live report --supabase`). The owner applies `supabase/migrations/20261008140000_live_reports.sql`, then creates the Vercel project with root `web` and its two public variables, and adds its URL to Supabase's auth redirect URLs (`web/README.md`).
+- **Task 8 (#168), the dashboard:** `web/` (Next.js, client-rendered, anon key only) shows the latest slate, the paper bets without result or profit, each night's CLV per bet to date, and the latest live report. The nightly upserts the report into `live_reports` (`nhl live report --supabase`). The owner applies `supabase/migrations/20261008140000_live_reports.sql`, then creates the Vercel project with root `web` and its two public variables, and adds its URL to Supabase's auth redirect URLs (`web/README.md`). The owner signs in with their Supabase user's email and password (#206), or an email link.
 - **Task 7 (#154, #193), edge attribution:** each bet's driver is measured against each input's usual level at the market price, so it no longer marks favourite against underdog. `nhl live slate` prints each live bet's driver and parts from the day's run bundle, against usual levels fixed once beside the live fit (`nhl live attribution-levels --write`).
 - **Reminders** for the dated items fire into this session on 2026-10-13 and 2026-10-22 at 10:30 UTC.
 
@@ -237,7 +241,9 @@ Every deliverable merged under its own task issue:
     - A 401 is a bad or expired token (it expires around 2027-09). A 403 or 404 means the token lacks Actions read and write.
     - `npx wrangler@4 secret put GITHUB_TOKEN` stores a new token.
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
-- **Open, waiting:** #9 and #42 (P1); #30, #79 and #11 (P2). **Open, later:** phase 5's #14 and #162 to #173, with #21, #67, #121, #154 and #156 (P5); #15 (P6).
+- **Open, waiting:** #9 and #42 (P1); #30, #79 and #11 (P2).
+- **Open, for the owner:** #120, #125 and #134 (P3); #169, the raw backup's location (P5).
+- **Open, later:** phase 5's #14, #67 (in April 2027), #121 (step 3 on 2026-11-05), #173 (after #30), #181 and #207 (P5); #15 and #186 (P6).
 
 ## Keep an eye on
 
@@ -264,7 +270,7 @@ Every deliverable merged under its own task issue:
   - It doesn't always start on its own. If nothing has arrived about 15 minutes after a PR opens, comment `@codex review`. A "Something went wrong" reply is an error, not a review round: ask again.
   - Reply to every finding with "Fixed in <sha>", "Follow-up #n" or "Won't fix: <reason>". A won't-fix on a P0 needs the owner first.
 - **Reference upkeep in 2026-27:** at a coaching change, end the old stint in `coaches.csv` and add the new one. Add a new venue name to `venues.csv`, and the building to `arenas.csv` if it is new (docs/data-sources.md). `nhl audit reference` flags both.
-- **#67 (P5):** `EXPECTED_GAMES` has no 2026-27 entry. It matters from April 2027.
+- **#67 (P5):** `EXPECTED_GAMES` has no 2026-27 entry. Add it only once the regular season ends, around 2027-04-17: every live feature build's input check compares each season up to its own with its count, so a mid-season entry would refuse them all. The July 2027 player-seasons refresh needs it.
 
 ## Continuing from a terminal
 

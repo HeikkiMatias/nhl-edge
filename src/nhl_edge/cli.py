@@ -2355,11 +2355,11 @@ def live_features(
     ] = False,
 ) -> None:
     """Rate a game date's slate (#162). Fetch the date's schedule, and refuse, before changing
-    anything, while a game of the week before is not final in the lake, no slate game was
-    fetched before its as-of time, or no game of the slate's season is final yet (#181). Then
-    write the slate, bring its season's played-game tables up to date (xg, stints, then each
-    builder) with the slate games' target rows beside them, and record the build in
-    feature_builds once every step is done."""
+    anything, while a game of the week before is not final in the lake, or no slate game was
+    fetched before its as-of time. Then write the slate, bring its season's played-game tables up
+    to date (xg, stints, then each builder) with the slate games' target rows beside them, and
+    record the build in feature_builds once every step is done. On a season's opening night, with
+    none of its games final, xg and stints have nothing to do and are skipped (#181)."""
     from datetime import UTC
 
     import polars as pl
@@ -2394,9 +2394,7 @@ def live_features(
         if late.height == slate.height:
             raise typer.Exit(code=1)
     played = lake.read("games")
-    problems = live_slate.opening(slate, played)
-    if slate.height and not problems:
-        problems = live_slate.settled_problems(api, game_date, played)
+    problems = live_slate.settled_problems(api, game_date, played) if slate.height else []
     if problems:
         for problem in problems:
             typer.echo(problem, err=True)
@@ -2422,8 +2420,12 @@ def live_features(
         return
     (season,) = slate["season"].unique().to_list()
     seasons = str(season)
-    xg(seasons=seasons, out=out / "xg", r2=r2)
-    stints(seasons=seasons, r2=r2)
+    if season in live_slate.opening(slate, played):
+        # Opening night (#181): no shot of the season to score, nor stints to build.
+        typer.echo(f"no game of {season} is final yet: its opening slate is rated without them")
+    else:
+        xg(seasons=seasons, out=out / "xg", r2=r2)
+        stints(seasons=seasons, r2=r2)
     team_strength(seasons=seasons, r2=r2, targets=day)
     goalie_start(seasons=seasons, out=out / "goalie-start", r2=r2, targets=day)
     lineups(seasons=seasons, out=out / "lineups", r2=r2, targets=day)

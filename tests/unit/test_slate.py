@@ -144,11 +144,9 @@ def test_a_day_without_games_still_names_its_response(tmp_path: Path) -> None:
     assert fetched.fetched_utc == FETCHED
 
 
-def test_an_opening_night_is_refused_until_a_game_of_its_season_is_final() -> None:
+def test_an_opening_night_is_one_with_no_game_of_its_season_final() -> None:
     rows = slate.slate_rows(body(), FETCHED, date(2026, 9, 30), "k")
     earlier = pl.DataFrame({"season": [20252026]}, schema={"season": pl.Int32})
-    assert slate.opening(rows, earlier) == [
-        "no game of 20262027 is final yet: its opening slate is not rated (#181)"
-    ]
+    assert slate.opening(rows, earlier) == [20262027]
     played = pl.DataFrame({"season": [20252026, 20262027]}, schema={"season": pl.Int32})
     assert slate.opening(rows, played) == []
