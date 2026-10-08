@@ -9,29 +9,9 @@ import { supabase } from "@/lib/supabase";
 
 import { ClvHistory, Ledger, Report, Slate } from "./sections";
 
-/** Why an email link brought the browser back signed out, read from the URL it returned to
- * before the client cleans it: Supabase's error (an expired or already used link, as when a mail
- * scanner opened it first), or a code this browser couldn't complete, since the link was asked
- * for in another. Null for an ordinary visit. */
-export function linkProblem(href: string): string | null {
-  const url = new URL(href);
-  const fragment = new URLSearchParams(url.hash.slice(1));
-  const reason = fragment.get("error_description") ?? url.searchParams.get("error_description");
-  if (reason) return `The sign-in link didn't work: ${reason}.`;
-  if (url.searchParams.has("code")) {
-    return "The sign-in link didn't work in this browser: open it in the browser that asked for it.";
-  }
-  return null;
-}
-
 /** The page: the sign-in form, or the board for a signed-in user, read through the client made
  * from the public URL and anon key (lib/supabase.ts). */
 export function Dashboard() {
-  // Read before the client exists, which clears a link's code from the URL.
-  // The server's prerender has no URL to read.
-  const [problem] = useState(() =>
-    typeof window === "undefined" ? null : linkProblem(window.location.href),
-  );
   const client = supabase();
   if (!client) {
     return (
@@ -44,26 +24,30 @@ export function Dashboard() {
       </main>
     );
   }
-  return <Signed client={client} problem={problem} />;
+  return <Signed client={client} />;
 }
 
-/** The signed-in state, followed through Supabase's auth events. */
-export function Signed({
-  client,
-  problem = null,
-}: {
-  client: SupabaseClient;
-  problem?: string | null;
-}) {
+/** The signed-in state, followed through Supabase's auth events. An email link that came back
+ * signed out says why, in Supabase's own words: the client's initialization reports the link's
+ * error, an expired or used-up link (as when a mail scanner opened it first) or a code it couldn't
+ * exchange. A session clears it. */
+export function Signed({ client }: { client: SupabaseClient }) {
   const [session, setSession] = useState<Session | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    client.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setReady(true);
+    Promise.all([client.auth.initialize(), client.auth.getSession()]).then(
+      ([{ error }, { data }]) => {
+        setSession(data.session);
+        setProblem(error && !data.session ? `The sign-in link didn't work: ${error.message}` : null);
+        setReady(true);
+      },
+    );
+    const { data } = client.auth.onAuthStateChange((_event, next) => {
+      setSession(next);
+      if (next) setProblem(null);
     });
-    const { data } = client.auth.onAuthStateChange((_event, next) => setSession(next));
     return () => data.subscription.unsubscribe();
   }, [client]);
 

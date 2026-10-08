@@ -9,7 +9,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import report from "@/lib/fixtures/live-report.json";
 import { type Answer, type Sent, type StoredReport, stubbed } from "@/lib/testing";
 
-import { Dashboard, linkProblem, Signed } from "./dashboard";
+import { Dashboard, Signed } from "./dashboard";
 
 // The auth events below are played inside act(), as React expects of a test environment.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -79,9 +79,17 @@ const TABLES = {
 
 /** The client, its auth replaced: `change` plays an auth event, as a magic link or a sign-out
  * would, and the spies record the auth calls. */
-function client(start: Session | null, answer?: (sent: Sent) => Answer | undefined) {
+function client(
+  start: Session | null,
+  answer?: (sent: Sent) => Answer | undefined,
+  linkError: string | null = null,
+) {
   const { supabase, requests } = stubbed(TABLES, new Set([OWNER_TOKEN]), answer);
   let current = start;
+  // What the client's initialization reports of the URL it was opened at: an email link's error.
+  vi.spyOn(supabase.auth, "initialize").mockResolvedValue({
+    error: linkError ? ({ message: linkError } as never) : null,
+  });
   let listener: ((event: AuthChangeEvent, next: Session | null) => void) | undefined;
   vi.spyOn(supabase.auth, "getSession").mockImplementation(async () =>
     current
@@ -187,24 +195,32 @@ test("a refused email link shows Supabase's reason", async () => {
   await screen.findByText("Signups not allowed for otp");
 });
 
-test("a link that comes back signed out says why", async () => {
-  const origin = "https://dashboard.example.com/";
-  expect(linkProblem(origin)).toBeNull();
-  // Used up before the click, as when a mail scanner opens it first.
-  expect(
-    linkProblem(
-      `${origin}#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired`,
-    ),
-  ).toBe("The sign-in link didn't work: Email link is invalid or has expired.");
-  expect(linkProblem(`${origin}?error_description=Email+link+is+invalid`)).toBe(
-    "The sign-in link didn't work: Email link is invalid.",
-  );
-  // A code this browser can't complete: the link was asked for in another.
-  expect(linkProblem(`${origin}?code=abc`)).toMatch(/in the browser that asked for it/);
-  const { supabase } = client(null);
-  render(<Signed client={supabase} problem={linkProblem(`${origin}?code=abc`)} />);
-  await screen.findByText(/in the browser that asked for it/);
+test("a link that comes back signed out says why, until a sign-in clears it", async () => {
+  // Codex on #206: Supabase's own reason, here a link a mail scanner used up first.
+  const reason = "Email link is invalid or has expired";
+  const { supabase, signOut } = client(null, undefined, reason);
+  render(<Signed client={supabase} />);
+  await screen.findByText(`The sign-in link didn't work: ${reason}`);
   expect(screen.getByPlaceholderText("password")).toBeTruthy();
+  const email = screen.getByPlaceholderText("email");
+  fireEvent.change(email, { target: { value: "owner@example.com" } });
+  fireEvent.change(screen.getByPlaceholderText("password"), { target: { value: "right" } });
+  fireEvent.submit(email.closest("form") as HTMLFormElement);
+  await screen.findByText("Paper bets");
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  await screen.findByPlaceholderText("email");
+  expect(signOut).toHaveBeenCalledOnce();
+  expect(screen.queryByText(/didn't work/)).toBeNull();
+});
+
+test("a link that signed in leaves no message after signing out", async () => {
+  // The error is the client's, not the URL's: a link that worked reports none.
+  const { supabase } = client(owner);
+  render(<Signed client={supabase} />);
+  await screen.findByText("Paper bets");
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  await screen.findByPlaceholderText("email");
+  expect(screen.queryByText(/didn't work/)).toBeNull();
 });
 
 test("an owner sees the slate, the bets, the CLV history and the report", async () => {
