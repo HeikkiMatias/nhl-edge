@@ -9,13 +9,16 @@ import pytest
 from nhl_edge.ingest import dailyfaceoff
 from nhl_edge.ingest.dailyfaceoff import (
     DailyFaceoff,
+    parse_line_combinations,
     parse_starting_goalies,
+    replay_line_combinations,
     replay_starting_goalies,
+    run_lines_poll,
     run_poll,
     season_of,
 )
 from nhl_edge.lake.raw import RawStore
-from nhl_edge.lake.schemas import DailyFaceoffGoalies
+from nhl_edge.lake.schemas import DailyFaceoffGoalies, DailyFaceoffLines
 from nhl_edge.lake.tables import Lake
 
 # FLA at CAR (no reports yet) and VAN at EDM (Jarry confirmed the day before), trimmed from the
@@ -103,3 +106,139 @@ def test_never_calls_the_api_path() -> None:
     # robots.txt disallows /api/; only the public page is fetched.
     assert not dailyfaceoff.PAGES.startswith("api")
     assert dailyfaceoff.BASE_URL == "https://www.dailyfaceoff.com"
+
+
+# Washington's line-combinations page fetched on 2026-10-08 at 10:01 UTC, trimmed to six players:
+# two first-line forwards, a defenceman, a goalie, a power-play entry, and the two injured.
+LINES = (
+    Path(__file__).parent
+    / "fixtures"
+    / "dailyfaceoff"
+    / "line-combinations_WSH_2026-10-08_trimmed.html"
+).read_bytes()
+LINES_FETCHED = datetime(2026, 10, 8, 10, 1, 10, tzinfo=UTC)
+GAME_DAY = date(2026, 10, 8)
+
+
+def test_parses_each_player_in_each_group_with_his_status() -> None:
+    frame = parse_line_combinations(LINES, LINES_FETCHED, "k", GAME_DAY)
+    assert frame.select("player_name", "group", "injury_status").rows() == [
+        ("Alex Tuch", "f1", None),
+        ("Pierre-Luc Dubois", "f1", None),
+        ("Jakob Chychrun", "d1", None),
+        ("Logan Thompson", "g", None),
+        ("Tom Wilson", "pp1", None),
+        ("Rasmus Sandin", "ir", "out"),
+        ("Matt Roy", "ir", "dtd"),
+    ]
+    roy = frame.filter(pl.col("player_name") == "Matt Roy").row(0, named=True)
+    assert roy["news_utc"] == datetime(2026, 10, 7, 15, 19, 57, 988000, tzinfo=UTC)
+    assert roy["game_time_decision"] is False
+    assert (frame["team"] == "WSH").all() and (frame["season"] == 20262027).all()
+    assert (
+        frame["lines_updated_utc"] == datetime(2026, 10, 6, 15, 36, 43, 17000, tzinfo=UTC)
+    ).all()
+    assert (frame["lines_source"] == "Sammi Silber").all()
+    assert (frame["observed_utc"] == LINES_FETCHED).all()
+
+
+def test_schema_rejects_lines_updated_after_the_fetch() -> None:
+    frame = parse_line_combinations(LINES, LINES_FETCHED, "k", GAME_DAY).with_columns(
+        lines_updated_utc=pl.lit(LINES_FETCHED + timedelta(hours=1)).dt.cast_time_unit("us")
+    )
+    with pytest.raises(pandera.errors.SchemaError):
+        DailyFaceoffLines.validate(frame)
+
+
+def fake_lines(
+    store: RawStore,
+    page: bytes = LINES,
+    takes: timedelta = timedelta(0),
+    timeouts: list[float] | None = None,
+) -> tuple[DailyFaceoff, list[str]]:
+    """A Daily Faceoff answering every team page with page, each request taking takes on a clock
+    that starts at LINES_FETCHED, with each request's read timeout kept in timeouts."""
+    paths: list[str] = []
+    clock = [LINES_FETCHED]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if timeouts is not None:
+            timeouts.append(request.extensions["timeout"]["read"])
+        clock[0] += takes
+        return httpx.Response(200, content=page)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url=dailyfaceoff.BASE_URL)
+    return DailyFaceoff(store, client, now=lambda: clock[0], sleep=lambda _: None), paths
+
+
+def test_lines_poll_stores_each_team_page_raw_and_replay_rebuilds_the_table(
+    tmp_path: Path,
+) -> None:
+    store = RawStore(tmp_path / "raw")
+    dfo, paths = fake_lines(store)
+    messages: list[str] = []
+    assert run_lines_poll(dfo=dfo, teams={("WSH", GAME_DAY)}, echo=messages.append) == []
+    assert paths == ["/teams/washington-capitals/line-combinations"]
+    raw_key = store.latest("dailyfaceoff/line-combinations/2026-10-08/WSH")
+    assert raw_key is not None and store.get(raw_key) == LINES
+    assert "1 teams, 2 injured players, 0 game-time decisions; 0 failed" in messages[0]
+    lake = Lake(tmp_path / "lake")
+    report = replay_line_combinations(store, lake)
+    assert (report.pages, report.rows, report.dates) == (1, 7, [GAME_DAY])
+    assert lake.read("dailyfaceoff_lines").height == 7
+
+
+def test_another_teams_page_is_a_failure(tmp_path: Path) -> None:
+    store = RawStore(tmp_path / "raw")
+    dfo, _ = fake_lines(store)
+    messages: list[str] = []
+    assert run_lines_poll(dfo=dfo, teams={("PIT", GAME_DAY)}, echo=messages.append) == ["PIT"]
+    assert "not PIT's" in messages[0]
+    # It is stored raw, as every response is, and replay refuses it again (Codex on #194).
+    assert store.latest("dailyfaceoff/line-combinations/2026-10-08/PIT") is not None
+    lake = Lake(tmp_path / "lake")
+    report = replay_line_combinations(store, lake)
+    assert (report.pages, report.rows, len(report.wrong_team)) == (0, 0, 1)
+    assert lake.read("dailyfaceoff_lines").is_empty()
+
+
+def test_the_lines_poll_stops_when_its_time_runs_out(tmp_path: Path) -> None:
+    # Each request takes 50 seconds of the 2-minute budget. Each gets the time left as its
+    # timeout, a page still arriving at the deadline is cut off, and no team starts after it
+    # (Codex on #194).
+    timeouts: list[float] = []
+    dfo, paths = fake_lines(
+        RawStore(tmp_path / "raw"), takes=timedelta(seconds=50), timeouts=timeouts
+    )
+    messages: list[str] = []
+    teams = {("BOS", GAME_DAY), ("PIT", GAME_DAY), ("TOR", GAME_DAY), ("WSH", GAME_DAY)}
+    failed = run_lines_poll(dfo=dfo, teams=teams, echo=messages.append)
+    assert timeouts == [120.0, 70.0, 20.0]
+    assert any("TOR" in m and "ran past the poll's deadline" in m for m in messages)
+    assert "TOR" in failed and len(paths) == 3
+    assert "1 skipped after 2 minutes" in messages[-1]
+
+
+def test_replay_skips_a_page_that_does_not_parse(tmp_path: Path) -> None:
+    # The poll stores every page before parsing it: one that doesn't parse is skipped and
+    # counted, never the end of the replay (Codex on #194).
+    store = RawStore(tmp_path / "raw")
+    broken = LINES.replace(b'"name":"Matt Roy"', b'"name":null')
+    dfo, _ = fake_lines(store, page=broken)
+    run_lines_poll(dfo=dfo, teams={("WSH", GAME_DAY)}, echo=lambda _: None)
+    report = replay_line_combinations(store, Lake(tmp_path / "lake"))
+    assert (report.pages, report.rows, len(report.unparsed)) == (0, 0, 1)
+
+
+def test_every_team_has_a_page() -> None:
+    assert len(dailyfaceoff.TEAM_SLUGS) == 32
+    assert dailyfaceoff.TEAM_SLUGS["WSH"] == "washington-capitals"
+    assert not dailyfaceoff.LINES.startswith("api")
+
+
+def test_a_page_that_does_not_parse_is_a_failure_not_a_crash(tmp_path: Path) -> None:
+    broken = LINES.replace(b'"name":"Matt Roy"', b'"name":null')
+    dfo, _ = fake_lines(RawStore(tmp_path / "raw"), page=broken)
+    messages: list[str] = []
+    assert run_lines_poll(dfo=dfo, teams={("WSH", GAME_DAY)}, echo=messages.append) == ["WSH"]

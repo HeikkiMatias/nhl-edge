@@ -24,12 +24,14 @@ import polars as pl
 from nhl_edge.lake.r2 import ObjectStore, R2Config, list_etags, list_keys
 from nhl_edge.lake.schemas import (
     DAILYFACEOFF_GOALIES_KEY,
+    DAILYFACEOFF_LINES_KEY,
     ODDS_KEY,
     PLAYER_LEAGUE_SEASONS_KEY,
     PREGAME_GOALIES_KEY,
     SBR_KEY,
     ActualLineups,
     DailyFaceoffGoalies,
+    DailyFaceoffLines,
     ExpectedPowerPlays,
     Faceoffs,
     FeatureBuilds,
@@ -114,6 +116,7 @@ TABLES: dict[str, Table] = {
     "sbr_odds": Table(SbrOdds, SBR_KEY, ("season",)),
     "pregame_goalies": Table(PregameGoalies, PREGAME_GOALIES_KEY, BY_DATE),
     "dailyfaceoff_goalies": Table(DailyFaceoffGoalies, DAILYFACEOFF_GOALIES_KEY, BY_DATE),
+    "dailyfaceoff_lines": Table(DailyFaceoffLines, DAILYFACEOFF_LINES_KEY, BY_DATE),
     "player_league_seasons": Table(PlayerLeagueSeasons, PLAYER_LEAGUE_SEASONS_KEY, ("season",)),
     # Phase 5's live path (#162): a game date's slate, and the record of its feature build.
     "slate": Table(Slate, ("game_id",), BY_DATE),

@@ -2109,6 +2109,55 @@ class DailyFaceoffGoalies(pa.DataFrameModel):
         )
 
 
+DAILYFACEOFF_LINES_KEY = ("game_date", "team", "observed_utc", "dfo_player_id", "group")
+
+
+class DailyFaceoffLines(pa.DataFrameModel):
+    """One player in one group of a Daily Faceoff team line-combinations page (#121), fetched
+    with the slot goalie polls for a team playing on game_date: the projected lines (F1-F4,
+    D1-D3, G), the power-play and penalty-kill units, and the injured players (group "ir"), with
+    Daily Faceoff's injury status ("out", "dtd"; null when none) and game-time-decision flag. A
+    player appears once per group he is in.
+
+    observed_utc is the fetch time, which is when a prediction may use the row: the lines and
+    statuses change, so lines_updated_utc (when Daily Faceoff last updated the page's lines, with
+    lines_source naming its source) and news_utc (the player's latest news item) only show how
+    old the information was. Players are kept by name and Daily Faceoff id; matching them to NHL
+    player ids is left to the measurement (#121), which has the players. Logged for live games
+    only: no source dates past statuses, so nothing here enters a backtest (hard rule 1).
+    """
+
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    lines_updated_utc: UtcDatetime = pa.Field(nullable=True)
+    lines_source: pl.String = pa.Field(nullable=True)
+    dfo_player_id: pl.Int64
+    player_name: pl.String
+    jersey: pl.Int16 = pa.Field(nullable=True)
+    position: pl.String = pa.Field(nullable=True)
+    group: pl.String
+    category: pl.String = pa.Field(nullable=True)
+    injury_status: pl.String = pa.Field(nullable=True)
+    game_time_decision: pl.Boolean
+    news_utc: UtcDatetime = pa.Field(nullable=True)
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(DAILYFACEOFF_LINES_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def updated_not_after_observed(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        observed = pl.col("observed_utc") + CLOCK_SKEW
+        return data.lazyframe.select(
+            (pl.col("lines_updated_utc").is_null() | (pl.col("lines_updated_utc") <= observed))
+            & (pl.col("news_utc").is_null() | (pl.col("news_utc") <= observed))
+        )
+
+
 # Reference files (src/nhl_edge/reference/): hand-compiled CSVs, not lake tables. They cover the
 # lake's seasons, 2010-11 on.
 ARENA_ID = r"^[a-z0-9_]+$"

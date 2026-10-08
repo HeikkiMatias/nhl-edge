@@ -395,6 +395,26 @@ The same `nhl goalies poll` also fetches Daily Faceoff's starting-goalies page f
 - **Parsed from** the JSON in the page's `__NEXT_DATA__` script (`props.pageProps.data`): per game `dateGmt` and, per side, the team name, goalie name and Daily Faceoff id, status (`NewsStrengthName`, such as Likely or Confirmed), `NewsCreatedAt` and `NewsSourceUrl`.
 - **Table:** `nhl goalies replay` also rebuilds the lake's `dailyfaceoff_goalies`: one row per page fetch, game and team with the goalie, status, `reported_utc` and source. `observed_utc` is the fetch time, not the report time, since a status can change. Games that had started at the fetch give no rows. Goalies stay names; the audit matches them to NHL player ids. There is no NHL `game_id`; `start_utc` and `team` identify the game.
 
+### Daily Faceoff line combinations
+
+With `--lines`, which only the slot polls pass (`odds-snapshots.yml`), `nhl goalies poll` also fetches Daily Faceoff's line-combinations page of every team playing in the window (#121). The pages give each team's projected lines and its injured players, to measure on live games whether Daily Faceoff's injury statuses would improve the lineup availability model (ADR 0017).
+- **Terms (checked 2026-10-08):**
+  - Daily Faceoff's robots.txt disallows only `/api/` and `/cms/`, and no terms of use exist (`/terms-of-use` and `/terms` return 404, and no page links one).
+  - Yahoo's injury statuses were rejected: its terms forbid automated collection, and its robots.txt blocks ClaudeBot and other crawlers.
+- **Endpoint:** `GET https://www.dailyfaceoff.com/teams/<slug>/line-combinations`, the team's public page. Slugs come from `TEAM_SLUGS` by NHL triCode, and the `/api/` behind the page is never called.
+- **Load:** a page is about 240 KB, or 31 KB gzipped.
+  - About 20 teams a slot poll, at least 1 second apart.
+  - At most 2 minutes a poll, so the pages never hold up the odds snapshot or the midday decision. The teams left are skipped, not failed.
+  - About 400 MB a season in R2.
+- **Raw:** each page untouched (HTML) as `dailyfaceoff/line-combinations/<ET game date>/<team>/<fetch stamp>`, mirrored to R2 and compared in full with R2 by `nhl status`.
+- **Parsed from** the JSON in the page's `__NEXT_DATA__` script (`props.pageProps.combinations`):
+  - the lines' `updatedAt` and source;
+  - per player: Daily Faceoff id, name, jersey, position, group (F1-F4, D1-D3, G, PP1-2, PK1-2, IR), `injuryStatus` ("out", "dtd"), `gameTimeDecision`, and his latest news item's `createdAt`.
+- **Table:** `nhl goalies replay` also rebuilds the lake's `dailyfaceoff_lines`: one row per page fetch, player and group.
+  - `observed_utc` is the fetch time: lines and statuses change, so `lines_updated_utc` and `news_utc` only show how old the information was.
+  - Players are kept by name and Daily Faceoff id. Matching them to NHL ids is the measurement's (#121).
+- **Live-only.** No source dates past statuses, so nothing here enters a backtest (hard rule 1), and no model reads it. Any use needs an ADR with the owner, after the measurement on live games.
+
 ## SBR odds archive
 
 `nhl odds sbr` imports 2010-11 to 2022-23 into the lake's `sbr_odds` table, one partition per season (#7).
