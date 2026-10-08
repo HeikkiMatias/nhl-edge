@@ -341,13 +341,24 @@ def known_before(
     return usable, ready
 
 
-def tuning_cutoff(tables: Tables) -> datetime:
-    """The latest tuning cutoff behind B2: its own, and each feature table's train_cutoff."""
+# The feature tables whose fits B2 reads at prediction time, each with its train_cutoff.
+CUTOFF_TABLES = ("team_strength", "schedule_terms", "goalie_starts", "goalie_effects")
+
+
+def tuning_cutoff(tables: Tables, season: int) -> datetime:
+    """The latest tuning cutoff behind B2 for the season's fold: its own, and the latest
+    train_cutoff of each feature table's rows of the seasons up to the fold's own. A table refit
+    each season, such as goalie_starts, carries later seasons' cutoffs that this fold never
+    reads (#132)."""
     cutoffs = [TUNED_CUTOFF]
-    for name in ("team_strength", "schedule_terms", "goalie_effects"):
+    for name in CUTOFF_TABLES:
         table = getattr(tables, name)
-        if "train_cutoff" in table.columns and table.height:
-            latest = table["train_cutoff"].max()
+        if "train_cutoff" not in table.columns:
+            continue
+        if "season" in table.columns:
+            table = table.filter(pl.col("season") <= season)
+        latest = table["train_cutoff"].max()
+        if latest is not None:
             assert isinstance(latest, datetime)
             cutoffs.append(latest)
     return max(cutoffs)
@@ -366,10 +377,11 @@ def predictions(
 
     In the backtest (known observed_utc), a fold starting before the tuning cutoff is refused: its
     features, or B2's own L2 setting, were tuned on its own season's results (ADR 0011). The
-    cutoff is B2's own and the latest train_cutoff of the feature tables, so a retuned table moves
-    it. The fit's train_cutoff is then at least B2's tuning cutoff."""
+    cutoff is B2's own and the latest train_cutoff of the feature tables' rows up to the fold's
+    season, so a retuned table moves it. The fit's train_cutoff is then at least B2's tuning
+    cutoff."""
     if known == "observed_utc":
-        cutoff = tuning_cutoff(tables)
+        cutoff = tuning_cutoff(tables, season)
         if start <= cutoff:
             raise ValueError(
                 f"{season}'s fold starts at {start:%Y-%m-%d}, before the tuning cutoff "
