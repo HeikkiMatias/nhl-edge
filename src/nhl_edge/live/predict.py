@@ -515,15 +515,19 @@ def responses(store: RawStore, day: date) -> list[str]:
     return [key for key in dated_raw_keys(SOURCE, store).get(day, []) if is_complete(store, key)]
 
 
-def raw_responses(store: RawStore, day: date) -> dict[str, bytes]:
+def raw_responses(store: RawStore, day: date, by: datetime | None = None) -> dict[str, bytes]:
     """Every odds response a decision on the day attempts (responses), and the metadata giving
-    its time, by raw key: what its run bundle records by sha256."""
+    its time, by raw key: what its run bundle records by sha256. by keeps only those fetched by
+    then, as a bundle finished later (#188) needs: the day's later slots weren't there to read."""
     import json
 
     raw: dict[str, bytes] = {}
     for key in responses(store, day):
+        meta = store.meta(key)
+        if by is not None and parse_utc(meta["fetched_utc"]) > by:
+            continue
         raw[key] = store.get(key)
-        raw[f"{key}.meta"] = json.dumps(store.meta(key), sort_keys=True).encode()
+        raw[f"{key}.meta"] = json.dumps(meta, sort_keys=True).encode()
     return raw
 
 

@@ -2539,7 +2539,8 @@ def live_bundle(
             err=True,
         )
         raise typer.Exit(code=1)
-    raw = lp.raw_responses(raw_store, decided[0].date())
+    (published,) = ledger["published_utc"].unique().to_list()
+    raw = lp.raw_responses(raw_store, decided[0].date(), by=published)
     try:
         where = lb.finish(
             store,
@@ -2547,6 +2548,7 @@ def live_bundle(
             ledger,
             ledger_at,
             raw,
+            blend_fit.load(json.loads(fits[0].read_text())),
             fits[0].name,
             lb.sha256(fits[0].read_bytes()),
         )

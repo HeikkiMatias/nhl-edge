@@ -286,34 +286,41 @@ def test_a_run_stopped_after_its_ledger_is_finished_and_replays(
         lb.read(store, pf.DAY)
     assert lb.unfinished(store, [pf.DAY]) == [pf.DAY]
     sha = lb.sha256(FIT.read_bytes())
-    lb.finish(store, pf.DAY, ledger, "R2 ledger/live/2026-10-07.parquet", {}, FIT.name, sha)
+    monkeypatch.setattr(lb, "models", lambda _: inputs.fitted)
+    # Files that don't reproduce the ledger never seal (Codex on #204): a stake moved.
+    moved = ledger.with_columns(stake=pl.col("stake") * 1.01)
+    with pytest.raises(ValueError, match="don't reproduce the ledger"):
+        lb.finish(store, pf.DAY, moved, "x", {}, inputs.live, FIT.name, sha)
+    assert lb.unfinished(store, [pf.DAY]) == [pf.DAY]
+    at = "R2 ledger/live/2026-10-07.parquet"
+    lb.finish(store, pf.DAY, ledger, at, {}, inputs.live, FIT.name, sha)
     saved = lb.read(store, pf.DAY)
     assert lb.unfinished(store, [pf.DAY]) == []
     # The identity the run would have written, from the ledger and the saved quotes.
     for name, value in day_identity(inputs).items():
         assert saved.manifest[name] == value, name
     assert saved.manifest["live_fit_sha256"] == sha and saved.manifest["finished_later"]
-    monkeypatch.setattr(lb, "models", lambda _: inputs.fitted)
     replayed = lb.replay(saved, inputs.live)
     assert lb.differences(replayed, ledger) == []
     assert replayed["bet"].fill_null(False).any()
     with pytest.raises(ValueError, match="complete already"):
-        lb.finish(store, pf.DAY, ledger, "x", {}, FIT.name, sha)
+        lb.finish(store, pf.DAY, ledger, "x", {}, inputs.live, FIT.name, sha)
 
 
 def test_a_bundle_missing_an_input_is_never_finished(tmp_path: Path) -> None:
     sha = lb.sha256(FIT.read_bytes())
-    _, ledger = stopped_after_the_ledger(lb.LocalStore(tmp_path / "none"))
+    inputs, ledger = stopped_after_the_ledger(lb.LocalStore(tmp_path / "none"))
+    live = inputs.live
     # Nothing of the run's files was written.
     with pytest.raises(ValueError, match="never written"):
-        lb.finish(lb.LocalStore(tmp_path / "empty"), pf.DAY, ledger, "x", {}, FIT.name, sha)
+        lb.finish(lb.LocalStore(tmp_path / "empty"), pf.DAY, ledger, "x", {}, live, FIT.name, sha)
     # The models were read, so their rows are needed too, and they aren't there.
     store = lb.LocalStore(tmp_path / "fits")
     stopped_after_the_ledger(store)
     store.root.joinpath(lb.prefix(pf.DAY), lb.FITS).unlink()
     store.put(f"{lb.prefix(pf.DAY)}/{lb.FITS}", b'{"b2": {}, "b3": {}}')
     with pytest.raises(ValueError, match="missing team_strength"):
-        lb.finish(store, pf.DAY, ledger, "x", {}, FIT.name, sha)
+        lb.finish(store, pf.DAY, ledger, "x", {}, live, FIT.name, sha)
 
 
 def test_the_inputs_a_decision_saves_are_the_ones_finish_requires() -> None:
@@ -377,3 +384,21 @@ def test_nhl_live_bundle_finishes_a_day_and_checks_every_day(
     later = pf.DAY + timedelta(days=1)
     assert f"{later}: the run bundle has no manifest" in result.output
     assert "1 of 2 decision days' bundles complete" in result.output
+
+
+def test_a_finished_bundle_records_only_the_odds_stored_by_its_publication(tmp_path: Path) -> None:
+    # Codex on #204: the day's evening slots come after the midday decision on the same UTC date,
+    # so a bundle finished later must leave them out.
+    from nhl_edge.lake.raw import RawStore
+
+    store = RawStore(tmp_path)
+    day = pf.DAY
+    for stamp, slot in (("12:47", "midday"), ("22:47", "pre7")):
+        fetched = datetime.fromisoformat(f"{day}T{stamp}:00+00:00")
+        meta = {"fetched_utc": fetched.isoformat(), "status": 200}
+        store.put("odds", f"{day}/{fetched:%Y%m%dT%H%M%SZ}_{slot}_eu", b"[]", meta)
+    every = lp.raw_responses(store, day)
+    published = datetime.fromisoformat(f"{day}T16:51:00+00:00")
+    kept = lp.raw_responses(store, day, by=published)
+    assert len(every) == 4 and len(kept) == 2
+    assert all("midday" in key for key in kept)

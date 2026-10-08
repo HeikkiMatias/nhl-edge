@@ -324,7 +324,7 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
     - the day's raw odds responses, which are immutable;
     - the committed live fit the ledger names.
 
-    The manifest marks itself `finished_later`, without the run's `uv.lock` hash. It never writes an input, and refuses a bundle missing any input the run writes.
+    The manifest marks itself `finished_later`, without the run's `uv.lock` hash. It is written only once the stored files reproduce the ledger through replay, every column, so files from another run never seal. The raw responses are those stored by the publication, since the day's later slots weren't there to read. It never writes an input, and refuses a bundle missing any input the run writes.
 - **`nhl live replay --date <d> --r2`** (or `--from <dry-run dir>`) makes the day's decision again from the bundle alone and the committed live fit, whose sha256 must match. It covers B2, B3, u, the blend, the selection, the guard and the stakes, and compares the ledger with the day's, every column. On 2026-10-07's real slate the whole ledger was reproduced, floats within 1e-9.
 - **Settlement (#165).** `nhl live settle --r2` runs nightly, after the odds replay. It finds each close by the same rule as the flag, at its own clock, so a game that started after the replay still gets its close. It rebuilds `paper_settlements` from the ledgers in R2, the games and the odds, with one row per paper bet whose game is final:
   - **The result,** on the full game, OT and shootout included (hard rule 2). The profit is stake·(price − 1) for a win and −stake for a loss.

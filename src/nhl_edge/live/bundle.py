@@ -259,15 +259,19 @@ def finish(
     ledger: pl.DataFrame,
     ledger_at: str,
     raw: Mapping[str, bytes],
+    live: blend_fit.LiveFit,
     live_fit: str,
     live_fit_sha256: str,
 ) -> str:
     """Complete a bundle whose run stopped after its ledger (#188): its manifest rebuilt from what
     is stored. The identity comes from the ledger's own columns (decision and publication times,
     versions, bankroll), the input cutoff from the saved quotes as the run computed it, the files
-    from the stored objects, the raw odds responses, which are immutable, from raw, and the live
-    fit the ledger names (live_fit, its sha256). It never writes an input, and refuses a bundle
-    already complete or missing any input the run writes."""
+    from the stored objects, the raw odds responses, which are immutable, from raw (those stored
+    by the publication), and the live fit the ledger names (live, its file live_fit and sha256).
+    The manifest, the completion mark, is written only once the stored files reproduce the
+    ledger through replay, every column: files from a run other than the ledger's never seal.
+    It never writes an input, and refuses a bundle already complete or missing any input the run
+    writes."""
     where = prefix(day)
     stored = {key.removeprefix(f"{where}/") for key in store.keys(where)}
     if MANIFEST in stored:
@@ -312,7 +316,14 @@ def finish(
         "ledger": ledger_at,
         "finished_later": True,
     }
-    return write_manifest(store, day, manifest_of(identity, files, raw))
+    manifest = manifest_of(identity, files, raw)
+    problems = differences(replay(_bundle(manifest, files), live), ledger)
+    if problems:
+        raise ValueError(
+            f"{where}: its stored files don't reproduce the ledger ({'; '.join(problems)}), "
+            "so it stays unfinished"
+        )
+    return write_manifest(store, day, manifest)
 
 
 def unfinished(store: Store, days: list[date]) -> list[date]:
@@ -351,6 +362,11 @@ def read(store: Store, day: date) -> Bundle:
         if sha256(body) != entry["sha256"]:
             raise ValueError(f"{where}/{name}: its bytes don't match the manifest")
         bodies[name] = body
+    return _bundle(manifest, bodies)
+
+
+def _bundle(manifest: Mapping[str, Any], bodies: Mapping[str, bytes]) -> Bundle:
+    """A bundle from its manifest and its files' bytes, by name."""
     frames = {
         name.removeprefix("inputs/").removesuffix(".parquet"): pl.read_parquet(body)
         for name, body in bodies.items()
