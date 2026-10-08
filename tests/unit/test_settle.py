@@ -8,6 +8,7 @@ import polars as pl
 import predict_fixtures as pf
 import pytest
 
+from nhl_edge.lake.schemas import PaperSettlements, dtypes
 from nhl_edge.live import predict as lp
 from nhl_edge.live import settle as ls
 from nhl_edge.market import closing
@@ -45,9 +46,9 @@ def games(**moved: timedelta) -> pl.DataFrame:
     return pl.DataFrame(rows, schema_overrides={"home_score": pl.Int16, "away_score": pl.Int16})
 
 
-def odds(*extra: list[dict[str, Any]]) -> pl.DataFrame:
+def odds(*extra: list[dict[str, Any]], flagged: datetime = NOW) -> pl.DataFrame:
     """The day's quotes, a pre7 snapshot of 053 and 054 at Pinnacle, as the lake keeps them
-    with their game_id, and the closing proxies marked."""
+    with their game_id, and the closing proxies marked as of flagged."""
     rows = pl.concat(
         [
             pf.day_quotes(),
@@ -58,7 +59,7 @@ def odds(*extra: list[dict[str, Any]]) -> pl.DataFrame:
             ),
         ]
     ).with_columns(game_id=pl.col("event_id").str.strip_prefix("e").cast(pl.Int64))
-    return closing.flag(rows, NOW)
+    return closing.flag(rows, flagged)
 
 
 def fair_home(home: float, away: float) -> float:
@@ -87,6 +88,17 @@ def test_each_bet_is_settled_on_the_full_game_and_valued_against_the_close() -> 
     assert set(settled["status"]) == {ls.SETTLED}
 
 
+def test_the_close_does_not_wait_for_the_stored_flag() -> None:
+    # The odds replay ran before the games started, so nothing is flagged yet: settled later,
+    # each bet still gets its close and CLV, as of the settlement's clock (Codex on #190).
+    early = odds(flagged=PRE7)
+    assert not early["is_closing_proxy"].any()
+    settled = ls.settle(ledger(), games(), early, NOW, VERSIONS)
+    expected = ls.settle(ledger(), games(), odds(), NOW, VERSIONS)
+    assert settled.drop("settled_utc").equals(expected.drop("settled_utc"))
+    assert settled["clv"].is_not_null().sum() == 2
+
+
 def test_a_game_not_final_is_not_settled() -> None:
     settled = ls.settle(
         ledger(), games().filter(pl.col("game_id") != 2026020055), odds(), NOW, {**VERSIONS}
@@ -98,7 +110,7 @@ def test_no_ledger_yet_settles_nothing() -> None:
     # The nightly runs before the season's first decision too.
     settled = ls.settle(ledger().clear(), games(), odds(), NOW, VERSIONS)
     assert settled.is_empty()
-    assert settled.columns == list(ls.dtypes(ls.PaperSettlements))
+    assert settled.columns == list(dtypes(PaperSettlements))
 
 
 def test_a_postponed_game_voids_its_bet() -> None:

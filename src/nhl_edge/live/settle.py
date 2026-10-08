@@ -1,6 +1,6 @@
 """Settlement and closing line value of the paper bets (#165, docs/plans/phase-5.md task 5).
 
-Each night, after the odds replay has marked the closing proxies (#21), every bet of the paper
+Each night, after the odds replay has brought the odds up to date (#21), every bet of the paper
 ledger whose game is final gets one row of paper_settlements:
 - **The result** on the full game, OT and shootout included (hard rule 2): games' scores count
   the shootout winner's goal, so home_score > away_score settles the moneyline. The profit is
@@ -36,28 +36,20 @@ SETTLED, VOID = "settled", "void"
 
 def closes(odds: pl.DataFrame, now: datetime) -> pl.DataFrame:
     """Pinnacle's close of each game started by now, by Odds API event: its status
-    (closing.pinnacle_closes), and for a proxy its snapshot and h2h pair."""
+    (closing.pinnacle_closes), and for a proxy its snapshot and h2h pair. The pair is read at the
+    proxy's own snapshot from the same calculation, never from the stored is_closing_proxy flag,
+    so a game that started after the odds replay ran still gets its pair with its status."""
     status = closing.pinnacle_closes(odds, now).select(
         "event_id", close_status="status", close_snapshot_utc="proxy_utc"
     )
-    proxies = odds.filter(
-        pl.col("is_closing_proxy"), pl.col("book") == closing.BOOK, pl.col("market") == "h2h"
-    )
-    pairs = (
-        proxies.pivot(on="side", index=["event_id", "snapshot_utc"], values="price_decimal").select(
-            "event_id", close_snapshot_utc="snapshot_utc", close_home="home", close_away="away"
+    pinnacle = odds.filter(pl.col("book") == closing.BOOK, pl.col("market") == "h2h")
+    keys = ["event_id", "close_snapshot_utc"]
+    for side in ("home", "away"):
+        price = pinnacle.filter(pl.col("side") == side).select(
+            "event_id", close_snapshot_utc="snapshot_utc", **{f"close_{side}": "price_decimal"}
         )
-        if proxies.height
-        else pl.DataFrame(
-            schema={
-                "event_id": pl.String,
-                "close_snapshot_utc": closing.UTC_TYPE,
-                "close_home": pl.Float64,
-                "close_away": pl.Float64,
-            }
-        )
-    )
-    return status.join(pairs, on=["event_id", "close_snapshot_utc"], how="left")
+        status = status.join(price, on=keys, how="left")
+    return status
 
 
 def settle(

@@ -2423,7 +2423,7 @@ def live_settle(
     """Settle the season's paper bets whose games are final (#165): each one's result on the
     full game, its profit, and its CLV against Pinnacle's closing proxy (ADR 0033), or why it has
     none. Rebuilds paper_settlements whole, from the ledgers (in R2 with --r2), the games and the
-    odds, whose closing proxies nhl odds replay marks."""
+    odds that nhl odds replay brings up to date; each close is found at this run's clock."""
     from datetime import UTC
 
     import polars as pl

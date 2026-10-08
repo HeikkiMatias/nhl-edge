@@ -62,7 +62,7 @@ jobs:
         run: uv run nhl odds replay --recent 14 --r2 --supabase
       - name: Settle the paper bets
         # Each paper bet whose game is final: its result on the full game, its profit, and its
-        # CLV against Pinnacle's closing proxy, which the odds replay above has just marked (#165).
+        # CLV against Pinnacle's closing proxy, in the odds the replay above has just updated (#165).
         if: always()
         run: uv run nhl live settle --r2
       - name: Pre-game goalies into the lake
