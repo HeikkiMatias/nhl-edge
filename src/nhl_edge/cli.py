@@ -2579,6 +2579,13 @@ def live_report(
         ),
     ] = False,
     out: Annotated[Path, typer.Option(help="Where the report is written.")] = Path("reports/live"),
+    supabase: Annotated[
+        bool,
+        typer.Option(
+            "--supabase",
+            help="Also upsert the report into Supabase's live_reports for the dashboard (#168).",
+        ),
+    ] = False,
 ) -> None:
     """The weekly live report (#166, ADR 0032): coverage, CLV against Pinnacle's closing proxy
     with the coverage floor and bound, the model comparisons, the blend's calibration band, the
@@ -2623,6 +2630,13 @@ def live_report(
         day,
     )
     json_path, md_path = lr.write(result, out)
+    if supabase:
+        from nhl_edge.backtest import reports
+        from nhl_edge.lake.supabase import Supabase
+
+        version = reports.version("live-report", datetime.now(UTC))
+        Supabase.from_env().upsert_records("live_reports", [lr.record(result, version)], ["as_of"])
+        typer.echo(f"supabase live_reports: the {day} report upserted")
     cover = result["coverage"]
     typer.echo(
         f"{result['kind']} report {day}: {cover['slate_games']} slate games, {cover['bets']} bets, "

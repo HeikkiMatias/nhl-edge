@@ -426,6 +426,60 @@ def test_nhl_live_report_and_slate(tmp_path: Any, monkeypatch: pytest.MonkeyPatc
     assert runner.invoke(app, ["live", "slate", "--date", "2026-09-01"]).exit_code == 1
 
 
+def test_nhl_live_report_upserts_the_report_into_supabase(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Codex on #197: `--supabase` sends the day's report, whole, to live_reports keyed on as_of.
+    import json
+
+    import httpx
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+    from nhl_edge.lake.supabase import Supabase
+    from nhl_edge.lake.tables import TABLES, Lake
+
+    season = Season(n_weeks=5)
+    tables = {
+        "paper_ledger": season.ledger,
+        "paper_settlements": season.settlements,
+        "games": season.games,
+        "odds_snapshots": TABLES["odds_snapshots"].empty(),
+        "sbr_odds": TABLES["sbr_odds"].empty(),
+    }
+    monkeypatch.setattr(Lake, "read", lambda self, table, seasons=None: tables[table])
+    monkeypatch.setattr(lr, "sbr_history", lambda sbr, games: pl.DataFrame(schema=HISTORY))
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(201)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    url = "https://abcdefghijklmnop.supabase.co"
+    monkeypatch.setattr(
+        Supabase, "from_env", classmethod(lambda cls: Supabase(url, "sb_secret_x", client))
+    )
+    out = tmp_path / "live"
+    result = CliRunner().invoke(
+        app, ["live", "report", "--as-of", "2026-12-31", "--out", str(out), "--supabase"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "supabase live_reports: the 2026-12-31 report upserted" in result.output
+    [request] = requests
+    assert request.method == "POST"
+    assert str(request.url) == f"{url}/rest/v1/live_reports?on_conflict=as_of"
+    assert request.headers["Prefer"] == "resolution=merge-duplicates,return=minimal"
+    [row] = json.loads(request.content)
+    assert row["as_of"] == "2026-12-31" and row["kind"] == "interim"
+    assert row["policy_version"] == POLICY_VERSION
+    assert row["code_version"].startswith("live-report-")
+    # The report as the committed JSON file has it, nested figures and all.
+    assert row["report"] == json.loads((out / "report-2026-12-31.json").read_text())
+    assert row["report"]["coverage"]["slate_games"] == 150
+    assert "low" in row["report"]["closing_value"]["clv_per_bet"]
+
+
 def test_the_review_needs_every_bet_settled_and_every_game_scored() -> None:
     # Codex on #191: at the formal review, a bet still unsettled or a game still without a
     # result leaves insufficient evidence, whatever the rest shows.
@@ -564,3 +618,34 @@ def test_sbr_history_scores_the_opener_and_close_of_its_seasons_only() -> None:
     row = history.filter(pl.col("game_id") == 2018020001).row(0, named=True)
     assert row["opener_loss"] == pytest.approx(loss(2018020001, "open"))
     assert row["close_loss"] == pytest.approx(loss(2018020001, "close"))
+
+
+def test_the_report_goes_to_supabase_as_json() -> None:
+    # #168: the dashboard reads the report's own figures, never computing any itself.
+    import json
+
+    season = Season(n_weeks=5)
+    lost = season.settlements.with_columns(profit=pl.lit(-1.0))
+    result = season.report(settlements=lost)
+    row = lr.record(result, "live-report-20261008-abc1234")
+    assert row["as_of"] == "2026-12-31" and row["kind"] == "interim"
+    assert row["policy_version"] == POLICY_VERSION
+    # JSON-ready throughout: dates and datetimes as strings, as the committed file has them.
+    assert json.loads(json.dumps(row["report"])) == row["report"]
+    assert isinstance(row["report"]["alerts"]["drawdown"]["first_utc"], str)
+
+
+def test_a_report_row_has_the_live_reports_columns() -> None:
+    import re
+    from pathlib import Path
+
+    migration = Path("supabase/migrations/20261008140000_live_reports.sql").read_text()
+    body = re.search(r"create table public\.live_reports \((.*?)\n\);", migration, re.S)
+    assert body is not None
+    column = re.compile(r"^  ([a-z_0-9]+) (?:date|text|jsonb|timestamptz)\b")
+    columns = {m.group(1) for line in body.group(1).splitlines() if (m := column.match(line))}
+    row = lr.record(Season(n_weeks=1).report(), "live-report-20261008-abc1234")
+    assert set(row) == columns - {"created_at"}
+    # The kinds the migration's check admits.
+    assert re.search(r"kind in \('interim', 'formal review'\)", migration)
+    assert row["kind"] in ("interim", "formal review")
