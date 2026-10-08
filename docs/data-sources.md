@@ -320,6 +320,12 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   - **Without a proxy,** `close_status` says why: no pre-game snapshot, stale or missing (ADR 0033). A game with no pre-game slot due has no CLV even when a delayed run left it a proxy (ADR 0032).
 
   Nothing in a decision reads the table: the bankroll reads the ledgers and the games itself.
+- **The paper ledger in Supabase (#167).** `nhl live supabase --r2` copies the R2 ledgers, which stay the record, to two Supabase tables for the dashboard (`supabase/migrations/20261008120000_paper_ledger.sql`):
+  - `predictions`: every slate game's decision, inserted once;
+  - `paper_bets`: every bet as decided, inserted once, with its settlement set afterwards.
+  - **Writes:** both tables are insert-only, with `created_at default now()` and checks that each decision and publication precede the start. The service role may update only `paper_bets`' settlement columns, and the pipeline alone holds its key.
+  - **Reads:** row-level security lets only the signed-in users listed in `dashboard_owners` read either table, and anon sees nothing.
+  - **When:** it runs after the midday Predict step and after the nightly settlement, and a rerun inserts nothing twice, so the first run backfills the season. Both steps wait for the repository variable `SUPABASE_LEDGER`, which the owner sets to `true` once the migration is applied and their user id added (`insert into public.dashboard_owners (user_id) values ('<auth.users id>')`).
 - **The live report (#166, ADR 0032).** `nhl live report --r2` writes `reports/live/report-<date>.md` and `.json`, committed weekly. It reads the ledgers in R2, the settlements, the games, the odds and SBR's 2018-19 to 2021-22 prices, and covers the frozen policy's regular-season decisions only.
   - **Intervals:** every figure has its 95% weekly block bootstrap interval. A figure over fewer than 4 weeks of games gives only its counts, no value.
   - **Interim until the formal review on 2027-04-12:** no verdict before it, and the return at the taken price, and the drawdown's size, only from then on (plan §11). The review covers every bet and game: while any bet is unsettled or any slate game lacks its result, its verdicts are "insufficient evidence".

@@ -65,6 +65,11 @@ jobs:
         # CLV against Pinnacle's closing proxy, in the odds the replay above has just updated (#165).
         if: always()
         run: uv run nhl live settle --r2
+      - name: Paper ledger to Supabase
+        # The day's settlements onto the dashboard's paper bets (#167), once the owner has applied
+        # the paper ledger migration and set the repository variable SUPABASE_LEDGER to true.
+        if: always() && vars.SUPABASE_LEDGER == 'true'
+        run: uv run nhl live supabase --r2
       - name: Pre-game goalies into the lake
         # Pre-game goalie polls, NHL and Daily Faceoff (#42, #48), rebuilt from the raw copies:
         # today, which the evening slots poll ahead, and the three game dates before it, so two
