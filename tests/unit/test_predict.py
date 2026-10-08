@@ -265,10 +265,11 @@ def test_a_game_starting_while_the_ledger_is_built_is_decided_again_as_started()
     status = dict(rows.select("game_id", "status").iter_rows())
     assert status[2026020053] == lp.STARTS_BEFORE_PUBLISHED
     assert status[2026020054] == status[2026020055] == lp.PREDICTED
-    assert set(rows["published_utc"]) == {matinee + second}
-    # Nothing starts while it is built: one pass, published at the first reading.
+    # Stamped with the clock that last checked it (Codex's P1 on #184).
+    assert set(rows["published_utc"]) == {matinee + 2 * second}
+    # Nothing starts while it is built: one pass, stamped at the check after it.
     once = lp.publish(inputs, clock(matinee - 2 * second, matinee - second))
-    assert set(once["published_utc"]) == {matinee - 2 * second}
+    assert set(once["published_utc"]) == {matinee - second}
     assert dict(once.select("game_id", "status").iter_rows())[2026020053] == lp.PREDICTED
 
 
@@ -367,9 +368,14 @@ def test_a_day_is_written_to_r2_once() -> None:
     bucket = ConditionalBucket()
     inputs = pf.day()
     rows = decided()
-    now = clock(pf.DECISION + timedelta(minutes=8))
-    assert lp.write_once(bucket, "b", inputs, rows, now) == "ledger/live/2026-10-07.parquet"
-    assert pl.read_parquet(bucket.objects["ledger/live/2026-10-07.parquet"]).equals(rows)
+    put = pf.DECISION + timedelta(minutes=8)
+    now = clock(put)
+    key, written = lp.write_once(bucket, "b", inputs, rows, now)
+    assert key == "ledger/live/2026-10-07.parquet"
+    # Stamped with the clock read at the write, its publication.
+    assert set(written["published_utc"]) == {put}
+    assert written.drop("published_utc").equals(rows.drop("published_utc"))
+    assert pl.read_parquet(bucket.objects[key]).equals(written)
     # A second run, or a late run after a skipped day, can't replace it.
     later = pf.day(decision_utc=pf.DECISION + timedelta(minutes=1))
     with pytest.raises(RuntimeError, match="PreconditionFailed"):

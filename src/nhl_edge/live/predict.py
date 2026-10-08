@@ -3,8 +3,8 @@
 At about 12:47 ET, after the midday odds snapshot, every slate game gets one ledger row: its
 prediction and bet, or why it has none. The decision instant is fixed when the run starts, and
 everything read must be known before it. The ledger is published minutes later, once the models
-are read: published_utc, the actual clock as it is built and written, read again after it is
-built and just before the write, with the day decided again if a game starts or its quote ages
+are read: published_utc, the actual clock read at the write and stamped on the ledger, also read
+after the ledger is built, with the day decided again if a game starts or its quote ages
 past the limit meanwhile (#170, ADR 0033's amendment).
 
 - **The window (ADR 0033):** the midday snapshot and the decision both fall between 12:45 and
@@ -471,19 +471,26 @@ def outdated(built: pl.DataFrame, inputs: Day, now: datetime) -> pl.DataFrame:
     )
 
 
+def stamped(built: pl.DataFrame, now: datetime) -> pl.DataFrame:
+    """built with published_utc set to now, a clock no predicted row is outdated by: every
+    prediction and bet is the one the day decided at now would hold."""
+    published = pl.lit(now).cast(built.schema["published_utc"])
+    return PaperLedger.validate(built.with_columns(published_utc=published))  # type: ignore[return-value]
+
+
 def publish(inputs: Day, clock: Callable[[], datetime], tries: int = 5) -> pl.DataFrame:
     """The day's ledger, decided against the publication clock (#170, ADR 0033's amendment).
-    published_utc is read from the clock, the ledger built, and the clock read again: while a
-    predicted row no longer holds by then (outdated), the day is decided again at the later
-    clock. That game gets its row, and the others keep their predictions, the stakes rescaled
-    without it."""
+    The ledger is built at a clock reading and the clock read again: while a predicted row no
+    longer holds by then (outdated), the day is decided again at the later clock. That game gets
+    its row, and the others keep their predictions, the stakes rescaled without it. The ledger
+    returned is stamped with the last reading."""
     published = clock()
     for _ in range(tries):
         day = replace(inputs, published_utc=published)
         built = ledger(decide(day), day)
         now = clock()
         if outdated(built, inputs, now).is_empty():
-            return built
+            return stamped(built, now)
         published = now
     raise ValueError(f"games kept changing while the ledger was built ({tries} tries)")
 
@@ -583,21 +590,23 @@ def ledger_key(day: date) -> str:
 
 def write_once(
     objects: Any, bucket: str, inputs: Day, ledger: pl.DataFrame, clock: Callable[[], datetime]
-) -> str:
+) -> tuple[str, pl.DataFrame]:
     """Write the day's ledger to R2 once, refused if the day exists (a second run, or a late one
     after a skipped day), and only if every prediction precedes its game's start. The clock is
-    read once the ledger is serialized, just before the put: a predicted row outdated by then is
-    refused (Republish), never written."""
+    read at the write: a predicted row outdated by then is refused (Republish), never written;
+    otherwise the ledger is stamped with that reading, its publication, and put milliseconds
+    later. Returns the key and the ledger written."""
     import io
 
     pre_game(ledger)
-    body = io.BytesIO()
-    ledger.write_parquet(body)
-    key = ledger_key(inputs.day)
     if (late := outdated(ledger, inputs, now := clock())).height:
         raise Republish(f"{late.height} predictions outdated by {now}")
+    written = stamped(ledger, now)
+    body = io.BytesIO()
+    written.write_parquet(body)
+    key = ledger_key(inputs.day)
     objects.put_object(Bucket=bucket, Key=key, Body=body.getvalue(), IfNoneMatch="*")
-    return key
+    return key, written
 
 
 def write_published(
@@ -608,7 +617,8 @@ def write_published(
     for _ in range(tries):
         built = publish(inputs, clock)
         try:
-            return built, write_once(objects, bucket, inputs, built, clock)
+            key, written = write_once(objects, bucket, inputs, built, clock)
         except Republish:
             continue
+        return written, key
     raise ValueError(f"games kept changing before the ledger was written ({tries} tries)")
