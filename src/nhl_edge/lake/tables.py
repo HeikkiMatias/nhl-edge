@@ -69,7 +69,8 @@ from nhl_edge.lake.schemas import (
 LAKE_DIR = Path("data/lake")
 R2_PREFIX = "lake"
 PART = "part-0.parquet"
-PULL_WORKERS = 16
+# A pull's download threads, each with its own connection (r2.POOL_CONNECTIONS, #207).
+PULL_WORKERS = 64
 
 
 @dataclass(frozen=True)
