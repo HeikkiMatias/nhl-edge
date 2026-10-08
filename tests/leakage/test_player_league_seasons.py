@@ -209,3 +209,24 @@ def test_a_refetched_page_s_new_season_waits_for_july_1_not_the_refetch() -> Non
     # A copy fetched before July 1 holds the season as partial, and leaves it out.
     early = table(datetime(2012, 6, 30, 23, 59, tzinfo=UTC), GOALIE)
     assert early.filter(pl.col("season") >= 20112012).is_empty()
+
+
+def test_a_returning_player_s_season_away_waits_for_july_1_after_it() -> None:
+    # #199: the refresh after 2012-13 fetches the goalie's page, though his only boxscore is of
+    # 2011-12. His 2012-13 lines in Germany and the ECHL are dated by the season's public date, so
+    # nothing before July 1, 2013 reads them, and 2013-14's season-start priors do.
+    from nhl_edge.ratings.priors import league_lines, season_start
+
+    frame = table(datetime(2013, 7, 2, 9, tzinfo=UTC), GOALIE)
+    away = frame.filter(pl.col("season") == 20122013)
+    assert not away.is_empty() and (away["league"] != "NHL").all()
+    assert (away["observed_utc"] == datetime(2013, 7, 1, tzinfo=UTC)).all()
+    assert known_at(away, datetime(2013, 7, 1, tzinfo=UTC)).is_empty()
+    starts = {
+        season: datetime.combine(season_start(season), datetime.min.time(), UTC)
+        for season in (20122013, 20132014)
+    }
+    early = league_lines(frame, starts[20122013])
+    assert early.filter(pl.col("season") == 20122013).is_empty()
+    late = league_lines(frame, starts[20132014])
+    assert not late.filter(pl.col("season") == 20122013).is_empty()

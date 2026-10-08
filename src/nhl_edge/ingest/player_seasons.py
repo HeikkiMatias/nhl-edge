@@ -5,7 +5,8 @@ nhl ingest fetches a player's landing page once, when he first shows up on a ros
 boxscore, and reuses it from then on (NhlApi.player_landing). So this reads the newest cached page
 of every player in players and makes no request; a season played after a page's fetch needs that
 page fetched again. Once a season, after its lines are public, `nhl player-seasons --refresh`
-does that for every player with a boxscore in it (refresh, #117).
+does that for every player with a boxscore in it or in the two seasons before (refresh, #117,
+#199), so a player who spent it outside the NHL has its lines when he returns.
 
 Point in time: a season's lines count as public on July 1 (00:00 UTC) after it, when nearly every
 league's season and the NHL playoffs are over (lake/schemas.py, SEASON_LINES_PUBLIC). The
@@ -48,6 +49,12 @@ from nhl_edge.lake.schemas import (
 )
 
 LANDING_PREFIX = "nhl/player-landing"
+# The seasons whose players the yearly refresh covers (#199): the season just played and the two
+# before. The next season's priors are fixed when it starts and read each player's lines of the
+# NHLE_SEASONS (ratings/priors.py) seasons before it, the last two. The refresh after the earlier
+# one fetched its line, and this one fetches the latest, for every player away for up to two
+# seasons. One away for three keeps only the earlier line, and one away longer neither.
+REFRESH_SEASONS = 3
 # The NHL draft's age cutoff (month, day): eligibility turns on a player's age on September 15.
 AGE_CUTOFF = (9, 15)
 COUNTS = ("games_played", "goals", "assists")
@@ -302,6 +309,7 @@ class RefreshReport:
     """The yearly refresh of one season's players' landing pages."""
 
     season: int
+    seasons: list[int] = field(default_factory=list)  # whose boxscores name the players
     players: int = 0
     fetched: int = 0
     reused: int = 0
@@ -318,21 +326,30 @@ def refresh_season(lineups: pl.DataFrame, now: datetime) -> int | None:
     return next((s for s in seasons if season_lines_public(s, "NHL") <= now), None)
 
 
+def refresh_seasons(season: int) -> list[int]:
+    """The seasons whose players the refresh after season covers: it and the REFRESH_SEASONS - 1
+    before, latest first."""
+    return [season - back * 10_001 for back in range(REFRESH_SEASONS)]
+
+
 def refresh(
     api: NhlApi, lineups: pl.DataFrame, season: int, known: Collection[int]
 ) -> RefreshReport:
-    """Fetch again the landing page of every player with a boxscore in season, unless his newest
-    copy was fetched once the season's lines were public, so a rerun reuses it and makes no
-    request. Each new copy is stored beside the old ones, and build then reads it as the newest:
-    the season enters player_league_seasons with every row's observed_utc as before, set by the
-    season's public date and the player's first boxscore, never by the fetch. A later replay of
-    players reads the new copy too, which changes only its provenance (fetched_utc, raw_key):
-    players has no observed_utc, and holds only facts fixed before a debut. A page the API no
-    longer has is counted. A player not among known (players' ids) whose page it now has comes
-    back as a players row (recovered), for the caller to add before the rebuild."""
+    """Fetch again the landing page of every player with a boxscore in season or the seasons
+    before it in refresh_seasons, so one who spent season outside the NHL has its lines when he
+    returns (#199), unless his newest copy was fetched once the season's lines were public, so a
+    rerun reuses it and makes no request. Each new copy is stored beside the old ones, and build
+    then reads it as the newest: the season enters player_league_seasons with every row's
+    observed_utc as before, set by the season's public date and the player's first boxscore,
+    never by the fetch. A later replay of players reads the new copy too, which changes only its
+    provenance (fetched_utc, raw_key): players has no observed_utc, and holds only facts fixed
+    before a debut. A page the API no longer has is counted. A player not among known (players'
+    ids) whose page it now has comes back as a players row (recovered), for the caller to add
+    before the rebuild."""
     public = season_lines_public(season, "NHL")
-    ids = sorted(set(lineups.filter(pl.col("season") == season)["player_id"].to_list()))
-    report = RefreshReport(season, players=len(ids))
+    seasons = refresh_seasons(season)
+    ids = sorted(set(lineups.filter(pl.col("season").is_in(seasons))["player_id"].to_list()))
+    report = RefreshReport(season, seasons, players=len(ids))
     for player_id in ids:
         try:
             response = api.player_landing(player_id, fetched_after(public))

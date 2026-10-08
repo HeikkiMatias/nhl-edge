@@ -332,8 +332,8 @@ def test_player_seasons_refresh_brings_in_the_season_just_played(
     result = runner.invoke(app, ["player-seasons", "--refresh"])
     assert result.exit_code == 0, result.output
     assert (
-        "refreshed 20112012: 1 players with a boxscore, 1 landing pages fetched in 1 requests, "
-        "0 already fetched after its lines were public, 0 not found"
+        "refreshed 20112012: 1 players with a boxscore in it or the 2 seasons before, 1 landing "
+        "pages fetched in 1 requests, 0 already fetched after its lines were public, 0 not found"
     ) in plain(result.output)
     assert urls == [f"/v1/player/{GOALIE}/landing"]
     table = Lake().read("player_league_seasons")
@@ -360,6 +360,15 @@ def test_player_seasons_refresh_needs_the_season_s_game_count(
     result = runner.invoke(app, ["player-seasons", "--refresh"])
     assert result.exit_code == 1
     assert "20112012 has no expected game count" in plain(result.output)
+    # #199: nor can it cover the seasons before, whose players the refresh fetches too.
+    from player_season_fixtures import NO_PAGE
+
+    monkeypatch.setattr("nhl_edge.ingest.games.EXPECTED_GAMES", {20112012: 1})
+    monkeypatch.setattr("nhl_edge.ingest.player_seasons.lineup_problems", lambda *_: [])
+    Lake().write("actual_lineups", boxscores(GOALIE, NO_PAGE))  # NO_PAGE's is of 2010-11
+    result = runner.invoke(app, ["player-seasons", "--refresh"])
+    assert result.exit_code == 1
+    assert "20102011 has no expected game count" in plain(result.output)
 
 
 def test_player_seasons_refresh_adds_a_player_the_ingest_could_not_fetch(
