@@ -38,6 +38,7 @@ from nhl_edge.backtest import e3
 from nhl_edge.game import b2, b3, uncertainty
 from nhl_edge.game.b2 import B2Model
 from nhl_edge.game.b3 import B3Model
+from nhl_edge.lake.r2 import list_keys
 from nhl_edge.lake.schemas import Games, dtypes
 from nhl_edge.live import blend_fit
 from nhl_edge.live import predict as lp
@@ -50,12 +51,18 @@ FITS = "fits.json"
 TOLERANCE = 1e-9
 
 
+class Conflict(ValueError):
+    """An object of the bundle already written with other bytes."""
+
+
 class Store(Protocol):
-    """Where a bundle's objects live: put writes once, get reads back."""
+    """Where a bundle's objects live: put writes once, get reads back, keys lists them."""
 
     def put(self, key: str, body: bytes) -> None: ...
 
     def get(self, key: str) -> bytes: ...
+
+    def keys(self, prefix: str) -> list[str]: ...
 
 
 @dataclass(frozen=True)
@@ -68,6 +75,9 @@ class R2Store:
 
     def get(self, key: str) -> bytes:
         return self.objects.get_object(Bucket=self.bucket, Key=key)["Body"].read()
+
+    def keys(self, prefix: str) -> list[str]:
+        return [key for key, _ in list_keys(self.objects, self.bucket, f"{prefix}/")]
 
 
 @dataclass(frozen=True)
@@ -82,6 +92,11 @@ class LocalStore:
 
     def get(self, key: str) -> bytes:
         return (self.root / key).read_bytes()
+
+    def keys(self, prefix: str) -> list[str]:
+        root = self.root / prefix
+        found = root.rglob("*") if root.exists() else []
+        return sorted(p.relative_to(self.root).as_posix() for p in found if p.is_file())
 
 
 @dataclass(frozen=True)
@@ -98,6 +113,24 @@ def sha256(body: bytes) -> str:
 
 def prefix(day: date) -> str:
     return f"{PREFIX}/{day.isoformat()}"
+
+
+# The rows every decision saves, and those it adds when its models were read (inputs()).
+BASE_INPUTS = ("slate", "feature_builds", "quotes")
+MODEL_INPUTS = (
+    "team_strength",
+    "schedule_terms",
+    "goalie_starts",
+    "goalie_effects",
+    "lineups",
+    "lineup_replacements",
+    "player_ratings",
+    "rapm_terms",
+    "expected_power_plays",
+    "goal_multipliers",
+    "actual_lineups",
+    "player_league_seasons",
+)
 
 
 def inputs(
@@ -169,6 +202,67 @@ def parquet(frame: pl.DataFrame) -> bytes:
     return body.getvalue()
 
 
+def write_files(
+    store: Store,
+    day: date,
+    rows: Mapping[str, pl.DataFrame],
+    fits: Mapping[str, B2Model | B3Model],
+) -> dict[str, bytes]:
+    """Write the rows the decision read and its fits once, before its ledger (#188), so they
+    survive a run that stops after it; and return them by name. Written again, the same bytes
+    count as written."""
+    files = {f"inputs/{name}.parquet": parquet(frame) for name, frame in rows.items()}
+    files[FITS] = json.dumps({k: fit_record(v) for k, v in fits.items()}, indent=1).encode()
+    where = prefix(day)
+    for name, body in files.items():
+        put_once(store, f"{where}/{name}", body)
+    return files
+
+
+def write_files_first(
+    store: Store,
+    day: date,
+    rows: Mapping[str, pl.DataFrame],
+    fits: Mapping[str, B2Model | B3Model],
+) -> str | None:
+    """write_files before the ledger, in one try, so a slow store never holds up the ledger: a
+    failure comes back as its message, for the run to log and the write after the ledger to try
+    again. A Conflict raises: an earlier run wrote the day's files from other inputs, and a ledger
+    published over them could never be finished (Codex on #204)."""
+    try:
+        write_files(store, day, rows, fits)
+    except Conflict:
+        raise
+    except Exception as exc:
+        return str(exc)
+    return None
+
+
+def manifest_of(
+    identity: Mapping[str, Any], files: Mapping[str, bytes], raw: Mapping[str, bytes]
+) -> dict[str, Any]:
+    """The manifest: the run's identity, each file's sha256 and rows, and each raw response the
+    decision read, by sha256."""
+    return {
+        **identity,
+        "files": {
+            name: {
+                "sha256": sha256(body),
+                "rows": pl.read_parquet(body).height if name.endswith(".parquet") else None,
+            }
+            for name, body in sorted(files.items())
+        },
+        "raw": {key: sha256(body) for key, body in sorted(raw.items())},
+    }
+
+
+def write_manifest(store: Store, day: date, manifest: Mapping[str, Any]) -> str:
+    """Write the manifest, the bundle's completion mark, once; and return the bundle's prefix."""
+    where = prefix(day)
+    put_once(store, f"{where}/{MANIFEST}", json.dumps(manifest, indent=1, default=str).encode())
+    return where
+
+
 def write_once(
     store: Store,
     day: date,
@@ -179,21 +273,86 @@ def write_once(
 ) -> str:
     """Write the day's bundle once, the manifest last, and return its prefix. raw maps each raw
     response the decision read to its bytes, recorded by sha256."""
-    files = {f"inputs/{name}.parquet": parquet(frame) for name, frame in rows.items()}
-    files[FITS] = json.dumps({k: fit_record(v) for k, v in fits.items()}, indent=1).encode()
-    counts = {f"inputs/{name}.parquet": frame.height for name, frame in rows.items()}
-    manifest = {
-        **identity,
-        "files": {
-            name: {"sha256": sha256(body), "rows": counts.get(name)} for name, body in files.items()
-        },
-        "raw": {key: sha256(body) for key, body in sorted(raw.items())},
-    }
+    files = write_files(store, day, rows, fits)
+    return write_manifest(store, day, manifest_of(identity, files, raw))
+
+
+def finish(
+    store: Store,
+    day: date,
+    ledger: pl.DataFrame,
+    ledger_at: str,
+    raw: Mapping[str, bytes],
+    live: blend_fit.LiveFit,
+    live_fit: str,
+    live_fit_sha256: str,
+) -> str:
+    """Complete a bundle whose run stopped after its ledger (#188): its manifest rebuilt from what
+    is stored. The identity comes from the ledger's own columns (decision and publication times,
+    versions, bankroll), the input cutoff from the saved quotes as the run computed it, the files
+    from the stored objects, the raw odds responses, which are immutable, from raw (those stored
+    by the publication), and the live fit the ledger names (live, its file live_fit and sha256).
+    The manifest, the completion mark, is written only once the stored files reproduce the
+    ledger through replay, every column: files from a run other than the ledger's never seal.
+    It never writes an input, and refuses a bundle already complete or missing any input the run
+    writes."""
     where = prefix(day)
-    for name, body in files.items():
-        put_once(store, f"{where}/{name}", body)
-    put_once(store, f"{where}/{MANIFEST}", json.dumps(manifest, indent=1, default=str).encode())
-    return where
+    stored = {key.removeprefix(f"{where}/") for key in store.keys(where)}
+    if MANIFEST in stored:
+        raise ValueError(f"{where} is complete already")
+    if FITS not in stored:
+        raise ValueError(f"{where}: no {FITS}, so the run's files were never written")
+    fits = json.loads(store.get(f"{where}/{FITS}"))
+    wanted = BASE_INPUTS + (MODEL_INPUTS if fits else ())
+    missing = [name for name in wanted if f"inputs/{name}.parquet" not in stored]
+    if missing:
+        raise ValueError(f"{where}: missing {', '.join(missing)}, so it can't be finished")
+    files = {
+        name: store.get(f"{where}/{name}")
+        for name in [FITS, *(f"inputs/{name}.parquet" for name in wanted)]
+    }
+    quotes = pl.read_parquet(files["inputs/quotes.parquet"])
+
+    def one(column: str) -> Any:
+        values = ledger[column].drop_nulls().unique().to_list()
+        if len(values) > 1:
+            raise ValueError(f"the ledger holds {len(values)} values of {column}")
+        return values[0] if values else None
+
+    decision = one("prediction_utc")
+    if decision is None:
+        raise ValueError("the ledger has no decision instant")
+    identity = {
+        "day": day.isoformat(),
+        "decision_utc": decision.isoformat(),
+        "published_utc": one("published_utc").isoformat(),
+        "input_cutoff": lp.input_cutoff(quotes, decision).isoformat(),
+        # The ledger's; none when it predicted no game, where it moves nothing.
+        "bankroll": one("bankroll"),
+        "policy_version": one("policy_version"),
+        "blend_version": one("blend_version"),
+        "live_fit": live_fit,
+        "live_fit_sha256": live_fit_sha256,
+        "feature_build": one("feature_build"),
+        "code_version": one("code_version"),
+        # The run's own lock file is not stored: a later checkout can't stand in for it.
+        "uv_lock_sha256": None,
+        "ledger": ledger_at,
+        "finished_later": True,
+    }
+    manifest = manifest_of(identity, files, raw)
+    problems = differences(replay(_bundle(manifest, files), live), ledger)
+    if problems:
+        raise ValueError(
+            f"{where}: its stored files don't reproduce the ledger ({'; '.join(problems)}), "
+            "so it stays unfinished"
+        )
+    return write_manifest(store, day, manifest)
+
+
+def unfinished(store: Store, days: list[date]) -> list[date]:
+    """The decision days among days whose bundle has no manifest."""
+    return [day for day in days if f"{prefix(day)}/{MANIFEST}" not in store.keys(prefix(day))]
 
 
 def put_once(store: Store, key: str, body: bytes) -> None:
@@ -207,7 +366,7 @@ def put_once(store: Store, key: str, body: bytes) -> None:
         except Exception:
             raise exc from None
         if sha256(held) != sha256(body):
-            raise ValueError(f"{key} is already written, with other bytes") from exc
+            raise Conflict(f"{key} is already written, with other bytes") from exc
 
 
 def read(store: Store, day: date) -> Bundle:
@@ -227,6 +386,11 @@ def read(store: Store, day: date) -> Bundle:
         if sha256(body) != entry["sha256"]:
             raise ValueError(f"{where}/{name}: its bytes don't match the manifest")
         bodies[name] = body
+    return _bundle(manifest, bodies)
+
+
+def _bundle(manifest: Mapping[str, Any], bodies: Mapping[str, bytes]) -> Bundle:
+    """A bundle from its manifest and its files' bytes, by name."""
     frames = {
         name.removeprefix("inputs/").removesuffix(".parquet"): pl.read_parquet(body)
         for name, body in bodies.items()

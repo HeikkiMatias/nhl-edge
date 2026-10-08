@@ -99,6 +99,11 @@ jobs:
           steps.ingest.outcome == 'success' && steps.odds.outcome == 'success' &&
           steps.settle.outcome == 'success'
         run: uv run nhl live report --r2 --supabase --out data/live/reports
+      - name: Run bundles complete
+        # Every decision day's run bundle has its manifest (#188). One left unfinished by a run
+        # that stopped after its ledger is named here, and nhl live bundle --finish completes it.
+        if: always()
+        run: uv run nhl live bundle --check --r2
       - name: Contract test on a golden game
         # One golden game read live must parse as its frozen copy does (issue #6). A failure
         # means the NHL API changed under the parsers.

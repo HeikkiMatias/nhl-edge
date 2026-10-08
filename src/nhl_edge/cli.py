@@ -618,6 +618,32 @@ def predict(
         it by the run's own time since its start."""
         return decision + (datetime.now(UTC) - started)
 
+    # The run bundle's rows and fits (#171) go first, each written once (#188): a run that stops
+    # after its ledger leaves them for nhl live bundle --finish. One try, so a slow store never
+    # holds up the ledger; the write after it tries again. Files of an earlier run with other
+    # bytes stop the run before its ledger, which they could never reproduce.
+    fits = {}
+    if fitted is not None and fitted.b2_model is not None and fitted.b3_model is not None:
+        fits = {"b2": fitted.b2_model, "b3": fitted.b3_model}
+    rows = lb.inputs(slate, record, quotes, read)
+    if dry_run:
+        bundles: lb.Store = lb.LocalStore(out)
+    else:
+        assert lake.objects is not None and lake.bucket is not None
+        bundles = lb.R2Store(lake.objects, lake.bucket)
+    try:
+        failed = lb.write_files_first(bundles, game_date, rows, fits)
+    except lb.Conflict as exc:
+        typer.echo(
+            f"{exc}: an earlier run wrote {game_date}'s run bundle files from other inputs, and "
+            "a ledger published over them could never be replayed, so nothing is published "
+            "(docs/data-sources.md, run bundles)",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    if failed is not None:
+        typer.echo(f"run bundle files not written before the ledger ({failed})", err=True)
+
     if dry_run:
         try:
             ledger = lp.publish(inputs, clock)
@@ -645,8 +671,8 @@ def predict(
             f"  bet {row['away']} at {row['home']}: {row['side']} at {row['price']:.2f}, "
             f"EV {row['ev']:+.3f} (hurdle {row['hurdle']:.3f}), stake {row['stake']:.2f}"
         )
-    # The day's run bundle (#171), written once after the ledger, which stands whatever happens
-    # here: the rows the decision read, the fits, and a manifest of hashes.
+    # The day's run bundle (#171), completed once after the ledger, which stands whatever happens
+    # here: its manifest of hashes, which names the publication time.
     try:
         lock = Path("uv.lock")
         identity = {
@@ -664,20 +690,7 @@ def predict(
             "uv_lock_sha256": lb.sha256(lock.read_bytes()) if lock.exists() else None,
             "ledger": where,
         }
-        fits = {}
-        if fitted is not None and fitted.b2_model is not None and fitted.b3_model is not None:
-            fits = {"b2": fitted.b2_model, "b3": fitted.b3_model}
-        rows = lb.inputs(slate, record, quotes, read)
-        # Every odds response the run attempted, parsed or not, and the metadata giving its time.
-        raw: dict[str, bytes] = {}
-        for key in lp.responses(store, decision.date()):
-            raw[key] = store.get(key)
-            raw[f"{key}.meta"] = json.dumps(store.meta(key), sort_keys=True).encode()
-        if dry_run:
-            bundles: lb.Store = lb.LocalStore(out)
-        else:
-            assert lake.objects is not None and lake.bucket is not None
-            bundles = lb.R2Store(lake.objects, lake.bucket)
+        raw = lp.raw_responses(store, decision.date())
         # A write that failed part way is run again, after a pause that rides out a brief R2
         # outage: what is already there with the same bytes counts as written.
         written = ""
@@ -685,6 +698,8 @@ def predict(
             try:
                 written = lb.write_once(bundles, game_date, rows, fits, identity, raw)
                 break
+            except lb.Conflict:
+                raise
             except Exception as exc:
                 if attempt == 3:
                     raise
@@ -2438,6 +2453,124 @@ def live_features(
 def bets() -> None:
     """Show the paper bet ledger and CLV."""
     _not_implemented("bets", "phase 5")
+
+
+@live_app.command("bundle")
+def live_bundle(
+    day: Annotated[
+        datetime | None,
+        typer.Option("--date", formats=["%Y-%m-%d"], help="The decision day to finish."),
+    ] = None,
+    finish: Annotated[
+        bool,
+        typer.Option(
+            "--finish",
+            help="Complete the day's bundle, written up to its ledger, with its manifest rebuilt "
+            "from what is stored (#188).",
+        ),
+    ] = False,
+    check: Annotated[
+        bool,
+        typer.Option("--check", help="List the decision days whose bundle has no manifest."),
+    ] = False,
+    r2: Annotated[bool, typer.Option("--r2", help="The bundles and ledgers in R2.")] = False,
+    source: Annotated[
+        Path | None,
+        typer.Option("--from", help="A dry run's --out directory instead (--finish only)."),
+    ] = None,
+) -> None:
+    """Run bundles that a decision left unfinished (#188). --check lists, from R2, each day with a
+    ledger whose bundle has no manifest, and exits 1 if there is one. --finish completes one:
+    its manifest rebuilt from the ledger's own columns, the stored inputs and fits, the day's raw
+    odds responses and the committed live fit the ledger names. It never writes an input, and
+    refuses a bundle missing one."""
+    import io
+    import json
+    from datetime import date
+
+    import polars as pl
+
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import blend_fit
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import predict as lp
+    from nhl_edge.settings import load_env
+
+    if check == finish:
+        raise typer.BadParameter("pass --check or --finish, one of them")
+    if check and not r2:
+        raise typer.BadParameter("--check reads the ledgers in R2: pass --r2")
+    if finish and (day is None or r2 == (source is not None)):
+        raise typer.BadParameter("--finish takes --date, and --r2 or --from, one of them")
+    load_env()
+    if check:
+        lake = Lake.from_env(mirror=True)
+        assert lake.objects is not None and lake.bucket is not None
+        store: lb.Store = lb.R2Store(lake.objects, lake.bucket)
+        days = sorted(
+            date.fromisoformat(key.rsplit("/", 1)[1].removesuffix(".parquet"))
+            for key in store.keys(lp.LEDGER_PREFIX)
+            if key.endswith(".parquet")
+        )
+        missing = lb.unfinished(store, days)
+        for each in missing:
+            typer.echo(
+                f"{each}: the run bundle has no manifest, so nhl live bundle --date {each} "
+                "--finish --r2 completes it",
+                err=True,
+            )
+        typer.echo(f"{len(days) - len(missing)} of {len(days)} decision days' bundles complete")
+        if missing:
+            raise typer.Exit(code=1)
+        return
+    assert day is not None
+    game_date = day.date()
+    if source is not None:
+        store = lb.LocalStore(source)
+        ledger = pl.read_parquet(source / f"{game_date.isoformat()}.parquet")
+        ledger_at = str(source / f"{game_date.isoformat()}.parquet")
+        raw_store = RawStore.from_env(mirror=False)
+    else:
+        lake = Lake.from_env(mirror=True)
+        assert lake.objects is not None and lake.bucket is not None
+        store = lb.R2Store(lake.objects, lake.bucket)
+        key = lp.ledger_key(game_date)
+        ledger = pl.read_parquet(io.BytesIO(store.get(key)))
+        ledger_at = f"R2 {key}"
+        raw_store = RawStore.from_env(mirror=True, flag="--r2")
+        raw_store.restore_from_r2(prefix=f"odds/{game_date.isoformat()}/")
+    decided = ledger["prediction_utc"].drop_nulls().unique().to_list()
+    (blend_version,) = ledger["blend_version"].unique().to_list()
+    fits = [
+        path
+        for path in sorted(blend_fit.REPORTS.glob(f"{blend_fit.COMPONENT}-*.json"))
+        if json.loads(path.read_text()).get("version") == blend_version
+    ]
+    if len(decided) != 1 or len(fits) != 1:
+        typer.echo(
+            f"{game_date}: the ledger needs one decision instant and its live fit {blend_version} "
+            "under reports/live/",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    (published,) = ledger["published_utc"].unique().to_list()
+    raw = lp.raw_responses(raw_store, decided[0].date(), by=published)
+    try:
+        where = lb.finish(
+            store,
+            game_date,
+            ledger,
+            ledger_at,
+            raw,
+            blend_fit.load(json.loads(fits[0].read_text())),
+            fits[0].name,
+            lb.sha256(fits[0].read_bytes()),
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"{where}: finished, its manifest rebuilt from what is stored")
 
 
 @live_app.command("replay")
