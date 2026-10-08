@@ -52,7 +52,7 @@ def test_valuing_against_the_close_never_moves_a_bet() -> None:
     )
     without = settled.with_columns(game_id=pl.lit(2, dtype=pl.Int64))
     both = pl.concat([settled, without])
-    valued = e3.closing_value(both, odds)
+    valued = e3.closing_value(both, e3.sbr_closes(odds))
     # Every bet stays, the one without a close with no CLV.
     assert_frame_equal(valued.select(both.columns), both)
     assert valued["clv"].is_null().to_list() == [False, True]

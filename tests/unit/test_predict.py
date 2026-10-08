@@ -76,6 +76,15 @@ def test_the_bankroll_counts_earlier_results_public_before_the_decision() -> Non
     # Won 1.0, lost 2.0; the third's result isn't public yet.
     assert lp.bankroll(earlier, results, pf.DECISION) == pytest.approx(99.0)
     assert lp.bankroll(earlier.clear(), results, pf.DECISION) == 100.0
+    # A game played two days after its bet's start was postponed: its bet is void (#165).
+    start = pf.DECISION - timedelta(days=3)
+    played = results.with_columns(played_utc=pl.lit(start)).with_columns(
+        played_utc=pl.when(pl.col("game_id") == 2)
+        .then(pl.col("played_utc") + timedelta(days=2))
+        .otherwise(pl.col("played_utc"))
+    )
+    starts = earlier.with_columns(start_utc=pl.lit(start))
+    assert lp.bankroll(starts, played, pf.DECISION) == pytest.approx(101.0)
 
 
 def test_a_stale_quote_gets_no_prediction() -> None:

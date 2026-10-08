@@ -532,6 +532,79 @@ class PaperLedger(pa.DataFrameModel):
         )
 
 
+class PaperSettlements(pa.DataFrameModel):
+    """One settled paper bet (nhl live settle, #165): a bet of the paper ledger whose game is
+    final, with its result on the full game (OT and shootout included, hard rule 2), its profit,
+    and its closing line value against Pinnacle's closing proxy (ADR 0033, market/closing.py).
+
+    won is whether the bet's side won the full game (home_win from games' scores, which count the
+    shootout winner's goal), and profit is stake·(price - 1) when it did, -stake when it didn't. A
+    game played more than 12 hours from the ledger's start is a postponed game: its bet is void
+    (status "void"), with no profit and no CLV. close_status is "proxy" when the game is eligible
+    and Pinnacle has a closing proxy taken after the bet's decision snapshot, or why it counts
+    without one (no pre-game snapshot, which holds even for an incidental proxy, stale, missing).
+    Only a proxy gives close_home and close_away, p_close (the bet's side, de-vigged
+    multiplicatively), clv = price·p_close - 1, and fair_move (p_close over the decision's
+    de-vigged probability of the side, less 1). The ledger's own columns travel along:
+    the price taken, the decision's Pinnacle pair (home_price, away_price) and its snapshot.
+    settled_utc and code_version name the run; the table is rebuilt whole each night from the
+    ledgers in R2, the games and the odds.
+    """
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    event_id: pl.String
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    decision_snapshot_utc: UtcDatetime
+    side: pl.String = pa.Field(isin=["home", "away"])
+    price: pl.Float64 = pa.Field(gt=1)
+    home_price: pl.Float64 = pa.Field(gt=1)
+    away_price: pl.Float64 = pa.Field(gt=1)
+    stake: pl.Float64 = pa.Field(gt=0)
+    status: pl.String = pa.Field(isin=["settled", "void"])
+    home_win: pl.Int8 = pa.Field(isin=[0, 1], nullable=True)
+    won: pl.Boolean = pa.Field(nullable=True)
+    profit: pl.Float64
+    result_utc: UtcDatetime
+    close_status: pl.String = pa.Field(isin=["proxy", "no pre-game snapshot", "stale", "missing"])
+    close_snapshot_utc: UtcDatetime = pa.Field(nullable=True)
+    close_home: pl.Float64 = pa.Field(gt=1, nullable=True)
+    close_away: pl.Float64 = pa.Field(gt=1, nullable=True)
+    p_close: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    clv: pl.Float64 = pa.Field(nullable=True)
+    fair_move: pl.Float64 = pa.Field(nullable=True)
+    policy_version: pl.String
+    blend_version: pl.String
+    settled_utc: UtcDatetime
+    code_version: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def a_close_only_from_a_proxy_after_the_decision(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        proxy = (pl.col("close_status") == "proxy") & (pl.col("status") == "settled")
+        valued = pl.col("clv").is_not_null()
+        after = pl.col("close_snapshot_utc") > pl.col("decision_snapshot_utc")
+        return data.lazyframe.select((proxy == valued) & (~valued | after.fill_null(False)))
+
+    @pa.dataframe_check
+    def the_profit_follows_the_result(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        expected = (
+            pl.when(pl.col("status") == "void")
+            .then(0.0)
+            .when(pl.col("won"))
+            .then(pl.col("stake") * (pl.col("price") - 1))
+            .otherwise(-pl.col("stake"))
+        )
+        return data.lazyframe.select((pl.col("profit") - expected).abs() < 1e-9)
+
+
 class FeatureBuilds(pa.DataFrameModel):
     """One table a live feature build (nhl live features, #162) wrote for a game date's slate: the
     record a prediction checks before it reads the slate's feature rows (#170).
