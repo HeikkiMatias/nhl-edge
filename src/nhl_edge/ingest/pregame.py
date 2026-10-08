@@ -108,6 +108,9 @@ class PollReport:
     failed: list[int] = field(default_factory=list)
     # The US Eastern dates of the games in the window, for the Daily Faceoff pages (#48).
     dates: set[date] = field(default_factory=set)
+    # Each team playing in the window with its game's US Eastern date, for Daily Faceoff's
+    # line-combinations pages (#121).
+    playing: set[tuple[str, date]] = field(default_factory=set)
 
 
 def run_poll(
@@ -126,6 +129,11 @@ def run_poll(
         echo(f"goalie poll: no NHL games starting within {horizon}, nothing fetched")
         return report
     report.dates = {game.start_utc.astimezone(ET).date() for game in games}
+    report.playing = {
+        (team, game.start_utc.astimezone(ET).date())
+        for game in games
+        for team in (game.home, game.away)
+    }
     frames = []
     for game in games:
         # Each page gets its own attempt: a pre-game state missed now cannot be fetched later.

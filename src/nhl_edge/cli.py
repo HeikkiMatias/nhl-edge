@@ -3053,12 +3053,20 @@ def poll(
     daily_faceoff: Annotated[
         bool, typer.Option(help="Also store Daily Faceoff's starting-goalies page of each date.")
     ] = True,
+    lines: Annotated[
+        bool,
+        typer.Option(
+            help="With --daily-faceoff, also store Daily Faceoff's line-combinations page of each "
+            "team playing in the window (#121): the slot polls only."
+        ),
+    ] = False,
     mirror_raw: Annotated[
         bool, typer.Option(help="Mirror the raw responses to R2 (needs the R2_* variables).")
     ] = False,
 ) -> None:
-    """Store the pre-game boxscore, landing and right-rail of every game starting soon, and Daily
-    Faceoff's starting goalies for their dates."""
+    """Store the pre-game boxscore, landing and right-rail of every game starting soon, Daily
+    Faceoff's starting goalies for their dates, and with --lines its line combinations of every
+    team playing."""
     from datetime import timedelta
 
     from nhl_edge.ingest import dailyfaceoff
@@ -3077,10 +3085,14 @@ def poll(
     report = run_poll(
         nhl=NhlApi(store), now=now, echo=typer.echo, horizon=timedelta(minutes=within)
     )
-    failed_pages = []
+    failed_pages: list[object] = []
     if daily_faceoff and report.dates:
         dfo = dailyfaceoff.DailyFaceoff(store)
-        failed_pages = dailyfaceoff.run_poll(dfo=dfo, days=report.dates, echo=typer.echo)
+        failed_pages += dailyfaceoff.run_poll(dfo=dfo, days=report.dates, echo=typer.echo)
+        if lines:
+            failed_pages += dailyfaceoff.run_lines_poll(
+                dfo=dfo, teams=report.playing, echo=typer.echo
+            )
     if report.failed or failed_pages:
         raise typer.Exit(code=1)
 
@@ -3096,9 +3108,9 @@ def goalies_replay(
         typer.Option("--r2", help="Restore the raw pre-game boxscores from R2 first, and mirror."),
     ] = False,
 ) -> None:
-    """Rebuild the lake's pregame_goalies and dailyfaceoff_goalies from the stored pre-game
-    boxscores and Daily Faceoff pages. Never calls either source. Without --recent, every stored
-    date is replayed."""
+    """Rebuild the lake's pregame_goalies, dailyfaceoff_goalies and dailyfaceoff_lines from the
+    stored pre-game boxscores and Daily Faceoff pages. Never calls either source. Without
+    --recent, every stored date is replayed."""
     from datetime import timedelta
 
     from nhl_edge.ingest import dailyfaceoff
@@ -3115,7 +3127,7 @@ def goalies_replay(
     load_env()
     store = RawStore.from_env(mirror=r2, flag="--r2")
     if r2:
-        roots = [BOXSCORE_PREFIX, dailyfaceoff.PREFIX]
+        roots = [BOXSCORE_PREFIX, dailyfaceoff.PREFIX, dailyfaceoff.LINES_PREFIX]
         prefixes = (
             [f"{root}/" for root in roots]
             if dates is None
@@ -3136,6 +3148,14 @@ def goalies_replay(
     typer.echo(
         f"daily faceoff replay {window}: {dfo.pages} pages, {dfo.rows} rows; "
         f"{len(dfo.incomplete)} incomplete"
+    )
+    team_pages = dailyfaceoff.replay_line_combinations(store, lake, dates)
+    window = (
+        f"{team_pages.dates[0]}..{team_pages.dates[-1]}" if team_pages.dates else "no stored pages"
+    )
+    typer.echo(
+        f"daily faceoff lines replay {window}: {team_pages.pages} team pages, "
+        f"{team_pages.rows} rows; {len(team_pages.incomplete)} incomplete"
     )
 
 
@@ -3456,6 +3476,7 @@ def _status_against_r2(local: "list[TableState]") -> None:
         "odds_snapshots": "nhl odds replay --r2",
         "pregame_goalies": "nhl goalies replay --r2",
         "dailyfaceoff_goalies": "nhl goalies replay --r2",
+        "dailyfaceoff_lines": "nhl goalies replay --r2",
         "sbr_odds": "nhl odds sbr --replay --r2",
         "player_league_seasons": "nhl player-seasons --r2",
     }

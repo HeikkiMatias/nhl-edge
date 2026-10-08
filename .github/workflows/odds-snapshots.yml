@@ -44,8 +44,9 @@ jobs:
       - run: uv sync --frozen
       - name: Pre-game goalies
         # The pre-game boxscore, landing and right-rail of every game in the next 18 hours, and
-        # Daily Faceoff's starting goalies for their dates, stored raw in R2 (issues #42 and #48),
-        # so the goalie state is on record at each odds slot. It runs before the snapshot, so every
+        # Daily Faceoff's starting goalies for their dates and line combinations of each team
+        # playing, within two minutes (#121), stored raw in R2 (issues #42 and #48), so the goalie
+        # and injury state is on record at each odds slot. It runs before the snapshot, so every
         # goalie row is observed before the prices of the same slot and a point-in-time join can
         # use it. The odds cron lines of the other half of the DST year skip.
         env:
@@ -56,7 +57,7 @@ jobs:
           CRON: ${{ github.event.schedule }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
-          uv run nhl goalies poll --mirror-raw "${pick[@]}"
+          uv run nhl goalies poll --lines --mirror-raw "${pick[@]}"
       - name: Snapshot
         # Runs when the goalie poll failed too.
         if: always()

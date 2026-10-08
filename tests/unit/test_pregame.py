@@ -141,6 +141,9 @@ def test_poll_stores_pregame_responses_apart_from_the_postgame_boxscores(tmp_pat
     messages: list[str] = []
     report = run_poll(nhl=api, now=MORNING, echo=messages.append)
     assert report.games == 5 and report.teams == 10 and report.flagged == 0
+    # Each team playing, with its game's ET date, for Daily Faceoff's team pages (#121).
+    assert len(report.playing) == 10
+    assert {day for _, day in report.playing} == report.dates
     assert paths.count("/v1/gamecenter/2026020001/boxscore") == 1
     assert paths.count("/v1/gamecenter/2026020001/landing") == 1
     assert paths.count("/v1/gamecenter/2026020001/right-rail") == 1
