@@ -4,6 +4,8 @@ name: player-seasons
 # through the client's 1-second throttle, mirrored to R2, and player_league_seasons is rebuilt
 # with the season's lines for the next season's NHLe priors (docs/data-sources.md). A page already
 # fetched after July 1 is reused, so a rerun by hand after a failure fetches only what is missing.
+# GitHub's own schedule starts it, not the Cloudflare timer (infra/timer): hours of delay don't
+# matter once a year, so it has no TIMER_ACTIVE guard.
 on:
   schedule:
     - cron: "17 10 2 7 *"  # July 2, 10:17 UTC
