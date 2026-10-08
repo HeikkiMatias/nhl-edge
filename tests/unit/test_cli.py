@@ -291,6 +291,134 @@ def test_player_seasons_rebuilds_the_table_from_the_cached_pages(
     assert not (tmp_path / stale_file).exists()
 
 
+def test_player_seasons_refresh_brings_in_the_season_just_played(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #117: the goalie's page was fetched mid-way through 2011-12, so the season is left out
+    # until --refresh fetches the page again; a rerun reuses the new copy.
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    import polars as pl
+    from player_season_fixtures import GOALIE, boxscores, page, players
+
+    from nhl_edge.ingest.nhl_api import NhlApi
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    # 2011-12 has a game count, and its boxscores pass as complete.
+    monkeypatch.setattr("nhl_edge.ingest.games.EXPECTED_GAMES", {20112012: 1})
+    monkeypatch.setattr("nhl_edge.ingest.player_seasons.lineup_problems", lambda *_: [])
+    refetched = datetime(2012, 7, 2, 9, tzinfo=UTC)
+    urls: list[str] = []
+
+    def get(self: NhlApi, url: str, headers: object = None) -> tuple[bytes, datetime, dict]:
+        self.requests += 1
+        urls.append(url)
+        return page(GOALIE), refetched, {"fetched_utc": refetched.isoformat(), "status": 200}
+
+    monkeypatch.setattr(NhlApi, "_get", get)
+    Lake().write("players", players(GOALIE))
+    Lake().write("actual_lineups", boxscores(GOALIE))
+    meta = {"fetched_utc": datetime(2012, 3, 1, tzinfo=UTC).isoformat(), "status": 200}
+    RawStore(Path("data") / "raw").put(
+        "nhl", f"player-landing/{GOALIE}/20120301T000000Z", page(GOALIE), meta
+    )
+    before = runner.invoke(app, ["player-seasons"])
+    assert before.exit_code == 0, before.output
+    assert Lake().read("player_league_seasons")["season"].max() == 20102011
+    assert urls == []
+    result = runner.invoke(app, ["player-seasons", "--refresh"])
+    assert result.exit_code == 0, result.output
+    assert (
+        "refreshed 20112012: 1 players with a boxscore, 1 landing pages fetched in 1 requests, "
+        "0 already fetched after its lines were public, 0 not found"
+    ) in plain(result.output)
+    assert urls == [f"/v1/player/{GOALIE}/landing"]
+    table = Lake().read("player_league_seasons")
+    assert table.filter(pl.col("season") == 20112012).height > 0
+    again = runner.invoke(app, ["player-seasons", "--refresh"])
+    assert again.exit_code == 0, again.output
+    assert "0 landing pages fetched in 0 requests, 1 already fetched" in plain(again.output)
+    assert len(urls) == 1
+
+
+def test_player_seasons_refresh_needs_the_season_s_game_count(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Codex on #200: without it, the boxscores' completeness check can't cover the season.
+    from player_season_fixtures import GOALIE, boxscores, players
+
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nhl_edge.ingest.games.EXPECTED_GAMES", {})
+    no_requests(monkeypatch)
+    Lake().write("players", players(GOALIE))
+    Lake().write("actual_lineups", boxscores(GOALIE))
+    result = runner.invoke(app, ["player-seasons", "--refresh"])
+    assert result.exit_code == 1
+    assert "20112012 has no expected game count" in plain(result.output)
+
+
+def test_player_seasons_refresh_adds_a_player_the_ingest_could_not_fetch(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Codex on #200: the goalie played, but his page 404'd at the ingest, so he isn't in players.
+    from datetime import UTC, datetime
+
+    import polars as pl
+    from player_season_fixtures import GOALIE, SKATER, boxscores, page_with_bio, players
+
+    from nhl_edge.ingest.nhl_api import NhlApi
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nhl_edge.ingest.games.EXPECTED_GAMES", {20112012: 1})
+    monkeypatch.setattr("nhl_edge.ingest.player_seasons.lineup_problems", lambda *_: [])
+    refetched = datetime(2012, 7, 2, 9, tzinfo=UTC)
+
+    def get(self: NhlApi, url: str, headers: object = None) -> tuple[bytes, datetime, dict]:
+        self.requests += 1
+        return (
+            page_with_bio(GOALIE),
+            refetched,
+            {"fetched_utc": refetched.isoformat(), "status": 200},
+        )
+
+    monkeypatch.setattr(NhlApi, "_get", get)
+    Lake().write("players", players(SKATER))
+    Lake().write("actual_lineups", boxscores(SKATER, GOALIE))
+    result = runner.invoke(app, ["player-seasons", "--refresh"])
+    assert result.exit_code == 0, result.output
+    assert "added 1 players whose page the ingest lacked" in plain(result.output)
+    assert set(Lake().read("players")["player_id"]) == {SKATER, GOALIE}
+    table = Lake().read("player_league_seasons")
+    assert table.filter(pl.col("player_id") == GOALIE, pl.col("season") == 20112012).height > 0
+
+
+def test_player_seasons_refresh_needs_a_season_whose_lines_are_public(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    from player_season_fixtures import GOALIE, boxscores, players
+
+    from nhl_edge.lake.tables import Lake
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("nhl_edge.ingest.games.EXPECTED_GAMES", {})
+    no_requests(monkeypatch)
+    # On June 1, 2012, the goalie's 2011-12, the only season with a boxscore here, isn't public.
+    monkeypatch.setattr("nhl_edge.ingest.nhl_api.utc_now", lambda: datetime(2012, 6, 1, tzinfo=UTC))
+    Lake().write("players", players(GOALIE))
+    Lake().write("actual_lineups", boxscores(GOALIE))
+    result = runner.invoke(app, ["player-seasons", "--refresh"])
+    assert result.exit_code == 1
+    assert "no season with boxscores has public lines yet" in plain(result.output)
+
+
 def test_player_seasons_needs_players_and_their_pages(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

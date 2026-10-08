@@ -4,7 +4,8 @@ array of the player landing pages in the raw cache, for the NHLe offensive prior
 nhl ingest fetches a player's landing page once, when he first shows up on a roster or in a
 boxscore, and reuses it from then on (NhlApi.player_landing). So this reads the newest cached page
 of every player in players and makes no request; a season played after a page's fetch needs that
-page fetched again.
+page fetched again. Once a season, after its lines are public, `nhl player-seasons --refresh`
+does that for every player with a boxscore in it (refresh, #117).
 
 Point in time: a season's lines count as public on July 1 (00:00 UTC) after it, when nearly every
 league's season and the NHL playoffs are over (lake/schemas.py, SEASON_LINES_PUBLIC). The
@@ -23,14 +24,15 @@ actual_lineups), and a player without a boxscore has none until he plays.
 """
 
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 import polars as pl
 
-from nhl_edge.ingest.nhl_api import parse_utc
+from nhl_edge.ingest.nhl_api import NhlApi, NotFoundError, fetched_after, parse_utc
+from nhl_edge.ingest.players import landing_row
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.schemas import (
     LATE_LEAGUE_SEASONS,
@@ -293,3 +295,56 @@ def build(
     frame = player_league_seasons(pl.DataFrame(rows, schema=LINE_SCHEMA), players, debuts)
     report.rows = frame.height
     return frame, report
+
+
+@dataclass
+class RefreshReport:
+    """The yearly refresh of one season's players' landing pages."""
+
+    season: int
+    players: int = 0
+    fetched: int = 0
+    reused: int = 0
+    missing: list[int] = field(default_factory=list)
+    # players rows for those with a boxscore who aren't in players, whose page the ingest could
+    # not fetch before and the refresh now has.
+    recovered: list[dict[str, Any]] = field(default_factory=list)
+
+
+def refresh_season(lineups: pl.DataFrame, now: datetime) -> int | None:
+    """The latest season with boxscores in lineups (actual_lineups) whose NHL lines are public
+    by now (season_lines_public), or None: the season the yearly refresh fetches pages for."""
+    seasons = sorted(set(lineups["season"].to_list()), reverse=True)
+    return next((s for s in seasons if season_lines_public(s, "NHL") <= now), None)
+
+
+def refresh(
+    api: NhlApi, lineups: pl.DataFrame, season: int, known: Collection[int]
+) -> RefreshReport:
+    """Fetch again the landing page of every player with a boxscore in season, unless his newest
+    copy was fetched once the season's lines were public, so a rerun reuses it and makes no
+    request. Each new copy is stored beside the old ones, and build then reads it as the newest:
+    the season enters player_league_seasons with every row's observed_utc as before, set by the
+    season's public date and the player's first boxscore, never by the fetch. A later replay of
+    players reads the new copy too, which changes only its provenance (fetched_utc, raw_key):
+    players has no observed_utc, and holds only facts fixed before a debut. A page the API no
+    longer has is counted. A player not among known (players' ids) whose page it now has comes
+    back as a players row (recovered), for the caller to add before the rebuild."""
+    public = season_lines_public(season, "NHL")
+    ids = sorted(set(lineups.filter(pl.col("season") == season)["player_id"].to_list()))
+    report = RefreshReport(season, players=len(ids))
+    for player_id in ids:
+        try:
+            response = api.player_landing(player_id, fetched_after(public))
+        except NotFoundError:
+            report.missing.append(player_id)
+            continue
+        if response.cached:
+            report.reused += 1
+        else:
+            report.fetched += 1
+        if player_id not in known:
+            report.recovered.append(
+                landing_row(response.body, response.fetched_utc, response.raw_key)
+            )
+    return report

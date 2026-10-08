@@ -57,7 +57,6 @@ Every deliverable merged under its own task issue:
 - **The gap review** (`reports/gaps/b3-gap-review.md`, tool `nhl audit gaps`) found no data error in 92 games read without results.
 
 **Open P3 follow-ups.** None blocks phase 5. Take them when convenient, one PR each:
-- #117: refetch the landing pages once a season.
 - #120: two possible calibration gaps in lineup availability. They need intervals before they count as findings.
 - #125: a debutant's NHLe in his debut season.
 - #130: `nhl power-plays` should refuse games missing inputs.

@@ -1,0 +1,30 @@
+name: player-seasons
+# Once a year, the day after the season just played becomes public (July 1, #117): the landing page
+# of every player with a boxscore in it is fetched again, about 1,050 requests to the free NHL API
+# through the client's 1-second throttle, mirrored to R2, and player_league_seasons is rebuilt
+# with the season's lines for the next season's NHLe priors (docs/data-sources.md). A page already
+# fetched after July 1 is reused, so a rerun by hand after a failure fetches only what is missing.
+# GitHub's own schedule starts it, not the Cloudflare timer (infra/timer): hours of delay don't
+# matter once a year, so it has no TIMER_ACTIVE guard.
+on:
+  schedule:
+    - cron: "17 10 2 7 *"  # July 2, 10:17 UTC
+  workflow_dispatch:
+concurrency: player-seasons
+permissions:
+  contents: read
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --frozen
+      - name: Refresh the landing pages and rebuild player_league_seasons
+        run: uv run nhl player-seasons --refresh --r2

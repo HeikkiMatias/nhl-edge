@@ -20,6 +20,7 @@ from player_season_fixtures import (
     table,
 )
 
+from nhl_edge.ingest.nhl_api import NhlApi
 from nhl_edge.ingest.player_seasons import (
     LEAGUE_VARIANTS,
     LINE_SCHEMA,
@@ -293,3 +294,110 @@ def test_build_reports_a_player_with_a_boxscore_who_is_not_in_players(tmp_path: 
     frame, report = build(store, players(SKATER), boxscores(SKATER, GOALIE))
     assert frame.equals(table(FETCHED, SKATER))
     assert report.not_in_players == sorted([GOALIE, OTHER_GOALIE])
+
+
+# The yearly refresh (#117): the goalie's page, first fetched mid-way through 2011-12, his first
+# NHL season, and fetched again once its lines are public on July 1, 2012.
+MID_SEASON = datetime(2012, 3, 1, tzinfo=UTC)
+REFETCHED = datetime(2012, 7, 2, 9, 0, tzinfo=UTC)
+
+
+def refresh_api(store: RawStore, served: dict[int, bytes]) -> tuple[NhlApi, list[str]]:
+    """An NHL client whose landing pages come from served, fetched at REFETCHED; any other
+    player's page is a 404."""
+    import httpx
+
+    from nhl_edge.ingest import nhl_api
+
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        player_id = int(request.url.path.split("/")[3])
+        if player_id not in served:
+            return httpx.Response(404)
+        return httpx.Response(200, content=served[player_id])
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url=nhl_api.BASE_URL)
+    api = NhlApi(store, client, min_interval_s=0.0, now=lambda: REFETCHED)
+    return api, paths
+
+
+def store_mid_season_page(store: RawStore) -> None:
+    meta = {"fetched_utc": MID_SEASON.isoformat(), "status": 200}
+    store.put("nhl", f"player-landing/{GOALIE}/20120301T000000Z", page(GOALIE), meta)
+
+
+def test_the_refresh_season_is_the_latest_whose_lines_are_public() -> None:
+    from nhl_edge.ingest.player_seasons import refresh_season
+
+    lineups = boxscores(SKATER, GOALIE)  # seasons 1991-92 and 2011-12
+    assert refresh_season(lineups, datetime(1992, 6, 30, tzinfo=UTC)) is None
+    assert refresh_season(lineups, datetime(2012, 6, 30, 23, 59, tzinfo=UTC)) == 19911992
+    assert refresh_season(lineups, datetime(2012, 7, 1, tzinfo=UTC)) == 20112012
+
+
+def test_a_refetched_page_brings_in_the_season_just_played(tmp_path: Path) -> None:
+    from nhl_edge.ingest.player_seasons import refresh
+
+    store = RawStore(tmp_path)
+    store_mid_season_page(store)
+    # Before the refresh, the page fetched mid-season leaves 2011-12 out as a partial season.
+    before, report = build(store, players(GOALIE), boxscores(GOALIE))
+    assert before["season"].max() == 20102011
+    assert report.partial > 0
+    api, paths = refresh_api(store, {GOALIE: page(GOALIE)})
+    done = refresh(api, boxscores(GOALIE), 20112012, {GOALIE})
+    assert (done.players, done.fetched, done.reused, done.missing) == (1, 1, 0, [])
+    assert paths == [f"/v1/player/{GOALIE}/landing"]
+    after, _ = build(store, players(GOALIE), boxscores(GOALIE))
+    new = after.filter(pl.col("season") == 20112012)
+    assert not new.is_empty() and after["season"].max() == 20112012
+    assert set(new["raw_key"]) == {f"nhl/player-landing/{GOALIE}/20120702T090000Z"}
+    # Public from July 1 after the season, as before: never from the refetch.
+    assert (new["observed_utc"] == datetime(2012, 7, 1, tzinfo=UTC)).all()
+    # The earlier seasons are the same rows, read from the new copy.
+    assert after.filter(pl.col("season") < 20112012).drop("raw_key").equals(before.drop("raw_key"))
+    # A rerun reuses the new copy and makes no request.
+    done = refresh(api, boxscores(GOALIE), 20112012, {GOALIE})
+    assert (done.fetched, done.reused) == (0, 1)
+    assert len(paths) == 1
+
+
+def test_a_page_already_fetched_after_the_season_is_not_fetched_again(tmp_path: Path) -> None:
+    from nhl_edge.ingest.player_seasons import refresh
+
+    store = RawStore(tmp_path)
+    store_pages(store, GOALIE)  # fetched in 2026, long after 2011-12
+    api, paths = refresh_api(store, {GOALIE: page(GOALIE)})
+    done = refresh(api, boxscores(GOALIE), 20112012, {GOALIE})
+    assert (done.fetched, done.reused, paths) == (0, 1, [])
+
+
+def test_a_page_the_api_no_longer_has_is_counted(tmp_path: Path) -> None:
+    from nhl_edge.ingest.player_seasons import refresh
+
+    store = RawStore(tmp_path)
+    store_mid_season_page(store)
+    api, _ = refresh_api(store, {})
+    done = refresh(api, boxscores(GOALIE), 20112012, {GOALIE})
+    assert (done.players, done.fetched, done.missing) == (1, 0, [GOALIE])
+    # The old copy stays the newest, so the table is as before.
+    after, _ = build(store, players(GOALIE), boxscores(GOALIE))
+    assert after["season"].max() == 20102011
+
+
+def test_a_player_missing_from_players_comes_back_as_a_players_row(tmp_path: Path) -> None:
+    # Codex on #200: his page 404'd at the ingest, so he isn't in players and build would skip
+    # him; the refresh hands back his row for the caller to add.
+    from player_season_fixtures import page_with_bio
+
+    from nhl_edge.ingest.player_seasons import refresh
+
+    store = RawStore(tmp_path)
+    api, _ = refresh_api(store, {GOALIE: page_with_bio(GOALIE)})
+    done = refresh(api, boxscores(GOALIE), 20112012, set())
+    [row] = done.recovered
+    assert row["player_id"] == GOALIE and row["fetched_utc"] == REFETCHED
+    assert row["raw_key"] == f"nhl/player-landing/{GOALIE}/20120702T090000Z"
+    assert refresh(api, boxscores(GOALIE), 20112012, {GOALIE}).recovered == []
