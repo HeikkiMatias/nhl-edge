@@ -94,7 +94,7 @@ def closing_value(
     )
 
 
-def _weighted(frame: pl.DataFrame) -> dict[str, float] | None:
+def stake_weighted(frame: pl.DataFrame) -> dict[str, float] | None:
     """The stake-weighted mean CLV with its weekly block bootstrap interval: the resampled weeks'
     sum of stake·CLV over their sum of stake."""
     if frame.is_empty():
@@ -112,7 +112,7 @@ def _summary(frame: pl.DataFrame) -> dict[str, Any]:
     return {
         "bets": frame.height,
         "clv_per_bet": bootstrap(frame, "clv").to_dict(),
-        "clv_stake_weighted": _weighted(frame),
+        "clv_stake_weighted": stake_weighted(frame),
         "fair_move_per_bet": bootstrap(frame, "fair_move").to_dict(),
         "positive_share": float((frame["clv"] > 0).mean()),  # type: ignore[arg-type]
         "return_per_bet": bootstrap(frame, "ret").to_dict(),

@@ -2462,6 +2462,144 @@ def live_settle(
         typer.echo(f"  {status}: {rows.height}")
 
 
+@live_app.command("report")
+def live_report(
+    as_of: Annotated[
+        datetime | None,
+        typer.Option(
+            "--as-of", formats=["%Y-%m-%d"], help="The report's date (default: today, ET)."
+        ),
+    ] = None,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="Read the ledgers from R2, and pull the games, odds, settlements and SBR's odds "
+            "first.",
+        ),
+    ] = False,
+    out: Annotated[Path, typer.Option(help="Where the report is written.")] = Path("reports/live"),
+) -> None:
+    """The weekly live report (#166, ADR 0032): coverage, CLV against Pinnacle's closing proxy
+    with the coverage floor and bound, the model comparisons, the blend's calibration band, the
+    gaps for hand review and the operational alerts, every figure with its weekly block bootstrap
+    interval. Interim until the formal review: no verdict before it. Writes
+    report-<date>.json and .md under out."""
+    import json
+    from datetime import UTC
+
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import blend_fit
+    from nhl_edge.live import predict as lp
+    from nhl_edge.live import report as lr
+    from nhl_edge.settings import load_env
+
+    load_env()
+    day = as_of.date() if as_of is not None else datetime.now(UTC).astimezone(ET).date()
+    lake = Lake.from_env(mirror=r2)
+    if r2:
+        assert lake.objects is not None and lake.bucket is not None
+        tables = ("games", "odds_snapshots", "paper_settlements", "sbr_odds")
+        pulled = sum(lake.pull(table) for table in tables)
+        typer.echo(f"pulled {pulled:,} table files from R2")
+        # The ledgers in R2 are the record.
+        ledger = lp.sync_ledgers(lake.objects, lake.bucket, blend_fit.LIVE_SEASON)
+    else:
+        ledger = lake.read("paper_ledger", seasons=[blend_fit.LIVE_SEASON])
+    paths = sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
+    if len(paths) != 1:
+        typer.echo(f"expected the season's one live fit, found {len(paths)}", err=True)
+        raise typer.Exit(code=1)
+    scale = next(iter(json.loads(paths[0].read_text())["fits"].values()))["u_scale"]
+    games = lake.read("games")
+    result = lr.report(
+        ledger,
+        lake.read("paper_settlements"),
+        games,
+        lake.read("odds_snapshots"),
+        lr.sbr_history(lake.read("sbr_odds"), games),
+        scale,
+        day,
+    )
+    json_path, md_path = lr.write(result, out)
+    cover = result["coverage"]
+    typer.echo(
+        f"{result['kind']} report {day}: {cover['slate_games']} slate games, {cover['bets']} bets, "
+        f"{cover['with_proxy']} of {cover['eligible']} eligible with a closing proxy"
+    )
+    typer.echo(f"wrote {md_path} and {json_path}")
+
+
+@live_app.command("slate")
+def live_slate(
+    day: Annotated[
+        datetime | None,
+        typer.Option("--date", formats=["%Y-%m-%d"], help="The game date (default: today, ET)."),
+    ] = None,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2", help="Read the day's ledger from R2, and pull its lineup replacements first."
+        ),
+    ] = False,
+    source: Annotated[
+        Path | None,
+        typer.Option("--from", help="A dry run's ledger file (nhl predict --dry-run) instead."),
+    ] = None,
+) -> None:
+    """The day's ledger for the daily-slate review (#166): each game's status, B1, B3, the blend,
+    the gap, u and the bet, the flags for hand review, and the lineup gaps."""
+    import io
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import blend_fit
+    from nhl_edge.live import predict as lp
+    from nhl_edge.live import report as lr
+    from nhl_edge.settings import load_env
+
+    if r2 and source is not None:
+        raise typer.BadParameter("pass at most one of --r2 and --from")
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    season = [blend_fit.LIVE_SEASON]
+    if source is not None:
+        ledger = pl.read_parquet(source)
+        dates = ledger["game_date"].unique().to_list()
+        # A dry run's ledger holds one date: its own, unless --date picks another.
+        if day is None and len(dates) != 1:
+            raise typer.BadParameter(f"{source} holds {len(dates)} dates: pass --date")
+        game_date = day.date() if day is not None else dates[0]
+    else:
+        game_date = day.date() if day is not None else datetime.now(UTC).astimezone(ET).date()
+        if r2:
+            assert lake.objects is not None and lake.bucket is not None
+            lake.pull("lineup_replacements", seasons=season)
+            key = lp.ledger_key(game_date)
+            listed = lake.objects.list_objects_v2(Bucket=lake.bucket, Prefix=key)
+            # Only an absent ledger is "no ledger": any other storage error surfaces as it is.
+            if not any(item["Key"] == key for item in listed.get("Contents", [])):
+                typer.echo(f"no ledger for {game_date} in R2", err=True)
+                raise typer.Exit(code=1)
+            body = lake.objects.get_object(Bucket=lake.bucket, Key=key)
+            ledger = pl.read_parquet(io.BytesIO(body["Body"].read()))
+        else:
+            ledger = lake.read("paper_ledger", seasons=season)
+    ledger = ledger.filter(pl.col("game_date") == game_date)
+    if ledger.is_empty():
+        typer.echo(f"no ledger rows for {game_date}", err=True)
+        raise typer.Exit(code=1)
+    replacements = lake.read("lineup_replacements", seasons=season).filter(
+        pl.col("game_date") == game_date
+    )
+    typer.echo(f"# Slate, {game_date}\n")
+    typer.echo(lr.slate_markdown(ledger, replacements))
+
+
 @live_app.command("blend-fit")
 def live_blend_fit(
     out: Annotated[

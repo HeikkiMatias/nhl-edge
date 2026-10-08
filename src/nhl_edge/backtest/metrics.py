@@ -141,18 +141,18 @@ def _calibration_fit(logit: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     return float(beta[0]), float(beta[1])
 
 
-def calibration(
+def calibration_draws(
     frame: pl.DataFrame, p: str, y: str, draws: int = DRAWS, seed: int = SEED
-) -> dict[str, Interval]:
+) -> tuple[tuple[float, float], np.ndarray]:
     """The calibration intercept and slope of probability p for outcome y, from a logistic
-    regression of y on p's log-odds, with weekly block bootstrap intervals: 0 and 1 when
-    calibrated. The frame needs season and game_date."""
+    regression of y on p's log-odds, and their refits on draws weekly block bootstrap resamples
+    (a draws by 2 array). The frame needs season and game_date."""
     if frame.is_empty():
         raise ValueError(f"no games to estimate {p}'s calibration on")
     clipped = frame[p].clip(EPSILON, 1 - EPSILON).to_numpy()
     logit = np.log(clipped / (1 - clipped))
     outcome = frame[y].cast(pl.Float64).to_numpy()
-    intercept, slope = _calibration_fit(logit, outcome)
+    fit = _calibration_fit(logit, outcome)
     rng = np.random.default_rng(seed)
     seasons = [
         (season["row"].to_list(), picks) for season, picks in _picks(_weeks(frame), draws, rng)
@@ -163,6 +163,16 @@ def calibration(
             [np.concatenate([weeks[w] for w in picks[d]]) for weeks, picks in seasons]
         ).astype(int)
         fitted[d] = _calibration_fit(logit[rows], outcome[rows])
+    return fit, fitted
+
+
+def calibration(
+    frame: pl.DataFrame, p: str, y: str, draws: int = DRAWS, seed: int = SEED
+) -> dict[str, Interval]:
+    """The calibration intercept and slope of probability p for outcome y, from a logistic
+    regression of y on p's log-odds, with weekly block bootstrap intervals: 0 and 1 when
+    calibrated. The frame needs season and game_date."""
+    (intercept, slope), fitted = calibration_draws(frame, p, y, draws, seed)
     return {
         "intercept": interval(intercept, fitted[:, 0]),
         "slope": interval(slope, fitted[:, 1]),
