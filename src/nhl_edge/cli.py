@@ -2517,10 +2517,28 @@ def live_supabase(
             "--r2", help="Read the ledgers from R2 and pull the settlements first (the record)."
         ),
     ] = False,
+    cron: Annotated[
+        str | None,
+        typer.Option(
+            help="The odds workflow's fallback cron line: copy only if it is today's midday "
+            "slot, as nhl predict decides, and otherwise do nothing."
+        ),
+    ] = None,
 ) -> None:
     """Copy the paper ledger to Supabase for the dashboard (#167): every new prediction and bet,
     inserted once, then every settlement onto its bet. A rerun sends nothing new, so the same
     command backfills the season. Needs the paper ledger migration applied."""
+    from datetime import UTC
+    from zoneinfo import ZoneInfo
+
+    if cron is not None:
+        from nhl_edge.ingest.odds import resolve_slot
+
+        today = datetime.now(UTC).astimezone(ZoneInfo("America/New_York")).date()
+        slot = resolve_slot("free-tier", cron, today)
+        if slot is None or slot.name != "midday":
+            typer.echo(f"{cron!r} is not today's midday slot: nothing copied")
+            return
     from nhl_edge.lake.supabase import Supabase
     from nhl_edge.lake.tables import Lake
     from nhl_edge.live import blend_fit, serving

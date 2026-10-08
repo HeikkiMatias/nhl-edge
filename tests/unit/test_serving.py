@@ -99,3 +99,19 @@ def test_a_settlement_without_its_bet_in_the_ledger_is_not_sent() -> None:
     ).with_columns(**{source: pl.lit(None) for source in serving.SETTLEMENT_COLUMNS.values()})
     fake = FakeSupabase()
     assert serving.sync(fake, decided, stray)["settlements"] == 0  # type: ignore[arg-type]
+
+
+def test_a_fallback_cron_line_copies_only_at_the_midday_slot(monkeypatch: Any) -> None:
+    # Codex on #196: every fallback cron line runs the step; only today's midday one copies.
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+    from nhl_edge.lake import supabase as sb
+
+    def refuse(cls: Any) -> Any:
+        raise AssertionError("Supabase reached on a morning cron line")
+
+    monkeypatch.setattr(sb.Supabase, "from_env", classmethod(refuse))
+    result = CliRunner().invoke(app, ["live", "supabase", "--r2", "--cron", "5 11 * * *"])
+    assert result.exit_code == 0, result.output
+    assert "is not today's midday slot: nothing copied" in result.output
