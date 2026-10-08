@@ -316,6 +316,7 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   Every object is written with `IfNoneMatch`. A write that failed part way is run again: an object already there with the same bytes counts as written. A reader refuses a bundle without its manifest or with a file that doesn't match it. If the bundle can't be written, the run exits non-zero and the ledger stands. A dry run into an `--out` that already holds the date's bundle is refused before anything is written.
 - **An unfinished bundle (#188).** The rows and fits go first, each written once, so a run that stops after its ledger leaves them.
   - **The first write gets one try,** so a slow store never holds up the ledger; the write after the ledger tries again.
+  - **Files already there with other bytes stop the run before its ledger.** An earlier run wrote them from other inputs, and a ledger published over them could never be replayed or finished. If the day has a ledger, that run published it. If it has none, the earlier run stopped between its files and its ledger: its files belong to no decision, and a rerun can decide only once they are removed from `bundles/live/<date>/` by hand.
   - **`nhl live bundle --check --r2`,** a nightly step, names each decision day whose bundle has no manifest, and fails the step.
   - **`nhl live bundle --date <d> --finish --r2`** (or `--from <dry-run dir>`) completes one. It rebuilds the manifest from:
     - the ledger's own columns: decision and publication times, versions, bankroll;

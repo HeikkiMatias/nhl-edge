@@ -616,7 +616,8 @@ def predict(
 
     # The run bundle's rows and fits (#171) go first, each written once (#188): a run that stops
     # after its ledger leaves them for nhl live bundle --finish. One try, so a slow store never
-    # holds up the ledger; the write after it tries again.
+    # holds up the ledger; the write after it tries again. Files of an earlier run with other
+    # bytes stop the run before its ledger, which they could never reproduce.
     fits = {}
     if fitted is not None and fitted.b2_model is not None and fitted.b3_model is not None:
         fits = {"b2": fitted.b2_model, "b3": fitted.b3_model}
@@ -627,9 +628,17 @@ def predict(
         assert lake.objects is not None and lake.bucket is not None
         bundles = lb.R2Store(lake.objects, lake.bucket)
     try:
-        lb.write_files(bundles, game_date, rows, fits)
-    except Exception as exc:
-        typer.echo(f"run bundle files not written before the ledger ({exc})", err=True)
+        failed = lb.write_files_first(bundles, game_date, rows, fits)
+    except lb.Conflict as exc:
+        typer.echo(
+            f"{exc}: an earlier run wrote {game_date}'s run bundle files from other inputs, and "
+            "a ledger published over them could never be replayed, so nothing is published "
+            "(docs/data-sources.md, run bundles)",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    if failed is not None:
+        typer.echo(f"run bundle files not written before the ledger ({failed})", err=True)
 
     if dry_run:
         try:
@@ -685,6 +694,8 @@ def predict(
             try:
                 written = lb.write_once(bundles, game_date, rows, fits, identity, raw)
                 break
+            except lb.Conflict:
+                raise
             except Exception as exc:
                 if attempt == 3:
                     raise

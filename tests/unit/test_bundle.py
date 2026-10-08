@@ -250,6 +250,33 @@ def test_nhl_live_replay_decides_the_day_again_from_the_bundle_and_the_fit(
     assert "is not the live fit" in result.output
 
 
+def test_files_an_earlier_run_wrote_from_other_inputs_stop_the_run_before_its_ledger() -> None:
+    # Codex on #204: a ledger published over them could never be finished.
+    from fakes import ConditionalBucket
+
+    bucket = ConditionalBucket()
+    store = lb.R2Store(bucket, "b")
+    day = fixture_slate()["game_date"][0]
+    slate = fixture_slate()
+    rows = lb.inputs(slate, RECORD, NO_QUOTES, None)
+    # A store down: the failure comes back for the run to log, and its ledger goes ahead.
+    put = bucket.put_object
+
+    def down(**kwargs: Any) -> None:
+        raise ConnectionError("lost")
+
+    bucket.put_object = down  # type: ignore[method-assign]
+    assert lb.write_files_first(store, day, rows, {}) == "lost"
+    bucket.put_object = put  # type: ignore[method-assign]
+    assert lb.write_files_first(store, day, rows, {}) is None
+    # The same files again count as written.
+    assert lb.write_files_first(store, day, rows, {}) is None
+    # Another run's slate, with other bytes, is a conflict: it raises.
+    other = lb.inputs(slate.with_columns(game_state=pl.lit("PRE")), RECORD, NO_QUOTES, None)
+    with pytest.raises(lb.Conflict, match="with other bytes"):
+        lb.write_files_first(store, day, other, {})
+
+
 def test_a_dry_run_into_a_directory_holding_the_days_bundle_is_refused(tmp_path: Path) -> None:
     from typer.testing import CliRunner
 

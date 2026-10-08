@@ -50,6 +50,10 @@ FITS = "fits.json"
 TOLERANCE = 1e-9
 
 
+class Conflict(ValueError):
+    """An object of the bundle already written with other bytes."""
+
+
 class Store(Protocol):
     """Where a bundle's objects live: put writes once, get reads back, keys lists them."""
 
@@ -214,6 +218,25 @@ def write_files(
     return files
 
 
+def write_files_first(
+    store: Store,
+    day: date,
+    rows: Mapping[str, pl.DataFrame],
+    fits: Mapping[str, B2Model | B3Model],
+) -> str | None:
+    """write_files before the ledger, in one try, so a slow store never holds up the ledger: a
+    failure comes back as its message, for the run to log and the write after the ledger to try
+    again. A Conflict raises: an earlier run wrote the day's files from other inputs, and a ledger
+    published over them could never be finished (Codex on #204)."""
+    try:
+        write_files(store, day, rows, fits)
+    except Conflict:
+        raise
+    except Exception as exc:
+        return str(exc)
+    return None
+
+
 def manifest_of(
     identity: Mapping[str, Any], files: Mapping[str, bytes], raw: Mapping[str, bytes]
 ) -> dict[str, Any]:
@@ -342,7 +365,7 @@ def put_once(store: Store, key: str, body: bytes) -> None:
         except Exception:
             raise exc from None
         if sha256(held) != sha256(body):
-            raise ValueError(f"{key} is already written, with other bytes") from exc
+            raise Conflict(f"{key} is already written, with other bytes") from exc
 
 
 def read(store: Store, day: date) -> Bundle:
