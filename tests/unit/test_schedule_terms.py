@@ -123,6 +123,14 @@ def test_rows_validate_and_carry_the_cutoff() -> None:
     assert (later["observed_utc"] == later["as_of_utc"]).all()
 
 
+def test_rows_of_another_season_s_game_are_refused() -> None:
+    # #131: B3 trusts season to keep each fold to its own rows and cutoffs.
+    frame = st.terms(LEAGUE["schedule"], LEAGUE["games"], SETTINGS, [20112012], REF)
+    out = st.rows(frame, SETTINGS, VERSION).head(1)
+    with pytest.raises(Exception, match="regular_season_id_of_its_season"):
+        ScheduleTerms.validate(out.with_columns(season=pl.col("season") + 10_001))
+
+
 def test_the_tuning_feature_is_zero_at_a_neutral_site() -> None:
     frame = st.terms(LEAGUE["schedule"], LEAGUE["games"], SETTINGS, [20112012], REF)
     feature = st.tuning_feature(frame).join(
