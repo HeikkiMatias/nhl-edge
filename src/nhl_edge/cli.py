@@ -1030,6 +1030,50 @@ def backtest(
         )
 
 
+def _check_blend_gaps(
+    rows: "pl.DataFrame",
+    gaps: Path,
+    games: "pl.DataFrame",
+    sbr_odds: "pl.DataFrame",
+    tables: "b2.Tables",
+    b3_tables: "b3.Tables",
+    lake: "Lake",
+) -> None:
+    """Recompute each blend gap's probability from its fold's fit, recorded in the run's report
+    (b3_gaps.run_summary, #156), from the market's de-vigged probability and u's parts at the
+    gap's prediction time. Raises when one doesn't follow."""
+    import json
+
+    import polars as pl
+
+    from nhl_edge.audit import b3_gaps
+    from nhl_edge.backtest.market import Experiment, market_prices
+    from nhl_edge.backtest.walk_forward import B1_METHOD, b0
+    from nhl_edge.game import uncertainty
+
+    if rows.is_empty():
+        return
+    fits = b3_gaps.fold_blends(json.loads(b3_gaps.run_summary(gaps).read_text()))
+    u_tables = uncertainty.Tables(
+        games,
+        tables.goalie_starts,
+        b3_tables.lineups,
+        b3_tables.lineup_replacements,
+        tables.actual_lineups,
+        lake.read("player_league_seasons"),
+    )
+    markets, doubts = [], []
+    for (experiment,), part in rows.group_by("experiment", maintain_order=True):
+        named = pl.lit(str(experiment)).alias("experiment")
+        priced = b0(market_prices(sbr_odds, Experiment(str(experiment))), B1_METHOD)
+        markets.append(priced.select(named, "game_id", p_mkt="p_home"))
+        moments = part.select("game_id", pl.col("prediction_utc").cast(pl.Datetime("us", "UTC")))
+        doubts.append(
+            uncertainty.parts(u_tables, moments).select(named, "game_id", *uncertainty.PARTS)
+        )
+    b3_gaps.blend_check(rows, pl.concat(markets), pl.concat(doubts), fits)
+
+
 def _b3_tables(lake: "Lake", tables: "b2.Tables") -> "b3.Tables":
     """B3's tables (ADR 0023), sharing B2's schedule terms, goalie starts and boxscores."""
     from nhl_edge.game.b3 import Tables
@@ -3336,7 +3380,8 @@ def audit_gaps(
     8's review (#107): each game's log-odds in parts, both teams' expected goals and the flags,
     to <out>/b3-gaps-<version>.md (the games to review) and .csv (every gap). No result is
     read. With --blend, the market blend's gaps instead, each game once, with B3's own terms at
-    the backtest's prediction time, to <out>/blend-gaps-<version>.md and .csv."""
+    the backtest's prediction time, to <out>/blend-gaps-<version>.md and .csv; each gap's blend
+    probability is first recomputed from its fold's fit in the run's summary.json (#156)."""
     from datetime import UTC
 
     import polars as pl
@@ -3374,10 +3419,11 @@ def audit_gaps(
     )
     seasons = sorted(int(s) for s in rows["season"].unique().to_list())
     b3_tables = _b3_tables(lake, tables)
+    sbr_odds = lake.read("sbr_odds").filter(pl.col("season").is_in(seasons)) if blend else None
     if blend:
+        assert sbr_odds is not None
         # Each experiment's gaps are refit at its own fold start, as in the backtest: E2's comes
         # at the season's first opener when that is before its first game.
-        sbr_odds = lake.read("sbr_odds").filter(pl.col("season").is_in(seasons))
         folds = walk_forward.fold_starts(sbr_odds, games, seasons)
         batches = [
             (str(experiment), part, {s: folds[(str(experiment), s)] for s in seasons})
@@ -3388,6 +3434,8 @@ def audit_gaps(
         batches = [("E1", rows, {s: fold_start(calendar, s) for s in seasons})]
     try:
         found = [(name, b3_gaps.screen(b3_tables, part, starts)) for name, part, starts in batches]
+        if sbr_odds is not None:
+            _check_blend_gaps(rows, gaps, games, sbr_odds, tables, b3_tables, lake)
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
