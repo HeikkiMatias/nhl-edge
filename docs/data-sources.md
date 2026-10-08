@@ -317,7 +317,7 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   - **The result,** on the full game, OT and shootout included (hard rule 2). The profit is stake·(price − 1) for a win and −stake for a loss.
   - **Postponed games:** a game played more than 12 hours from the ledger's start voids its bet.
   - **The close:** Pinnacle's closing proxy of the bet's own Odds API event, taken after its decision snapshot. CLV = price·p_close − 1, and the fair move, both through `backtest/e3.closing_value` as on history.
-  - **Without a proxy,** `close_status` says why: no pre-game snapshot, stale or missing (ADR 0033).
+  - **Without a proxy,** `close_status` says why: no pre-game snapshot, stale or missing (ADR 0033). A game with no pre-game slot due has no CLV even when a delayed run left it a proxy (ADR 0032).
 
   Nothing in a decision reads the table: the bankroll reads the ledgers and the games itself.
 

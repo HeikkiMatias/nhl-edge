@@ -7,8 +7,9 @@ ledger whose game is final gets one row of paper_settlements:
   stake·(price - 1) for a win and -stake for a loss. A game played more than POSTPONED from the
   ledger's start is a postponed game, and its bet is void, as the books settle it.
 - **The close:** Pinnacle's closing proxy of the bet's own Odds API event (ADR 0033), taken after
-  the bet's decision snapshot. Without one, close_status gives why (market/closing.py):
-  no pre-game snapshot (outside ADR 0032's coverage floor), stale or missing (counted against it).
+  the bet's decision snapshot. close_status gives the game's status (market/closing.py): proxy,
+  or no pre-game snapshot (outside ADR 0032's coverage floor, with no CLV even when a delayed run
+  left a proxy), stale or missing (counted against it).
 - **CLV** = price·p_close - 1 and the fair move, through backtest/e3.closing_value, as on history:
   p_close is the bet's side in Pinnacle's closing pair de-vigged multiplicatively
   (market/devig.py), and the fair move compares it with the decision's own de-vigged pair.

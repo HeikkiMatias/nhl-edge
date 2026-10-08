@@ -540,11 +540,12 @@ class PaperSettlements(pa.DataFrameModel):
     won is whether the bet's side won the full game (home_win from games' scores, which count the
     shootout winner's goal), and profit is stake·(price - 1) when it did, -stake when it didn't. A
     game played more than 12 hours from the ledger's start is a postponed game: its bet is void
-    (status "void"), with no profit and no CLV. close_status is "proxy" when Pinnacle has a
-    closing proxy taken after the bet's decision snapshot, or why it has none (no pre-game
-    snapshot, stale, missing). Only a proxy gives close_home and close_away, p_close (the bet's
-    side, de-vigged multiplicatively), clv = price·p_close - 1, and fair_move (p_close over the
-    decision's de-vigged probability of the side, less 1). The ledger's own columns travel along:
+    (status "void"), with no profit and no CLV. close_status is "proxy" when the game is eligible
+    and Pinnacle has a closing proxy taken after the bet's decision snapshot, or why it counts
+    without one (no pre-game snapshot, which holds even for an incidental proxy, stale, missing).
+    Only a proxy gives close_home and close_away, p_close (the bet's side, de-vigged
+    multiplicatively), clv = price·p_close - 1, and fair_move (p_close over the decision's
+    de-vigged probability of the side, less 1). The ledger's own columns travel along:
     the price taken, the decision's Pinnacle pair (home_price, away_price) and its snapshot.
     settled_utc and code_version name the run; the table is rebuilt whole each night from the
     ledgers in R2, the games and the odds.
