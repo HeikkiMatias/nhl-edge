@@ -159,7 +159,7 @@ Every deliverable merged under its own task issue:
 - **Task 4 (#21), the closing proxy:**
   - `nhl odds replay` marks each started game's closing proxy under ADR 0033 (`market/closing.py`), and the nightly upserts the flag to Supabase.
   - `nhl audit report` gives Pinnacle's proxy lead per ET start time, and why a game has none.
-  - Next is task 5 (#165), settlement and CLV.
+- **Task 5 (#165), settlement and CLV:** `nhl live settle --r2` runs nightly after the odds replay. It rebuilds `paper_settlements`: each final game's bet with its result on the full game, its profit, and its CLV against Pinnacle's closing proxy, or why it has none. Next is task 6 (#166), the live report.
 - **Reminders** for the dated items fire into this session on 2026-10-13 and 2026-10-22 at 10:30 UTC.
 
 **Never change the frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and the CLV count restarts.

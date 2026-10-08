@@ -50,7 +50,7 @@ def test_clv_is_the_price_taken_times_the_fair_closing_probability() -> None:
         }
     )
     odds = pl.concat([sbr(1, 1.90, 2.00), sbr(2, 1.90, 2.00)])
-    valued = e3.closing_value(settled, odds)
+    valued = e3.closing_value(settled, e3.sbr_closes(odds))
     # Game 3 has no close, so no CLV, but it stays in the ledger.
     assert valued["game_id"].to_list() == [1, 2, 3]
     assert valued["clv"][2] is None

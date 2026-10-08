@@ -548,7 +548,11 @@ def predict(
         quotes=quotes,
         fitted=fitted,
         live=live,
-        bankroll=lp.bankroll(earlier, outcomes(games), decision),
+        bankroll=lp.bankroll(
+            earlier,
+            games.select("game_id", played_utc="start_utc").join(outcomes(games), on="game_id"),
+            decision,
+        ),
         versions={
             "blend_version": live.version,
             "feature_build": record["build_id"].first() if record.height else None,
@@ -954,7 +958,7 @@ def backtest(
     # driver among the blend's parts.
     e2 = bets.EXPERIMENT
     settled = e3.attribution(
-        e3.closing_value(settled, sbr_odds),
+        e3.closing_value(settled, e3.sbr_closes(sbr_odds)),
         b3_tables,
         b3_fits.get(e2, {}),
         {season: by_name["BLEND"] for season, by_name in blend_fits.get(e2, {}).items()},
@@ -2403,6 +2407,59 @@ def live_replay(
     if problems:
         raise typer.Exit(code=1)
     typer.echo(f"the ledger is reproduced, every column, floats within {lb.TOLERANCE:g}")
+
+
+@live_app.command("settle")
+def live_settle(
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="Read the ledgers from R2, pull the games and odds first, and mirror "
+            "paper_settlements to R2.",
+        ),
+    ] = False,
+) -> None:
+    """Settle the season's paper bets whose games are final (#165): each one's result on the
+    full game, its profit, and its CLV against Pinnacle's closing proxy (ADR 0033), or why it has
+    none. Rebuilds paper_settlements whole, from the ledgers (in R2 with --r2), the games and the
+    odds, whose closing proxies nhl odds replay marks."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import predict as lp
+    from nhl_edge.live import settle as ls
+    from nhl_edge.live.blend_fit import LIVE_SEASON
+    from nhl_edge.settings import load_env
+
+    load_env()
+    now = datetime.now(UTC)
+    version = reports.version(ls.COMPONENT, now)
+    if r2 and version.endswith("-dirty"):
+        raise typer.BadParameter("commit first: the settlements name their commit")
+    lake = Lake.from_env(mirror=r2)
+    if r2:
+        assert lake.objects is not None and lake.bucket is not None
+        pulled = sum(lake.pull(table) for table in ("games", "odds_snapshots"))
+        typer.echo(f"pulled {pulled:,} table files from R2")
+        # The ledgers in R2 are the record.
+        ledger = lp.sync_ledgers(lake.objects, lake.bucket, LIVE_SEASON)
+    else:
+        ledger = lake.read("paper_ledger", seasons=[LIVE_SEASON])
+    games = lake.read("games", seasons=[LIVE_SEASON])
+    settled = ls.settle(ledger, games, lake.read("odds_snapshots"), now, {"code_version": version})
+    lake.replace("paper_settlements", settled)
+    bets = int(ledger["bet"].fill_null(False).sum()) if ledger.height else 0
+    valued = settled.filter(pl.col("clv").is_not_null())
+    typer.echo(
+        f"paper_settlements: {settled.height} of {bets} bets settled, {valued.height} with a CLV"
+        + (f" (mean {valued['clv'].mean():+.4f})" if valued.height else "")
+    )
+    for (status,), rows in settled.group_by("close_status", maintain_order=True):
+        typer.echo(f"  {status}: {rows.height}")
 
 
 @live_app.command("blend-fit")

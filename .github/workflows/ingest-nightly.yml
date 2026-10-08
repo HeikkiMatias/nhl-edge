@@ -60,6 +60,11 @@ jobs:
         # Each started game's closing proxy is marked, and the flag upserted to Supabase (#21).
         if: always()
         run: uv run nhl odds replay --recent 14 --r2 --supabase
+      - name: Settle the paper bets
+        # Each paper bet whose game is final: its result on the full game, its profit, and its
+        # CLV against Pinnacle's closing proxy, which the odds replay above has just marked (#165).
+        if: always()
+        run: uv run nhl live settle --r2
       - name: Pre-game goalies into the lake
         # Pre-game goalie polls, NHL and Daily Faceoff (#42, #48), rebuilt from the raw copies:
         # today, which the evening slots poll ahead, and the three game dates before it, so two

@@ -22,6 +22,7 @@ schedule terms and B3's intercept. Each part is signed toward the bet's side, an
 the bet's driver.
 """
 
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -42,16 +43,24 @@ DRAWS = 2000
 PARTS = ("market", "skaters", "goalies", "home_ice", "schedule", "intercept")
 
 
-def closing_value(settled: pl.DataFrame, sbr_odds: pl.DataFrame) -> pl.DataFrame:
-    """The ledger's bets with the fair closing probability of their side (p_close), their CLV,
-    and the fair move of their side from the opener to the close (fair_move, p_close over the
-    opener's de-vigged probability, less 1), which leaves out the two books' margins; all null
-    for a bet without an SBR close."""
-    closes = market_prices(sbr_odds, Experiment.E1).select(
+def sbr_closes(sbr_odds: pl.DataFrame) -> pl.DataFrame:
+    """SBR's closing moneyline of each game (game_id, close_home, close_away), E1's prices."""
+    return market_prices(sbr_odds, Experiment.E1).select(
         "game_id", close_home="home_price", close_away="away_price"
     )
+
+
+def closing_value(
+    settled: pl.DataFrame, closes: pl.DataFrame, on: Sequence[str] = ("game_id",)
+) -> pl.DataFrame:
+    """The ledger's bets with the fair closing probability of their side (p_close), their CLV,
+    and the fair move of their side from the price taken's market (home_price, away_price) to the
+    close (fair_move, p_close over that market's de-vigged probability, less 1), which leaves out
+    the two books' margins; all null for a bet without a close. closes gives each game's closing
+    pair (game_id, close_home, close_away): SBR's on history (sbr_closes), Pinnacle's closing
+    proxy live (live/settle.py), keyed on the columns on."""
     # A left join: a bet without a close stays in the ledger, with no CLV.
-    priced = settled.join(closes, on="game_id", how="left")
+    priced = settled.join(closes, on=list(on), how="left")
     known = priced["close_home"].is_not_null().to_numpy()
     fair = np.full(priced.height, np.nan)
     if known.any():

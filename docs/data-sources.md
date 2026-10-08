@@ -313,6 +313,13 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
 
   Every object is written with `IfNoneMatch`. A write that failed part way is run again: an object already there with the same bytes counts as written. A reader refuses a bundle without its manifest or with a file that doesn't match it. If the bundle can't be written, the run exits non-zero and the ledger stands. A dry run into an `--out` that already holds the date's bundle is refused before anything is written.
 - **`nhl live replay --date <d> --r2`** (or `--from <dry-run dir>`) makes the day's decision again from the bundle alone and the committed live fit, whose sha256 must match. It covers B2, B3, u, the blend, the selection, the guard and the stakes, and compares the ledger with the day's, every column. On 2026-10-07's real slate the whole ledger was reproduced, floats within 1e-9.
+- **Settlement (#165).** `nhl live settle --r2` runs nightly, after the odds replay has marked the closing proxies. It rebuilds `paper_settlements` from the ledgers in R2, the games and the odds, with one row per paper bet whose game is final:
+  - **The result,** on the full game, OT and shootout included (hard rule 2). The profit is stake·(price − 1) for a win and −stake for a loss.
+  - **Postponed games:** a game played more than 12 hours from the ledger's start voids its bet.
+  - **The close:** Pinnacle's closing proxy of the bet's own Odds API event, taken after its decision snapshot. CLV = price·p_close − 1, and the fair move, both through `backtest/e3.closing_value` as on history.
+  - **Without a proxy,** `close_status` says why: no pre-game snapshot, stale or missing (ADR 0033).
+
+  Nothing in a decision reads the table: the bankroll reads the ledgers and the games itself.
 
 ## Odds snapshots
 

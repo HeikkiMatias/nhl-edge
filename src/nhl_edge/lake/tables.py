@@ -42,6 +42,7 @@ from nhl_edge.lake.schemas import (
     LineupReplacements,
     Lineups,
     PaperLedger,
+    PaperSettlements,
     Penalties,
     PenaltyRates,
     PlayerLeagueSeasons,
@@ -119,6 +120,8 @@ TABLES: dict[str, Table] = {
     "feature_builds": Table(FeatureBuilds, ("game_date", "table", "artifact_version"), BY_DATE),
     # The paper ledger (#164): each date's decisions, as written once to R2.
     "paper_ledger": Table(PaperLedger, ("game_date", "game_id"), BY_DATE),
+    # Its bets settled, with their CLV against Pinnacle's closing proxy (#165).
+    "paper_settlements": Table(PaperSettlements, ("game_date", "game_id"), BY_DATE),
 }
 # Partition columns replace_dates can replace a date at a time.
 DATE_PARTITIONS = ("game_date", "snapshot_date")

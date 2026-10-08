@@ -46,6 +46,7 @@ from nhl_edge.ingest.odds_lake import dated_raw_keys, is_complete, match_games
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.schemas import PaperLedger, dtypes
 from nhl_edge.live import blend_fit
+from nhl_edge.live.settle import POSTPONED
 from nhl_edge.live.targets import with_targets
 from nhl_edge.market.devig import fair_probabilities
 
@@ -303,11 +304,15 @@ def predictions(rows: pl.DataFrame, fitted: Models, live: blend_fit.LiveFit) -> 
 
 def bankroll(earlier: pl.DataFrame, results: pl.DataFrame, decision_utc: datetime) -> float:
     """The season's paper bankroll at the decision: 100 units plus the profit of earlier logged
-    bets (side, price, stake) whose results (home_win, result_utc) were public before it."""
+    bets (side, price, stake) whose results (home_win, result_utc) were public before it. Given
+    when each game was played (played_utc), a game played more than POSTPONED from the bet's
+    start_utc voids its bet, as settlement does (live/settle.py)."""
     bets = earlier.filter(pl.col("bet"))
     if bets.is_empty():
         return POLICY.bankroll
     settled = bets.join(results, on="game_id").filter(pl.col("result_utc") < decision_utc)
+    if "played_utc" in settled.columns:
+        settled = settled.filter((pl.col("played_utc") - pl.col("start_utc")).abs() <= POSTPONED)
     profit = settled.select(
         pl.when(staking.won(pl.col("side"), pl.col("home_win")))
         .then(pl.col("stake") * (pl.col("price") - 1))
