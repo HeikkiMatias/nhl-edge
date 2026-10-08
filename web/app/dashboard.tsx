@@ -27,17 +27,27 @@ export function Dashboard() {
   return <Signed client={client} />;
 }
 
-/** The signed-in state, followed through Supabase's auth events. */
+/** The signed-in state, followed through Supabase's auth events. An email link that came back
+ * signed out says why, in Supabase's own words: the client's initialization reports the link's
+ * error, an expired or used-up link (as when a mail scanner opened it first) or a code it couldn't
+ * exchange. A session clears it. */
 export function Signed({ client }: { client: SupabaseClient }) {
   const [session, setSession] = useState<Session | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    client.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setReady(true);
+    Promise.all([client.auth.initialize(), client.auth.getSession()]).then(
+      ([{ error }, { data }]) => {
+        setSession(data.session);
+        setProblem(error && !data.session ? `The sign-in link didn't work: ${error.message}` : null);
+        setReady(true);
+      },
+    );
+    const { data } = client.auth.onAuthStateChange((_event, next) => {
+      setSession(next);
+      if (next) setProblem(null);
     });
-    const { data } = client.auth.onAuthStateChange((_event, next) => setSession(next));
     return () => data.subscription.unsubscribe();
   }, [client]);
 
@@ -51,18 +61,29 @@ export function Signed({ client }: { client: SupabaseClient }) {
         // no account ever sees the rows, or the denial, loaded for another.
         <Board key={session.user.id} client={client} session={session} />
       ) : (
-        <SignIn client={client} />
+        <SignIn client={client} problem={problem} />
       )}
     </main>
   );
 }
 
-function SignIn({ client }: { client: SupabaseClient }) {
+function SignIn({ client, problem }: { client: SupabaseClient; problem: string | null }) {
   const [email, setEmail] = useState("");
-  const [message, setMessage] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState<string | null>(problem);
 
-  async function send(event: FormEvent) {
+  async function signIn(event: FormEvent) {
     event.preventDefault();
+    const { error } = await client.auth.signInWithPassword({ email, password });
+    // A session arrives through the auth events; only a refusal needs saying.
+    setMessage(error ? error.message : null);
+  }
+
+  async function sendLink() {
+    if (!email) {
+      setMessage("Enter your email first.");
+      return;
+    }
     const { error } = await client.auth.signInWithOtp({
       email,
       options: { emailRedirectTo: window.location.origin, shouldCreateUser: false },
@@ -72,16 +93,31 @@ function SignIn({ client }: { client: SupabaseClient }) {
 
   return (
     <>
-      <p className="muted">Sign in with the email of a dashboard owner.</p>
-      <form onSubmit={send}>
+      <p className="muted">
+        Sign in as a dashboard owner: the email and password of your Supabase user, or an email
+        link.
+      </p>
+      <form onSubmit={signIn}>
         <input
           type="email"
           required
           placeholder="email"
+          autoComplete="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
-        <button type="submit">Send link</button>
+        <input
+          type="password"
+          required
+          placeholder="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <button type="submit">Sign in</button>
+        <button type="button" className="link" onClick={sendLink}>
+          Email me a link instead
+        </button>
       </form>
       {message ? <p>{message}</p> : null}
     </>

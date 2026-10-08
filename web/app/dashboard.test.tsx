@@ -79,9 +79,17 @@ const TABLES = {
 
 /** The client, its auth replaced: `change` plays an auth event, as a magic link or a sign-out
  * would, and the spies record the auth calls. */
-function client(start: Session | null, answer?: (sent: Sent) => Answer | undefined) {
+function client(
+  start: Session | null,
+  answer?: (sent: Sent) => Answer | undefined,
+  linkError: string | null = null,
+) {
   const { supabase, requests } = stubbed(TABLES, new Set([OWNER_TOKEN]), answer);
   let current = start;
+  // What the client's initialization reports of the URL it was opened at: an email link's error.
+  vi.spyOn(supabase.auth, "initialize").mockResolvedValue({
+    error: linkError ? ({ message: linkError } as never) : null,
+  });
   let listener: ((event: AuthChangeEvent, next: Session | null) => void) | undefined;
   vi.spyOn(supabase.auth, "getSession").mockImplementation(async () =>
     current
@@ -100,11 +108,31 @@ function client(start: Session | null, answer?: (sent: Sent) => Answer | undefin
   const signIn = vi
     .spyOn(supabase.auth, "signInWithOtp")
     .mockResolvedValue({ data: { user: null, session: null }, error: null });
+  // A right password signs in as the owner; any other is refused, as Supabase refuses it.
+  const signInWithPassword = vi
+    .spyOn(supabase.auth, "signInWithPassword")
+    .mockImplementation(async (credentials) => {
+      if ("email" in credentials && credentials.password === "right") {
+        await change("SIGNED_IN", owner);
+        return { data: { user: owner.user, session: owner }, error: null } as never;
+      }
+      return {
+        data: { user: null, session: null },
+        error: { message: "Invalid login credentials" },
+      } as never;
+    });
   const signOut = vi.spyOn(supabase.auth, "signOut").mockImplementation(async () => {
     await change("SIGNED_OUT", null);
     return { error: null };
   });
-  return { supabase: supabase as SupabaseClient, requests, change, signIn, signOut };
+  return {
+    supabase: supabase as SupabaseClient,
+    requests,
+    change,
+    signIn,
+    signInWithPassword,
+    signOut,
+  };
 }
 
 test("without the public URL and key the page says it isn't configured", () => {
@@ -113,12 +141,40 @@ test("without the public URL and key the page says it isn't configured", () => {
   expect(screen.queryByRole("button")).toBeNull();
 });
 
+test("signed out, the right password opens the owner's board", async () => {
+  const { supabase, signInWithPassword } = client(null);
+  render(<Signed client={supabase} />);
+  const email = await screen.findByPlaceholderText("email");
+  fireEvent.change(email, { target: { value: "owner@example.com" } });
+  fireEvent.change(screen.getByPlaceholderText("password"), { target: { value: "right" } });
+  fireEvent.submit(email.closest("form") as HTMLFormElement);
+  await screen.findByText("Paper bets");
+  expect(signInWithPassword).toHaveBeenCalledWith({
+    email: "owner@example.com",
+    password: "right",
+  });
+});
+
+test("a wrong password shows Supabase's reason and stays signed out", async () => {
+  const { supabase } = client(null);
+  render(<Signed client={supabase} />);
+  const email = await screen.findByPlaceholderText("email");
+  fireEvent.change(email, { target: { value: "owner@example.com" } });
+  fireEvent.change(screen.getByPlaceholderText("password"), { target: { value: "wrong" } });
+  fireEvent.submit(email.closest("form") as HTMLFormElement);
+  await screen.findByText("Invalid login credentials");
+  expect(screen.queryByText("Paper bets")).toBeNull();
+});
+
 test("signed out, the form sends an email link to existing users only", async () => {
   const { supabase, signIn } = client(null);
   render(<Signed client={supabase} />);
   const email = await screen.findByPlaceholderText("email");
+  fireEvent.click(screen.getByRole("button", { name: "Email me a link instead" }));
+  await screen.findByText("Enter your email first.");
+  expect(signIn).not.toHaveBeenCalled();
   fireEvent.change(email, { target: { value: "owner@example.com" } });
-  fireEvent.submit(email.closest("form") as HTMLFormElement);
+  fireEvent.click(screen.getByRole("button", { name: "Email me a link instead" }));
   await screen.findByText("Check your email for the sign-in link.");
   expect(signIn).toHaveBeenCalledWith({
     email: "owner@example.com",
@@ -135,8 +191,36 @@ test("a refused email link shows Supabase's reason", async () => {
   render(<Signed client={supabase} />);
   const email = await screen.findByPlaceholderText("email");
   fireEvent.change(email, { target: { value: "someone@example.com" } });
-  fireEvent.submit(email.closest("form") as HTMLFormElement);
+  fireEvent.click(screen.getByRole("button", { name: "Email me a link instead" }));
   await screen.findByText("Signups not allowed for otp");
+});
+
+test("a link that comes back signed out says why, until a sign-in clears it", async () => {
+  // Codex on #206: Supabase's own reason, here a link a mail scanner used up first.
+  const reason = "Email link is invalid or has expired";
+  const { supabase, signOut } = client(null, undefined, reason);
+  render(<Signed client={supabase} />);
+  await screen.findByText(`The sign-in link didn't work: ${reason}`);
+  expect(screen.getByPlaceholderText("password")).toBeTruthy();
+  const email = screen.getByPlaceholderText("email");
+  fireEvent.change(email, { target: { value: "owner@example.com" } });
+  fireEvent.change(screen.getByPlaceholderText("password"), { target: { value: "right" } });
+  fireEvent.submit(email.closest("form") as HTMLFormElement);
+  await screen.findByText("Paper bets");
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  await screen.findByPlaceholderText("email");
+  expect(signOut).toHaveBeenCalledOnce();
+  expect(screen.queryByText(/didn't work/)).toBeNull();
+});
+
+test("a link that signed in leaves no message after signing out", async () => {
+  // The error is the client's, not the URL's: a link that worked reports none.
+  const { supabase } = client(owner);
+  render(<Signed client={supabase} />);
+  await screen.findByText("Paper bets");
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  await screen.findByPlaceholderText("email");
+  expect(screen.queryByText(/didn't work/)).toBeNull();
 });
 
 test("an owner sees the slate, the bets, the CLV history and the report", async () => {

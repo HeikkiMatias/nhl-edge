@@ -15,7 +15,8 @@ It never reads a bet's result or profit. The return and the drawdown's size appe
 
 - **The browser holds only the public anon key.** The service role key stays in the GitHub workflows' secrets, and the app has no server code that could hold it.
 - **Row-level security decides what a signed-in user can read.** Only the users in `public.dashboard_owners` can read `predictions`, `paper_bets` and `live_reports`. Anon reads nothing.
-- **Sign-in is by email link,** and only for users who already exist (`shouldCreateUser: false`). Any other signed-in account is told it is not an owner, and is shown its user id.
+- **Sign-in is by password, or by email link,** and only for users who already exist: sign-ups are off, and the link never creates a user (`shouldCreateUser: false`). Any other signed-in account is told it is not an owner, and is shown its user id.
+- **A link that comes back signed out says why,** in Supabase's words from the client's initialization: an expired or used-up link (as when a mail scanner opened it first), or a code it couldn't exchange, as in a browser other than the one that asked for it. A sign-in clears the message.
 - The page asks search engines not to index it.
 
 ## Environment variables
@@ -35,7 +36,9 @@ Without them the build still succeeds, and the page says it isn't configured.
    - `supabase/migrations/20261008120000_paper_ledger.sql` (#167);
    - `supabase/migrations/20261008140000_live_reports.sql`.
 2. **Your user.**
-   - Authentication → Users → Add user, with your email.
+   - Authentication → Users → Add user → Create new user, with your email and a password, and "Auto Confirm User" ticked. You sign in with those.
+   - A user made without a password: delete it and add it again with one, then put its new id in `dashboard_owners` (step 2's insert). Or set the password through Supabase Auth's admin API, which hashes it as Auth does, never with SQL on `auth.users`:
+     `curl -X PUT "$SUPABASE_URL/auth/v1/admin/users/<user id>" -H "apikey: $SERVICE_ROLE_KEY" -H "Authorization: Bearer $SERVICE_ROLE_KEY" -H "Content-Type: application/json" -d '{"password": "<password>"}'`
    - Authentication → Sign In / Providers: turn off "Allow new users to sign up".
    - In the SQL editor, run `insert into public.dashboard_owners (user_id) values ('<your user id>');`
 3. **The repository variable `SUPABASE_LEDGER=true`** (GitHub → Settings → Secrets and variables → Actions → Variables), if not already set for #167. The midday and nightly runs then copy the ledger, and the nightly run writes the live report.
@@ -61,7 +64,7 @@ npm run build
 
 The tests run the real supabase-js client against a stand-in for PostgREST (`lib/testing.ts`) that applies row-level security by token, paging and the policy filter. `lib/load.test.ts` covers the reads, and `app/dashboard.test.tsx` covers the page's states:
 - not configured;
-- the sign-in form;
+- the sign-in form: a password, or an email link, and a link that came back signed out;
 - an owner's board, and a non-owner's denial;
 - a failed read;
 - a session that changes, or signs out.
