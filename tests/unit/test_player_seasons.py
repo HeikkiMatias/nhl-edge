@@ -347,7 +347,7 @@ def test_a_refetched_page_brings_in_the_season_just_played(tmp_path: Path) -> No
     assert before["season"].max() == 20102011
     assert report.partial > 0
     api, paths = refresh_api(store, {GOALIE: page(GOALIE)})
-    done = refresh(api, boxscores(GOALIE), 20112012)
+    done = refresh(api, boxscores(GOALIE), 20112012, {GOALIE})
     assert (done.players, done.fetched, done.reused, done.missing) == (1, 1, 0, [])
     assert paths == [f"/v1/player/{GOALIE}/landing"]
     after, _ = build(store, players(GOALIE), boxscores(GOALIE))
@@ -359,7 +359,7 @@ def test_a_refetched_page_brings_in_the_season_just_played(tmp_path: Path) -> No
     # The earlier seasons are the same rows, read from the new copy.
     assert after.filter(pl.col("season") < 20112012).drop("raw_key").equals(before.drop("raw_key"))
     # A rerun reuses the new copy and makes no request.
-    done = refresh(api, boxscores(GOALIE), 20112012)
+    done = refresh(api, boxscores(GOALIE), 20112012, {GOALIE})
     assert (done.fetched, done.reused) == (0, 1)
     assert len(paths) == 1
 
@@ -370,7 +370,7 @@ def test_a_page_already_fetched_after_the_season_is_not_fetched_again(tmp_path: 
     store = RawStore(tmp_path)
     store_pages(store, GOALIE)  # fetched in 2026, long after 2011-12
     api, paths = refresh_api(store, {GOALIE: page(GOALIE)})
-    done = refresh(api, boxscores(GOALIE), 20112012)
+    done = refresh(api, boxscores(GOALIE), 20112012, {GOALIE})
     assert (done.fetched, done.reused, paths) == (0, 1, [])
 
 
@@ -380,8 +380,24 @@ def test_a_page_the_api_no_longer_has_is_counted(tmp_path: Path) -> None:
     store = RawStore(tmp_path)
     store_mid_season_page(store)
     api, _ = refresh_api(store, {})
-    done = refresh(api, boxscores(GOALIE), 20112012)
+    done = refresh(api, boxscores(GOALIE), 20112012, {GOALIE})
     assert (done.players, done.fetched, done.missing) == (1, 0, [GOALIE])
     # The old copy stays the newest, so the table is as before.
     after, _ = build(store, players(GOALIE), boxscores(GOALIE))
     assert after["season"].max() == 20102011
+
+
+def test_a_player_missing_from_players_comes_back_as_a_players_row(tmp_path: Path) -> None:
+    # Codex on #200: his page 404'd at the ingest, so he isn't in players and build would skip
+    # him; the refresh hands back his row for the caller to add.
+    from player_season_fixtures import page_with_bio
+
+    from nhl_edge.ingest.player_seasons import refresh
+
+    store = RawStore(tmp_path)
+    api, _ = refresh_api(store, {GOALIE: page_with_bio(GOALIE)})
+    done = refresh(api, boxscores(GOALIE), 20112012, set())
+    [row] = done.recovered
+    assert row["player_id"] == GOALIE and row["fetched_utc"] == REFETCHED
+    assert row["raw_key"] == f"nhl/player-landing/{GOALIE}/20120702T090000Z"
+    assert refresh(api, boxscores(GOALIE), 20112012, {GOALIE}).recovered == []

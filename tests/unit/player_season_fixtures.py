@@ -52,6 +52,20 @@ def page(player_id: int) -> bytes:
     return (FIXTURES / f"landing_{player_id}_trimmed.json").read_bytes()
 
 
+def page_with_bio(player_id: int) -> bytes:
+    """The trimmed page with the bio and draft fields players reads, as a real page has them."""
+    import json
+
+    data = json.loads(page(player_id))
+    data.update(
+        firstName={"default": "First"},
+        lastName={"default": str(player_id)},
+        birthDate=BIRTH_DATES[player_id].isoformat(),
+        shootsCatches="L",
+    )
+    return json.dumps(data).encode()
+
+
 def raw_key(player_id: int) -> str:
     return f"nhl/player-landing/{player_id}/{STAMP}"
 

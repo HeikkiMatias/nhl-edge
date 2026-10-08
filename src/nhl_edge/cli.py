@@ -332,8 +332,19 @@ def player_seasons(
                 "no season with boxscores has public lines yet: nothing to refresh", err=True
             )
             raise typer.Exit(code=1)
+        if season not in EXPECTED_GAMES:
+            # Without its game count the check above can't tell the season's boxscores are all
+            # here, and a missing game would leave its players out of the refresh.
+            typer.echo(
+                f"{season} has no expected game count (ingest/games.py EXPECTED_GAMES), so its "
+                "boxscores can't be checked complete: add it first",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        from nhl_edge.ingest.players import parse_players
+
         api = NhlApi(store)
-        done = refresh_pages(api, lineups, season)
+        done = refresh_pages(api, lineups, season, set(players["player_id"].to_list()))
         typer.echo(
             f"refreshed {season}: {done.players:,} players with a boxscore, {done.fetched:,} "
             f"landing pages fetched in {api.requests:,} requests, {done.reused:,} already fetched "
@@ -343,6 +354,12 @@ def player_seasons(
             typer.echo(
                 f"warning: no landing page for {', '.join(map(str, done.missing))}", err=True
             )
+        if done.recovered:
+            # Players whose page the ingest couldn't fetch before: in players, so their lines
+            # count.
+            lake.upsert("players", parse_players(done.recovered))
+            players = lake.read("players")
+            typer.echo(f"added {len(done.recovered)} players whose page the ingest lacked")
     try:
         frame, report = build(store, players, lineups)
     except ValueError as exc:
