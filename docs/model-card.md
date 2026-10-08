@@ -233,7 +233,17 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
 - **Bets lean on this season's quirks.**
   - The blend's intercept, -0.08 on E2, tilts every game about 2 points toward the away team, and 77% of the bets are away bets. B3's home bias changes sign between eras: its calibration intercept is -0.089 [-0.194, +0.018] on the development seasons (E2) and +0.089 [+0.015, +0.160] on 2023-24 and 2024-25.
   - All 59 bets on Seattle's games backed Seattle, 13% of the bets, and so did 9 of the 12 with the highest expected return. That is B3's view of the new team (gate 2's review), which no live season repeats.
-- **The bet's driver mostly marks favourite against underdog.** `e3.attribution` splits the blend's move from the raw market. Underdog bets come out as "market" (the blend's shrinkage toward 50%) and most favourite bets as "skaters". The driver figures say little about which input carries an edge (#154).
+- **The bet's driver** (#154). `e3.attribution` measures each B3 input against its usual level at the game's market price. That level is a line learnt on the fold's earlier blend-training seasons, from inputs only. The market's part is then only the blend's reshaping of the market price.
+  - **Before #154,** the split was from the raw market, and the driver marked favourite against underdog. All 187 "market" bets backed underdogs, and 199 of the 223 "skaters" bets backed favourites. `reports/backtest/bets.csv` of `backtest-20261004-6f74840` still carries that split.
+  - **Rerun on 2021-22's 465 bets,** with the same picks, the drivers are:
+    - skaters 233 (129 favourites, 104 underdogs);
+    - goalies 98 (49 and 49);
+    - schedule 66 (32 and 34);
+    - the market's part 66 (17 and 49, the blend's shrinkage toward 50%);
+    - home ice 2.
+  - **Fair move per bet:** +0.035 [+0.022, +0.051] for the skaters' bets and +0.042 [+0.023, +0.060] for the schedule's.
+  - **CLV per bet:** −0.028 [−0.043, −0.012] for the goalies' bets and −0.030 [−0.043, −0.018] for the market's.
+  - This is one season, described after the fact, and nothing in the policy reads it. It is no evidence of where an edge lies.
 - **The guard can't act on history.** Its θ of 0.0535 is a whole-day move. It would have fired on 7 of the 465 bets between the opener and the close.
 - **Gaps above 8 points against B1:** 17 on E1 and 49 on E2, against B3's 208 in 2021-22 on E1. All were reviewed by hand, and no bug was found.
 

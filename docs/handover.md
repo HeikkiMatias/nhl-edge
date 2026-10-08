@@ -160,7 +160,8 @@ Every deliverable merged under its own task issue:
   - `nhl odds replay` marks each started game's closing proxy under ADR 0033 (`market/closing.py`), and the nightly upserts the flag to Supabase.
   - `nhl audit report` gives Pinnacle's proxy lead per ET start time, and why a game has none.
 - **Task 5 (#165), settlement and CLV:** `nhl live settle --r2` runs nightly after the odds replay. It rebuilds `paper_settlements`: each final game's bet with its result on the full game, its profit, and its CLV against Pinnacle's closing proxy, or why it has none.
-- **Task 6 (#166), the live report:** `nhl live report --r2` writes `reports/live/report-<date>.md` and `.json` under ADR 0032's rules, committed weekly. It is interim, with no verdict, until the formal review on 2027-04-12. `nhl live slate` and the `daily-slate` skill review each day's ledger. Closing #166 also completes #172. Next is task 7 (#154), edge attribution.
+- **Task 6 (#166), the live report:** `nhl live report --r2` writes `reports/live/report-<date>.md` and `.json` under ADR 0032's rules, committed weekly. It is interim, with no verdict, until the formal review on 2027-04-12. `nhl live slate` and the `daily-slate` skill review each day's ledger. Closing #166 also completes #172.
+- **Task 7 (#154), edge attribution:** each bet's driver is measured against each input's usual level at the market price, so it no longer marks favourite against underdog. Attribution in the daily slate follows as its own issue.
 - **Reminders** for the dated items fire into this session on 2026-10-13 and 2026-10-22 at 10:30 UTC.
 
 **Never change the frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and the CLV count restarts.
