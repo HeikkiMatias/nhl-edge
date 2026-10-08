@@ -293,14 +293,14 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
 
   Every model input must be known before the decision snapshot, when the price bet was observed, not merely before the run. It reads no table of confirmed starters (ADR 0030).
 - **Per game, in order:**
-  1. started before the decision, or starts before the decision is published. The ledger reaches R2 minutes after the decision instant, once the lake is pulled and B2 and B3 are read, and a weekend matinee can start inside the window. `published_utc` is the actual clock as the ledger is built and written. The clock is read again after the ledger is built and at the write: a game that starts by then has the day decided again at the later clock, so it is recorded as started and the other games keep theirs (#170);
+  1. started before the decision, or starts before the decision is published. The ledger reaches R2 minutes after the decision instant, once the lake is pulled and B2 and B3 are read, and a weekend matinee can start inside the window. `published_utc` is the actual clock as the ledger is built and written. The clock is read again after the ledger is built and just before the write: if a game starts by then, by the slate or the odds, or its quote ages past the limit below, the day is decided again at the later clock, so that game gets its row and the other games keep theirs (#170);
   2. no Pinnacle midday price;
-  3. no fresh price: Pinnacle's quote more than 5 minutes old at the decision;
+  3. no fresh price: Pinnacle's quote more than 5 minutes old at the decision, or more than 15 minutes old at publication (ADR 0033's amendment), so a stalled run can't log a bet at a price long gone;
   4. a missing input;
   5. otherwise a prediction: B0 to B3, u, the blend and its twins.
 
   The frozen selection, guard and staking then decide the bet, and the best other EU book's prices are logged beside Pinnacle's.
-- **A paper bet assumes its price could be had.** It takes Pinnacle's quote at the decision snapshot, at most 5 minutes old at the decision, as available at the stake's size when the decision is published. The quote is not proof of a fill: the price may have moved by publication, and Pinnacle's limits are not checked. CLV against the closing proxy measures the price, not whether it was obtainable.
+- **A paper bet assumes its price could be had.** It takes Pinnacle's quote at the decision snapshot, at most 5 minutes old at the decision and 15 at publication, as available at the stake's size when the decision is published. The quote is not proof of a fill: the price may have moved by publication, and Pinnacle's limits are not checked. CLV against the closing proxy measures the price, not whether it was obtainable.
 - **The ledger:**
   - one row per slate game (`PaperLedger`), written once to R2 as `ledger/live/<date>.parquet` with `IfNoneMatch="*"`, and to the lake's `paper_ledger`;
   - each real run first rebuilds the lake's `paper_ledger` from the ledgers in R2, the record, before reading the bankroll from it;
