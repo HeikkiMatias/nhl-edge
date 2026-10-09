@@ -7,6 +7,7 @@ import { easternDate } from "@/lib/format";
 import { load, type Data } from "@/lib/load";
 import { supabase } from "@/lib/supabase";
 
+import { LiveScores } from "./live";
 import { ClvHistory, Glossary, Headline, Ledger, Report, Results, Slate } from "./sections";
 
 /** The page: the sign-in form, or the board for a signed-in user, read through the client made
@@ -181,6 +182,9 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
             } (ADR 0032). The results below are mostly luck over this few bets: CLV is the measure (ADR 0034).`}
       </p>
       <Headline bets={data.bets} report={data.report} />
+
+      <h2>Live scores</h2>
+      <LiveScores day={data.day} rows={data.slate} bets={data.bets} />
 
       <h2>Slate</h2>
       {data.day !== today ? (

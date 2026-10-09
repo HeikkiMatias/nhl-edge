@@ -4,9 +4,10 @@
 // with its auth calls replaced, so the board reads exactly as it would.
 import type { AuthChangeEvent, Session, SupabaseClient } from "@supabase/supabase-js";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import report from "@/lib/fixtures/live-report.json";
+import type { LiveGame, Scores } from "@/lib/live";
 import { type Answer, type Sent, type StoredReport, stubbed } from "@/lib/testing";
 
 import { Dashboard, Signed } from "./dashboard";
@@ -14,6 +15,44 @@ import { Dashboard, Signed } from "./dashboard";
 // The auth events below are played inside act(), as React expects of a test environment.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(cleanup);
+
+// The scoreboard route (app/api/scores), as the board reads it through the browser's fetch:
+// PIT at WSH, the slate's game with the paper bet on WSH, in the second period.
+const PIT_AT_WSH: LiveGame = {
+  game_id: 2026020011,
+  start_utc: "2026-10-08T23:00:00Z",
+  state: "LIVE",
+  schedule_state: "OK",
+  away: "PIT",
+  home: "WSH",
+  away_score: 1,
+  home_score: 2,
+  period: 2,
+  period_type: "REG",
+  clock: "12:34",
+  intermission: false,
+  last_period_type: null,
+};
+let scoreboard: { status: number; body: Scores | { error: string } };
+const scoreFetch = vi.fn(async (url: string) =>
+  url.startsWith("/api/scores?date=")
+    ? Response.json(scoreboard.body, { status: scoreboard.status })
+    : Promise.reject(new Error(`unexpected request ${url}`)),
+);
+
+beforeEach(() => {
+  scoreboard = {
+    status: 200,
+    body: { date: "2026-10-08", fetched_utc: "2026-10-09T00:30:00Z", games: [PIT_AT_WSH] },
+  };
+  vi.stubGlobal("fetch", scoreFetch);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers(); // also restores the date set by vi.setSystemTime
+  scoreFetch.mockClear();
+});
 
 const OWNER_TOKEN = "owner-token";
 
@@ -314,6 +353,49 @@ test("before the games migration, results show and say why the scores don't", as
   await screen.findByText("Won");
   expect(screen.queryByText("DAL 4–2 BUF")).toBeNull();
   expect(screen.getByText(/Scores show once the owner applies the migration/)).toBeTruthy();
+});
+
+test("tonight's games show live, with the paper bet's team marked", async () => {
+  vi.setSystemTime(new Date("2026-10-09T00:30:00Z")); // 20:30 ET on the slate's day
+  const { supabase } = client(owner);
+  render(<Signed client={supabase} />);
+  const status = await screen.findByText("2nd · 12:34");
+  const row = status.closest("tr") as HTMLTableRowElement;
+  expect(row.textContent).toContain("PIT 1–2 WSH");
+  expect(row.querySelector(".bet-side")?.textContent).toBe("WSH");
+  expect(scoreFetch).toHaveBeenCalledWith("/api/scores?date=2026-10-08");
+  expect(screen.getByText(/It refreshes every 30 seconds while a game is on/)).toBeTruthy();
+  expect(screen.getAllByText("Live scores").length).toBeGreaterThan(1); // the heading and its term
+});
+
+test("a final score marks the bet provisionally, until the nightly run settles it", async () => {
+  vi.setSystemTime(new Date("2026-10-09T02:00:00Z"));
+  scoreboard.body = {
+    date: "2026-10-08",
+    fetched_utc: "2026-10-09T02:00:00Z",
+    games: [{ ...PIT_AT_WSH, state: "FINAL", away_score: 2, home_score: 3, period: 4, period_type: "OT", last_period_type: "OT" }],
+  };
+  const { supabase } = client(owner);
+  render(<Signed client={supabase} />);
+  expect(await screen.findByText("Final (OT)")).toBeTruthy();
+  expect(screen.getByText("Provisionally won").className).toBe("won");
+});
+
+test("a scoreboard that fails says so, and the rest of the board stands", async () => {
+  vi.setSystemTime(new Date("2026-10-09T00:30:00Z"));
+  scoreboard = { status: 502, body: { error: "NHL API answered 503" } };
+  const { supabase } = client(owner);
+  render(<Signed client={supabase} />);
+  expect(await screen.findByText("Live scores unavailable: NHL API answered 503")).toBeTruthy();
+  expect(screen.getByText("Paper bets")).toBeTruthy();
+});
+
+test("an older slate shows no live scores and asks the scoreboard nothing", async () => {
+  vi.setSystemTime(new Date("2026-10-12T16:00:00Z"));
+  const { supabase } = client(owner);
+  render(<Signed client={supabase} />);
+  expect(await screen.findByText(/Live scores show for today's and last night's games/)).toBeTruthy();
+  expect(scoreFetch).not.toHaveBeenCalled();
 });
 
 test("an account that isn't an owner sees nothing but its user id", async () => {

@@ -107,6 +107,22 @@ export const GLOSSARY = {
       "The final score, away team first. OT means it was decided in overtime, SO in a shootout " +
       "(the shootout's winner gets one extra goal).",
   },
+  live: {
+    term: "Live scores",
+    meaning:
+      "The NHL's own scoreboard for the slate's games, read every 30 seconds while a game is on: " +
+      "the score (away team first), the period and the time left in it. The bet's team is in " +
+      "bold. Scores are only shown here: they never enter the ledger, the settlement or the " +
+      "model.",
+  },
+  provisional: {
+    term: "Provisionally won or lost",
+    meaning:
+      "What the final score says about the bet, before it counts. The nightly run, around 05:00 " +
+      "ET, settles every bet officially from the NHL's final result, overtime and the shootout " +
+      "included; then the result reads Won or Lost. The two agree unless the NHL corrects a " +
+      "result, which is rare.",
+  },
   profit: {
     term: "Profit",
     meaning:
