@@ -3,6 +3,7 @@
 // never enters the ledger, the settlement, CLV or any model input. The official result stays the
 // nightly settlement, on the full game with overtime and the shootout included (hard rule 2).
 
+import { easternDate } from "./format.ts";
 import type { Bet } from "./types.ts";
 
 export const NHL_SCORES = "https://api-web.nhle.com/v1/score";
@@ -89,9 +90,22 @@ export function dateAllowed(date: string, today: string): boolean {
   return Math.abs(day - Date.parse(`${today}T00:00:00Z`)) <= MAX_DAYS_AWAY * 86_400_000;
 }
 
+/** Whether a slate's day is today's or yesterday's US Eastern date: a late game of yesterday's
+ * slate is still on after midnight ET, and older days have nothing live. Yesterday is the
+ * calendar day before today's ET date, never 24 hours ago, which misses it across a DST change. */
+export function isCurrent(day: string, now: Date): boolean {
+  const today = easternDate(now);
+  const before = new Date(`${today}T12:00:00Z`);
+  before.setUTCDate(before.getUTCDate() - 1);
+  return day === today || day === before.toISOString().slice(0, 10);
+}
+
 export const isFinal = (g: LiveGame) => g.state === "FINAL" || g.state === "OFF";
 const isOn = (g: LiveGame) => g.state === "LIVE" || g.state === "CRIT" || g.state === "PRE";
+/** Not played as scheduled: postponed, suspended or cancelled. */
 const isOff = (g: LiveGame) => g.schedule_state !== "OK";
+/** Postponed or cancelled: nothing more will happen on this date. A suspended game may resume. */
+const isOver = (g: LiveGame) => g.schedule_state === "PPD" || g.schedule_state === "CNCL";
 
 const ORDINAL = ["", "1st", "2nd", "3rd"];
 
@@ -122,12 +136,15 @@ export function provisional(bet: Bet, g: LiveGame | undefined): "won" | "lost" |
 }
 
 /** When to read the scoreboard again: every LIVE_POLL_MS while a game is on or starts within
- * half an hour, every IDLE_POLL_MS while one is still to come, and never once all are over. */
+ * half an hour, every IDLE_POLL_MS while one is still to come or suspended, and never once all
+ * are over (final, postponed or cancelled). */
 export function nextPoll(games: LiveGame[], now: Date): number | null {
-  const open = games.filter((g) => !isFinal(g) && !isOff(g));
+  const open = games.filter((g) => !isFinal(g) && !isOver(g));
   if (open.length === 0) return null;
   const soon = open.some(
-    (g) => isOn(g) || (g.state === "FUT" && Date.parse(g.start_utc) - now.getTime() <= SOON_MS),
+    (g) =>
+      !isOff(g) &&
+      (isOn(g) || (g.state === "FUT" && Date.parse(g.start_utc) - now.getTime() <= SOON_MS)),
   );
   return soon ? LIVE_POLL_MS : IDLE_POLL_MS;
 }

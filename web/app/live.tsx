@@ -2,19 +2,20 @@
 
 import { useEffect, useState } from "react";
 
-import { easternDate, easternTime } from "@/lib/format";
-import { LIVE_POLL_MS, type LiveGame, nextPoll, provisional, type Scores, statusLine } from "@/lib/live";
+import { easternTime } from "@/lib/format";
+import {
+  isCurrent,
+  LIVE_POLL_MS,
+  type LiveGame,
+  nextPoll,
+  provisional,
+  type Scores,
+  statusLine,
+} from "@/lib/live";
 import { result } from "@/lib/results";
 import type { Bet, Prediction } from "@/lib/types";
 
 import { Explain } from "./sections";
-
-/** Whether the slate's day is today's or yesterday's US Eastern date: a late game of yesterday's
- * slate is still on after midnight ET, and older days have nothing live to show. */
-function current(day: string, now: Date): boolean {
-  const yesterday = new Date(now.getTime() - 86_400_000);
-  return day === easternDate(now) || day === easternDate(yesterday);
-}
 
 /** The slate's games on the NHL's scoreboard (#211): score, period and clock, the paper bet's side,
  * and its result: provisional from the final score, official once the nightly run settles it.
@@ -30,7 +31,7 @@ export function LiveScores({
 }) {
   const [scores, setScores] = useState<Scores | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const live = day !== null && current(day, new Date());
+  const live = day !== null && isCurrent(day, new Date());
 
   useEffect(() => {
     if (!live) return;

@@ -5,6 +5,7 @@ import upcoming from "./fixtures/score-2026-10-09.json";
 import {
   dateAllowed,
   IDLE_POLL_MS,
+  isCurrent,
   LIVE_POLL_MS,
   type LiveGame,
   nextPoll,
@@ -102,8 +103,24 @@ test("the board refreshes often while games are on, rarely before, and stops aft
   expect(nextPoll(tonight, new Date("2026-10-09T22:30:00Z"))).toBe(LIVE_POLL_MS);
   const on = tonight.map((g, i) => (i === 0 ? { ...g, state: "LIVE" } : g));
   expect(nextPoll(on, NOW)).toBe(LIVE_POLL_MS);
-  // A postponed game is never waited for.
+  // A postponed or cancelled game is never waited for; a suspended one may resume, so it is
+  // read again, at the slower rate.
   expect(nextPoll([{ ...tonight[0], schedule_state: "PPD" }], NOW)).toBeNull();
+  expect(nextPoll([{ ...tonight[0], schedule_state: "CNCL" }], NOW)).toBeNull();
+  const suspended = { ...tonight[0], state: "LIVE", schedule_state: "SUSP" };
+  expect(nextPoll([suspended], NOW)).toBe(IDLE_POLL_MS);
+  expect(statusLine(suspended, "19:00")).toBe("Suspended");
+});
+
+test("today's and last night's slates are current, by the Eastern calendar", () => {
+  // 20:30 ET on 2026-10-08, and 02:00 ET the next morning while a late game may still run.
+  expect(isCurrent("2026-10-08", new Date("2026-10-09T00:30:00Z"))).toBe(true);
+  expect(isCurrent("2026-10-08", new Date("2026-10-09T06:00:00Z"))).toBe(true);
+  expect(isCurrent("2026-10-07", new Date("2026-10-09T06:00:00Z"))).toBe(false);
+  // 00:15 EDT on Monday 2027-03-15, the night the clocks went forward: Sunday's slate is last
+  // night's, though 24 hours earlier was still Saturday in Eastern time.
+  expect(isCurrent("2027-03-14", new Date("2027-03-15T04:15:00Z"))).toBe(true);
+  expect(isCurrent("2027-03-13", new Date("2027-03-15T04:15:00Z"))).toBe(false);
 });
 
 test("the route serves real dates within two days of today only", () => {
