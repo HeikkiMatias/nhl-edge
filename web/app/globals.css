@@ -268,3 +268,10 @@ details.explain dd {
   margin: 2px 0 0;
   color: var(--text);
 }
+
+/* Live scores (#211): the paper bet's team in the score. */
+.bet-side {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

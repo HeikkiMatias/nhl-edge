@@ -31,6 +31,7 @@ NHL API (api-web.nhle.com)
   GET /v1/player/{playerId}/game-log/{season}/{gameType}
   GET /v1/draft/picks/{season}/all
   GET /v1/prospects/{team}
+  GET /v1/score/{YYYY-MM-DD}              # the dashboard's live scores only (#211), never stored
 
 Daily Faceoff (www.dailyfaceoff.com), HTML page, never /api/
   GET /starting-goalies/{YYYY-MM-DD}      # US Eastern date
@@ -56,6 +57,10 @@ SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
 - NHL.com's terms forbid unauthorized automated harvesting of its pages. Its time-on-ice reports are fetched only under the owner's one-time decision of 2026-10-02 (#68): `nhl toi-reports` refuses any game outside 2024021235 to 2024021291 before it makes a request, and a stored page is never fetched again. Any other page or game needs a new decision.
 - The NHL API is unofficial and changes without notice. A nightly contract test on one golden game catches schema drift.
 - The NHL API has no end-of-game time. A result counts as public at 10:00 UTC the morning after its game date, and at least six hours after its start (`games.observed_utc`, ADR 0003).
+- **The dashboard's live scores (#211)** read `/v1/score/{date}` through the app's own route, `web/app/api/scores`, because the API sends no CORS header and a browser can't call it directly.
+  - **How often it calls the NHL:** Vercel's CDN keeps each answer for 20 seconds. However many pages are open, the NHL gets about one request per date in that time. A page refreshes every 30 seconds while a game is on or starts within half an hour, every 5 minutes while one is still to come, and stops once all are over.
+  - **Which dates:** only those within two days of today's US Eastern date, so the route is no proxy for the NHL's archive.
+  - **Display only:** the scores are never stored, so the raw-cache rule above doesn't apply. They never reach the lake, the ledger, the settlement or a model. The official result stays the nightly settlement, under ADR 0003's public time.
 - Shift chart coverage varies for older seasons. Phase 1 checks coverage per season before RAPM depends on it.
 - The Odds API free tier has 500 credits a month. A call costs 1 credit per market per region and returns every game. The slot plan uses about 300 credits a month. Store `last_update` with every quote.
 - Many EU books (13 of 20 on 2026-09-28, among them Marathonbet, Unibet, Betclic and 1xBet) quote the 3-way regulation line under the Odds API `h2h` key, with a `Draw` outcome. The parser stores those quotes as `h2h_3_way`, so `h2h` only holds the two-way moneyline including OT and the shootout. Pinnacle, Betsson and NordicBet quote the two-way line.

@@ -8,6 +8,12 @@ The paper-trading dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.j
   - the bankroll after each settled day, with its table;
   - the bets per day;
   - each bet's expected return at the decision against its CLV at the close.
+- **Live scores** (#211) for the slate's games:
+  - each game's score, period and time left;
+  - the paper bet's team in bold;
+  - "Provisionally won" or "lost" from the final score, until the nightly run settles the bet officially.
+
+  The scores come from the NHL's public scoreboard through `app/api/scores`. They refresh every 30 seconds while a game is on, and are display only (docs/data-sources.md).
 - **The slate:** the latest game day's decisions, with B1, the blend, their gap (above 8 points it goes to hand review), and each bet's side, price and stake.
 - **The paper bets:** all of them, newest first, with the result (won, lost, void or awaiting), the final score and how the game ended (regulation, OT or a shootout), the profit, the closing proxy status, CLV and the fair move.
 - **Cumulative CLV per bet:** each nightly report's CLV per bet to its date under the current policy, with its weekly block bootstrap interval, as a chart and a table.
@@ -22,7 +28,9 @@ The paper-trading dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.j
 
 ## Security
 
-- **The browser holds only the public anon key.** The service role key stays in the GitHub workflows' secrets, and the app has no server code that could hold it.
+- **The browser holds only the public anon key.** The service role key stays in the GitHub workflows' secrets.
+  - The app's one server route, `app/api/scores`, relays the NHL's public scoreboard. It holds no secret and reads no Supabase data.
+  - It serves only dates within two days of today, and Vercel's CDN caches its answers for 20 seconds.
 - **Row-level security decides what a signed-in user can read.** Only the users in `public.dashboard_owners` can read `predictions`, `paper_bets` and `live_reports`, and, from `games`, the scores of the bets' games. Anon reads nothing.
 - **Sign-in is by password, or by email link,** and only for users who already exist: sign-ups are off, and the link never creates a user (`shouldCreateUser: false`). Any other signed-in account is told it is not an owner, and is shown its user id.
 - **A link that comes back signed out says why,** in Supabase's words from the client's initialization: an expired or used-up link (as when a mail scanner opened it first), or a code it couldn't exchange, as in a browser other than the one that asked for it. A sign-in clears the message.
@@ -72,13 +80,18 @@ npm test           # vitest: lib/ in Node, the page's states in jsdom
 npm run build
 ```
 
-The tests run the real supabase-js client against a stand-in for PostgREST (`lib/testing.ts`) that applies row-level security by token, paging and the policy filter. `lib/load.test.ts` covers the reads, `lib/results.test.ts` the bankroll and the record, and `app/dashboard.test.tsx` the page's states:
-- not configured;
-- the sign-in form: a password, or an email link, and a link that came back signed out;
-- an owner's board, with the results, the bankroll, the charts' keyboard readout and the glossary, and a non-owner's denial;
-- the scores before their migration is applied;
-- a failed read;
-- a session that changes, or signs out.
+The tests run the real supabase-js client against a stand-in for PostgREST (`lib/testing.ts`) that applies row-level security by token, paging and the policy filter. By file:
+- `lib/load.test.ts`: the reads.
+- `lib/results.test.ts`: the bankroll and the record.
+- `lib/live.test.ts` and `app/api/scores/route.test.ts`: the live scores and their route, on the NHL's recorded scoreboards of 2026-10-08 and 10-09 (`lib/fixtures/score-*.json`).
+- `app/dashboard.test.tsx`: the page's states.
+  - not configured;
+  - the sign-in form: a password, or an email link, and a link that came back signed out;
+  - an owner's board, with the results, the bankroll, the charts' keyboard readout and the glossary, and a non-owner's denial;
+  - the scores before their migration is applied;
+  - live scores during a game, a provisional result after it, a failed scoreboard, and an older slate that asks for none;
+  - a failed read;
+  - a session that changes, or signs out.
 
 The report fixture (`lib/fixtures/live-report.json`) is `nhl live report`'s output on the Python tests' synthetic season.
 
