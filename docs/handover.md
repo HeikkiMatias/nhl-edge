@@ -11,12 +11,12 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
    - Gate 1 (#79) is still open. It is a checkpoint, not a stop (ADR 0002).
    - **The clock runs:** the policy was frozen on 2026-10-05, and live games count from 2026-10-06. Every game without a logged pre-game prediction is a paper bet the live test can't use.
 4. **Take over the scheduled check-ins.** They are Routines bound to the session that created them, so they keep firing into the old session, not a new one. List them (`list_triggers`), create each again bound to the new session with the same time and prompt, then delete the old one. On 2026-10-09 they were:
-   - 2026-10-09 10:05 UTC: the first paper settlement;
-   - 2026-10-09 17:05 UTC: the midday pull time after #207;
    - Mondays 10:20 UTC: the weekly live report;
    - 2026-10-13 10:30 UTC: #9 and #42;
    - 2026-10-22 10:30 UTC: #30, then gate 1;
-   - 2026-11-05 10:40 UTC: #121 step 3.
+   - 2026-11-05 10:40 UTC: #121 step 3, which also revisits #120's early-exit gap.
+
+   The two check-ins of 2026-10-09, the first settlement and the midday pull time, are done (below).
 
    A check-in whose time has passed in the old session needs doing by hand: check its result first.
 
@@ -65,10 +65,12 @@ Every deliverable merged under its own task issue:
 - **The one-time test is spent.** `nhl backtest --hockey-only --one-time-test` is refused for good. Records of the run sit in R2 (`ledger/one_time_test.txt`), beside the lake and in `reports/backtest/one_time_test.txt`.
 - **The gap review** (`reports/gaps/b3-gap-review.md`, tool `nhl audit gaps`) found no data error in 92 games read without results.
 
-**Open P3 follow-ups.** None blocks phase 5, and each waits on the owner:
-- #120: two possible calibration gaps in lineup availability. They need intervals before they count as findings.
-- #125: a debutant's NHLe in his debut season.
-- #134: rate replacement skaters below RAPM's reference skater.
+**P3 follow-ups, decided by the owner on 2026-10-09:**
+- **#120 is closed** by the owner's decision, with no lineup change for now. The figures are on the issue; all were measured on the training seasons only:
+  - **After an early exit:** the gap is +0.137 [+0.116, +0.158]. It moves +0.96% [+0.83%, +1.08%] of the expected 5v5 minutes of a team-game with such a skater. This gap is revisited with #121 step 3.
+  - **Openers, for candidates who didn't dress in the team's last game:** the gap is −0.082 [−0.122, −0.042]. It moves −3.9% [−5.3%, −2.4%] of an opener team-game's minutes. These intervals resample whole seasons, since a season's openers fall in one week.
+  - **Openers, for skaters who did dress in the team's last game:** the gap is +0.013 [−0.009, +0.033]. That interval includes zero, so it was recorded and not pursued.
+- **#125 and #134 are parked for the next model version** (label `next-model-version`, milestone P6). #125 is a debutant's NHLe in his debut season; #134 is replacement skaters rated at RAPM's reference. They are decided after the formal review on 2027-04-12, each through its own ADR.
 
 Done since: #117 and #199, the yearly landing refresh (#200, #205); #130 (#185); #131 (#201); #132 (#202).
 
@@ -135,9 +137,18 @@ Every deliverable merged under its own task issue:
 
 **State on 2026-10-09:**
 - **The first live decision ran on 2026-10-08** at the 12:45 ET midday dispatch, and #164 is closed.
-  - All 10 games were predicted, with 6 bets totalling the 5% daily cap, and none was lost. The games of 2026-10-06 and 10-07 were lost to the live test and are never reconstructed.
+  - All 10 games were predicted, with 6 bets totalling the 5% daily cap: no game of the slate went without a decision. The games of 2026-10-06 and 10-07 were lost to the live test and are never reconstructed.
   - `nhl live replay --r2` reproduced the ledger from its run bundle, and the slate review flagged nothing.
-  - The decision was published 10m46s after the snapshot, 10m41s of it the R2 pull of 30,674 files. Pinnacle's quotes were then 11m03s old, under ADR 0033's 15 minutes. #207 (merged in #208) gives the pull a connection per thread, which cut a test pull from 124 s to about 25 s. The first midday run with it is 2026-10-09's: post its pull time and the quote's age at publication on #207, and open a new [priority] issue if the gap is still near 15 minutes.
+  - The decision was published 10m46s after the snapshot, 10m41s of it the R2 pull of 30,674 files. Pinnacle's quotes were then 11m03s old, under ADR 0033's 15 minutes.
+- **The first settlement, in the 2026-10-09 nightly:**
+  - All 6 bets of 2026-10-08 settled, each with a closing proxy 11 to 73 minutes before its start.
+  - Each result, profit and CLV was checked by hand against the final scores; the SJS–STL bet correctly lost in overtime.
+  - Five won and one lost: +2.39 units, with a mean CLV of −1.3%. That is six bets on one night, with no verdict.
+- **The second decision, on 2026-10-09,** was the first with #207's faster pull (#208, a connection per thread):
+  - The pull took 3m10s, against 10m41s the day before.
+  - The decision was published 3m25s after it was made, with Pinnacle's quotes 4m04s old (#207 has the figures).
+  - 4 games were predicted, with 2 bets: SEA at 2.27 and WPG at 1.83, staking 1.31 units. Both bets are driven by the skaters.
+  - The largest gap was 5.2 points, so nothing went to hand review, and the replay reproduces the ledger.
   - Daily Faceoff's line-combinations poll (#121, step 2) ran for the first time in the same dispatch: 20 teams, 43 injured players, 0 failed, in 48s. It took the goalie step to 2m14s, just over its 2-minute budget.
 - **Task 1 is merged** (#180):
   - the `slate` table;
@@ -171,11 +182,17 @@ Every deliverable merged under its own task issue:
 - **Task 6 (#166), the live report:** `nhl live report --r2` writes `reports/live/report-<date>.md` and `.json` under ADR 0032's rules, committed weekly. It is interim, with no verdict, until the formal review on 2027-04-12. `nhl live slate` and the `daily-slate` skill review each day's ledger. Closing #166 also completes #172.
 - **Task 8 (#167), the Supabase paper ledger:** `nhl live supabase --r2` copies the ledgers and settlements into insert-only `predictions` and `paper_bets` tables that only the dashboard's owner can read. The owner applies `supabase/migrations/20261008120000_paper_ledger.sql`, adds their auth user id to `dashboard_owners`, and sets the repository variable `SUPABASE_LEDGER=true`. The next midday or nightly run then backfills the season.
 - **Task 8 (#168), the dashboard:** `web/` (Next.js, client-rendered, anon key only) shows the latest slate, the paper bets, each night's CLV per bet to date, and the latest live report.
-  - **Results during the season (#210, ADR 0034):** the owner chose on 2026-10-09 to see each bet's result, score and profit, and the paper bankroll with its drawdown, beside CLV. CLV stays the measure and the first tile, the page says results over this few bets are mostly luck, and nothing in the policy changes because of them. The page has four charts, and every field is explained in plain language from `web/lib/glossary.ts`. The owner applied the scores migration, `supabase/migrations/20261009120000_games_owner_reads.sql`, on 2026-10-09. The nightly upserts the report into `live_reports` (`nhl live report --supabase`). The owner applies `supabase/migrations/20261008140000_live_reports.sql`, then creates the Vercel project with root `web` and its two public variables, and adds its URL to Supabase's auth redirect URLs (`web/README.md`). The owner signs in with their Supabase user's email and password (#206), or an email link.
+  - **Setup:** the nightly upserts the report into `live_reports` (`nhl live report --supabase`). The owner has applied the migrations and created the Vercel project with root `web` and its two public variables (`web/README.md`). The owner signs in with their Supabase user's email and password (#206), or an email link.
+  - **Results during the season (#210, ADR 0034):** the owner chose on 2026-10-09 to see each bet's result, score and profit, and the paper bankroll with its drawdown, beside CLV.
+    - CLV stays the measure and the first tile.
+    - The page says results over this few bets are mostly luck, and nothing in the policy changes because of them.
+    - The page has four charts, and every field is explained in plain language from `web/lib/glossary.ts`.
+    - The owner applied the scores migration, `supabase/migrations/20261009120000_games_owner_reads.sql`, on 2026-10-09.
+  - **Live scores (#211, merged in #217):** the slate's games on the NHL's scoreboard, through the app's one server route `app/api/scores`, with a provisional won or lost from the final score until the nightly settles it. It is display only (docs/data-sources.md).
+  - **Helsinki time (#218, merged in #219):** every clock time shows in Helsinki time. Game days stay the NHL's dates.
 - **Task 7 (#154, #193), edge attribution:** each bet's driver is measured against each input's usual level at the market price, so it no longer marks favourite against underdog. `nhl live slate` prints each live bet's driver and parts from the day's run bundle, against usual levels fixed once beside the live fit (`nhl live attribution-levels --write`).
 - **What's left in phase 5:**
-  - #211: follow tonight's games in real time on the dashboard, with live scores. It's the owner's ask of 2026-10-09 and the next task.
-  - #169, task 9: a weekly copy of `raw/` outside R2. It waits for the owner to choose where.
+  - #169, task 9: a second copy of `raw/` outside R2. The owner chose, on 2026-10-09, to keep it on their own computer, set up later; the steps are on the issue (`nhl lake restore-raw` with a read-only R2 token).
   - #173, after #30: whether post-game corrections change model inputs.
   - #121 step 3, on 2026-11-05: measure Daily Faceoff's statuses against who dressed.
   - #67, around 2027-04-17: `EXPECTED_GAMES` for 2026-27 (below).
@@ -262,8 +279,9 @@ Every deliverable merged under its own task issue:
     - `npx wrangler@4 secret put GITHUB_TOKEN` stores a new token.
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
 - **Open, waiting:** #9 and #42 (P1); #30, #79 and #11 (P2).
-- **Open, for the owner:** #120, #125 and #134 (P3); #169, the raw backup's location (P5).
-- **Open, next:** #211 (P5), live scores on the dashboard.
+- **Open, for the owner:** #169, the raw backup on the owner's own computer (P5).
+- **Open, next:** nothing beyond the dated items above.
+- **Parked for the next model version:** #125 and #134 (P6, label `next-model-version`).
 - **Open, later:** phase 5's #14, #67 (in April 2027), #121 (step 3 on 2026-11-05) and #173 (after #30); #15 and #186 (P6).
 
 ## Keep an eye on
