@@ -66,10 +66,10 @@ Every deliverable merged under its own task issue:
 - **The gap review** (`reports/gaps/b3-gap-review.md`, tool `nhl audit gaps`) found no data error in 92 games read without results.
 
 **P3 follow-ups, decided by the owner on 2026-10-09:**
-- **#120 is closed,** as not worth a change for now (its figures, on the training seasons, are on the issue). Both lineup gaps exclude zero but are small in minutes:
-  - **After an early exit:** the gap is +0.137 [+0.116, +0.158]. It moves +0.96% [+0.83%, +1.08%] of the expected 5v5 minutes in the 13.9% of team-games with such a skater. This gap is revisited with #121 step 3.
-  - **Openers, for candidates who didn't dress in the team's last game:** the gap is −0.082 [−0.122, −0.042]. It moves −3.9% [−5.3%, −2.4%] of the minutes, in 1.3% of team-games. These intervals resample whole seasons, since a season's openers fall in one week.
-  - For the skaters who dressed in the team's last game, the opener gap is +0.013 [−0.009, +0.033]. That interval includes zero, so it was recorded and not pursued.
+- **#120 is closed** by the owner's decision, with no lineup change for now. The figures are on the issue; all were measured on the training seasons only:
+  - **After an early exit:** the gap is +0.137 [+0.116, +0.158]. It moves +0.96% [+0.83%, +1.08%] of the expected 5v5 minutes of a team-game with such a skater. This gap is revisited with #121 step 3.
+  - **Openers, for candidates who didn't dress in the team's last game:** the gap is −0.082 [−0.122, −0.042]. It moves −3.9% [−5.3%, −2.4%] of an opener team-game's minutes. These intervals resample whole seasons, since a season's openers fall in one week.
+  - **Openers, for skaters who did dress in the team's last game:** the gap is +0.013 [−0.009, +0.033]. That interval includes zero, so it was recorded and not pursued.
 - **#125 and #134 are parked for the next model version** (label `next-model-version`, milestone P6). #125 is a debutant's NHLe in his debut season; #134 is replacement skaters rated at RAPM's reference. They are decided after the formal review on 2027-04-12, each through its own ADR.
 
 Done since: #117 and #199, the yearly landing refresh (#200, #205); #130 (#185); #131 (#201); #132 (#202).
