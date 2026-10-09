@@ -653,7 +653,7 @@ Track a paper bankroll of 100 units. A bet needs an expected return of at least 
 
 ### Bet ledger and CLV
 
-Every paper and real bet goes into `bets` with the Pinnacle price, the best EU book price and the Pinnacle close, so CLV is computed automatically. The gate is judged on Pinnacle; the EU price shows what a soft book would have paid. Review CLV with its interval every week and profit only once a season, since results over a few hundred bets are mostly noise.
+Every paper and real bet goes into `bets` with the Pinnacle price, the best EU book price and the Pinnacle close, so CLV is computed automatically. The gate is judged on Pinnacle; the EU price shows what a soft book would have paid. Review CLV with its interval every week and profit only once a season, since results over a few hundred bets are mostly noise. The dashboard shows each bet's result and the paper bankroll during the season, beside CLV and with that warning (ADR 0034); the formal review still judges CLV.
 
 ### Model versioning
 

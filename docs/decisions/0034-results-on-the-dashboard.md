@@ -1,6 +1,6 @@
 # 0034. Each paper bet's result and the paper bankroll on the dashboard during the season
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-10-09)
 - Date: 2026-10-09
 - Amends: ADR 0032 (for the dashboard only), and plan §11's "profit only once a season"
 
