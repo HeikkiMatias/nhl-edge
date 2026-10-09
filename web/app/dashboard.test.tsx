@@ -297,6 +297,9 @@ test("an owner sees the slate, the bets, the CLV history and the report", async 
   expect(screen.getByText("Signed in as owner@example.com.", { exact: false })).toBeTruthy();
   // The slate's bet and the ledger's, at Pinnacle's price.
   expect(screen.getAllByText("WSH @ 1.900").length).toBe(1);
+  // Its 19:00 ET start of Thursday 2026-10-08, in Helsinki time (#218).
+  expect(screen.getByText("Start (Helsinki)")).toBeTruthy();
+  expect(screen.getByText("Fri 02:00")).toBeTruthy();
   expect(screen.getByText("Awaiting the result")).toBeTruthy();
   // The report's own figures: CLV per bet with its interval in the headline tile, the report and
   // its date in the history.

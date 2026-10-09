@@ -21,9 +21,11 @@ export const GLOSSARY = {
   price: {
     term: "Price",
     meaning:
-      "Decimal odds offered by Pinnacle, a large bookmaker, at 12:45 ET on game day, when the " +
-      "model decides. A 1-unit bet at 1.88 pays back 1.88 units if it wins (0.88 profit plus the " +
-      "stake) and loses the 1 unit if it doesn't. A price of 2.00 is an even-money bet.",
+      "Decimal odds offered by Pinnacle, a large bookmaker, at 12:45 New York time on game day, " +
+      "when the model decides: 19:45 in Helsinki, or 18:45 in the weeks when only one of the two " +
+      "has changed its clocks. A 1-unit bet at 1.88 pays back 1.88 units if it wins (0.88 " +
+      "profit plus the stake) and loses the 1 unit if it doesn't. A price of 2.00 is an " +
+      "even-money bet.",
   },
   b1: {
     term: "B1",
@@ -118,10 +120,10 @@ export const GLOSSARY = {
   provisional: {
     term: "Provisionally won or lost",
     meaning:
-      "What the final score says about the bet, before it counts. The nightly run, around 05:00 " +
-      "ET, settles every bet officially from the NHL's final result, overtime and the shootout " +
-      "included; then the result reads Won or Lost. The two agree unless the NHL corrects a " +
-      "result, which is rare.",
+      "What the final score says about the bet, before it counts. The nightly run, around midday " +
+      "Helsinki time (09:00 UTC), settles every bet officially from the NHL's final result, " +
+      "overtime and the shootout included; then the result reads Won or Lost. The two agree " +
+      "unless the NHL corrects a result, which is rare.",
   },
   profit: {
     term: "Profit",

@@ -1,4 +1,4 @@
-import { easternTime, estimate, percent, shortDate } from "@/lib/format";
+import { estimate, helsinkiTime, percent, shortDate } from "@/lib/format";
 import { GLOSSARY, type TermKey } from "@/lib/glossary";
 import {
   bankroll,
@@ -36,7 +36,7 @@ export function Slate({
         <thead>
           <tr>
             <th>Game</th>
-            <th>Start (ET)</th>
+            <th>Start (Helsinki)</th>
             <th>Status</th>
             <th className="number">Home price</th>
             <th className="number">Away price</th>
@@ -56,7 +56,7 @@ export function Slate({
                 <td>
                   {r.away} at {r.home}
                 </td>
-                <td>{easternTime(r.start_utc)}</td>
+                <td>{helsinkiTime(r.start_utc, r.game_date)}</td>
                 <td>{r.status}</td>
                 <td className="number">{price(r.home_price)}</td>
                 <td className="number">{price(r.away_price)}</td>
@@ -76,8 +76,9 @@ export function Slate({
         </tbody>
       </table>
       <p className="muted">
-        Slate of {day}. Gap is the blend minus B1 in points; above {100 * GAP} it goes to hand
-        review.
+        Slate of {day}, the NHL&apos;s game day (its US Eastern date); start times are Helsinki
+        time, with the weekday when a game starts after that day. Gap is the blend minus B1 in
+        points; above {100 * GAP} it goes to hand review.
       </p>
       <Explain terms={["price", "b1", "blend", "gap", "status", "stake"]} />
     </div>

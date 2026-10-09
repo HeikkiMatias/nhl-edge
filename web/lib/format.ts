@@ -39,13 +39,36 @@ export function easternDate(at: Date): string {
   }).format(at);
 }
 
-/** A UTC timestamp as US Eastern clock time, such as "19:00". */
-export function easternTime(iso: string): string {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: "America/New_York",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(iso));
+// Every clock time the dashboard shows is Helsinki time (#218). The game day stays the NHL's own
+// date, which is US Eastern: a 19:00 ET game of 2026-10-08 starts at 02:00 on Friday in Helsinki.
+const HELSINKI = "Europe/Helsinki";
+
+const day = (at: Date, timeZone: string) =>
+  new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
+const clock = (at: Date, timeZone: string) =>
+  new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit" }).format(at);
+
+/** An instant as Helsinki clock time, such as "19:45", with the weekday in front when its
+ * Helsinki date isn't the given game day: "Fri 02:00" for a 19:00 ET game of a Thursday. */
+export function helsinkiTime(iso: string, gameDay?: string): string {
+  const at = new Date(iso);
+  const time = clock(at, HELSINKI);
+  if (gameDay === undefined || day(at, HELSINKI) === gameDay) return time;
+  const weekday = new Intl.DateTimeFormat("en-GB", { timeZone: HELSINKI, weekday: "short" }).format(at);
+  return `${weekday} ${time}`;
+}
+
+/** The instant of a US Eastern clock time on a game day, such as the 12:45 ET decision (ADR
+ * 0033). New York's offset is -4 or -5 hours, so of the two candidates the one that reads back
+ * as that day and time is it. */
+export function easternInstant(gameDay: string, time: string): Date {
+  const [h, m] = time.split(":").map(Number);
+  const [y, mo, d] = gameDay.split("-").map(Number);
+  for (const offset of [4, 5]) {
+    const at = new Date(Date.UTC(y, mo - 1, d, h + offset, m));
+    if (day(at, "America/New_York") === gameDay && clock(at, "America/New_York") === time) return at;
+  }
+  throw new Error(`no ${time} US Eastern on ${gameDay}`);
 }
 
 /** A game date (YYYY-MM-DD) as a short label for a chart's axis, such as "Oct 8". */
