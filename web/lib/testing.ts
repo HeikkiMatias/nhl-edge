@@ -19,6 +19,7 @@ export type Tables = {
   predictions?: unknown[];
   paper_bets?: unknown[];
   live_reports?: StoredReport[];
+  games?: unknown[];
 };
 
 /**

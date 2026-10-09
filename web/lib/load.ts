@@ -1,14 +1,17 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import type { Bet, Figure, LiveReport, Prediction, ReportRow } from "./types.ts";
+import type { Bet, Figure, LiveReport, Prediction, ReportRow, Score } from "./types.ts";
 
 export const PREDICTION_COLUMNS =
   "game_date, game_id, start_utc, home, away, status, home_price, away_price, p_b1, p_b3, " +
   "p_blend, bet";
-// Never won or profit: no result-based figure shows before the season's end (plan §11).
+// With each bet's result and profit, shown during the season (ADR 0034).
 export const BET_COLUMNS =
-  "game_date, game_id, start_utc, home, away, side, price, p_side, ev, stake, settlement, " +
-  "close_status, clv, fair_move";
+  "game_date, game_id, start_utc, home, away, side, price, p_side, ev, bankroll, stake, " +
+  "settled_utc, settlement, won, profit, close_status, clv, fair_move";
+export const SCORE_COLUMNS = "game_id, home_score, away_score, decided_in";
+// Postgres's "permission denied": the games read migration (#210) isn't applied yet.
+const NOT_GRANTED = "42501";
 // A day's slate is at most 16 games, so the latest 40 decisions hold the latest day's.
 const LATEST_DECISIONS = 40;
 // PostgREST caps each response at the project's max rows (1,000 by default), so the whole
@@ -23,6 +26,8 @@ export type Data = {
   bets: Bet[];
   report: LiveReport | null;
   history: { as_of: string; clv: Figure }[];
+  /** Each settled bet's final score, by game id; null while the owner can't read games. */
+  scores: Record<number, Score> | null;
 };
 
 const NOTHING: Data = {
@@ -32,6 +37,7 @@ const NOTHING: Data = {
   bets: [],
   report: null,
   history: [],
+  scores: {},
 };
 
 type Page<T> = PromiseLike<{ data: T[] | null; error: unknown }>;
@@ -106,5 +112,31 @@ export async function load(client: SupabaseClient): Promise<Data> {
     bets,
     report: latest?.report ?? null,
     history,
+    scores: await scores(client, bets),
   };
+}
+
+/** The final scores of the settled bets' games, from their first date on, or null when the
+ * owner can't read games yet (the migration of #210): the results show without their scores. */
+async function scores(client: SupabaseClient, bets: Bet[]): Promise<Record<number, Score> | null> {
+  const settled = bets.filter((b) => b.settlement !== null);
+  if (settled.length === 0) return {};
+  const first = settled.reduce((d, b) => (b.game_date < d ? b.game_date : d), settled[0].game_date);
+  const wanted = new Set(settled.map((b) => b.game_id));
+  let games: Score[];
+  try {
+    games = await every((from, to) =>
+      client
+        .from("games")
+        .select(SCORE_COLUMNS)
+        .gte("game_date", first)
+        .order("game_id")
+        .range(from, to)
+        .overrideTypes<Score[], { merge: false }>(),
+    );
+  } catch (error) {
+    if ((error as { code?: string }).code === NOT_GRANTED) return null;
+    throw error;
+  }
+  return Object.fromEntries(games.filter((g) => wanted.has(g.game_id)).map((g) => [g.game_id, g]));
 }

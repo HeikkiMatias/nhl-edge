@@ -1,5 +1,5 @@
 // The rows the dashboard reads, as the migrations in supabase/migrations/ define them. Only the
-// columns it selects: paper_bets' won and profit stay unread until the season's end (plan §11).
+// columns it selects. Each bet's result and profit show during the season (ADR 0034).
 
 /** A slate game's paper decision (public.predictions). */
 export type Prediction = {
@@ -17,7 +17,8 @@ export type Prediction = {
   bet: boolean;
 };
 
-/** A paper bet with its closing line value once settled (public.paper_bets). */
+/** A paper bet with its result, profit and closing line value once settled (public.paper_bets).
+ * The result is on the full game, overtime and the shootout included. */
 export type Bet = {
   game_date: string;
   game_id: number;
@@ -28,11 +29,23 @@ export type Bet = {
   price: number;
   p_side: number;
   ev: number;
+  bankroll: number;
   stake: number;
+  settled_utc: string | null;
   settlement: string | null;
+  won: boolean | null;
+  profit: number | null;
   close_status: string | null;
   clv: number | null;
   fair_move: number | null;
+};
+
+/** A game's final score (public.games): full-game, so a shootout adds one goal for its winner. */
+export type Score = {
+  game_id: number;
+  home_score: number;
+  away_score: number;
+  decided_in: "REG" | "OT" | "SO";
 };
 
 /** A figure of the live report: a mean or value with its interval, or only its counts. */

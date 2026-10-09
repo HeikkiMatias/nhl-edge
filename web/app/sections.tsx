@@ -1,5 +1,17 @@
-import { easternTime, estimate, percent } from "@/lib/format";
-import type { Bet, Figure, LiveReport, Prediction } from "@/lib/types";
+import { easternTime, estimate, percent, shortDate } from "@/lib/format";
+import { GLOSSARY, type TermKey } from "@/lib/glossary";
+import {
+  bankroll,
+  betsPerDay,
+  record,
+  result,
+  REVIEW_DRAWDOWN,
+  scoreLine,
+  START,
+} from "@/lib/results";
+import type { Bet, Figure, LiveReport, Prediction, Score } from "@/lib/types";
+
+import { ColumnChart, LineChart, ScatterChart } from "./charts";
 
 // Probability gaps above this many points get a hand review (hard rule 8), as in the report.
 const GAP = 0.08;
@@ -67,13 +79,14 @@ export function Slate({
         Slate of {day}. Gap is the blend minus B1 in points; above {100 * GAP} it goes to hand
         review.
       </p>
+      <Explain terms={["price", "b1", "blend", "gap", "status", "stake"]} />
     </div>
   );
 }
 
-/** The paper bets, newest first, with their closing line value once settled. No result or
- * profit: those show only at the season's end. */
-export function Ledger({ bets }: { bets: Bet[] }) {
+/** The paper bets, newest first, with their result, score, profit and closing line value once
+ * settled (ADR 0034). scores is null while the owner can't read the games' scores. */
+export function Ledger({ bets, scores }: { bets: Bet[]; scores: Record<number, Score> | null }) {
   if (bets.length === 0) return <p className="muted">No paper bet yet.</p>;
   return (
     <div className="scroll">
@@ -87,7 +100,9 @@ export function Ledger({ bets }: { bets: Bet[] }) {
             <th className="number">p</th>
             <th className="number">EV</th>
             <th className="number">Stake</th>
-            <th>Settlement</th>
+            <th>Result</th>
+            <th>Score</th>
+            <th className="number">Profit</th>
             <th>Close</th>
             <th className="number">CLV</th>
             <th className="number">Fair move</th>
@@ -105,7 +120,11 @@ export function Ledger({ bets }: { bets: Bet[] }) {
               <td className="number">{percent(b.p_side)}</td>
               <td className="number">{percent(b.ev)}</td>
               <td className="number">{b.stake.toFixed(2)}</td>
-              <td>{b.settlement ?? "awaiting the result"}</td>
+              <td className={b.settlement === "settled" ? (b.won ? "won" : "lost") : undefined}>
+                {result(b)}
+              </td>
+              <td>{scoreLine(b, scores?.[b.game_id])}</td>
+              <td className="number">{b.profit === null ? "" : signedUnits(b.profit)}</td>
               <td>{b.close_status ?? ""}</td>
               <td className="number">{signed(b.clv)}</td>
               <td className="number">{signed(b.fair_move)}</td>
@@ -113,7 +132,169 @@ export function Ledger({ bets }: { bets: Bet[] }) {
           ))}
         </tbody>
       </table>
+      {scores === null ? (
+        <p className="muted">
+          Scores show once the owner applies the migration
+          supabase/migrations/20261009120000_games_owner_reads.sql (web/README.md).
+        </p>
+      ) : null}
+      <Explain
+        terms={[
+          "side", "price", "p", "ev", "hurdle", "u", "stake",
+          "result", "score", "profit", "close", "clv", "fairMove",
+        ]}
+      />
     </div>
+  );
+}
+
+/** The headline figures: CLV per bet first, the measure the test is judged on, then the bankroll,
+ * the record and the drawdown (ADR 0034). */
+export function Headline({ bets, report }: { bets: Bet[]; report: LiveReport | null }) {
+  const days = bankroll(bets);
+  const now = days[days.length - 1];
+  const r = record(bets);
+  const clv = report?.closing_value.clv_per_bet;
+  const centre = clv?.mean ?? clv?.value;
+  return (
+    <div className="tiles">
+      <div className="tile">
+        <div className="label">CLV per bet, the measure</div>
+        <div className="value">{centre === undefined ? "–" : signed(centre)}</div>
+        <div className="sub">{clv ? estimate(clv, "bets") : "no report yet"}</div>
+      </div>
+      <div className="tile">
+        <div className="label">Bankroll (paper)</div>
+        <div className="value">{(now?.balance ?? START).toFixed(2)}</div>
+        <div className="sub">
+          units, from {START}
+          {r.open ? `; ${r.inPlay.toFixed(2)} in play` : ""}
+        </div>
+      </div>
+      <div className="tile">
+        <div className="label">Record</div>
+        <div className="value">
+          {r.won}–{r.lost}
+        </div>
+        <div className="sub">
+          won–lost; {r.open} awaiting{r.void ? `, ${r.void} void` : ""}
+        </div>
+      </div>
+      <div className="tile">
+        <div className="label">Drawdown from the peak</div>
+        <div className="value">{percent(now ? -now.drawdown : 0)}</div>
+        <div className="sub">review at {(100 * REVIEW_DRAWDOWN).toFixed(0)}%</div>
+      </div>
+    </div>
+  );
+}
+
+/** The results during the season (ADR 0034): the bankroll after each settled day with the
+ * drawdown review line, the bets per day, and each settled bet's expected return against its CLV,
+ * with the note that over this few bets results are mostly luck. */
+export function Results({ bets }: { bets: Bet[] }) {
+  if (bets.length === 0) return <p className="muted">No paper bet yet.</p>;
+  const days = bankroll(bets);
+  const r = record(bets);
+  const withClv = bets.filter((b) => b.clv !== null);
+  // The review line is drawn once the bankroll has fallen half way to it; before that it would
+  // only squash the bankroll's own line, and the caption says how far off it is.
+  const deepest = Math.max(0, ...days.map((d) => -d.drawdown));
+  const nearReview = deepest >= REVIEW_DRAWDOWN / 2;
+  return (
+    <>
+      <p className="notice">
+        Over this few bets, results are mostly luck: a 58% bet still loses 42% of the time. CLV
+        is the measure; nothing in the policy changes because of these numbers (ADR 0034).
+      </p>
+      <p>
+        {r.won + r.lost} settled bets: {r.won} won, {r.lost} lost. Profit{" "}
+        {signedUnits(r.profit)} units on {r.staked.toFixed(2)} staked.
+      </p>
+      <h3>Bankroll after each day</h3>
+      {days.length === 0 ? (
+        <p className="muted">No settled bet yet: the nightly run settles each night&apos;s games.</p>
+      ) : (
+        <>
+          <LineChart
+            title="Paper bankroll after each settled day, in units"
+            points={days.map((d) => ({ label: shortDate(d.date), value: d.balance }))}
+            format={(v) => v.toFixed(1)}
+            reference={
+              nearReview
+                ? {
+                    values: days.map((d) => d.peak * (1 - REVIEW_DRAWDOWN)),
+                    label: `${(100 * REVIEW_DRAWDOWN).toFixed(0)}% below the peak: review`,
+                  }
+                : undefined
+            }
+          />
+          {nearReview ? null : (
+            <p className="muted">
+              The review line, {(100 * REVIEW_DRAWDOWN).toFixed(0)}% below the peak, is off this
+              scale: the deepest drawdown so far is {percent(deepest)}.
+            </p>
+          )}
+          <details className="explain">
+            <summary>As a table</summary>
+            <div className="scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Day</th>
+                    <th className="number">Bets</th>
+                    <th className="number">Profit</th>
+                    <th className="number">Bankroll</th>
+                    <th className="number">Drawdown</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {days.map((d) => (
+                    <tr key={d.date}>
+                      <td>{d.date}</td>
+                      <td className="number">{d.bets}</td>
+                      <td className="number">{signedUnits(d.profit)}</td>
+                      <td className="number">{d.balance.toFixed(2)}</td>
+                      <td className="number">{percent(-d.drawdown)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </>
+      )}
+      <h3>Bets per day</h3>
+      <ColumnChart
+        title="Paper bets per game day"
+        bars={betsPerDay(bets).map((d) => ({ label: shortDate(d.date), value: d.bets }))}
+        format={(v) => v.toFixed(0)}
+      />
+      <h3>Expected return against CLV</h3>
+      {withClv.length === 0 ? (
+        <p className="muted">No bet with a closing price yet.</p>
+      ) : (
+        <>
+          <ScatterChart
+            title="Each settled bet's expected return at the decision against its CLV at the close"
+            points={withClv.map((b) => ({
+              x: b.ev,
+              y: b.clv as number,
+              label: `${b.game_date} ${b.away} at ${b.home}`,
+            }))}
+            xTitle="EV"
+            yTitle="CLV"
+            format={(v) => percent(v)}
+          />
+          <p className="muted">
+            Right of the middle line: the model expected a profit. Above it: the price beat the
+            fair closing price. Bets in the top right are the ones the model was right about
+            before the game started, whatever the result.
+          </p>
+        </>
+      )}
+      <Explain terms={["units", "result", "profit", "drawdown", "luck", "ev", "clv"]} />
+    </>
   );
 }
 
@@ -123,8 +304,26 @@ export function ClvHistory({ rows }: { rows: { as_of: string; clv: Figure }[] })
   if (rows.length === 0) {
     return <p className="muted">No live report yet: the nightly run writes one.</p>;
   }
+  const oldest = [...rows].reverse().filter((r) => (r.clv.mean ?? r.clv.value) !== undefined);
   return (
     <div className="scroll">
+      {oldest.length ? (
+        <LineChart
+          title="CLV per bet to date, with its 95% interval"
+          points={oldest.map((r) => ({
+            label: shortDate(r.as_of),
+            value: (r.clv.mean ?? r.clv.value) as number,
+            low: r.clv.low,
+            high: r.clv.high,
+          }))}
+          format={(v) => percent(v)}
+          zero
+        />
+      ) : (
+        <p className="muted">
+          The chart starts once a report has four weeks of bets, enough for an interval.
+        </p>
+      )}
       <table>
         <thead>
           <tr>
@@ -141,6 +340,7 @@ export function ClvHistory({ rows }: { rows: { as_of: string; clv: Figure }[] })
           ))}
         </tbody>
       </table>
+      <Explain terms={["clv", "interval"]} />
     </div>
   );
 }
@@ -289,6 +489,8 @@ export function Report({ report }: { report: LiveReport | null }) {
         </div>
       )}
 
+      <Explain terms={["interim", "coverage", "clv", "fairMove", "interval", "comparison", "calibration", "gap"]} />
+
       <h3>Operational alerts</h3>
       <p className="muted">These never change the policy.</p>
       <ul>
@@ -336,6 +538,43 @@ export function Report({ report }: { report: LiveReport | null }) {
       ) : null}
     </>
   );
+}
+
+/** A collapsed "What these mean" panel with the given glossary entries. */
+export function Explain({ terms }: { terms: TermKey[] }) {
+  return (
+    <details className="explain">
+      <summary>What these mean</summary>
+      <dl>
+        {terms.map((t) => (
+          <div key={t}>
+            <dt>{GLOSSARY[t].term}</dt>
+            <dd>{GLOSSARY[t].meaning}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  );
+}
+
+/** Every term on the page, explained. */
+export function Glossary() {
+  return (
+    <dl>
+      {Object.entries(GLOSSARY).map(([key, t]) => (
+        <div key={key}>
+          <dt>
+            <strong>{t.term}</strong>
+          </dt>
+          <dd>{t.meaning}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function signedUnits(x: number): string {
+  return (x >= 0 ? "+" : "") + x.toFixed(2);
 }
 
 function price(x: number | null): string {

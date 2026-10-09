@@ -67,14 +67,41 @@ const TABLES = {
       price: 1.9,
       p_side: 0.52,
       ev: 0.044,
+      bankroll: 100,
       stake: 0.75,
+      settled_utc: null,
       settlement: null,
+      won: null,
+      profit: null,
       close_status: null,
       clv: null,
       fair_move: null,
     },
+    {
+      game_date: "2026-10-07",
+      game_id: 2026020003,
+      start_utc: "2026-10-07T23:00:00+00:00",
+      home: "BUF",
+      away: "DAL",
+      side: "away",
+      price: 1.88,
+      p_side: 0.58,
+      ev: 0.09,
+      bankroll: 100,
+      stake: 1.09,
+      settled_utc: "2026-10-08T05:01:12+00:00",
+      settlement: "settled",
+      won: true,
+      profit: 0.9592,
+      close_status: "proxy",
+      clv: 0.031,
+      fair_move: 0.012,
+    },
   ],
   live_reports: [stored],
+  games: [
+    { game_id: 2026020003, game_date: "2026-10-07", home_score: 2, away_score: 4, decided_in: "REG" },
+  ],
 };
 
 /** The client, its auth replaced: `change` plays an auth event, as a magic link or a sign-out
@@ -231,13 +258,62 @@ test("an owner sees the slate, the bets, the CLV history and the report", async 
   expect(screen.getByText("Signed in as owner@example.com.", { exact: false })).toBeTruthy();
   // The slate's bet and the ledger's, at Pinnacle's price.
   expect(screen.getAllByText("WSH @ 1.900").length).toBe(1);
-  expect(screen.getByText("awaiting the result")).toBeTruthy();
-  // The report's own figures: CLV per bet with its interval, and its date in the history.
+  expect(screen.getByText("Awaiting the result")).toBeTruthy();
+  // The report's own figures: CLV per bet with its interval in the headline tile, the report and
+  // its date in the history.
   expect(
     screen.getAllByText(/\+0\.0180 \[\+0\.0143, \+0\.0209\] \(66 bets, 5 weeks\)/).length,
-  ).toBe(2);
+  ).toBe(3);
   expect(screen.getByText(/Interim: no verdict/)).toBeTruthy();
   expect(screen.queryByText(/not a dashboard owner/)).toBeNull();
+});
+
+test("an owner sees each bet's result, its score and the bankroll, with CLV first", async () => {
+  // ADR 0034: results show during the season, beside the note that they are mostly luck.
+  const { supabase } = client(owner);
+  render(<Signed client={supabase} />);
+  await screen.findByText("Results and bankroll");
+  const won = screen.getByText("Won");
+  expect(won.className).toBe("won");
+  expect(screen.getByText("DAL 4–2 BUF")).toBeTruthy();
+  expect(screen.getAllByText("+0.96").length).toBeGreaterThan(0);
+  expect(screen.getByText("Awaiting the result")).toBeTruthy();
+  // The headline tiles lead with CLV, the measure; the bankroll is 100 plus the profit.
+  const tiles = [...document.querySelectorAll(".tile .label")].map((t) => t.textContent);
+  expect(tiles[0]).toBe("CLV per bet, the measure");
+  expect(screen.getAllByText("100.96").length).toBe(2); // the tile, and the day in its table
+  expect(screen.getByText(/Over this few bets, results are mostly luck/)).toBeTruthy();
+  // Far from the review line, which is named in a caption rather than drawn.
+  expect(screen.getByText(/is off this scale: the deepest drawdown so far is 0.0%/)).toBeTruthy();
+  // The charts, each named for a screen reader.
+  expect(screen.getByRole("img", { name: /Paper bankroll after each settled day/ })).toBeTruthy();
+  expect(screen.getByRole("img", { name: "Paper bets per game day" })).toBeTruthy();
+  expect(screen.getByRole("img", { name: /expected return at the decision against its CLV/ })).toBeTruthy();
+  // Every term explained.
+  expect(screen.getByText("What everything means")).toBeTruthy();
+  expect(screen.getAllByText("CLV (closing line value)").length).toBeGreaterThan(1);
+});
+
+test("the bankroll chart's readout follows the keys", async () => {
+  const { supabase } = client(owner);
+  render(<Signed client={supabase} />);
+  const chart = await screen.findByRole("img", { name: /Paper bankroll after each settled day/ });
+  fireEvent.focus(chart);
+  const readout = await screen.findByRole("status");
+  expect(readout.textContent).toContain("101.0");
+  expect(readout.textContent).toContain("Oct 7");
+});
+
+test("before the games migration, results show and say why the scores don't", async () => {
+  const { supabase } = client(owner, (sent) =>
+    sent.url.pathname.endsWith("/games")
+      ? { status: 401, body: { code: "42501", message: "permission denied for table games" } }
+      : undefined,
+  );
+  render(<Signed client={supabase} />);
+  await screen.findByText("Won");
+  expect(screen.queryByText("DAL 4–2 BUF")).toBeNull();
+  expect(screen.getByText(/Scores show once the owner applies the migration/)).toBeTruthy();
 });
 
 test("an account that isn't an owner sees nothing but its user id", async () => {
