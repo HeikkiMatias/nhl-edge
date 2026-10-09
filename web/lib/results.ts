@@ -21,7 +21,13 @@ export type Day = {
 
 /** The bankroll after each game day with a settled bet, oldest first: 100 units plus the
  * settled bets' profit to that day, with its running peak and its drawdown from it. A void bet
- * moves nothing. */
+ * moves nothing.
+ *
+ * Game days come in the order their results became public, as the live report applies profits
+ * (by result_utc, its game's start plus six hours): a bet is decided at 12:45 ET on its date, and a
+ * game played more than 12 hours from its ledger start is void (settle.POSTPONED), so one day's
+ * results are all public before the next day's. The report's drawdown alert, which steps by each
+ * result rather than by day, stays the one that triggers the review. */
 export function bankroll(bets: Bet[]): Day[] {
   const byDay = new Map<string, { bets: number; profit: number }>();
   for (const b of bets) {
