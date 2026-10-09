@@ -24,12 +24,27 @@ const prediction = (game_date: string, game_id: number) => ({
   bet: false,
 });
 
-const bet = (game_date: string, game_id: number) => ({
+// As PostgREST returns them: every selected column, null where unset.
+const bet = (game_date: string, game_id: number, settled: Record<string, unknown> = {}) => ({
   game_date,
   game_id,
   side: "home",
   price: 2.0,
+  bankroll: 100,
   stake: 1.0,
+  settled_utc: null,
+  settlement: null,
+  won: null,
+  profit: null,
+  ...settled,
+});
+
+const game = (game_date: string, game_id: number) => ({
+  game_id,
+  game_date,
+  home_score: 3,
+  away_score: 2,
+  decided_in: "OT",
 });
 
 const report = (as_of: string, policy_version: string): StoredReport => ({
@@ -44,6 +59,7 @@ const tables = (more: Tables = {}): Tables => ({
   predictions: [],
   paper_bets: [],
   live_reports: [],
+  games: [],
   ...more,
 });
 
@@ -88,11 +104,12 @@ test("an owner reads the latest day's slate, the bets and the report, newest fir
 
   const [predictions] = sentTo(requests, "predictions");
   assert.equal(predictions.url.searchParams.get("order"), "game_date.desc,start_utc.asc");
-  // A bet's result and profit are never read before the season's end.
+  // Each bet's result and profit are read during the season (ADR 0034).
   const [bets] = sentTo(requests, "paper_bets");
   const columns = bets.url.searchParams.get("select")?.split(",") ?? [];
-  assert.ok(columns.includes("clv") && columns.includes("stake"));
-  assert.ok(!columns.includes("won") && !columns.includes("profit"));
+  assert.ok(["clv", "stake", "won", "profit", "bankroll"].every((c) => columns.includes(c)));
+  // No bet is settled, so no score is asked for.
+  assert.equal(sentTo(requests, "games").length, 0);
   assert.equal(bets.url.searchParams.get("order"), "game_date.desc,start_utc.asc,game_id.asc");
   const [latest, history] = sentTo(requests, "live_reports");
   assert.equal(latest.url.searchParams.get("order"), "as_of.desc");
@@ -148,6 +165,51 @@ test("every bet and every report of the policy are read, a page at a time", asyn
   assert.equal(sentTo(requests, "paper_bets").length, 4);
   const offsets = sentTo(requests, "paper_bets").map((r) => r.url.searchParams.get("offset"));
   assert.deepEqual(offsets, ["0", "1000", "2000", "2600"]);
+});
+
+test("each settled bet gets its game's final score, from its first date on", async () => {
+  const settled = { settlement: "settled", won: true, profit: 1.0 };
+  const { supabase, requests } = stubbed(
+    tables({
+      paper_bets: [bet("2026-10-09", 7), bet("2026-10-08", 5, settled)],
+      games: [game("2026-10-08", 5), game("2026-10-08", 6)],
+    }),
+    OWNER,
+  );
+  const data = await load(supabase);
+  assert.deepEqual(data.scores, { 5: game("2026-10-08", 5) });
+  const [games] = sentTo(requests, "games");
+  assert.equal(games.url.searchParams.get("game_date"), "gte.2026-10-08");
+  assert.equal(games.url.searchParams.get("select"), "game_id,home_score,away_score,decided_in");
+});
+
+test("before the owner applies the games migration, results show without scores", async () => {
+  // The read is refused with Postgres's "permission denied" until the #210 migration is in.
+  const settled = { settlement: "settled", won: false, profit: -1.0 };
+  const { supabase } = stubbed(
+    tables({ paper_bets: [bet("2026-10-08", 5, settled)] }),
+    OWNER,
+    (sent) =>
+      sent.url.pathname.endsWith("/games")
+        ? { status: 401, body: { code: "42501", message: "permission denied for table games" } }
+        : undefined,
+  );
+  const data = await load(supabase);
+  assert.equal(data.scores, null);
+  assert.equal(data.bets[0].won, false);
+});
+
+test("any other failed read of the scores is an error", async () => {
+  const settled = { settlement: "settled", won: true, profit: 1.0 };
+  const { supabase } = stubbed(
+    tables({ paper_bets: [bet("2026-10-08", 5, settled)] }),
+    OWNER,
+    (sent) =>
+      sent.url.pathname.endsWith("/games")
+        ? { status: 401, body: { code: "PGRST301", message: "JWT expired" } }
+        : undefined,
+  );
+  await assert.rejects(load(supabase), { message: "JWT expired" });
 });
 
 test("without a report there is no history to read", async () => {

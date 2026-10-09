@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 
-import { easternDate, easternTime, estimate, percent } from "./format.ts";
+import { easternDate, easternTime, estimate, percent, shortDate } from "./format.ts";
 
 test("an estimate shows its interval, or only its counts with too few weeks", () => {
   assert.equal(
@@ -22,4 +22,9 @@ test("dates and times are US Eastern, as the ledger keys games", () => {
   assert.equal(easternTime("2026-10-08T23:00:00Z"), "19:00");
   assert.equal(percent(0.5234), "52.3%");
   assert.equal(percent(null), "");
+});
+
+test("a chart's date label is the short month and day", () => {
+  assert.equal(shortDate("2026-10-08"), "Oct 8");
+  assert.equal(shortDate("2027-01-03"), "Jan 3");
 });

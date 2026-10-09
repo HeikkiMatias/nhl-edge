@@ -47,3 +47,10 @@ export function easternTime(iso: string): string {
     minute: "2-digit",
   }).format(new Date(iso));
 }
+
+/** A game date (YYYY-MM-DD) as a short label for a chart's axis, such as "Oct 8". */
+export function shortDate(day: string): string {
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" }).format(
+    new Date(`${day}T12:00:00Z`),
+  );
+}

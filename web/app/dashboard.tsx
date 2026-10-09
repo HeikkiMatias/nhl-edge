@@ -7,7 +7,7 @@ import { easternDate } from "@/lib/format";
 import { load, type Data } from "@/lib/load";
 import { supabase } from "@/lib/supabase";
 
-import { ClvHistory, Ledger, Report, Slate } from "./sections";
+import { ClvHistory, Glossary, Headline, Ledger, Report, Results, Slate } from "./sections";
 
 /** The page: the sign-in form, or the board for a signed-in user, read through the client made
  * from the public URL and anon key (lib/supabase.ts). */
@@ -178,8 +178,9 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
           ? "The formal review (ADR 0032)."
           : `Interim: no verdict, promotion or real stake follows before the formal review on ${
               data.report?.review_date ?? "2027-04-12"
-            } (ADR 0032). Results and profit show only at the season's end.`}
+            } (ADR 0032). The results below are mostly luck over this few bets: CLV is the measure (ADR 0034).`}
       </p>
+      <Headline bets={data.bets} report={data.report} />
 
       <h2>Slate</h2>
       {data.day !== today ? (
@@ -189,14 +190,20 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
       ) : null}
       <Slate day={data.day} rows={data.slate} bets={data.bets} />
 
+      <h2>Results and bankroll</h2>
+      <Results bets={data.bets} />
+
       <h2>Paper bets</h2>
-      <Ledger bets={data.bets} />
+      <Ledger bets={data.bets} scores={data.scores} />
 
       <h2>Cumulative CLV per bet</h2>
       <ClvHistory rows={data.history} />
 
       <h2>Live report</h2>
       <Report report={data.report} />
+
+      <h2>What everything means</h2>
+      <Glossary />
     </>
   );
 }

@@ -1,6 +1,6 @@
 # 0032. Judging live evidence: one formal review at the season's end, a practical calibration band, and every denominator shown
 
-- Status: Accepted (by the owner, 2026-10-07); amended the same day by the owner's rulings on Codex's review of #179: the coverage floor and bound, a calibration band derived from the hurdle, and the proxy's maximum lead time
+- Status: Accepted (by the owner, 2026-10-07); amended the same day by the owner's rulings on Codex's review of #179: the coverage floor and bound, a calibration band derived from the hurdle, and the proxy's maximum lead time; amended by ADR 0034 (2026-10-09): each paper bet's result and the paper bankroll show on the dashboard during the season
 - Date: 2026-10-07
 
 ## Context
