@@ -63,7 +63,8 @@ test("a game's state reads in words, from the start to the final", () => {
   expect(statusLine(game(night, 2026020056), "19:00")).toBe("Final");
   expect(statusLine(game(night, 2026020063), "20:00")).toBe("Final (OT)");
   expect(statusLine(game(night, 2026020065), "22:00")).toBe("Final (SO)");
-  expect(statusLine(tonight[0], "19:00")).toBe("Starts 19:00 ET");
+  // Tonight's 19:00 ET start, as the board passes it in Helsinki time.
+  expect(statusLine(tonight[0], "Sat 02:00")).toBe("Starts Sat 02:00");
   // Live states, from a game to come with its state moved on as the scoreboard would.
   const on = (change: Partial<LiveGame>) => ({ ...tonight[0], away_score: 1, home_score: 2, ...change });
   expect(statusLine(on({ state: "PRE" }), "19:00")).toBe("Warm-up");

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { easternTime } from "@/lib/format";
+import { helsinkiTime } from "@/lib/format";
 import {
   isCurrent,
   LIVE_POLL_MS,
@@ -99,7 +99,7 @@ export function LiveScores({
                       </>
                     )}
                   </td>
-                  <td>{g ? statusLine(g, easternTime(g.start_utc)) : "Not on the scoreboard"}</td>
+                  <td>{g ? statusLine(g, helsinkiTime(g.start_utc, day)) : "Not on the scoreboard"}</td>
                   <td>{bet ? (bet.side === "home" ? bet.home : bet.away) : ""}</td>
                   <td>{outcome(bet, g)}</td>
                 </tr>
@@ -110,8 +110,8 @@ export function LiveScores({
       ) : null}
       {scores !== null ? (
         <p className="muted">
-          Scoreboard of {day}, read at {easternTime(scores.fetched_utc)} ET. It refreshes every 30
-          seconds while a game is on.
+          Scoreboard of {day}, the NHL&apos;s game day, read at {helsinkiTime(scores.fetched_utc)}{" "}
+          Helsinki time. Times are Helsinki time. It refreshes every 30 seconds while a game is on.
         </p>
       ) : null}
       <Explain terms={["live", "provisional"]} />

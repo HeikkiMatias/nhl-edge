@@ -109,9 +109,9 @@ const isOver = (g: LiveGame) => g.schedule_state === "PPD" || g.schedule_state =
 
 const ORDINAL = ["", "1st", "2nd", "3rd"];
 
-/** A game's state in words: "Starts 19:00 ET", "2nd · 12:34", "2nd intermission", "OT · 3:12",
+/** A game's state in words: "Starts Fri 02:00", "2nd · 12:34", "2nd intermission", "OT · 3:12",
  * "Shootout", "Final", "Final (OT)", "Final (SO)" or "Postponed". */
-export function statusLine(g: LiveGame, startEt: string): string {
+export function statusLine(g: LiveGame, start: string): string {
   if (g.schedule_state === "PPD") return "Postponed";
   if (g.schedule_state === "SUSP") return "Suspended";
   if (g.schedule_state === "CNCL") return "Cancelled";
@@ -119,7 +119,7 @@ export function statusLine(g: LiveGame, startEt: string): string {
     const end = g.last_period_type === "OT" || g.last_period_type === "SO";
     return end ? `Final (${g.last_period_type})` : "Final";
   }
-  if (g.state === "FUT") return `Starts ${startEt} ET`;
+  if (g.state === "FUT") return `Starts ${start}`;
   if (g.state === "PRE") return "Warm-up";
   const name =
     g.period_type === "OT" ? "OT" : g.period_type === "SO" ? "Shootout" : ORDINAL[g.period ?? 0];

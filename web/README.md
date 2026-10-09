@@ -19,6 +19,8 @@ The paper-trading dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.j
 - **Cumulative CLV per bet:** each nightly report's CLV per bet to its date under the current policy, with its weekly block bootstrap interval, as a chart and a table.
 - **The latest live report** (`nhl live report`), with coverage, CLV with the floor and bound, the model comparisons, the blend's calibration band, gaps for hand review, and the operational alerts.
 
+**Times** are Helsinki time (#218), computed from the stored UTC instants, so they follow both countries' daylight-saving changes. A game day is still the NHL's own date (US Eastern), as the ledger keys on it. A 19:00 ET game of a Thursday shows as "Fri 02:00", and the 12:45 ET decision as 19:45, or 18:45 in the weeks when only one country has changed its clocks.
+
 **Explanations.** Each section has a "What these mean" panel, and a glossary closes the page. Every term is written for a reader with no betting or statistics background, in one place (`lib/glossary.ts`), so the panels and the glossary never disagree.
 
 **Where the figures come from.**

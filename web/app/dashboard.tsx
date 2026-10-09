@@ -3,7 +3,7 @@
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { type FormEvent, useEffect, useState } from "react";
 
-import { easternDate } from "@/lib/format";
+import { easternDate, easternInstant, helsinkiTime } from "@/lib/format";
 import { load, type Data } from "@/lib/load";
 import { supabase } from "@/lib/supabase";
 
@@ -189,7 +189,9 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
       <h2>Slate</h2>
       {data.day !== today ? (
         <p className="muted">
-          No decision for today ({today}) yet: a game day&apos;s are published after 12:45 ET.
+          No decision for today&apos;s game day ({today}) yet: it is published after{" "}
+          {helsinkiTime(easternInstant(today, "12:45").toISOString())} Helsinki time (12:45 in New
+          York).
         </p>
       ) : null}
       <Slate day={data.day} rows={data.slate} bets={data.bets} />
