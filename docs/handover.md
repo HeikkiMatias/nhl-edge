@@ -1,6 +1,6 @@
-# Handover, 2026-10-08
+# Handover, 2026-10-09
 
-This file says where the build stands after the cloud sessions of 2026-09-29 to 10-07, and how a fresh session picks it up. CLAUDE.md holds the rules; this file holds the state. Update it, or delete it, when it goes stale.
+This file says where the build stands after the cloud sessions of 2026-09-29 to 10-09, and how a fresh session picks it up. CLAUDE.md holds the rules; this file holds the state. Update it, or delete it, when it goes stale.
 
 ## Start here (a fresh session)
 
@@ -10,6 +10,15 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
    - Phase 4 is done. Gate 3 is not met (ADR 0031): the blend adds no information beyond the recalibrated market on history. As the owner decided, phase 5 paper-trades the frozen policy anyway, and live 2026-27 is the remaining test.
    - Gate 1 (#79) is still open. It is a checkpoint, not a stop (ADR 0002).
    - **The clock runs:** the policy was frozen on 2026-10-05, and live games count from 2026-10-06. Every game without a logged pre-game prediction is a paper bet the live test can't use.
+4. **Take over the scheduled check-ins.** They are Routines bound to the session that created them, so they keep firing into the old session, not a new one. List them (`list_triggers`), create each again bound to the new session with the same time and prompt, then delete the old one. On 2026-10-09 they were:
+   - 2026-10-09 10:05 UTC: the first paper settlement;
+   - 2026-10-09 17:05 UTC: the midday pull time after #207;
+   - Mondays 10:20 UTC: the weekly live report;
+   - 2026-10-13 10:30 UTC: #9 and #42;
+   - 2026-10-22 10:30 UTC: #30, then gate 1;
+   - 2026-11-05 10:40 UTC: #121 step 3.
+
+   A check-in whose time has passed in the old session needs doing by hand: check its result first.
 
 ## Waiting items: when and how
 
@@ -56,13 +65,12 @@ Every deliverable merged under its own task issue:
 - **The one-time test is spent.** `nhl backtest --hockey-only --one-time-test` is refused for good. Records of the run sit in R2 (`ledger/one_time_test.txt`), beside the lake and in `reports/backtest/one_time_test.txt`.
 - **The gap review** (`reports/gaps/b3-gap-review.md`, tool `nhl audit gaps`) found no data error in 92 games read without results.
 
-**Open P3 follow-ups.** None blocks phase 5. Take them when convenient, one PR each:
+**Open P3 follow-ups.** None blocks phase 5, and each waits on the owner:
 - #120: two possible calibration gaps in lineup availability. They need intervals before they count as findings.
 - #125: a debutant's NHLe in his debut season.
-- #130: `nhl power-plays` should refuse games missing inputs.
-- #131: schemas should check season against game_id.
-- #132: B2's tuning check leaves out `goalie_starts`.
 - #134: rate replacement skaters below RAPM's reference skater.
+
+Done since: #117 and #199, the yearly landing refresh (#200, #205); #130 (#185); #131 (#201); #132 (#202).
 
 ## Phase 4: done (#13)
 
@@ -102,9 +110,7 @@ Every deliverable merged under its own task issue:
 
 **ADR 0026's revisit trigger fired.** 2022-23's fits put u's weight at +0.24 [+0.01, +0.48] (E1): the model is trusted more as doubt grows. The owner kept u frozen. Live evidence decides, and any change is a new policy version.
 
-**Open follow-ups:** none blocks phase 5.
-- #154 (P5): the E3 driver mostly marks favourite against underdog.
-- #156 (P5): recompute the blend's probability in the gap screen.
+**Its follow-ups are done:** #154, the E3 driver (task 7 below), and #156, the gap screen.
 
 ## Phase 5: where it stands (#14)
 
@@ -127,11 +133,11 @@ Every deliverable merged under its own task issue:
    - task 3, #164: `nhl predict` and the ledger.
 3. **Then** tasks 4 to 9, and #173 after #30.
 
-**State on 2026-10-08:**
+**State on 2026-10-09:**
 - **The first live decision ran on 2026-10-08** at the 12:45 ET midday dispatch, and #164 is closed.
   - All 10 games were predicted, with 6 bets totalling the 5% daily cap, and none was lost. The games of 2026-10-06 and 10-07 were lost to the live test and are never reconstructed.
   - `nhl live replay --r2` reproduced the ledger from its run bundle, and the slate review flagged nothing.
-  - The decision was published 10m46s after the snapshot, 10m41s of it the R2 pull of 30,674 files. Pinnacle's quotes were then 11m03s old, under ADR 0033's 15 minutes. #207 (PR #208) gives the pull a connection per thread, which cut a test pull 4 to 5 times; measure it on the next midday run.
+  - The decision was published 10m46s after the snapshot, 10m41s of it the R2 pull of 30,674 files. Pinnacle's quotes were then 11m03s old, under ADR 0033's 15 minutes. #207 (merged in #208) gives the pull a connection per thread, which cut a test pull from 124 s to about 25 s. The first midday run with it is 2026-10-09's: post its pull time and the quote's age at publication on #207, and open a new [priority] issue if the gap is still near 15 minutes.
   - Daily Faceoff's line-combinations poll (#121, step 2) ran for the first time in the same dispatch: 20 teams, 43 injured players, 0 failed, in 48s. It took the goalie step to 2m14s, just over its 2-minute budget.
 - **Task 1 is merged** (#180):
   - the `slate` table;
@@ -164,9 +170,15 @@ Every deliverable merged under its own task issue:
 - **Task 5 (#165), settlement and CLV:** `nhl live settle --r2` runs nightly after the odds replay. It rebuilds `paper_settlements`: each final game's bet with its result on the full game, its profit, and its CLV against Pinnacle's closing proxy, or why it has none.
 - **Task 6 (#166), the live report:** `nhl live report --r2` writes `reports/live/report-<date>.md` and `.json` under ADR 0032's rules, committed weekly. It is interim, with no verdict, until the formal review on 2027-04-12. `nhl live slate` and the `daily-slate` skill review each day's ledger. Closing #166 also completes #172.
 - **Task 8 (#167), the Supabase paper ledger:** `nhl live supabase --r2` copies the ledgers and settlements into insert-only `predictions` and `paper_bets` tables that only the dashboard's owner can read. The owner applies `supabase/migrations/20261008120000_paper_ledger.sql`, adds their auth user id to `dashboard_owners`, and sets the repository variable `SUPABASE_LEDGER=true`. The next midday or nightly run then backfills the season.
-- **Task 8 (#168), the dashboard:** `web/` (Next.js, client-rendered, anon key only) shows the latest slate, the paper bets without result or profit, each night's CLV per bet to date, and the latest live report. The nightly upserts the report into `live_reports` (`nhl live report --supabase`). The owner applies `supabase/migrations/20261008140000_live_reports.sql`, then creates the Vercel project with root `web` and its two public variables, and adds its URL to Supabase's auth redirect URLs (`web/README.md`). The owner signs in with their Supabase user's email and password (#206), or an email link.
+- **Task 8 (#168), the dashboard:** `web/` (Next.js, client-rendered, anon key only) shows the latest slate, the paper bets, each night's CLV per bet to date, and the latest live report.
+  - **Results during the season (#210, ADR 0034):** the owner chose on 2026-10-09 to see each bet's result, score and profit, and the paper bankroll with its drawdown, beside CLV. CLV stays the measure and the first tile, the page says results over this few bets are mostly luck, and nothing in the policy changes because of them. The page has four charts, and every field is explained in plain language from `web/lib/glossary.ts`. The owner applied the scores migration, `supabase/migrations/20261009120000_games_owner_reads.sql`, on 2026-10-09. The nightly upserts the report into `live_reports` (`nhl live report --supabase`). The owner applies `supabase/migrations/20261008140000_live_reports.sql`, then creates the Vercel project with root `web` and its two public variables, and adds its URL to Supabase's auth redirect URLs (`web/README.md`). The owner signs in with their Supabase user's email and password (#206), or an email link.
 - **Task 7 (#154, #193), edge attribution:** each bet's driver is measured against each input's usual level at the market price, so it no longer marks favourite against underdog. `nhl live slate` prints each live bet's driver and parts from the day's run bundle, against usual levels fixed once beside the live fit (`nhl live attribution-levels --write`).
-- **Reminders** for the dated items fire into this session on 2026-10-13 and 2026-10-22 at 10:30 UTC.
+- **What's left in phase 5:**
+  - #211: follow tonight's games in real time on the dashboard, with live scores. It's the owner's ask of 2026-10-09 and the next task.
+  - #169, task 9: a weekly copy of `raw/` outside R2. It waits for the owner to choose where.
+  - #173, after #30: whether post-game corrections change model inputs.
+  - #121 step 3, on 2026-11-05: measure Daily Faceoff's statuses against who dressed.
+  - #67, around 2027-04-17: `EXPECTED_GAMES` for 2026-27 (below).
 
 **Never change the frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and the CLV count restarts.
 
@@ -193,6 +205,9 @@ Every deliverable merged under its own task issue:
   - **Time-on-ice reports (#68):** fetched once, for the 57 games only, and never again (NHL.com's terms).
   - **Season totals (ADR 0016):** the 2026 copies' goals and assists count as public at the season's end, corrections included.
 - **Lineups (ADR 0017, 0018):** the specifications are fixed, with nothing tuned. A change to their inputs, window or total needs a new ADR (#120).
+- **The dashboard shows results during the season (ADR 0034).** If the results start pulling toward a policy change, hiding them again is the remedy, never changing the policy.
+- **The repository is public** since 2026-10-09, so Actions minutes are free (#213 has the history).
+- **Dependabot's four patch bumps of 2026-10-05** (#174 to #177) were closed at the owner's request. None was a security fix.
 
 ## State
 
@@ -233,6 +248,11 @@ Every deliverable merged under its own task issue:
     - **B0** is the de-vigged market (ADR 0008).
     - **B1** is its per-fold recalibration. B1 doesn't beat B0: B0 minus B1 is +0.0004 [-0.0005, +0.0013] on E1.
   - The model card has every figure.
+- **CI** (#213): `ci.yml` runs the Python checks, and `web.yml` the dashboard's, once per change: on its pull request, and on `main` after the merge. A push to a branch with no pull request runs nothing, and a newer push cancels the older run. `ci.yml` skips changes confined to `web/`, and `web.yml` runs only when `web/` changes.
+- **The repository is public** (2026-10-09):
+  - Actions minutes are free. When it was private, 1,804 of the 2,000 included minutes were used by 2026-10-09.
+  - Run logs are public, so never print a secret or anything private in a workflow. Secrets are masked, but values passed as plain variables are not.
+  - GitHub pauses scheduled workflows in a public repository after 60 days without a commit. The timer's dispatches keep running regardless, and a commit restarts the schedules.
 - **Jobs:**
   - **What runs:** GitHub Actions runs the nightly ingest at 09:00 UTC, then `nhl recheck`. It also runs five odds slots a day, and the goalie polls hourly at :50 from 12:50 to 02:50 UTC (docs/data-sources.md, "When jobs run").
   - **The timer:** the Cloudflare Worker `nhl-edge-timer` (`infra/timer`, #53) dispatches them on time. `TIMER_ACTIVE` is `true`, so GitHub's own late schedule skips.
@@ -243,7 +263,8 @@ Every deliverable merged under its own task issue:
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
 - **Open, waiting:** #9 and #42 (P1); #30, #79 and #11 (P2).
 - **Open, for the owner:** #120, #125 and #134 (P3); #169, the raw backup's location (P5).
-- **Open, later:** phase 5's #14, #67 (in April 2027), #121 (step 3 on 2026-11-05), #173 (after #30), #181 and #207 (P5); #15 and #186 (P6).
+- **Open, next:** #211 (P5), live scores on the dashboard.
+- **Open, later:** phase 5's #14, #67 (in April 2027), #121 (step 3 on 2026-11-05) and #173 (after #30); #15 and #186 (P6).
 
 ## Keep an eye on
 
