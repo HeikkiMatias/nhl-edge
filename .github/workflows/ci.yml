@@ -1,6 +1,17 @@
-# .github/workflows/ci.yml
 name: ci
-on: [push, pull_request]
+# Each change runs once: on its pull request, and on main after the merge. A push to a branch
+# with an open pull request no longer runs a second copy, and a newer push to the same pull
+# request cancels the older run (#213: the repository is private, so every minute is billed).
+# The dashboard has its own workflow (web.yml), and no Python test reads web/.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["web/**"]
+  pull_request:
+    paths-ignore: ["web/**"]
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -10,27 +21,9 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run pyright src
-      - run: uv run pytest -m "not slow" -q
+      # The leakage tests run once, as their own step.
+      - run: uv run pytest -m "not slow" -q --ignore=tests/leakage
       - run: uv run pytest tests/leakage -q
       - name: Timer Worker tests
         run: node --test
         working-directory: infra/timer
-  web:
-    # The dashboard (web/, #168): typecheck, its tests, and a build without Supabase's env vars.
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-        env:
-          NEXT_TELEMETRY_DISABLED: "1"

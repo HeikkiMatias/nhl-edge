@@ -82,4 +82,4 @@ The tests run the real supabase-js client against a stand-in for PostgREST (`lib
 
 The report fixture (`lib/fixtures/live-report.json`) is `nhl live report`'s output on the Python tests' synthetic season.
 
-CI's `web` job runs `npm ci`, the typecheck, the tests and the build without the variables.
+CI's `web` workflow (`.github/workflows/web.yml`) runs `npm ci`, the typecheck, the tests and the build without the variables, on every pull request that changes `web/` and on `main` after its merge.
