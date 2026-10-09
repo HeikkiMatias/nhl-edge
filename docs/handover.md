@@ -66,7 +66,10 @@ Every deliverable merged under its own task issue:
 - **The gap review** (`reports/gaps/b3-gap-review.md`, tool `nhl audit gaps`) found no data error in 92 games read without results.
 
 **P3 follow-ups, decided by the owner on 2026-10-09:**
-- **#120 is closed,** as not worth a change for now. Both lineup gaps are real but small: after an early exit, +0.137 [+0.116, +0.158], about 1% of the minutes in one team-game in seven; for openers, about 4% of the minutes in one team-game in seventy-five. The early-exit gap is revisited with #121 step 3.
+- **#120 is closed,** as not worth a change for now (its figures, on the training seasons, are on the issue). Both lineup gaps exclude zero but are small in minutes:
+  - **After an early exit:** the gap is +0.137 [+0.116, +0.158]. It moves +0.96% [+0.83%, +1.08%] of the expected 5v5 minutes in the 13.9% of team-games with such a skater. This gap is revisited with #121 step 3.
+  - **Openers, for candidates who didn't dress in the team's last game:** the gap is −0.082 [−0.122, −0.042]. It moves −3.9% [−5.3%, −2.4%] of the minutes, in 1.3% of team-games. These intervals resample whole seasons, since a season's openers fall in one week.
+  - For the skaters who dressed in the team's last game, the opener gap is +0.013 [−0.009, +0.033]. That interval includes zero, so it was recorded and not pursued.
 - **#125 and #134 are parked for the next model version** (label `next-model-version`, milestone P6). #125 is a debutant's NHLe in his debut season; #134 is replacement skaters rated at RAPM's reference. They are decided after the formal review on 2027-04-12, each through its own ADR.
 
 Done since: #117 and #199, the yearly landing refresh (#200, #205); #130 (#185); #131 (#201); #132 (#202).
@@ -134,7 +137,7 @@ Every deliverable merged under its own task issue:
 
 **State on 2026-10-09:**
 - **The first live decision ran on 2026-10-08** at the 12:45 ET midday dispatch, and #164 is closed.
-  - All 10 games were predicted, with 6 bets totalling the 5% daily cap, and none was lost. The games of 2026-10-06 and 10-07 were lost to the live test and are never reconstructed.
+  - All 10 games were predicted, with 6 bets totalling the 5% daily cap: no game of the slate went without a decision. The games of 2026-10-06 and 10-07 were lost to the live test and are never reconstructed.
   - `nhl live replay --r2` reproduced the ledger from its run bundle, and the slate review flagged nothing.
   - The decision was published 10m46s after the snapshot, 10m41s of it the R2 pull of 30,674 files. Pinnacle's quotes were then 11m03s old, under ADR 0033's 15 minutes.
 - **The first settlement, in the 2026-10-09 nightly:**
