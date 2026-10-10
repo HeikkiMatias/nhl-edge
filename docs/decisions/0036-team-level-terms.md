@@ -1,6 +1,6 @@
 # 0036. Policy v2's B3: team strength, a new coach and penalty drawing beyond the power play
 
-- Status: Proposed
+- Status: Proposed: none of the three terms passes its rule (backtest evidence below)
 - Date: 2026-10-10
 - Part of: policy v2 (#225), which the owner decided on 2026-10-10 (#222)
 
@@ -43,7 +43,19 @@ As in ADR 0035, the evidence can't come from the training seasons (#225), so eac
 
 ## Backtest evidence
 
-None yet. The runs above provide it, and their results are added here before the owner decides on acceptance.
+**Three runs of `backtest-hockey-20261010-a6e67dd`,** one per term, each committed after this ADR (`reports/backtest/hockey-20261010-a6e67dd-210612.json`, `-210638.json` and `-210704.json`, logged in `runs.csv`). Each covers the same 5,207 games over 112 weeks.
+
+| Term minus B3 | Pooled paired log loss [95% weekly block bootstrap] | 2018-19 | 2021-22 | 2023-24 | 2024-25 |
+| --- | --- | --- | --- | --- | --- |
+| team (ΔS) | **+0.00034 [−0.00138, +0.00198]** | −0.00041 | −0.00161 | +0.00231 | +0.00104 |
+| coach | **−0.00006 [−0.00019, +0.00006]** | −0.00027 | +0.00010 | +0.00002 | −0.00010 |
+| pest | **−0.00056 [−0.00127, +0.00014]** | −0.00044 | −0.00158 | −0.00027 | +0.00006 |
+
+**No pooled interval lies wholly below 0, so under this ADR's rule none of the three terms enters policy v2.** The combination step doesn't arise.
+- **team:** ΔS takes a weight of about 0.14 while Δĝ's falls from about 0.31 to 0.23 to 0.31. The two share most of their information, and together they forecast no better.
+- **coach:** the effect is tiny. A new coach's first games are a small share of all games, and the weight is near 0 in every fold.
+- **pest:** this is the closest. Its weight grows from 0.025 to 0.06 over the folds, and its point estimate favours it. But the pooled interval includes 0, and a term only enters on a pooled interval below 0.
+- **The rule stands as written.** It was fixed before these results were read, and changing it now that they are known would be tuning on seen seasons.
 
 ## Consequences
 
