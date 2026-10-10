@@ -52,6 +52,7 @@ As in ADR 0035, the evidence can't come from the training seasons (#225), so eac
 | pest | **−0.00056 [−0.00127, +0.00014]** | −0.00044 | −0.00158 | −0.00027 | +0.00006 |
 
 **No pooled interval lies wholly below 0, so under this ADR's rule none of the three terms enters policy v2.** The combination step doesn't arise.
+- **The coach run was repeated** as `backtest-hockey-20261010-fbe351b` (`hockey-20261010-fbe351b-214050.json`). That run gates each coaching stint by its public time rather than by the calendar day (Codex on #227). Its figures and fold fits are the same to the last digit, since every game was predicted after its stints were public. The first run stays logged.
 - **The per-season figures** are point estimates. The verdict rests on the pooled interval alone.
 - **Each fold's weights** are point estimates with no interval, so no conclusion is drawn from them:
   - **team:** ΔS's weight is 0.135 to 0.152 per fold. Δĝ's weight beside it is 0.227 to 0.310, against 0.310 to 0.404 in B3 alone.
