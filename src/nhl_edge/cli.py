@@ -749,6 +749,16 @@ def backtest(
             ),
         ),
     ] = False,
+    b3_terms: Annotated[
+        str | None,
+        typer.Option(
+            "--b3-terms",
+            help=(
+                "With --hockey-only, also score B3 with policy v2's terms (#225), comma-separated "
+                "(arena: ADR 0035), paired against B3 on the same games."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Run the walk-forward backtest on the SBR archive, for E1 (the close) and E2 (the opener):
     B0 under each de-vig method, B1 fitted per season on the earlier seasons' prices, B2, the
@@ -800,6 +810,17 @@ def backtest(
     # and, once, the one-time test season.
     roles = HOCKEY_ROLES if hockey_only else OPEN_ROLES
     where = None
+    terms = None
+    if b3_terms is not None:
+        if not hockey_only or one_time_test:
+            raise typer.BadParameter(
+                "needs --hockey-only, without --one-time-test", param_hint="--b3-terms"
+            )
+        names = [name.strip() for name in b3_terms.split(",") if name.strip()]
+        known = set(vars(b3.Terms()))
+        if not names or set(names) - known:
+            raise typer.BadParameter(f"terms are {sorted(known)}", param_hint="--b3-terms")
+        terms = b3.Terms(**dict.fromkeys(names, True))
     if one_time_test:
         if not hockey_only:
             raise typer.BadParameter("needs --hockey-only", param_hint="--one-time-test")
@@ -868,7 +889,7 @@ def backtest(
         )
     lake = Lake()
     if hockey_only:
-        _hockey_backtest(lake, wanted, out, where)
+        _hockey_backtest(lake, wanted, out, where, terms)
         return
     # B1 is fitted on every open SBR season before the test season, so those need prices too.
     history = [s for s in SEASON_PAGES if s in OPEN_SEASONS]
@@ -1155,11 +1176,16 @@ def _b3_tables(lake: "Lake", tables: "b2.Tables") -> "b3.Tables":
         rapm_terms=lake.read("rapm_terms"),
         expected_power_plays=lake.read("expected_power_plays"),
         goal_multipliers=lake.read("goal_multipliers"),
+        schedule=lake.read("schedule"),
     )
 
 
 def _hockey_backtest(
-    lake: "Lake", wanted: list[int], out: Path, one_time_places: "Places | None" = None
+    lake: "Lake",
+    wanted: list[int],
+    out: Path,
+    one_time_places: "Places | None" = None,
+    terms: "b3.Terms | None" = None,
 ) -> None:
     """B2 and B3 at the as-of time on outcomes alone (ADR 0023), to <out>/hockey-<version>.json,
     with every run logged in <out>/runs.csv."""
@@ -1210,6 +1236,7 @@ def _hockey_backtest(
                 if one_time_places is None
                 else lambda: one_time.claim(one_time_places, run_version)
             ),
+            b3_terms=terms,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--seasons") from None

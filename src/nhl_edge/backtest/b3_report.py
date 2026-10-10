@@ -45,16 +45,19 @@ def fit_rows(fits: dict[int, B3Model]) -> dict[str, Any]:
             "weights": dict(zip(INPUTS, model.weights, strict=True)),
             "games": model.games,
             "train_cutoff": model.train_cutoff.isoformat(),
+            # Each arena's home edge, with Terms(arena=True) only (ADR 0035).
+            **({"arenas": dict(model.arenas)} if model.arenas else {}),
         }
         for season, model in sorted(fits.items())
     }
 
 
-def against(rows: pl.DataFrame, reference: str = REFERENCE) -> pl.DataFrame:
-    """Per game, B3's log loss less the reference model's, on the games both scored."""
+def against(rows: pl.DataFrame, reference: str = REFERENCE, model: str = MODEL) -> pl.DataFrame:
+    """Per game, the model's log loss (B3's by default) less the reference model's, on the
+    games both scored."""
     keys = ["season", "game_id", "game_date"]
     return (
-        rows.filter(pl.col("model") == MODEL)
+        rows.filter(pl.col("model") == model)
         .select(*keys, "log_loss")
         .join(
             rows.filter(pl.col("model") == reference).select("game_id", other="log_loss"),
@@ -247,11 +250,19 @@ def hockey(
     if b2_fits and REFERENCE in models:
         models[REFERENCE]["fits"] = b2_report.fit_rows(next(iter(b2_fits.values()), {}))
     if MODEL in models:
-        models[MODEL]["fits"] = fit_rows(next(iter(b3_fits.values()), {}))
+        models[MODEL]["fits"] = fit_rows(b3_fits.get(HOCKEY) or next(iter(b3_fits.values()), {}))
         models[MODEL][f"paired_against_{REFERENCE}"] = _estimates(
             against(predictions), "difference"
         )
         models[MODEL]["gate_2_subsets"] = subsets(predictions, flags)
+    # B3 with policy v2's terms (#225), scored on the same games: its gain over B3 decides
+    # whether a term enters v2 (ADR 0035).
+    for name in models:
+        if name.startswith(f"{MODEL}+") and name in b3_fits:
+            models[name]["fits"] = fit_rows(b3_fits[name])
+            models[name][f"paired_against_{MODEL}"] = _estimates(
+                against(predictions, reference=MODEL, model=name), "difference"
+            )
     return {
         "version": run_version,
         "run_utc": now.isoformat(),

@@ -37,6 +37,7 @@ from numpy.typing import NDArray
 from scipy.optimize import minimize
 from scipy.special import expit
 
+from nhl_edge import reference
 from nhl_edge.features import team_strength as ts
 from nhl_edge.game import b2
 from nhl_edge.lineup.goalie_start import team_goalie_games
@@ -54,6 +55,23 @@ TUNED_CUTOFF = max(rapm.TRAIN_CUTOFF, b2.TUNED_CUTOFF)
 ON_ICE = {"5v5": 5.0, "pp": 5.0, "pk": 4.0}
 STATES = tuple(ON_ICE)
 UTC = pl.Datetime("us", "UTC")
+# A game counts toward, and gets, its arena's home edge only when at least half full (ADR 0035).
+HALF_EMPTY = 0.5
+
+
+@dataclass(frozen=True)
+class Terms:
+    """B3's optional terms for policy v2 (#225). The default adds none: it is the B3 that every
+    policy v1 decision, replay and backtest reads, untouched."""
+
+    arena: bool = False  # each arena's home edge beyond h_s (#223, ADR 0035)
+
+    def label(self) -> str:
+        """The model's name in a backtest: B3, or B3 with its terms, such as B3+arena."""
+        return "+".join(["B3", *(name for name, on in vars(self).items() if on)])
+
+
+V1 = Terms()
 
 
 @dataclass(frozen=True)
@@ -70,6 +88,8 @@ class Tables:
     rapm_terms: pl.DataFrame
     expected_power_plays: pl.DataFrame
     goal_multipliers: pl.DataFrame
+    # The pre-game schedule (ADR 0005), read only by Terms(arena=True) for each game's venue.
+    schedule: pl.DataFrame | None = None
 
 
 def league_rates(rapm_terms: pl.DataFrame) -> pl.DataFrame:
@@ -322,7 +342,7 @@ def scenarios(usable: pl.DataFrame, candidates: pl.DataFrame, gammas: pl.DataFra
 @dataclass(frozen=True)
 class B3Model:
     """A fitted B3: its intercept and weights on the standardized inputs, the standardization,
-    and the games it read."""
+    the games it read, and with Terms(arena=True) each arena's home edge (ADR 0035)."""
 
     season: int
     settings: b2.Settings
@@ -332,15 +352,18 @@ class B3Model:
     scales: tuple[float, ...]
     games: int
     train_cutoff: datetime
+    arenas: tuple[tuple[str, float], ...] = ()
 
     def predict(self, inputs: pl.DataFrame, pairs: pl.DataFrame) -> pl.DataFrame:
-        """Each game in inputs (game_id, the schedule inputs, offset) with p_home, averaged over
-        its goalie pairs (scenarios())."""
+        """Each game in inputs (game_id, the schedule inputs, offset, and arena_id when the fit
+        has arenas) with p_home, averaged over its goalie pairs (scenarios())."""
         means, scales, weights = (np.asarray(v) for v in (self.means, self.scales, self.weights))
         others = [name for name in INPUTS if name != "delta_g_hat"]
         index = [INPUTS.index(name) for name in others]
         z = (inputs.select(others).to_numpy() - means[index]) / scales[index]
         base = self.intercept + inputs["offset"].to_numpy() + z @ weights[index]
+        if self.arenas:
+            base = base + arena_offsets(inputs, self.arenas)
         frame = inputs.select("game_id").with_columns(base=pl.Series(base))
         joined = pairs.join(frame, on="game_id")
         skill = (joined["delta_g_hat"].to_numpy() - means[SKILL]) / scales[SKILL]
@@ -381,6 +404,82 @@ def fit(train: pl.DataFrame, settings: b2.Settings, season: int) -> B3Model:
         games=train.height,
         train_cutoff=cutoff,
     )
+
+
+def fitted(model: B3Model, frame: pl.DataFrame) -> NDArray[np.float64]:
+    """The model's chance for each row of frame (INPUTS, offset), as fitted: Δĝ from the row's
+    own starters, with no goalie mixing."""
+    means, scales, weights = (np.asarray(v) for v in (model.means, model.scales, model.weights))
+    z = (frame.select(INPUTS).to_numpy().astype(float) - means) / scales
+    return cast(
+        NDArray[np.float64], expit(model.intercept + frame["offset"].to_numpy() + z @ weights)
+    )
+
+
+def counted() -> pl.Expr:
+    """The games an arena's home edge reads and applies to (ADR 0035): at a known arena, not a
+    neutral site (arena_id is null there), and at least half full."""
+    return pl.col("arena_id").is_not_null() & (pl.col("empty_seats") <= HALF_EMPTY)
+
+
+def arena_shifts(train: pl.DataFrame, model: B3Model) -> tuple[tuple[str, float], ...]:
+    """Each arena's home edge beyond h_s, in log-odds (#223, ADR 0035), from the fold's training
+    games (train, with arena_id and home_win) and the model fitted on them: per arena, g = Σ(win -
+    p) and h = Σ p(1 - p) over its counted games; τ², how much arenas truly differ, is max(0, (Σ
+    g²/h - k) / Σ h) over its k arenas; and the shift g·τ² / (τ²·h + 1) pulls each raw edge g/h
+    toward 0 by τ² / (τ² + 1/h). Nothing is tuned: τ² is the fold's own."""
+    games = train.with_columns(p=pl.Series(fitted(model, train))).filter(counted())
+    per = games.group_by("arena_id").agg(
+        g=(pl.col("home_win") - pl.col("p")).sum(), h=(pl.col("p") * (1 - pl.col("p"))).sum()
+    )
+    if per.is_empty():
+        return ()
+    g, h = per["g"].to_numpy(), per["h"].to_numpy()
+    tau2 = max(0.0, float(((g**2 / h).sum() - per.height) / h.sum()))
+    shifts = g * tau2 / (tau2 * h + 1)
+    return tuple(sorted(zip(per["arena_id"].to_list(), (float(x) for x in shifts), strict=True)))
+
+
+def with_arena(tables: Tables, inputs: pl.DataFrame) -> pl.DataFrame:
+    """inputs with each game's arena_id (ADR 0035): its venue's arena in the pre-game schedule
+    (ADR 0005), null at a neutral site, and its observed_utc the later of its own and the schedule
+    row's. A game without a schedule row is refused."""
+    if tables.schedule is None:
+        raise ValueError("Terms(arena=True) needs the schedule in B3's tables")
+    # A game without its schedule row would leave the arena model fitting and scoring on fewer
+    # games than B3, and bias the paired comparison: refuse instead (Codex on #226).
+    missing = inputs.join(tables.schedule.select("game_id"), on="game_id", how="anti")
+    if missing.height:
+        raise ValueError(
+            f"{missing.height} games lack a schedule row for the arena term, such as "
+            f"{missing['game_id'][0]}: ingest their schedule first"
+        )
+    arenas = (
+        tables.schedule.select("game_id", "venue", "neutral_site", a_utc="observed_utc")
+        .join(reference.load_venues(), on="venue", how="left")
+        .select(
+            "game_id", "a_utc", arena_id=pl.when(~pl.col("neutral_site")).then(pl.col("arena_id"))
+        )
+    )
+    return (
+        inputs.join(arenas, on="game_id")
+        .with_columns(observed_utc=b2_later(pl.col("observed_utc"), pl.col("a_utc")))
+        .drop("a_utc")
+    )
+
+
+def arena_offsets(
+    inputs: pl.DataFrame, arenas: tuple[tuple[str, float], ...]
+) -> NDArray[np.float64]:
+    """Each row's arena shift (ADR 0035): its arena's for a counted game, else 0."""
+    table = pl.DataFrame(
+        {"arena_id": [a for a, _ in arenas], "shift": [x for _, x in arenas]},
+        schema={"arena_id": pl.String, "shift": pl.Float64},
+    )
+    rows = inputs.select("arena_id", "empty_seats").with_row_index("row")
+    joined = rows.join(table, on="arena_id", how="left").sort("row")
+    shift = pl.when(counted()).then(pl.col("shift")).otherwise(0.0).fill_null(0.0)
+    return joined.select(shift=shift)["shift"].to_numpy()
 
 
 def training_games(
@@ -424,7 +523,7 @@ def through(tables: Tables, season: int) -> Tables:
     kept = {
         name: frame.filter(pl.col("season") <= season)
         for name, frame in vars(tables).items()
-        if "season" in frame.columns
+        if frame is not None and "season" in frame.columns
     }
     return replace(tables, **kept)
 
@@ -454,6 +553,7 @@ def predictions(
     season: int,
     start: datetime,
     settings: b2.Settings = TUNED,
+    terms: Terms = V1,
 ) -> tuple[pl.DataFrame, B3Model]:
     """B3's p_home for the season's games in moments (game_id, prediction_utc), from a fit on the
     games before start, with its train_cutoff, and the fit. Only rows of seasons up to the
@@ -468,7 +568,12 @@ def predictions(
             f"{cutoff:%Y-%m-%d}: B3's inputs are in-sample (ADR 0011)"
         )
     inputs = game_inputs(tables)
-    model = fit(training_games(tables, inputs, season, start, "observed_utc"), settings, season)
+    if terms.arena:
+        inputs = with_arena(tables, inputs)
+    train = training_games(tables, inputs, season, start, "observed_utc")
+    model = fit(train, settings, season)
+    if terms.arena:
+        model = replace(model, arenas=arena_shifts(train, model))
     model = replace(model, train_cutoff=max(model.train_cutoff, cutoff))
     pool = tables.goalie_starts.select("game_id", "team", "goalie_id", "p_start", "observed_utc")
     usable, ready = b2.known_before(

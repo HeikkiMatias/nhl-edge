@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import market_history
@@ -616,3 +616,151 @@ def test_hockey_only_scores_the_hockey_validation_seasons() -> None:
     assert set(predictions["season"]) == {20232024} and set(predictions["model"]) == {"B2", "B3"}
     assert coverage[HOCKEY][20232024]["b3_scored"] == 60
     assert fits3[HOCKEY][20232024].games == 60
+
+
+# Policy v2's arena home edge (#223, ADR 0035).
+
+
+def flat_model() -> b3.B3Model:
+    """A fit whose every game is a coin flip: p = 1/2, so the arena arithmetic reads by hand."""
+    n = len(b3.INPUTS)
+    return b3.B3Model(
+        season=TEST,
+        settings=b2.TUNED,
+        intercept=0.0,
+        weights=(0.0,) * n,
+        means=(0.0,) * n,
+        scales=(1.0,) * n,
+        games=0,
+        train_cutoff=datetime(2018, 4, 10, tzinfo=UTC),
+    )
+
+
+def arena_games(wins: dict[str | None, int], empty: float = 0.0) -> pl.DataFrame:
+    """100 home games at each arena, the first wins of them won."""
+    return pl.DataFrame(
+        [
+            {**dict.fromkeys(b3.INPUTS, 0.0), "empty_seats": empty, "offset": 0.0}
+            | {"arena_id": arena, "home_win": int(i < won)}
+            for arena, won in wins.items()
+            for i in range(100)
+        ],
+        schema_overrides={"arena_id": pl.String},
+    )
+
+
+def test_an_arenas_edge_is_pulled_toward_zero_by_how_much_arenas_differ() -> None:
+    # At p = 1/2: g = 20, 0 and -20, and h = 25 each, so Σ g²/h = 32 over k = 3 arenas and Σ h =
+    # 75 give τ² = 29/75; the raw edge 0.8 is pulled to 0.8 · τ² / (τ² + 1/25).
+    shifts = dict(b3.arena_shifts(arena_games({"a": 70, "b": 50, "c": 30}), flat_model()))
+    tau2 = 29 / 75
+    assert shifts["a"] == pytest.approx(0.8 * tau2 / (tau2 + 1 / 25))
+    assert shifts["b"] == pytest.approx(0.0)
+    assert shifts["c"] == pytest.approx(-shifts["a"])
+
+
+def test_arenas_that_differ_by_chance_alone_get_no_edge() -> None:
+    # Σ g²/h = 0.32 is below k = 3: τ² is 0, and every shift with it.
+    shifts = b3.arena_shifts(arena_games({"a": 52, "b": 50, "c": 48}), flat_model())
+    assert [x for _, x in shifts] == [0.0, 0.0, 0.0]
+
+
+def test_neutral_sites_and_half_empty_games_neither_count_nor_get_an_edge() -> None:
+    games = arena_games({"a": 70, "b": 50, "c": 30})
+    extra = pl.concat([arena_games({None: 100}), arena_games({"a": 0}, empty=0.6)])
+    shifts = b3.arena_shifts(pl.concat([games, extra]), flat_model())
+    assert shifts == b3.arena_shifts(games, flat_model())
+    rows = pl.DataFrame(
+        {"arena_id": ["a", "a", None, "z"], "empty_seats": [0.0, 0.6, 0.0, 0.0]},
+        schema={"arena_id": pl.String, "empty_seats": pl.Float64},
+    )
+    a = dict(shifts)["a"]
+    assert b3.arena_offsets(rows, shifts).tolist() == pytest.approx([a, 0.0, 0.0, 0.0])
+
+
+def test_a_fits_arena_edge_moves_its_prediction_in_every_goalie_scenario() -> None:
+    model = flat_model()
+    with_arenas = b3.B3Model(**{**model.__dict__, "arenas": (("a", 0.4),)})
+    inputs = pl.DataFrame(
+        {"game_id": [1, 2], **{name: [0.0, 0.0] for name in b3.INPUTS if name != "delta_g_hat"}}
+        | {"offset": [0.0, 0.0], "arena_id": ["a", "b"]}
+    )
+    pairs = pl.DataFrame({"game_id": [1, 1, 2], "weight": [0.6, 0.4, 1.0], "delta_g_hat": 0.0})
+    p = with_arenas.predict(inputs, pairs).sort("game_id")["p_home"].to_list()
+    assert p == pytest.approx([1 / (1 + np.exp(-0.4)), 0.5])
+    # Without arenas, v1's prediction reads no arena at all.
+    assert model.predict(inputs.drop("arena_id"), pairs)["p_home"].to_list() == [0.5, 0.5]
+
+
+def test_policy_v1s_b3_has_no_terms_and_its_bundle_record_is_unchanged() -> None:
+    from nhl_edge.live import bundle
+
+    assert b3.V1.label() == "B3" and b3.Terms(arena=True).label() == "B3+arena"
+    record = bundle.fit_record(flat_model())
+    assert "arenas" not in record
+    carried = bundle.fit_record(b3.B3Model(**{**flat_model().__dict__, "arenas": (("a", 0.4),)}))
+    assert carried["arenas"] == (("a", 0.4),)
+    # A bundle can't replay the arena input, so it refuses such a fit outright.
+    with pytest.raises(ValueError, match="arena shifts"):
+        bundle._fit(json_round_trip(carried), b3.B3Model)
+    assert bundle._fit(json_round_trip(record), b3.B3Model).arenas == ()
+
+
+def json_round_trip(record: dict) -> dict:
+    import json
+
+    return json.loads(json.dumps(record))
+
+
+def schedule_of(games: pl.DataFrame) -> pl.DataFrame:
+    """The pre-game schedule of games: public 24 hours before each start (ADR 0005)."""
+    return games.select(
+        "game_id",
+        "season",
+        "start_utc",
+        "home",
+        "away",
+        "venue",
+        neutral_site=pl.lit(False),
+        observed_utc=pl.col("start_utc") - timedelta(hours=24),
+    )
+
+
+def test_hockey_only_scores_b3_with_v2s_terms_paired_against_b3() -> None:
+    # The fixture's venue ("x") is no known arena: the shifts are empty, so B3+arena equals B3,
+    # and the report still pairs it on the same games.
+    b2_tables = feature_tables(LEAGUE.games, 4)
+    fits3: dict[str, dict[int, b3.B3Model]] = {}
+    terms = b3.Terms(arena=True)
+    league = b3.Tables(**{**LEAGUE.__dict__, "schedule": schedule_of(LEAGUE.games)})
+    predictions, coverage = hockey_only(
+        LEAGUE.games, [TEST], b2_tables, league, {}, fits3, b3_terms=terms
+    )
+    assert set(predictions["model"]) == {"B2", "B3", "B3+arena"}
+    assert coverage[HOCKEY][TEST]["B3+arena_scored"] == 400
+    assert set(fits3) == {HOCKEY, "B3+arena"} and fits3["B3+arena"][TEST].arenas == ()
+    report = b3_report.hockey(
+        predictions, coverage, fits3, report_flags(LEAGUE.games), [TEST], "x", datetime.now(UTC)
+    )
+    paired = report["models"]["B3+arena"]["paired_against_B3"]["pooled"]
+    assert paired["games"] == 400 and paired["mean"] == pytest.approx(0.0, abs=1e-12)
+    assert report["models"]["B3"]["fits"] == b3_report.fit_rows(fits3[HOCKEY])
+
+
+def test_an_empty_set_of_terms_is_refused_rather_than_scoring_b3_twice() -> None:
+    with pytest.raises(ValueError, match="no term"):
+        hockey_only(
+            LEAGUE.games, [TEST], feature_tables(LEAGUE.games, 4), LEAGUE, b3_terms=b3.Terms()
+        )
+    with pytest.raises(ValueError, match="needs the schedule"):
+        b3.with_arena(LEAGUE, b3.game_inputs(LEAGUE))
+
+
+def test_the_arena_term_refuses_a_game_without_its_schedule_row() -> None:
+    schedule = schedule_of(LEAGUE.games)
+    first = schedule["game_id"][0]
+    league = b3.Tables(
+        **{**LEAGUE.__dict__, "schedule": schedule.filter(pl.col("game_id") != first)}
+    )
+    with pytest.raises(ValueError, match="lack a schedule row"):
+        b3.with_arena(league, b3.game_inputs(league))

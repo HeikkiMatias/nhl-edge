@@ -419,6 +419,7 @@ def hockey_only(
     b2_fits: B2Fits | None = None,
     b3_fits: B3Fits | None = None,
     one_time: Callable[[], None] | None = None,
+    b3_terms: "b3.Terms | None" = None,
 ) -> tuple[pl.DataFrame, Coverage]:
     """B2 and B3 scored at the as-of time on outcomes alone, for seasons without prices (ADR
     0023): every game of the season with a result, each model fitted on the games before the
@@ -428,11 +429,14 @@ def hockey_only(
     seasons are refused, except the one-time test season alone with one_time, which claims the
     run (one_time.claim) before anything is scored and refuses a second one. The predictions
     carry the experiment HOCKEY and no method; coverage counts each model's scored and training
-    games."""
+    games. With b3_terms, B3 with those terms (policy v2's, #225) is scored beside it on the same
+    games, as the model b3_terms.label(), and its fits go to b3_fits under that name."""
     from nhl_edge.features import team_strength as ts
     from nhl_edge.game import b2, b3
 
     seasons = sorted(set(seasons))
+    if b3_terms is not None and b3_terms.label() == "B3":
+        raise ValueError("b3_terms switches no term on: it would score B3 twice")
     roles = HOCKEY_ROLES
     if one_time is not None:
         if seasons != list(ONE_TIME_SEASONS):
@@ -481,5 +485,12 @@ def hockey_only(
             "b3_scored": rows3.height,
             "b3_trained_on": fit3.games,
         }
+        if b3_terms is not None:
+            label = b3_terms.label()
+            rows_t, fit_t = b3.predictions(b3_tables, timing, season, start, terms=b3_terms)
+            frames.append(_scored(rows_t.join(moments, on="game_id"), HOCKEY, label, NO_METHOD))
+            if b3_fits is not None:
+                b3_fits.setdefault(label, {})[season] = fit_t
+            counts[f"{label}_scored"] = rows_t.height
         coverage[HOCKEY][season] = counts
     return pl.concat(frames), coverage

@@ -310,3 +310,103 @@ def test_hockey_only_opens_the_hockey_validation_seasons_alone() -> None:
         hockey_only(
             LEAGUE.games, [20252026], feature_tables(LEAGUE.games, 4), LEAGUE, one_time=refused
         )
+
+
+# Policy v2's arena home edge (#223, ADR 0035): each fold's shifts read only the games whose
+# results were public before the fold starts.
+ARENA = b3.Terms(arena=True)
+
+
+def arena_league() -> b3.Tables:
+    """LEAGUE with each home team at a real arena, and one team winning every home game of the
+    seasons before TEST, so the arenas truly differ and the shifts are not all 0."""
+    from nhl_edge import reference
+
+    teams = sorted(LEAGUE.games["home"].unique().to_list())
+    venues = reference.load_venues().unique("arena_id").sort("arena_id")["venue"].to_list()
+    strong = (pl.col("home") == teams[0]) & (pl.col("season") < TEST)
+    games = LEAGUE.games.with_columns(
+        venue=pl.col("home").replace_strict(dict(zip(teams, venues, strict=False))),
+        home_score=pl.when(strong)
+        .then(pl.max_horizontal("home_score", "away_score") + 1)
+        .otherwise(pl.col("home_score")),
+    )
+    schedule = games.select(
+        "game_id",
+        "season",
+        "start_utc",
+        "home",
+        "away",
+        "venue",
+        neutral_site=pl.lit(False),
+        observed_utc=pl.col("start_utc") - timedelta(hours=24),
+    )
+    return replaced(games=games, schedule=schedule)
+
+
+ARENAS = arena_league()
+
+
+def shifts(tables: b3.Tables = ARENAS) -> dict[str, float]:
+    _, model = b3.predictions(tables, MOMENTS, TEST, START, terms=ARENA)
+    return dict(model.arenas)
+
+
+def flipped(tables: b3.Tables, which: pl.Expr) -> b3.Tables:
+    games = tables.games.with_columns(
+        home_score=pl.when(which).then(pl.col("away_score")).otherwise(pl.col("home_score")),
+        away_score=pl.when(which).then(pl.col("home_score")).otherwise(pl.col("away_score")),
+    )
+    return b3.Tables(**{**tables.__dict__, "games": games})
+
+
+def test_the_arenas_differ_in_the_fixture() -> None:
+    # The guards below are not vacuous: the strong home team's arena gets a clear edge.
+    found = shifts()
+    assert max(found.values()) > 0.1
+
+
+def test_the_tested_seasons_own_results_never_move_an_arenas_edge() -> None:
+    own = flipped(ARENAS, pl.col("season") == TEST)
+    assert shifts(own) == pytest.approx(shifts(), rel=1e-12, abs=1e-12)
+    before, _ = b3.predictions(ARENAS, MOMENTS, TEST, START, terms=ARENA)
+    after, _ = b3.predictions(own, MOMENTS, TEST, START, terms=ARENA)
+    assert same(after.sort("game_id"), before.sort("game_id"))
+
+
+def test_an_earlier_result_published_after_the_fold_start_does_not_shape_an_edge() -> None:
+    late_game = ARENAS.games.filter(pl.col("season") == TEST - 10_001)["game_id"][0]
+    retimed_games = retimed(ARENAS.games, pl.col("game_id") == late_game, START)
+    dropped = ARENAS.games.filter(pl.col("game_id") != late_game)
+    assert shifts(replaced_from(ARENAS, games=retimed_games)) == pytest.approx(
+        shifts(replaced_from(ARENAS, games=dropped))
+    )
+
+
+def test_earlier_results_do_move_an_arenas_edge() -> None:
+    earlier = flipped(ARENAS, pl.col("season") < TEST)
+    assert shifts(earlier) != pytest.approx(shifts())
+
+
+def replaced_from(tables: b3.Tables, **frames: pl.DataFrame) -> b3.Tables:
+    return b3.Tables(**{**tables.__dict__, **frames})
+
+
+def test_a_schedule_row_known_only_at_the_prediction_time_is_not_read_by_the_arena() -> None:
+    game = MOMENTS["game_id"][0]
+    moment = MOMENTS.filter(pl.col("game_id") == game)["prediction_utc"].item()
+    assert ARENAS.schedule is not None
+    late = retimed(ARENAS.schedule, pl.col("game_id") == game, moment)
+    before, _ = b3.predictions(ARENAS, MOMENTS, TEST, START, terms=ARENA)
+    after, _ = b3.predictions(
+        replaced_from(ARENAS, schedule=late), MOMENTS, TEST, START, terms=ARENA
+    )
+    assert game in before["game_id"].to_list() and game not in after["game_id"].to_list()
+
+
+def test_the_venue_is_read_from_the_schedule_never_from_the_result() -> None:
+    # A venue changed only in the games table, published with the result, moves nothing.
+    games = ARENAS.games.with_columns(venue=pl.lit("Somewhere Else"))
+    before, _ = b3.predictions(ARENAS, MOMENTS, TEST, START, terms=ARENA)
+    after, _ = b3.predictions(replaced_from(ARENAS, games=games), MOMENTS, TEST, START, terms=ARENA)
+    assert same(after.sort("game_id"), before.sort("game_id"))
