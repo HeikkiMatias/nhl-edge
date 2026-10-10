@@ -187,12 +187,11 @@ def fit_record(model: B2Model | B3Model) -> dict[str, Any]:
 
 
 def _fit(record: Mapping[str, Any], kind: type[Any]) -> Any:
-    # A B3 fit with Terms(arena=True) carries its arena shifts (ADR 0035); v1's carry none.
-    extra = (
-        {"arenas": tuple((str(a), float(x)) for a, x in record["arenas"])}
-        if kind is B3Model and record.get("arenas")
-        else {}
-    )
+    if kind is B3Model and record.get("arenas"):
+        # A bundle keeps no schedule, so its replay could not rebuild the arena input: refuse
+        # rather than fail midway (Codex on #226). The arena term stays out of v2 (ADR 0035).
+        raise ValueError("a run bundle cannot replay a B3 fit with arena shifts")
+    extra: dict[str, Any] = {}
     return kind(
         season=record["season"],
         settings=b2.Settings(**record["settings"]),

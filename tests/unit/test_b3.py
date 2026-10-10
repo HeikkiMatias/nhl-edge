@@ -699,8 +699,10 @@ def test_policy_v1s_b3_has_no_terms_and_its_bundle_record_is_unchanged() -> None
     record = bundle.fit_record(flat_model())
     assert "arenas" not in record
     carried = bundle.fit_record(b3.B3Model(**{**flat_model().__dict__, "arenas": (("a", 0.4),)}))
-    restored = bundle._fit(json_round_trip(carried), b3.B3Model)
-    assert restored.arenas == (("a", 0.4),)
+    assert carried["arenas"] == (("a", 0.4),)
+    # A bundle can't replay the arena input, so it refuses such a fit outright.
+    with pytest.raises(ValueError, match="arena shifts"):
+        bundle._fit(json_round_trip(carried), b3.B3Model)
     assert bundle._fit(json_round_trip(record), b3.B3Model).arenas == ()
 
 
@@ -752,3 +754,13 @@ def test_an_empty_set_of_terms_is_refused_rather_than_scoring_b3_twice() -> None
         )
     with pytest.raises(ValueError, match="needs the schedule"):
         b3.with_arena(LEAGUE, b3.game_inputs(LEAGUE))
+
+
+def test_the_arena_term_refuses_a_game_without_its_schedule_row() -> None:
+    schedule = schedule_of(LEAGUE.games)
+    first = schedule["game_id"][0]
+    league = b3.Tables(
+        **{**LEAGUE.__dict__, "schedule": schedule.filter(pl.col("game_id") != first)}
+    )
+    with pytest.raises(ValueError, match="lack a schedule row"):
+        b3.with_arena(league, b3.game_inputs(league))
