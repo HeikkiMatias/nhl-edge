@@ -442,6 +442,28 @@ def test_an_input_terms_row_known_only_at_the_prediction_time_is_not_read(
     assert same(after.sort("game_id"), before.filter(pl.col("game_id") != game).sort("game_id"))
 
 
+def test_team_strength_retuned_after_the_fold_start_refuses_the_team_terms_fold() -> None:
+    # B2's team strength is a fitted input of Terms(team=True): rows of the fold's season
+    # retuned after its start move the tuning cutoff past it (Codex on #227). v1's B3 doesn't
+    # read the table, so its fold stands.
+    # The fixture's team strength has no season or train_cutoff; the lake's has both.
+    strength = TERMS.team_strength.join(LEAGUE.games.select("game_id", "season"), on="game_id")
+    tuned = strength.with_columns(train_cutoff=pl.lit(b3.TUNED_CUTOFF, UTC_TYPE))
+    retuned = strength.with_columns(
+        train_cutoff=pl.when(pl.col("season") == TEST)
+        .then(pl.lit(START + timedelta(days=1), UTC_TYPE))
+        .otherwise(pl.lit(b3.TUNED_CUTOFF, UTC_TYPE))
+    )
+    fine = b3.Tables(**{**TERMS.__dict__, "team_strength": tuned})
+    late = b3.Tables(**{**TERMS.__dict__, "team_strength": retuned})
+    b3.predictions(fine, MOMENTS, TEST, START, terms=b3.Terms(team=True))
+    with pytest.raises(ValueError, match="before the tuning cutoff"):
+        b3.predictions(late, MOMENTS, TEST, START, terms=b3.Terms(team=True))
+    assert b3.tuning_cutoff(late, TEST, b3.Terms(team=True)) == START + timedelta(days=1)
+    assert b3.tuning_cutoff(late, TEST) == b3.tuning_cutoff(TERMS, TEST)
+    b3.predictions(late, MOMENTS, TEST, START)
+
+
 def test_a_coach_counts_only_from_the_morning_after_his_first_game() -> None:
     from datetime import date as day
 

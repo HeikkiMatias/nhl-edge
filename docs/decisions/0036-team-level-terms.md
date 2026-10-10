@@ -66,7 +66,7 @@ As in ADR 0035, the evidence can't come from the training seasons (#225), so eac
 - **A run bundle refuses a fit with extra inputs.** Its replay rebuilds v1's inputs only. Since no term enters v2, no live bundle carries one. If a later version takes a term, #225 makes the replay rebuild it first.
 - **`b3.Tables`** gains an optional `team_strength`. The coach input reads `coaches.csv`, so live v2 depends on the reference being updated at each coaching change (handover: reference upkeep).
 - **Tests:** a leakage test per term in `tests/leakage/test_b3.py` (hard rule 1):
-  - ΔS reads only rows known before the prediction;
+  - ΔS reads only rows known before the prediction, and with the team term a fold is refused when B2's team strength was retuned after its start;
   - a coach counts from the morning after his first game;
   - the penalty indices are the expected power plays' own, known before the prediction.
 

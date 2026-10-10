@@ -639,15 +639,18 @@ def through(tables: Tables, season: int) -> Tables:
     return replace(tables, **kept)
 
 
-def tuning_cutoff(tables: Tables, season: int) -> datetime:
+def tuning_cutoff(tables: Tables, season: int, terms: Terms = V1) -> datetime:
     """The latest tuning cutoff behind B3 for the season's fold: RAPM's and B2's, and the latest
     train_cutoff of each table's rows of the seasons the fold reads, up to its own. Tables refit
     each season (expected power plays, finishing, the projection) carry later seasons' cutoffs
-    that this fold never reads."""
+    that this fold never reads. Terms(team=True) also reads B2's fitted team strength (ADR 0036),
+    so its cutoff counts too."""
     cutoffs = [TUNED_CUTOFF]
-    for name in CUTOFF_TABLES:
+    names = (*CUTOFF_TABLES, "team_strength") if terms.team else CUTOFF_TABLES
+    for name in names:
         table = getattr(tables, name)
-        if "train_cutoff" not in table.columns:
+        # A missing team_strength is refused by with_terms, with its own message.
+        if table is None or "train_cutoff" not in table.columns:
             continue
         if "season" in table.columns:
             table = table.filter(pl.col("season") <= season)
@@ -672,7 +675,7 @@ def predictions(
     its own season's results (ADR 0011). Every row is read only once known (observed_utc), and
     train_cutoff covers the fit and every table's cutoff."""
     tables = through(tables, season)
-    cutoff = tuning_cutoff(tables, season)
+    cutoff = tuning_cutoff(tables, season, terms)
     if start <= cutoff:
         raise ValueError(
             f"{season}'s fold starts at {start:%Y-%m-%d}, before the tuning cutoff "
