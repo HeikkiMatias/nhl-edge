@@ -1,6 +1,6 @@
 # 0035. Policy v2's B3: each arena's home edge beyond the league's
 
-- Status: Proposed
+- Status: Proposed: the term stays out of v2 under its own rule (backtest evidence below)
 - Date: 2026-10-10
 - Part of: policy v2 (#225), which the owner decided on 2026-10-10 (#222)
 
@@ -53,7 +53,22 @@ So the model treats every arena's home edge as the same.
 
 ## Backtest evidence
 
-**Rerun pending.** The first run, `backtest-hockey-20261010-108ff8c`, read each game's venue from the games table. That table is timestamped with the result (Codex on #226, P0). Its result was a pooled B3+arena minus B3 of +0.00004 [−0.00065, +0.00072]. The code now reads the venue from the pre-game schedule, with its own known time, and the run is repeated unchanged otherwise. Its result replaces this paragraph, and the first run stays logged in `runs.csv`.
+**Run `backtest-hockey-20261010-4c8c7df`** (`reports/backtest/hockey-20261010-4c8c7df-210002.json`, logged in `runs.csv`). The arena is read from the pre-game schedule, and the code was committed after this ADR. The run covers 5,207 games over 112 weeks.
+
+| B3+arena minus B3 | Paired log loss [95% weekly block bootstrap] |
+| --- | --- |
+| **Pooled** | **+0.00004 [−0.00065, +0.00072]** |
+| 2018-19 | +0.00144 [−0.00066, +0.00358] |
+| 2021-22 | +0.00087 [−0.00021, +0.00187] |
+| 2023-24 | −0.00069 [−0.00151, +0.00025] |
+| 2024-25 | −0.00142 [−0.00269, −0.00021] |
+
+- **The pooled interval includes 0, so under this ADR's rule the arena term stays out of policy v2.**
+- **The first run agrees.** `backtest-hockey-20261010-108ff8c` read the venue from the games table (Codex on #226), and its figures are the same to the last digit: no venue changed after the schedule in these seasons. It stays logged.
+- **The shifts are point estimates with no interval,** so no conclusion is drawn from them.
+  - Colorado's (Ball Arena) is +0.017 to +0.043 per fold.
+  - Every active arena's lies within ±0.18.
+- **For reference,** B3's log loss on these games is 0.6597 [0.6534, 0.6658], and B2's is 0.6675 [0.6619, 0.6732].
 
 ## Consequences
 
