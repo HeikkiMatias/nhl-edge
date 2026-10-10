@@ -508,8 +508,10 @@ def coach_flags(games: pl.DataFrame, coaches: pl.DataFrame, lines: dict[str, str
     the game's as-of time took over mid-season and has coached fewer than NEW_COACH_GAMES of its
     games so far, else 0 (ADR 0036). A stint is known from the morning after its first game
     (coaches_known_at), so for a game on date d the known stint is the latest whose first game is
-    before d, and known_utc is when it became public: null when the team has no known stint.
-    Teams match by franchise line, so a renamed team keeps its coach."""
+    before d. Each game a mid-season stint counts shows the coach only in its feeds, public the
+    morning after, so known_utc is when the stint and its last counted game were both public:
+    null when the team has no known stint. Teams match by franchise line, so a renamed team
+    keeps its coach."""
     sides = reference.team_games(games).with_columns(line=pl.col("team").replace_strict(lines))
     first = sides.group_by("season", "line").agg(season_start=pl.col("game_date").min())
     stints = coaches.with_columns(line=pl.col("team").replace_strict(lines)).select(
@@ -528,7 +530,7 @@ def coach_flags(games: pl.DataFrame, coaches: pl.DataFrame, lines: dict[str, str
         .join(played, on=["line", "season"])
         .filter(pl.col("day") >= pl.col("first_game"), pl.col("day") < pl.col("game_date"))
         .group_by("game_id", "team")
-        .agg(games_under=pl.len())
+        .agg(games_under=pl.len(), last_day=pl.col("day").max())
     )
     return (
         sides.join(known, on=["game_id", "team"], how="left")
@@ -543,7 +545,11 @@ def coach_flags(games: pl.DataFrame, coaches: pl.DataFrame, lines: dict[str, str
             )
             .fill_null(False)
             .cast(pl.Float64),
-            known_utc=result_public(pl.col("first_game")),
+            # A mid-season stint's count reads last night's game too, only once its feeds are
+            # public (Codex on #227). An earlier stint's flag is 0 whatever the count.
+            known_utc=pl.when(pl.col("first_game") > pl.col("season_start"))
+            .then(b2_later(result_public(pl.col("first_game")), result_public(pl.col("last_day"))))
+            .otherwise(result_public(pl.col("first_game"))),
         )
     )
 

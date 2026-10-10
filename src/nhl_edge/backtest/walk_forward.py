@@ -437,6 +437,12 @@ def hockey_only(
     seasons = sorted(set(seasons))
     if b3_terms is not None and b3_terms.label() == "B3":
         raise ValueError("b3_terms switches no term on: it would score B3 twice")
+    if b3_terms is not None and b3_terms.label().count("+") > 1:
+        # ADR 0036 keeps a combination only if it beats each of its terms alone, and the report
+        # pairs a variant against B3 only (Codex on #227): score one term at a time.
+        raise ValueError(
+            f"{b3_terms.label()} combines terms: the report can't pair it against each of them"
+        )
     roles = HOCKEY_ROLES
     if one_time is not None:
         if seasons != list(ONE_TIME_SEASONS):

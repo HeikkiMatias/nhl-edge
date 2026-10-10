@@ -513,6 +513,19 @@ def test_a_game_reading_a_new_coach_is_known_no_earlier_than_the_morning_after_h
     involved = (pl.col("home") == team) | (pl.col("away") == team)
     later = inputs.filter(pl.col("game_date") > takeover, involved)
     assert later.height and (later["observed_utc"] >= public).all()
+    # His count of games reads the team's last game, so it waits for that game's feeds too: the
+    # morning after it (Codex on #227).
+    days = games.filter(involved)["game_date"].unique().sort()
+    previous = later.with_columns(
+        last=pl.col("game_date").map_elements(
+            lambda d: days.filter(days < d).max(), return_dtype=pl.Date
+        )
+    )
+    morning = (previous["last"].cast(pl.Datetime("us")).dt.replace_time_zone("UTC")) + timedelta(
+        days=1, hours=10
+    )
+    assert (previous["observed_utc"] >= morning).all()
+    assert (previous["last"] > takeover).any()
     # Before his first game, and for the other teams, the stints are long public.
     before = inputs.filter(~(involved & (pl.col("game_date") > takeover)))
     assert (before["observed_utc"] == early).all()

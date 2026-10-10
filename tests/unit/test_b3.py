@@ -756,6 +756,17 @@ def test_an_empty_set_of_terms_is_refused_rather_than_scoring_b3_twice() -> None
         b3.with_arena(LEAGUE, b3.game_inputs(LEAGUE))
 
 
+def test_a_combination_of_terms_is_refused_until_it_can_be_paired_against_each_term() -> None:
+    with pytest.raises(ValueError, match="combines terms"):
+        hockey_only(
+            LEAGUE.games,
+            [TEST],
+            feature_tables(LEAGUE.games, 4),
+            LEAGUE,
+            b3_terms=b3.Terms(team=True, pest=True),
+        )
+
+
 def test_the_arena_term_refuses_a_game_without_its_schedule_row() -> None:
     schedule = schedule_of(LEAGUE.games)
     first = schedule["game_id"][0]
