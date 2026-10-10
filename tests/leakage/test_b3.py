@@ -484,3 +484,35 @@ def test_a_coach_counts_only_from_the_morning_after_his_first_game() -> None:
     # From the next morning on, his team's games are flagged.
     after = with_new.join(games.filter(pl.col("game_date") > takeover), on="game_id")
     assert (after.filter(pl.col("team") == team)["new"] == 1.0).any()
+
+
+def test_a_game_reading_a_new_coach_is_known_no_earlier_than_the_morning_after_his_first_game(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Gated by the stint's public time, not by the calendar day alone (Codex on #227): a
+    # prediction before 10:00 UTC the morning after his first game can't read the new stint.
+    from datetime import UTC, datetime
+    from datetime import date as day
+
+    games = LEAGUE.games.filter(pl.col("season") == TEST)
+    team = games["home"][0]
+    takeover = games.filter(pl.col("home") == team)["game_date"].sort()[10]
+    teams = pl.concat([LEAGUE.games["home"], LEAGUE.games["away"]]).unique().to_list()
+    old = pl.DataFrame({"team": teams, "first_game": [day(2010, 9, 1)] * len(teams)})
+    coaches = pl.concat([old, pl.DataFrame({"team": [team], "first_game": [takeover]})])
+    monkeypatch.setattr(b3.reference, "load_coaches", lambda: coaches)
+    monkeypatch.setattr(b3.reference, "lineage", lambda _: {t: t for t in teams})
+    monkeypatch.setattr(b3.reference, "load_teams", lambda: pl.DataFrame())
+    # Every other input known early, so only the coach's stint can move a game's known time.
+    early = datetime(2015, 1, 1, tzinfo=UTC)
+    plain = b3.game_inputs(TERMS).with_columns(observed_utc=pl.lit(early, UTC_TYPE))
+    inputs = b3.with_terms(TERMS, plain, b3.Terms(coach=True))
+    public = datetime.combine(takeover + timedelta(days=1), datetime.min.time(), UTC).replace(
+        hour=10
+    )
+    involved = (pl.col("home") == team) | (pl.col("away") == team)
+    later = inputs.filter(pl.col("game_date") > takeover, involved)
+    assert later.height and (later["observed_utc"] >= public).all()
+    # Before his first game, and for the other teams, the stints are long public.
+    before = inputs.filter(~(involved & (pl.col("game_date") > takeover)))
+    assert (before["observed_utc"] == early).all()

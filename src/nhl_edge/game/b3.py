@@ -40,6 +40,7 @@ from scipy.special import expit
 from nhl_edge import reference
 from nhl_edge.features import team_strength as ts
 from nhl_edge.game import b2
+from nhl_edge.ingest.games import result_public
 from nhl_edge.lineup.goalie_start import team_goalie_games
 from nhl_edge.ratings import rapm
 
@@ -503,11 +504,12 @@ NEW_COACH_GAMES = 20
 
 
 def coach_flags(games: pl.DataFrame, coaches: pl.DataFrame, lines: dict[str, str]) -> pl.DataFrame:
-    """Per team-game (game_id, team, new): 1 when the team's coach as known by the game's as-of
-    time took over mid-season and has coached fewer than NEW_COACH_GAMES of its games so far, else
-    0 (ADR 0036). A stint is known from the morning after its first game (coaches_known_at), so
-    for a game on date d the known stint is the latest whose first game is before d; teams match
-    by franchise line, so a renamed team keeps its coach."""
+    """Per team-game (game_id, team, new, known_utc): new is 1 when the team's coach as known by
+    the game's as-of time took over mid-season and has coached fewer than NEW_COACH_GAMES of its
+    games so far, else 0 (ADR 0036). A stint is known from the morning after its first game
+    (coaches_known_at), so for a game on date d the known stint is the latest whose first game is
+    before d, and known_utc is when it became public: null when the team has no known stint.
+    Teams match by franchise line, so a renamed team keeps its coach."""
     sides = reference.team_games(games).with_columns(line=pl.col("team").replace_strict(lines))
     first = sides.group_by("season", "line").agg(season_start=pl.col("game_date").min())
     stints = coaches.with_columns(line=pl.col("team").replace_strict(lines)).select(
@@ -541,6 +543,7 @@ def coach_flags(games: pl.DataFrame, coaches: pl.DataFrame, lines: dict[str, str
             )
             .fill_null(False)
             .cast(pl.Float64),
+            known_utc=result_public(pl.col("first_game")),
         )
     )
 
@@ -548,8 +551,9 @@ def coach_flags(games: pl.DataFrame, coaches: pl.DataFrame, lines: dict[str, str
 def with_terms(tables: Tables, inputs: pl.DataFrame, terms: Terms) -> pl.DataFrame:
     """inputs with the columns of terms' input terms (ADR 0036), each game's observed_utc the
     later of its own and those rows': team adds delta_s from B2's team strength, coach adds
-    new_coach (home - away coach_flags), pest adds drawn_diff (home - away drawn_index of the
-    expected power plays). A game without a term's row drops out of that model only."""
+    new_coach (home - away coach_flags, each side's stint public by then), pest adds drawn_diff
+    (home - away drawn_index of the expected power plays). A game without a term's row drops out
+    of that model only."""
     if terms.team:
         if tables.team_strength is None:
             raise ValueError("Terms(team=True) needs team_strength in B3's tables")
@@ -563,11 +567,19 @@ def with_terms(tables: Tables, inputs: pl.DataFrame, terms: Terms) -> pl.DataFra
         flags = coach_flags(
             tables.games, reference.load_coaches(), reference.lineage(reference.load_teams())
         )
+        # A game reads each side's stint only once it is public (Codex on #227).
+        home = flags.select("game_id", home="team", h_new="new", h_utc="known_utc")
+        away = flags.select("game_id", away="team", a_new="new", a_utc="known_utc")
         inputs = (
-            inputs.join(flags.select("game_id", home="team", h_new="new"), on=["game_id", "home"])
-            .join(flags.select("game_id", away="team", a_new="new"), on=["game_id", "away"])
-            .with_columns(new_coach=pl.col("h_new") - pl.col("a_new"))
-            .drop("h_new", "a_new")
+            inputs.join(home, on=["game_id", "home"])
+            .join(away, on=["game_id", "away"])
+            .with_columns(
+                new_coach=pl.col("h_new") - pl.col("a_new"),
+                observed_utc=b2_later(
+                    b2_later(pl.col("observed_utc"), pl.col("h_utc")), pl.col("a_utc")
+                ),
+            )
+            .drop("h_new", "a_new", "h_utc", "a_utc")
         )
     if terms.pest:
         drawn = tables.expected_power_plays.select(
