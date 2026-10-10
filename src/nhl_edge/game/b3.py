@@ -88,6 +88,8 @@ class Tables:
     rapm_terms: pl.DataFrame
     expected_power_plays: pl.DataFrame
     goal_multipliers: pl.DataFrame
+    # The pre-game schedule (ADR 0005), read only by Terms(arena=True) for each game's venue.
+    schedule: pl.DataFrame | None = None
 
 
 def league_rates(rapm_terms: pl.DataFrame) -> pl.DataFrame:
@@ -259,17 +261,9 @@ def game_inputs(tables: Tables) -> pl.DataFrame:
     known = pl.col("observed_utc")
     for column in ("home_utc", "away_utc", "home_m", "away_m"):
         known = b2_later(known, pl.col(column))
-    # The game's arena from the schedule's venue (ADR 0035), null at a neutral site.
-    arenas = (
-        tables.schedule_terms.select("game_id", "neutral_site")
-        .join(tables.games.select("game_id", "venue"), on="game_id", how="left")
-        .join(reference.load_venues(), on="venue", how="left")
-        .select("game_id", arena_id=pl.when(~pl.col("neutral_site")).then(pl.col("arena_id")))
-    )
     return (
         schedule.join(home, on="game_id")
         .join(away, on="game_id")
-        .join(arenas, on="game_id", how="left")
         .with_columns(observed_utc=known)
         .drop("home_utc", "away_utc", "home_m", "away_m")
         .sort("game_id")
@@ -446,6 +440,26 @@ def arena_shifts(train: pl.DataFrame, model: B3Model) -> tuple[tuple[str, float]
     return tuple(sorted(zip(per["arena_id"].to_list(), (float(x) for x in shifts), strict=True)))
 
 
+def with_arena(tables: Tables, inputs: pl.DataFrame) -> pl.DataFrame:
+    """inputs with each game's arena_id (ADR 0035): its venue's arena in the pre-game schedule
+    (ADR 0005), null at a neutral site, and its observed_utc the later of its own and the schedule
+    row's. A game without a schedule row drops out of the arena model only."""
+    if tables.schedule is None:
+        raise ValueError("Terms(arena=True) needs the schedule in B3's tables")
+    arenas = (
+        tables.schedule.select("game_id", "venue", "neutral_site", a_utc="observed_utc")
+        .join(reference.load_venues(), on="venue", how="left")
+        .select(
+            "game_id", "a_utc", arena_id=pl.when(~pl.col("neutral_site")).then(pl.col("arena_id"))
+        )
+    )
+    return (
+        inputs.join(arenas, on="game_id")
+        .with_columns(observed_utc=b2_later(pl.col("observed_utc"), pl.col("a_utc")))
+        .drop("a_utc")
+    )
+
+
 def arena_offsets(
     inputs: pl.DataFrame, arenas: tuple[tuple[str, float], ...]
 ) -> NDArray[np.float64]:
@@ -501,7 +515,7 @@ def through(tables: Tables, season: int) -> Tables:
     kept = {
         name: frame.filter(pl.col("season") <= season)
         for name, frame in vars(tables).items()
-        if "season" in frame.columns
+        if frame is not None and "season" in frame.columns
     }
     return replace(tables, **kept)
 
@@ -546,6 +560,8 @@ def predictions(
             f"{cutoff:%Y-%m-%d}: B3's inputs are in-sample (ADR 0011)"
         )
     inputs = game_inputs(tables)
+    if terms.arena:
+        inputs = with_arena(tables, inputs)
     train = training_games(tables, inputs, season, start, "observed_utc")
     model = fit(train, settings, season)
     if terms.arena:

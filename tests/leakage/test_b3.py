@@ -331,7 +331,17 @@ def arena_league() -> b3.Tables:
         .then(pl.max_horizontal("home_score", "away_score") + 1)
         .otherwise(pl.col("home_score")),
     )
-    return replaced(games=games)
+    schedule = games.select(
+        "game_id",
+        "season",
+        "start_utc",
+        "home",
+        "away",
+        "venue",
+        neutral_site=pl.lit(False),
+        observed_utc=pl.col("start_utc") - timedelta(hours=24),
+    )
+    return replaced(games=games, schedule=schedule)
 
 
 ARENAS = arena_league()
@@ -380,3 +390,23 @@ def test_earlier_results_do_move_an_arenas_edge() -> None:
 
 def replaced_from(tables: b3.Tables, **frames: pl.DataFrame) -> b3.Tables:
     return b3.Tables(**{**tables.__dict__, **frames})
+
+
+def test_a_schedule_row_known_only_at_the_prediction_time_is_not_read_by_the_arena() -> None:
+    game = MOMENTS["game_id"][0]
+    moment = MOMENTS.filter(pl.col("game_id") == game)["prediction_utc"].item()
+    assert ARENAS.schedule is not None
+    late = retimed(ARENAS.schedule, pl.col("game_id") == game, moment)
+    before, _ = b3.predictions(ARENAS, MOMENTS, TEST, START, terms=ARENA)
+    after, _ = b3.predictions(
+        replaced_from(ARENAS, schedule=late), MOMENTS, TEST, START, terms=ARENA
+    )
+    assert game in before["game_id"].to_list() and game not in after["game_id"].to_list()
+
+
+def test_the_venue_is_read_from_the_schedule_never_from_the_result() -> None:
+    # A venue changed only in the games table, published with the result, moves nothing.
+    games = ARENAS.games.with_columns(venue=pl.lit("Somewhere Else"))
+    before, _ = b3.predictions(ARENAS, MOMENTS, TEST, START, terms=ARENA)
+    after, _ = b3.predictions(replaced_from(ARENAS, games=games), MOMENTS, TEST, START, terms=ARENA)
+    assert same(after.sort("game_id"), before.sort("game_id"))

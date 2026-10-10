@@ -1,6 +1,6 @@
 # 0035. Policy v2's B3: each arena's home edge beyond the league's
 
-- Status: Proposed: the term stays out of v2 under its own rule (backtest evidence below)
+- Status: Proposed
 - Date: 2026-10-10
 - Part of: policy v2 (#225), which the owner decided on 2026-10-10 (#222)
 
@@ -53,26 +53,13 @@ So the model treats every arena's home edge as the same.
 
 ## Backtest evidence
 
-**Run `backtest-hockey-20261010-108ff8c`** (`reports/backtest/hockey-20261010-108ff8c-204842.json`, logged in `runs.csv`). The code was committed after this ADR. The run covers 5,207 games over 112 weeks.
-
-| B3+arena minus B3 | Paired log loss [95% interval] |
-| --- | --- |
-| **Pooled** | **+0.00004 [−0.00065, +0.00072]** |
-| 2018-19 | +0.00144 [−0.00066, +0.00358] |
-| 2021-22 | +0.00087 [−0.00021, +0.00187] |
-| 2023-24 | −0.00069 [−0.00151, +0.00025] |
-| 2024-25 | −0.00142 [−0.00269, −0.00021] |
-
-- **The pooled interval includes 0, so under this ADR's rule the arena term stays out of policy v2.** The seasons disagree: the two earlier ones are worse with it, the two later ones better.
-- **τ² was above 0 in every fold,** so the arenas differ somewhat beyond chance. Every active arena's shift lies within ±0.11 to ±0.18 in log-odds.
-- **Colorado's altitude (Ball Arena):** its shift is +0.017 to +0.043 per fold, about +0.5 to +1 point of home win chance. It is small, positive and steady, but too little to improve the forecast. Calgary and Edmonton come out slightly negative.
-- **For reference,** B3's own log loss on these games is 0.6597 [0.6534, 0.6658], and B2's is 0.6675 [0.6619, 0.6732].
+**Rerun pending.** The first run, `backtest-hockey-20261010-108ff8c`, read each game's venue from the games table. That table is timestamped with the result (Codex on #226, P0). Its result was a pooled B3+arena minus B3 of +0.00004 [−0.00065, +0.00072]. The code now reads the venue from the pre-game schedule, with its own known time, and the run is repeated unchanged otherwise. Its result replaces this paragraph, and the first run stays logged in `runs.csv`.
 
 ## Consequences
 
 - **v1 is untouched.** `b3.Terms()` adds nothing, so every v1 decision, replay and backtest reads the B3 it read before.
 - **A fit carries its arena shifts** (`B3Model.arenas`), so a v2 run bundle replays them.
-- **`b3.game_inputs`** gains `arena_id`, which is null for neutral sites. The venue is the schedule's, public a day before the game (ADR 0005).
+- **`b3.with_arena`** adds `arena_id` for the arena model only, from the pre-game `schedule` table. That table is public 24 hours before the start (ADR 0005), and a game's known time becomes the later of its own and the schedule row's. The arena is null at a neutral site, and v1's inputs are unchanged.
 - **Tests:** a leakage test in `tests/leakage/test_b3.py` (hard rule 1): a fold's shifts read only training games whose results were public before the fold starts. Unit tests cover the shrinkage and the half-full rule.
 - **Live v2** needs each slate game's venue, which the schedule row already has. #225 wires it.
 

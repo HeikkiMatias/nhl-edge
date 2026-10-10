@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import market_history
@@ -710,14 +710,29 @@ def json_round_trip(record: dict) -> dict:
     return json.loads(json.dumps(record))
 
 
+def schedule_of(games: pl.DataFrame) -> pl.DataFrame:
+    """The pre-game schedule of games: public 24 hours before each start (ADR 0005)."""
+    return games.select(
+        "game_id",
+        "season",
+        "start_utc",
+        "home",
+        "away",
+        "venue",
+        neutral_site=pl.lit(False),
+        observed_utc=pl.col("start_utc") - timedelta(hours=24),
+    )
+
+
 def test_hockey_only_scores_b3_with_v2s_terms_paired_against_b3() -> None:
     # The fixture's venue ("x") is no known arena: the shifts are empty, so B3+arena equals B3,
     # and the report still pairs it on the same games.
     b2_tables = feature_tables(LEAGUE.games, 4)
     fits3: dict[str, dict[int, b3.B3Model]] = {}
     terms = b3.Terms(arena=True)
+    league = b3.Tables(**{**LEAGUE.__dict__, "schedule": schedule_of(LEAGUE.games)})
     predictions, coverage = hockey_only(
-        LEAGUE.games, [TEST], b2_tables, LEAGUE, {}, fits3, b3_terms=terms
+        LEAGUE.games, [TEST], b2_tables, league, {}, fits3, b3_terms=terms
     )
     assert set(predictions["model"]) == {"B2", "B3", "B3+arena"}
     assert coverage[HOCKEY][TEST]["B3+arena_scored"] == 400
@@ -728,3 +743,12 @@ def test_hockey_only_scores_b3_with_v2s_terms_paired_against_b3() -> None:
     paired = report["models"]["B3+arena"]["paired_against_B3"]["pooled"]
     assert paired["games"] == 400 and paired["mean"] == pytest.approx(0.0, abs=1e-12)
     assert report["models"]["B3"]["fits"] == b3_report.fit_rows(fits3[HOCKEY])
+
+
+def test_an_empty_set_of_terms_is_refused_rather_than_scoring_b3_twice() -> None:
+    with pytest.raises(ValueError, match="no term"):
+        hockey_only(
+            LEAGUE.games, [TEST], feature_tables(LEAGUE.games, 4), LEAGUE, b3_terms=b3.Terms()
+        )
+    with pytest.raises(ValueError, match="needs the schedule"):
+        b3.with_arena(LEAGUE, b3.game_inputs(LEAGUE))
