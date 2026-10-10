@@ -52,15 +52,18 @@ As in ADR 0035, the evidence can't come from the training seasons (#225), so eac
 | pest | **−0.00056 [−0.00127, +0.00014]** | −0.00044 | −0.00158 | −0.00027 | +0.00006 |
 
 **No pooled interval lies wholly below 0, so under this ADR's rule none of the three terms enters policy v2.** The combination step doesn't arise.
-- **team:** ΔS takes a weight of about 0.14 while Δĝ's falls from about 0.31 to 0.23 to 0.31. The two share most of their information, and together they forecast no better.
-- **coach:** the effect is tiny. A new coach's first games are a small share of all games, and the weight is near 0 in every fold.
-- **pest:** this is the closest. Its weight grows from 0.025 to 0.06 over the folds, and its point estimate favours it. But the pooled interval includes 0, and a term only enters on a pooled interval below 0.
-- **The rule stands as written.** It was fixed before these results were read, and changing it now that they are known would be tuning on seen seasons.
+- **The per-season figures** are point estimates. The verdict rests on the pooled interval alone.
+- **Each fold's weights** are point estimates with no interval, so no conclusion is drawn from them:
+  - **team:** ΔS's weight is 0.135 to 0.152 per fold. Δĝ's weight beside it is 0.227 to 0.310, against 0.310 to 0.404 in B3 alone.
+  - **coach:** −0.011 to +0.004 per fold.
+  - **pest:** +0.025 in 2018-19's fold, then +0.050, +0.060 and +0.059.
+- **The rule stands as written.** Pest's pooled interval is the nearest to passing, but it includes 0. The rule was fixed before these results were read, and changing it now that they are known would be tuning on seen seasons.
 
 ## Consequences
 
 - **v1 is untouched.** `Terms()` adds no input, so a v1 fit keeps its inputs and its bundle record.
-- **A fit names its inputs** (`B3Model.inputs`), so a v2 bundle replays them.
+- **A fit names its inputs** (`B3Model.inputs`), so the backtest report shows each term's weight.
+- **A run bundle refuses a fit with extra inputs.** Its replay rebuilds v1's inputs only. Since no term enters v2, no live bundle carries one. If a later version takes a term, #225 makes the replay rebuild it first.
 - **`b3.Tables`** gains an optional `team_strength`. The coach input reads `coaches.csv`, so live v2 depends on the reference being updated at each coaching change (handover: reference upkeep).
 - **Tests:** a leakage test per term in `tests/leakage/test_b3.py` (hard rule 1):
   - ΔS reads only rows known before the prediction;
