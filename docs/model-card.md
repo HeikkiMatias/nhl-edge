@@ -139,6 +139,13 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - Its own log loss per season is 0.6804 and 0.6558 on E1.
 - **It is under-confident.** The calibration slope is 1.35 [1.09, 1.62] on E1, driven by 2021-22 (1.55 [1.25, 1.86]; 2018-19 1.06 [0.59, 1.59]). Its probabilities spread less than the market's (standard deviation 0.082 against 0.122 on E1), though the two agree in direction (correlation 0.78). Expected-goals team strength with an 80-game memory misses talent that shows in goals, and the goalie mixture flattens further.
 - **Gaps above 8 points against B1** (hard rule 8): 822 of 2,583 games on E1 (382 in 2018-19, 440 in 2021-22) and 775 of 2,573 on E2. They are listed in `reports/backtest/gaps.csv` without results, and counted in `summary.json`. The largest are games where team strength rates the teams even and the market does not, such as NJD against WSH in March 2019. That many cannot all get a manual review. Gate 1 (#79) decides how they are reviewed, and none led to a change of model.
+- **Gate 1's gap review** (`reports/backtest/gap-review.md`, #79) screened all 822 E1 gaps and reviewed 153 by hand, reading no result. It found no bug. The gaps come from:
+  - B2's timidity;
+  - public news the market prices and B2 cannot see: injuries (Hall in 2019), trades (Ottawa's 2019 deadline), COVID absences (Montreal on 2022-01-01);
+  - teams whose results ran far from their expected goals (Carolina in 2018-19);
+  - offseason changes early in a season, which an 80-game memory carries slowly.
+
+  The player layer (phase 3) and the blend (phase 4) are where these get addressed.
 - **Weights** (on standardized inputs, 2021-22 fold): ΔS 0.29, ΔG 0.06, home back-to-back -0.08, away back-to-back +0.09. Rest, travel, time zones and empty seats are all within 0.03.
 - **Lineup quality:** the goalie-start model's Brier score over the team-games of the games B2 scored is 0.415 [0.404, 0.426] on E1 and 0.415 [0.405, 0.427] on E2 (0.405 in 2018-19, 0.424 in 2021-22). 0.9% of starters were not among its candidates.
 - **Training on the starters who played** (ADR 0013): Codex read hard rule 9 as forbidding it (P0 on #90). The owner kept it, since the rule governs predictions, and no game's own lineup feeds its own prediction.

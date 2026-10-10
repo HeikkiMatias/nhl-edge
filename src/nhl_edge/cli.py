@@ -1742,6 +1742,52 @@ def tune_b2(
     typer.echo(f"{path}: chose {choice.chosen.label}, which {frozen} the frozen TUNED")
 
 
+@app.command("gap-review")
+def gap_review(
+    out: Annotated[Path, typer.Option(help="Backtest report directory.")] = DEFAULT_BACKTEST_OUT,
+    experiment: Annotated[str, typer.Option(help="The experiment whose gaps to screen.")] = "E1",
+) -> None:
+    """Screen B2's gaps above 8 points from <out>/gaps.csv for gate 1's review (#79, hard rule 8):
+    write every gap game's input contributions and flags to <out>/gap-screen.csv, and the games
+    to review by hand to <out>/gap-review-set.csv. Reads no result."""
+    import json
+
+    import polars as pl
+
+    from nhl_edge.backtest import gap_review as review
+    from nhl_edge.game import b2
+    from nhl_edge.lake.tables import Lake
+
+    path = out / "gaps.csv"
+    if not path.exists():
+        typer.echo(f"no {path}: run nhl backtest first", err=True)
+        raise typer.Exit(code=1)
+    gaps = pl.read_csv(path, try_parse_dates=True).filter(pl.col("experiment") == experiment)
+    if gaps.is_empty():
+        raise typer.BadParameter(f"no {experiment} gaps in {path}", param_hint="--experiment")
+    lake = Lake()
+    tables = b2.Tables(
+        lake.read("games"),
+        *(
+            lake.read(name)
+            for name in (
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        ),
+    )
+    gaps = gaps.with_columns(pl.col("season").cast(pl.Int32), pl.col("game_id").cast(pl.Int64))
+    screened = review.screen(tables, gaps)
+    chosen = review.review_set(screened)
+    rounded = pl.selectors.float()
+    screened.with_columns(rounded.round(4)).write_csv(out / "gap-screen.csv")
+    chosen.with_columns(rounded.round(4)).write_csv(out / "gap-review-set.csv")
+    typer.echo(json.dumps(review.summary(screened, chosen), indent=2))
+
+
 @app.command("goalie-start")
 def goalie_start(
     seasons: Annotated[
