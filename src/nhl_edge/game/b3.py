@@ -459,9 +459,17 @@ def arena_shifts(train: pl.DataFrame, model: B3Model) -> tuple[tuple[str, float]
 def with_arena(tables: Tables, inputs: pl.DataFrame) -> pl.DataFrame:
     """inputs with each game's arena_id (ADR 0035): its venue's arena in the pre-game schedule
     (ADR 0005), null at a neutral site, and its observed_utc the later of its own and the schedule
-    row's. A game without a schedule row drops out of the arena model only."""
+    row's. A game without a schedule row is refused."""
     if tables.schedule is None:
         raise ValueError("Terms(arena=True) needs the schedule in B3's tables")
+    # A game without its schedule row would leave the arena model fitting and scoring on fewer
+    # games than B3, and bias the paired comparison: refuse instead (Codex on #226).
+    missing = inputs.join(tables.schedule.select("game_id"), on="game_id", how="anti")
+    if missing.height:
+        raise ValueError(
+            f"{missing.height} games lack a schedule row for the arena term, such as "
+            f"{missing['game_id'][0]}: ingest their schedule first"
+        )
     arenas = (
         tables.schedule.select("game_id", "venue", "neutral_site", a_utc="observed_utc")
         .join(reference.load_venues(), on="venue", how="left")

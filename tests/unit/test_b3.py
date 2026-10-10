@@ -699,8 +699,10 @@ def test_policy_v1s_b3_has_no_terms_and_its_bundle_record_is_unchanged() -> None
     record = bundle.fit_record(flat_model())
     assert "arenas" not in record
     carried = bundle.fit_record(b3.B3Model(**{**flat_model().__dict__, "arenas": (("a", 0.4),)}))
-    restored = bundle._fit(json_round_trip(carried), b3.B3Model)
-    assert restored.arenas == (("a", 0.4),)
+    assert carried["arenas"] == (("a", 0.4),)
+    # A bundle can't replay the arena input, so it refuses such a fit outright.
+    with pytest.raises(ValueError, match="arena shifts"):
+        bundle._fit(json_round_trip(carried), b3.B3Model)
     assert bundle._fit(json_round_trip(record), b3.B3Model).arenas == ()
 
 
@@ -752,6 +754,16 @@ def test_an_empty_set_of_terms_is_refused_rather_than_scoring_b3_twice() -> None
         )
     with pytest.raises(ValueError, match="needs the schedule"):
         b3.with_arena(LEAGUE, b3.game_inputs(LEAGUE))
+
+
+def test_the_arena_term_refuses_a_game_without_its_schedule_row() -> None:
+    schedule = schedule_of(LEAGUE.games)
+    first = schedule["game_id"][0]
+    league = b3.Tables(
+        **{**LEAGUE.__dict__, "schedule": schedule.filter(pl.col("game_id") != first)}
+    )
+    with pytest.raises(ValueError, match="lack a schedule row"):
+        b3.with_arena(league, b3.game_inputs(league))
 
 
 # Policy v2's input terms (#224, ADR 0036).
@@ -831,7 +843,7 @@ def test_input_terms_join_their_rows_and_take_the_later_known_time() -> None:
         b3.with_terms(league, inputs, b3.Terms(team=True))
 
 
-def test_a_fit_with_input_terms_names_its_inputs_and_its_bundle_record_carries_them() -> None:
+def test_a_fit_with_input_terms_names_its_inputs_and_a_bundle_refuses_to_replay_it() -> None:
     from nhl_edge.live import bundle
 
     league = with_drawn(LEAGUE)
@@ -840,11 +852,15 @@ def test_a_fit_with_input_terms_names_its_inputs_and_its_bundle_record_carries_t
     terms = b3.Terms(pest=True).inputs()
     model = b3.fit(train, b2.TUNED, TEST, terms)
     assert model.inputs == terms and len(model.weights) == len(terms)
-    restored = bundle._fit(json_round_trip(bundle.fit_record(model)), b3.B3Model)
-    assert restored.inputs == terms and restored.weights == model.weights
+    record = bundle.fit_record(model)
+    assert tuple(record["inputs"]) == terms
+    # A bundle's replay rebuilds v1's inputs only, so it refuses such a fit outright.
+    with pytest.raises(ValueError, match="inputs beyond v1's"):
+        bundle._fit(json_round_trip(record), b3.B3Model)
     plain = b3.fit(
         b3.training_games(LEAGUE, b3.game_inputs(LEAGUE), TEST, START, "observed_utc"),
         b2.TUNED,
         TEST,
     )
     assert "inputs" not in bundle.fit_record(plain)
+    assert bundle._fit(json_round_trip(bundle.fit_record(plain)), b3.B3Model).inputs == b3.INPUTS
