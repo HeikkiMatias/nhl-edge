@@ -65,10 +65,18 @@ class Terms:
     policy v1 decision, replay and backtest reads, untouched."""
 
     arena: bool = False  # each arena's home edge beyond h_s (#223, ADR 0035)
+    team: bool = False  # B2's team strength ΔS as an input (#224, ADR 0036)
+    coach: bool = False  # a new mid-season coach's first games (#224, ADR 0036)
+    pest: bool = False  # penalty drawing beyond the expected power plays (#224, ADR 0036)
 
     def label(self) -> str:
         """The model's name in a backtest: B3, or B3 with its terms, such as B3+arena."""
         return "+".join(["B3", *(name for name, on in vars(self).items() if on)])
+
+    def inputs(self) -> tuple[str, ...]:
+        """The regression's inputs: B3's, then each switched-on input term's (ADR 0036)."""
+        extra = {"team": "delta_s", "coach": "new_coach", "pest": "drawn_diff"}
+        return (*INPUTS, *(column for name, column in extra.items() if getattr(self, name)))
 
 
 V1 = Terms()
@@ -90,6 +98,8 @@ class Tables:
     goal_multipliers: pl.DataFrame
     # The pre-game schedule (ADR 0005), read only by Terms(arena=True) for each game's venue.
     schedule: pl.DataFrame | None = None
+    # B2's team strength, read only by Terms(team=True) (ADR 0036).
+    team_strength: pl.DataFrame | None = None
 
 
 def league_rates(rapm_terms: pl.DataFrame) -> pl.DataFrame:
@@ -353,21 +363,24 @@ class B3Model:
     games: int
     train_cutoff: datetime
     arenas: tuple[tuple[str, float], ...] = ()
+    # The regression's inputs, in the order of weights: B3's own, or with v2's terms (ADR 0036).
+    inputs: tuple[str, ...] = INPUTS
 
     def predict(self, inputs: pl.DataFrame, pairs: pl.DataFrame) -> pl.DataFrame:
-        """Each game in inputs (game_id, the schedule inputs, offset, and arena_id when the fit
-        has arenas) with p_home, averaged over its goalie pairs (scenarios())."""
+        """Each game in inputs (game_id, the model's inputs but Δĝ, offset, and arena_id when the
+        fit has arenas) with p_home, averaged over its goalie pairs (scenarios())."""
         means, scales, weights = (np.asarray(v) for v in (self.means, self.scales, self.weights))
-        others = [name for name in INPUTS if name != "delta_g_hat"]
-        index = [INPUTS.index(name) for name in others]
+        others = [name for name in self.inputs if name != "delta_g_hat"]
+        index = [self.inputs.index(name) for name in others]
         z = (inputs.select(others).to_numpy() - means[index]) / scales[index]
         base = self.intercept + inputs["offset"].to_numpy() + z @ weights[index]
         if self.arenas:
             base = base + arena_offsets(inputs, self.arenas)
         frame = inputs.select("game_id").with_columns(base=pl.Series(base))
         joined = pairs.join(frame, on="game_id")
-        skill = (joined["delta_g_hat"].to_numpy() - means[SKILL]) / scales[SKILL]
-        p = expit(joined["base"].to_numpy() + weights[SKILL] * skill)
+        skill_at = self.inputs.index("delta_g_hat")
+        skill = (joined["delta_g_hat"].to_numpy() - means[skill_at]) / scales[skill_at]
+        p = expit(joined["base"].to_numpy() + weights[skill_at] * skill)
         mixed = (
             joined.with_columns(p=pl.Series(p) * pl.col("weight"))
             .group_by("game_id")
@@ -376,19 +389,21 @@ class B3Model:
         return inputs.select("game_id").join(mixed, on="game_id")
 
 
-def fit(train: pl.DataFrame, settings: b2.Settings, season: int) -> B3Model:
-    """B3 fitted on train: one row per game with INPUTS (delta_g_hat from its starters), offset,
-    home_win and known_utc. train_cutoff is the latest known_utc."""
+def fit(
+    train: pl.DataFrame, settings: b2.Settings, season: int, inputs: tuple[str, ...] = INPUTS
+) -> B3Model:
+    """B3 fitted on train: one row per game with the inputs (delta_g_hat from its starters),
+    offset, home_win and known_utc. train_cutoff is the latest known_utc."""
     if train.height == 0 or train["home_win"].n_unique() < 2:
         raise ValueError(f"no earlier games to fit B3 on for {season}")
-    raw = train.select(INPUTS).to_numpy().astype(float)
+    raw = train.select(inputs).to_numpy().astype(float)
     means = raw.mean(axis=0)
     scales = raw.std(axis=0)
     scales[scales == 0] = 1.0
     x = (raw - means) / scales
     y = train["home_win"].cast(pl.Float64).to_numpy()
     loss = b2.objective(x, y, train["offset"].to_numpy().astype(float), settings.l2)
-    result = minimize(loss, np.zeros(len(INPUTS) + 1), jac=True, method="L-BFGS-B")
+    result = minimize(loss, np.zeros(len(inputs) + 1), jac=True, method="L-BFGS-B")
     if not result.success:
         raise ValueError(f"B3's fit for {season} did not converge: {result.message}")
     beta = cast(NDArray[np.float64], result.x)
@@ -403,14 +418,15 @@ def fit(train: pl.DataFrame, settings: b2.Settings, season: int) -> B3Model:
         scales=tuple(float(s) for s in scales),
         games=train.height,
         train_cutoff=cutoff,
+        inputs=inputs,
     )
 
 
 def fitted(model: B3Model, frame: pl.DataFrame) -> NDArray[np.float64]:
-    """The model's chance for each row of frame (INPUTS, offset), as fitted: Δĝ from the row's
-    own starters, with no goalie mixing."""
+    """The model's chance for each row of frame (its inputs, offset), as fitted: Δĝ from the
+    row's own starters, with no goalie mixing."""
     means, scales, weights = (np.asarray(v) for v in (model.means, model.scales, model.weights))
-    z = (frame.select(INPUTS).to_numpy().astype(float) - means) / scales
+    z = (frame.select(model.inputs).to_numpy().astype(float) - means) / scales
     return cast(
         NDArray[np.float64], expit(model.intercept + frame["offset"].to_numpy() + z @ weights)
     )
@@ -472,6 +488,101 @@ def arena_offsets(
     joined = rows.join(table, on="arena_id", how="left").sort("row")
     shift = pl.when(counted()).then(pl.col("shift")).otherwise(0.0).fill_null(0.0)
     return joined.select(shift=shift)["shift"].to_numpy()
+
+
+# A coach is new for this many of his team's games after a mid-season takeover (ADR 0036).
+NEW_COACH_GAMES = 20
+
+
+def coach_flags(games: pl.DataFrame, coaches: pl.DataFrame, lines: dict[str, str]) -> pl.DataFrame:
+    """Per team-game (game_id, team, new): 1 when the team's coach as known by the game's as-of
+    time took over mid-season and has coached fewer than NEW_COACH_GAMES of its games so far, else
+    0 (ADR 0036). A stint is known from the morning after its first game (coaches_known_at), so
+    for a game on date d the known stint is the latest whose first game is before d; teams match
+    by franchise line, so a renamed team keeps its coach."""
+    sides = reference.team_games(games).with_columns(line=pl.col("team").replace_strict(lines))
+    first = sides.group_by("season", "line").agg(season_start=pl.col("game_date").min())
+    stints = coaches.with_columns(line=pl.col("team").replace_strict(lines)).select(
+        "line", "first_game"
+    )
+    known = (
+        sides.join(stints, on="line")
+        .filter(pl.col("first_game") < pl.col("game_date"))
+        .group_by("game_id", "team")
+        .agg(pl.col("first_game").max())
+    )
+    played = sides.select("line", "season", day="game_date")
+    under = (
+        sides.join(known, on=["game_id", "team"])
+        .join(first, on=["season", "line"])
+        .join(played, on=["line", "season"])
+        .filter(pl.col("day") >= pl.col("first_game"), pl.col("day") < pl.col("game_date"))
+        .group_by("game_id", "team")
+        .agg(games_under=pl.len())
+    )
+    return (
+        sides.join(known, on=["game_id", "team"], how="left")
+        .join(first, on=["season", "line"])
+        .join(under, on=["game_id", "team"], how="left")
+        .select(
+            "game_id",
+            "team",
+            new=(
+                (pl.col("first_game") > pl.col("season_start"))
+                & (pl.col("games_under").fill_null(0) < NEW_COACH_GAMES)
+            )
+            .fill_null(False)
+            .cast(pl.Float64),
+        )
+    )
+
+
+def with_terms(tables: Tables, inputs: pl.DataFrame, terms: Terms) -> pl.DataFrame:
+    """inputs with the columns of terms' input terms (ADR 0036), each game's observed_utc the
+    later of its own and those rows': team adds delta_s from B2's team strength, coach adds
+    new_coach (home - away coach_flags), pest adds drawn_diff (home - away drawn_index of the
+    expected power plays). A game without a term's row drops out of that model only."""
+    if terms.team:
+        if tables.team_strength is None:
+            raise ValueError("Terms(team=True) needs team_strength in B3's tables")
+        strength = tables.team_strength.select("game_id", "delta_s", s_utc="observed_utc")
+        inputs = (
+            inputs.join(strength, on="game_id")
+            .with_columns(observed_utc=b2_later(pl.col("observed_utc"), pl.col("s_utc")))
+            .drop("s_utc")
+        )
+    if terms.coach:
+        flags = coach_flags(
+            tables.games, reference.load_coaches(), reference.lineage(reference.load_teams())
+        )
+        inputs = (
+            inputs.join(flags.select("game_id", home="team", h_new="new"), on=["game_id", "home"])
+            .join(flags.select("game_id", away="team", a_new="new"), on=["game_id", "away"])
+            .with_columns(new_coach=pl.col("h_new") - pl.col("a_new"))
+            .drop("h_new", "a_new")
+        )
+    if terms.pest:
+        drawn = tables.expected_power_plays.select(
+            "game_id", "team", "drawn_index", p_utc="observed_utc"
+        )
+        inputs = (
+            inputs.join(
+                drawn.rename({"team": "home", "drawn_index": "h_drawn", "p_utc": "h_utc"}),
+                on=["game_id", "home"],
+            )
+            .join(
+                drawn.rename({"team": "away", "drawn_index": "a_drawn", "p_utc": "a_utc"}),
+                on=["game_id", "away"],
+            )
+            .with_columns(
+                drawn_diff=pl.col("h_drawn") - pl.col("a_drawn"),
+                observed_utc=b2_later(
+                    b2_later(pl.col("observed_utc"), pl.col("h_utc")), pl.col("a_utc")
+                ),
+            )
+            .drop("h_drawn", "a_drawn", "h_utc", "a_utc")
+        )
+    return inputs
 
 
 def training_games(
@@ -559,11 +670,11 @@ def predictions(
             f"{season}'s fold starts at {start:%Y-%m-%d}, before the tuning cutoff "
             f"{cutoff:%Y-%m-%d}: B3's inputs are in-sample (ADR 0011)"
         )
-    inputs = game_inputs(tables)
+    inputs = with_terms(tables, game_inputs(tables), terms)
     if terms.arena:
         inputs = with_arena(tables, inputs)
     train = training_games(tables, inputs, season, start, "observed_utc")
-    model = fit(train, settings, season)
+    model = fit(train, settings, season, terms.inputs())
     if terms.arena:
         model = replace(model, arenas=arena_shifts(train, model))
     model = replace(model, train_cutoff=max(model.train_cutoff, cutoff))

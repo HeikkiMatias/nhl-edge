@@ -180,19 +180,23 @@ def inputs(
 def fit_record(model: B2Model | B3Model) -> dict[str, Any]:
     record = asdict(model)
     record["train_cutoff"] = model.train_cutoff.isoformat()
-    # A fit without arena shifts (every v1 fit) keeps v1's bundle bytes (ADR 0035).
+    # A fit without arena shifts or input terms (every v1 fit) keeps v1's bundle bytes (ADR
+    # 0035, 0036).
     if not record.get("arenas", True):
         del record["arenas"]
+    if isinstance(model, B3Model) and model.inputs == b3.INPUTS:
+        del record["inputs"]
     return record
 
 
 def _fit(record: Mapping[str, Any], kind: type[Any]) -> Any:
-    # A B3 fit with Terms(arena=True) carries its arena shifts (ADR 0035); v1's carry none.
-    extra = (
-        {"arenas": tuple((str(a), float(x)) for a, x in record["arenas"])}
-        if kind is B3Model and record.get("arenas")
-        else {}
-    )
+    # A B3 fit with v2's terms carries its arena shifts (ADR 0035) and its inputs (ADR 0036);
+    # v1's carry neither.
+    extra: dict[str, Any] = {}
+    if kind is B3Model and record.get("arenas"):
+        extra["arenas"] = tuple((str(a), float(x)) for a, x in record["arenas"])
+    if kind is B3Model and record.get("inputs"):
+        extra["inputs"] = tuple(str(name) for name in record["inputs"])
     return kind(
         season=record["season"],
         settings=b2.Settings(**record["settings"]),

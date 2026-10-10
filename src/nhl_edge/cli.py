@@ -1177,6 +1177,7 @@ def _b3_tables(lake: "Lake", tables: "b2.Tables") -> "b3.Tables":
         expected_power_plays=lake.read("expected_power_plays"),
         goal_multipliers=lake.read("goal_multipliers"),
         schedule=lake.read("schedule"),
+        team_strength=tables.team_strength,
     )
 
 

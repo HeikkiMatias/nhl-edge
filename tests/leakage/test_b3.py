@@ -410,3 +410,55 @@ def test_the_venue_is_read_from_the_schedule_never_from_the_result() -> None:
     before, _ = b3.predictions(ARENAS, MOMENTS, TEST, START, terms=ARENA)
     after, _ = b3.predictions(replaced_from(ARENAS, games=games), MOMENTS, TEST, START, terms=ARENA)
     assert same(after.sort("game_id"), before.sort("game_id"))
+
+
+# Policy v2's input terms (#224, ADR 0036): each reads only rows known before the prediction.
+def term_league() -> b3.Tables:
+    strength = feature_tables(LEAGUE.games, 4).team_strength
+    epp = LEAGUE.expected_power_plays.with_columns(
+        drawn_index=1.0 + (pl.col("game_id") % 5) / 10 + pl.col("is_home").cast(pl.Float64) / 20
+    )
+    return replaced(team_strength=strength, expected_power_plays=epp)
+
+
+TERMS = term_league()
+
+
+@pytest.mark.parametrize(
+    ("terms", "table"),
+    [(b3.Terms(team=True), "team_strength"), (b3.Terms(pest=True), "expected_power_plays")],
+)
+def test_an_input_terms_row_known_only_at_the_prediction_time_is_not_read(
+    terms: b3.Terms, table: str
+) -> None:
+    game = MOMENTS["game_id"][0]
+    moment = MOMENTS.filter(pl.col("game_id") == game)["prediction_utc"].item()
+    late = retimed(getattr(TERMS, table), pl.col("game_id") == game, moment)
+    before, _ = b3.predictions(TERMS, MOMENTS, TEST, START, terms=terms)
+    after, _ = b3.predictions(
+        b3.Tables(**{**TERMS.__dict__, table: late}), MOMENTS, TEST, START, terms=terms
+    )
+    assert game in before["game_id"].to_list() and game not in after["game_id"].to_list()
+    assert same(after.sort("game_id"), before.filter(pl.col("game_id") != game).sort("game_id"))
+
+
+def test_a_coach_counts_only_from_the_morning_after_his_first_game() -> None:
+    from datetime import date as day
+
+    games = LEAGUE.games.filter(pl.col("season") == TEST)
+    team = games["home"][0]
+    takeover = games.filter(pl.col("home") == team)["game_date"].sort()[10]
+    lines = {t: t for t in pl.concat([games["home"], games["away"]]).unique().to_list()}
+    old = pl.DataFrame({"team": [team], "first_game": [day(2018, 9, 1)]})
+    both = pl.concat([old, pl.DataFrame({"team": [team], "first_game": [takeover]})])
+    without = b3.coach_flags(games, old, lines)
+    with_new = b3.coach_flags(games, both, lines)
+    up_to = games.filter(pl.col("game_date") <= takeover).select("game_id")
+    # The new coach's stint changes nothing up to and including his own first game.
+    assert same(
+        with_new.join(up_to, on="game_id").sort("game_id", "team"),
+        without.join(up_to, on="game_id").sort("game_id", "team"),
+    )
+    # From the next morning on, his team's games are flagged.
+    after = with_new.join(games.filter(pl.col("game_date") > takeover), on="game_id")
+    assert (after.filter(pl.col("team") == team)["new"] == 1.0).any()

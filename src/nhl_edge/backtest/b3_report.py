@@ -26,7 +26,7 @@ from nhl_edge.backtest import b2_report
 from nhl_edge.backtest.metrics import DRAWS, LEVEL, SEED, bootstrap, week_of
 from nhl_edge.backtest.subsets import SUBSETS
 from nhl_edge.game.b2 import B2Model
-from nhl_edge.game.b3 import INPUTS, B3Model
+from nhl_edge.game.b3 import B3Model
 from nhl_edge.lake.schemas import PP_UNIT
 
 MODEL = "B3"
@@ -42,7 +42,7 @@ def fit_rows(fits: dict[int, B3Model]) -> dict[str, Any]:
         str(season): {
             "l2": model.settings.l2,
             "intercept": model.intercept,
-            "weights": dict(zip(INPUTS, model.weights, strict=True)),
+            "weights": dict(zip(model.inputs, model.weights, strict=True)),
             "games": model.games,
             "train_cutoff": model.train_cutoff.isoformat(),
             # Each arena's home edge, with Terms(arena=True) only (ADR 0035).
