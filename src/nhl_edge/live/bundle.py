@@ -180,18 +180,23 @@ def inputs(
 def fit_record(model: B2Model | B3Model) -> dict[str, Any]:
     record = asdict(model)
     record["train_cutoff"] = model.train_cutoff.isoformat()
-    # A fit without arena shifts (every v1 fit) keeps v1's bundle bytes (ADR 0035).
+    # A fit without arena shifts or input terms (every v1 fit) keeps v1's bundle bytes (ADR
+    # 0035, 0036).
     if not record.get("arenas", True):
         del record["arenas"]
+    if isinstance(model, B3Model) and model.inputs == b3.INPUTS:
+        del record["inputs"]
     return record
 
 
 def _fit(record: Mapping[str, Any], kind: type[Any]) -> Any:
+    # A bundle keeps neither the schedule nor v2's extra inputs, and its replay rebuilds v1's
+    # inputs only: refuse a fit with arena shifts (ADR 0035) or extra inputs (ADR 0036) rather
+    # than fail midway (Codex on #226). Neither enters v2.
     if kind is B3Model and record.get("arenas"):
-        # A bundle keeps no schedule, so its replay could not rebuild the arena input: refuse
-        # rather than fail midway (Codex on #226). The arena term stays out of v2 (ADR 0035).
         raise ValueError("a run bundle cannot replay a B3 fit with arena shifts")
-    extra: dict[str, Any] = {}
+    if kind is B3Model and tuple(record.get("inputs", b3.INPUTS)) != b3.INPUTS:
+        raise ValueError("a run bundle cannot replay a B3 fit with inputs beyond v1's")
     return kind(
         season=record["season"],
         settings=b2.Settings(**record["settings"]),
@@ -201,7 +206,6 @@ def _fit(record: Mapping[str, Any], kind: type[Any]) -> Any:
         scales=tuple(record["scales"]),
         games=record["games"],
         train_cutoff=datetime.fromisoformat(record["train_cutoff"]),
-        **extra,
     )
 
 

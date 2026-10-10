@@ -410,3 +410,122 @@ def test_the_venue_is_read_from_the_schedule_never_from_the_result() -> None:
     before, _ = b3.predictions(ARENAS, MOMENTS, TEST, START, terms=ARENA)
     after, _ = b3.predictions(replaced_from(ARENAS, games=games), MOMENTS, TEST, START, terms=ARENA)
     assert same(after.sort("game_id"), before.sort("game_id"))
+
+
+# Policy v2's input terms (#224, ADR 0036): each reads only rows known before the prediction.
+def term_league() -> b3.Tables:
+    strength = feature_tables(LEAGUE.games, 4).team_strength
+    epp = LEAGUE.expected_power_plays.with_columns(
+        drawn_index=1.0 + (pl.col("game_id") % 5) / 10 + pl.col("is_home").cast(pl.Float64) / 20
+    )
+    return replaced(team_strength=strength, expected_power_plays=epp)
+
+
+TERMS = term_league()
+
+
+@pytest.mark.parametrize(
+    ("terms", "table"),
+    [(b3.Terms(team=True), "team_strength"), (b3.Terms(pest=True), "expected_power_plays")],
+)
+def test_an_input_terms_row_known_only_at_the_prediction_time_is_not_read(
+    terms: b3.Terms, table: str
+) -> None:
+    game = MOMENTS["game_id"][0]
+    moment = MOMENTS.filter(pl.col("game_id") == game)["prediction_utc"].item()
+    late = retimed(getattr(TERMS, table), pl.col("game_id") == game, moment)
+    before, _ = b3.predictions(TERMS, MOMENTS, TEST, START, terms=terms)
+    after, _ = b3.predictions(
+        b3.Tables(**{**TERMS.__dict__, table: late}), MOMENTS, TEST, START, terms=terms
+    )
+    assert game in before["game_id"].to_list() and game not in after["game_id"].to_list()
+    assert same(after.sort("game_id"), before.filter(pl.col("game_id") != game).sort("game_id"))
+
+
+def test_team_strength_retuned_after_the_fold_start_refuses_the_team_terms_fold() -> None:
+    # B2's team strength is a fitted input of Terms(team=True): rows of the fold's season
+    # retuned after its start move the tuning cutoff past it (Codex on #227). v1's B3 doesn't
+    # read the table, so its fold stands.
+    # The fixture's team strength has no season or train_cutoff; the lake's has both.
+    strength = TERMS.team_strength.join(LEAGUE.games.select("game_id", "season"), on="game_id")
+    tuned = strength.with_columns(train_cutoff=pl.lit(b3.TUNED_CUTOFF, UTC_TYPE))
+    retuned = strength.with_columns(
+        train_cutoff=pl.when(pl.col("season") == TEST)
+        .then(pl.lit(START + timedelta(days=1), UTC_TYPE))
+        .otherwise(pl.lit(b3.TUNED_CUTOFF, UTC_TYPE))
+    )
+    fine = b3.Tables(**{**TERMS.__dict__, "team_strength": tuned})
+    late = b3.Tables(**{**TERMS.__dict__, "team_strength": retuned})
+    b3.predictions(fine, MOMENTS, TEST, START, terms=b3.Terms(team=True))
+    with pytest.raises(ValueError, match="before the tuning cutoff"):
+        b3.predictions(late, MOMENTS, TEST, START, terms=b3.Terms(team=True))
+    assert b3.tuning_cutoff(late, TEST, b3.Terms(team=True)) == START + timedelta(days=1)
+    assert b3.tuning_cutoff(late, TEST) == b3.tuning_cutoff(TERMS, TEST)
+    b3.predictions(late, MOMENTS, TEST, START)
+
+
+def test_a_coach_counts_only_from_the_morning_after_his_first_game() -> None:
+    from datetime import date as day
+
+    games = LEAGUE.games.filter(pl.col("season") == TEST)
+    team = games["home"][0]
+    takeover = games.filter(pl.col("home") == team)["game_date"].sort()[10]
+    lines = {t: t for t in pl.concat([games["home"], games["away"]]).unique().to_list()}
+    old = pl.DataFrame({"team": [team], "first_game": [day(2018, 9, 1)]})
+    both = pl.concat([old, pl.DataFrame({"team": [team], "first_game": [takeover]})])
+    without = b3.coach_flags(games, old, lines)
+    with_new = b3.coach_flags(games, both, lines)
+    up_to = games.filter(pl.col("game_date") <= takeover).select("game_id")
+    # The new coach's stint changes nothing up to and including his own first game.
+    assert same(
+        with_new.join(up_to, on="game_id").sort("game_id", "team"),
+        without.join(up_to, on="game_id").sort("game_id", "team"),
+    )
+    # From the next morning on, his team's games are flagged.
+    after = with_new.join(games.filter(pl.col("game_date") > takeover), on="game_id")
+    assert (after.filter(pl.col("team") == team)["new"] == 1.0).any()
+
+
+def test_a_game_reading_a_new_coach_is_known_no_earlier_than_the_morning_after_his_first_game(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Gated by the stint's public time, not by the calendar day alone (Codex on #227): a
+    # prediction before 10:00 UTC the morning after his first game can't read the new stint.
+    from datetime import UTC, datetime
+    from datetime import date as day
+
+    games = LEAGUE.games.filter(pl.col("season") == TEST)
+    team = games["home"][0]
+    takeover = games.filter(pl.col("home") == team)["game_date"].sort()[10]
+    teams = pl.concat([LEAGUE.games["home"], LEAGUE.games["away"]]).unique().to_list()
+    old = pl.DataFrame({"team": teams, "first_game": [day(2010, 9, 1)] * len(teams)})
+    coaches = pl.concat([old, pl.DataFrame({"team": [team], "first_game": [takeover]})])
+    monkeypatch.setattr(b3.reference, "load_coaches", lambda: coaches)
+    monkeypatch.setattr(b3.reference, "lineage", lambda _: {t: t for t in teams})
+    monkeypatch.setattr(b3.reference, "load_teams", lambda: pl.DataFrame())
+    # Every other input known early, so only the coach's stint can move a game's known time.
+    early = datetime(2015, 1, 1, tzinfo=UTC)
+    plain = b3.game_inputs(TERMS).with_columns(observed_utc=pl.lit(early, UTC_TYPE))
+    inputs = b3.with_terms(TERMS, plain, b3.Terms(coach=True))
+    public = datetime.combine(takeover + timedelta(days=1), datetime.min.time(), UTC).replace(
+        hour=10
+    )
+    involved = (pl.col("home") == team) | (pl.col("away") == team)
+    later = inputs.filter(pl.col("game_date") > takeover, involved)
+    assert later.height and (later["observed_utc"] >= public).all()
+    # His count of games reads the team's last game, so it waits for that game's feeds too: the
+    # morning after it (Codex on #227).
+    days = games.filter(involved)["game_date"].unique().sort()
+    previous = later.with_columns(
+        last=pl.col("game_date").map_elements(
+            lambda d: days.filter(days < d).max(), return_dtype=pl.Date
+        )
+    )
+    morning = (previous["last"].cast(pl.Datetime("us")).dt.replace_time_zone("UTC")) + timedelta(
+        days=1, hours=10
+    )
+    assert (previous["observed_utc"] >= morning).all()
+    assert (previous["last"] > takeover).any()
+    # Before his first game, and for the other teams, the stints are long public.
+    before = inputs.filter(~(involved & (pl.col("game_date") > takeover)))
+    assert (before["observed_utc"] == early).all()

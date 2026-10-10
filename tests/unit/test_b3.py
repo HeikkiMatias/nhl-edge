@@ -756,6 +756,17 @@ def test_an_empty_set_of_terms_is_refused_rather_than_scoring_b3_twice() -> None
         b3.with_arena(LEAGUE, b3.game_inputs(LEAGUE))
 
 
+def test_a_combination_of_terms_is_refused_until_it_can_be_paired_against_each_term() -> None:
+    with pytest.raises(ValueError, match="combines terms"):
+        hockey_only(
+            LEAGUE.games,
+            [TEST],
+            feature_tables(LEAGUE.games, 4),
+            LEAGUE,
+            b3_terms=b3.Terms(team=True, pest=True),
+        )
+
+
 def test_the_arena_term_refuses_a_game_without_its_schedule_row() -> None:
     schedule = schedule_of(LEAGUE.games)
     first = schedule["game_id"][0]
@@ -764,3 +775,103 @@ def test_the_arena_term_refuses_a_game_without_its_schedule_row() -> None:
     )
     with pytest.raises(ValueError, match="lack a schedule row"):
         b3.with_arena(league, b3.game_inputs(league))
+
+
+# Policy v2's input terms (#224, ADR 0036).
+
+
+def test_input_terms_extend_b3s_inputs_in_order() -> None:
+    assert b3.V1.inputs() == b3.INPUTS
+    assert b3.Terms(pest=True, team=True).inputs() == (*b3.INPUTS, "delta_s", "drawn_diff")
+    assert b3.Terms(coach=True).label() == "B3+coach"
+
+
+def coach_games() -> pl.DataFrame:
+    days = [date(2019, 10, 1) + timedelta(days=i) for i in range(32)]
+    return pl.DataFrame(
+        {
+            "game_id": list(range(1, 33)),
+            "season": 20192020,
+            "game_date": days,
+            "home": "ANA",
+            "away": ["BOS" if i % 2 else "BUF" for i in range(32)],
+        }
+    )
+
+
+def test_a_mid_season_coach_is_new_for_his_first_twenty_games_from_the_morning_after() -> None:
+    games = coach_games()
+    coaches = pl.DataFrame(
+        {
+            "team": ["ANA", "ANA"],
+            "first_game": [date(2019, 10, 1), date(2019, 10, 10)],  # day 0 and day 9
+        }
+    )
+    lines = {team: team for team in ("ANA", "BOS", "BUF")}
+    flags = b3.coach_flags(games, coaches, lines).filter(pl.col("team") == "ANA").sort("game_id")
+    new = dict(zip(flags["game_id"], flags["new"], strict=True))
+    # Through his own first game (day 9) the stint isn't known yet: the old coach, from the
+    # season's start, is not new. From the next game he is, until he has coached 20 games.
+    assert all(new[g] == 0.0 for g in range(1, 11))
+    assert all(new[g] == 1.0 for g in range(11, 30))
+    assert new[30] == 0.0 and new[32] == 0.0
+    # A team without a stint is not new.
+    others = b3.coach_flags(games, coaches, lines).filter(pl.col("team") != "ANA")
+    assert (others["new"] == 0.0).all()
+
+
+def with_drawn(tables: b3.Tables) -> b3.Tables:
+    """tables whose expected power plays carry a drawn index, as the lake's do (ADR 0021)."""
+    epp = tables.expected_power_plays.with_columns(
+        drawn_index=1.0 + (pl.col("game_id") % 7) / 10 + pl.col("is_home").cast(pl.Float64) / 20
+    )
+    return b3.Tables(**{**tables.__dict__, "expected_power_plays": epp})
+
+
+def test_input_terms_join_their_rows_and_take_the_later_known_time() -> None:
+    league = with_drawn(LEAGUE)
+    inputs = b3.game_inputs(league)
+    first = inputs["game_id"][0]
+    late = datetime(2030, 1, 1, tzinfo=UTC)
+    strength = pl.DataFrame(
+        {"game_id": inputs["game_id"], "delta_s": 0.5, "season": inputs["season"]}
+    ).with_columns(observed_utc=pl.when(pl.col("game_id") == first).then(late).otherwise(None))
+    strength = strength.with_columns(
+        observed_utc=pl.col("observed_utc").fill_null(datetime(2000, 1, 1, tzinfo=UTC))
+    )
+    tables = b3.Tables(**{**league.__dict__, "team_strength": strength})
+    joined = b3.with_terms(tables, inputs, b3.Terms(team=True, pest=True))
+    assert joined.height == inputs.height
+    assert joined.filter(pl.col("game_id") == first)["observed_utc"].item() == late
+    assert (joined["delta_s"] == 0.5).all()
+    epp = league.expected_power_plays
+    home = epp.filter(pl.col("is_home")).select("game_id", h="drawn_index")
+    away = epp.filter(~pl.col("is_home")).select("game_id", a="drawn_index")
+    want = home.join(away, on="game_id").select("game_id", want=pl.col("h") - pl.col("a"))
+    check = joined.join(want, on="game_id")
+    assert (check["drawn_diff"] - check["want"]).abs().max() < 1e-12
+    with pytest.raises(ValueError, match="team_strength"):
+        b3.with_terms(league, inputs, b3.Terms(team=True))
+
+
+def test_a_fit_with_input_terms_names_its_inputs_and_a_bundle_refuses_to_replay_it() -> None:
+    from nhl_edge.live import bundle
+
+    league = with_drawn(LEAGUE)
+    inputs = b3.with_terms(league, b3.game_inputs(league), b3.Terms(pest=True))
+    train = b3.training_games(league, inputs, TEST, START, "observed_utc")
+    terms = b3.Terms(pest=True).inputs()
+    model = b3.fit(train, b2.TUNED, TEST, terms)
+    assert model.inputs == terms and len(model.weights) == len(terms)
+    record = bundle.fit_record(model)
+    assert tuple(record["inputs"]) == terms
+    # A bundle's replay rebuilds v1's inputs only, so it refuses such a fit outright.
+    with pytest.raises(ValueError, match="inputs beyond v1's"):
+        bundle._fit(json_round_trip(record), b3.B3Model)
+    plain = b3.fit(
+        b3.training_games(LEAGUE, b3.game_inputs(LEAGUE), TEST, START, "observed_utc"),
+        b2.TUNED,
+        TEST,
+    )
+    assert "inputs" not in bundle.fit_record(plain)
+    assert bundle._fit(json_round_trip(bundle.fit_record(plain)), b3.B3Model).inputs == b3.INPUTS
