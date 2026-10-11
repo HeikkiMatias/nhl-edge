@@ -1,6 +1,6 @@
 # 0035. Policy v2's B3: each arena's home edge beyond the league's
 
-- Status: Proposed: the term stays out of v2 under its own rule (backtest evidence below)
+- Status: Accepted (by the owner, 2026-10-11): the term stays out of v2 under its own rule (backtest evidence below)
 - Date: 2026-10-10
 - Part of: policy v2 (#225), which the owner decided on 2026-10-10 (#222)
 
