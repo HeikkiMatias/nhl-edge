@@ -1,6 +1,6 @@
 # 0037. Policy v2: confirmed starting goalies in live B3 and in u
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-10-11)
 - Date: 2026-10-11
 - Part of: policy v2 (#225), which replaces v1 from its freeze date (the owner, 2026-10-10, #222 option 1)
 
@@ -53,7 +53,9 @@
 
 **A confirmed starter in B3:**
 - He replaces the mix: his scenario has probability 1, and B3's other inputs are unchanged.
-- **One outside the candidates** (a trade, a signing, a call-up) is rated from his own history, as of the game's morning, like any candidate. His goalie effect and gamma follow him from team to team (ADRs 0011 and 0022).
+- **One outside the candidates** (a trade, a signing, a call-up) is rated from his own history: the effect of his latest goalie-effect row known before the decision, from any team. His goalie effect and gamma follow him from team to team (ADRs 0011 and 0022).
+  - **Why the latest row:** the morning build runs at 09:00 UTC, before the day's first poll, so it can't rate a goalie the polls name later. A row is as of the morning of his last game as a candidate, so it misses at most the games he has played since then.
+  - **His gamma** comes from that effect and the attacking team's xG per shot in the game. **His expected goals saved** use his new team's expected shots.
 - **A name that matches no goalie** is rated as a goalie with no earlier game: effect 0, gamma 1, the model's treatment of an unknown goalie. The mismatch is logged for review.
 
 **A likely starter in B3:**
@@ -65,6 +67,8 @@
   - **When it's fixed:** once, at the freeze, with its 95% interval. It is never updated within the season, and it's recorded in the freeze commit.
   - **Small samples:** if fewer than 30 such team-games exist by then, L comes back to the owner before the freeze.
 - **His rating:** as for a confirmed starter, outside the candidates or unmatched.
+
+**B2,** the yardstick, reads the same starters, so the comparison of B3 with B2 stays like for like (hard rule 3).
 
 **u:**
 - **A confirmed team's goalie doubt is 0.**
