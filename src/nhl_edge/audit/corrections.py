@@ -5,6 +5,8 @@ Each live-season game's feeds are fetched again RECHECK_AFTER after the copy the
 difference is a correction that the backtest's late copies carry and live's first copies lack.
 ADR 0004 accepts a moved goal scorer as small, so every other kind of difference is listed as a
 problem to review; if such differences reach more than a few games a season, ADR 0004 is reopened.
+A rechecked shift chart without rows, when the tables' copy has shifts, is a failed recheck of the
+chart, listed as such and never counted as shifts removed (#237).
 """
 
 from dataclasses import dataclass
@@ -27,6 +29,8 @@ from nhl_edge.ingest.corrections import (
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import FEED_TABLES
 
+# The table that is the shift chart's own rows.
+CHART_TABLE = "shifts"
 # The one difference ADR 0004 accepts as small: a goal credited to another shooter.
 SCORER = ("shots", GOAL_SCORER)
 # A recheck is due RECHECK_AFTER after the tables' copy was fetched. The nightly run that falls due
@@ -46,6 +50,11 @@ class Corrections:
     def missing(self) -> list[int]:
         checked = {diff.game_id for diff in self.diffs}
         return [game_id for game_id in self.due if game_id not in checked]
+
+    @property
+    def charts_not_rechecked(self) -> list[int]:
+        """The compared games whose rechecked shift chart had no rows (#237)."""
+        return [diff.game_id for diff in self.diffs if not diff.chart_rechecked]
 
 
 def corrections(
@@ -99,12 +108,25 @@ def markdown_report(result: Corrections) -> str:
         def total(name: str, frame: pl.DataFrame = mine) -> int:
             return int(frame.filter(pl.col("field") == name)["rows"].sum())
 
-        rows = sum(diff.rows[table] for diff in result.diffs)
+        # The shifts are the chart's own rows: a game whose chart wasn't rechecked isn't checked.
+        checked = [d for d in result.diffs if d.chart_rechecked or table != CHART_TABLE]
+        rows = sum(diff.rows[table] for diff in checked)
         games = mine["game_id"].n_unique()
         lines.append(
-            f"| {table} | {len(result.diffs)} | {rows:,} | {games} | {total(ADDED)} | "
+            f"| {table} | {len(checked)} | {rows:,} | {games} | {total(ADDED)} | "
             f"{total(REMOVED)} | {total(CHANGED)} |"
         )
+    unchecked = result.charts_not_rechecked
+    if unchecked:
+        lines += [
+            "",
+            f"The rechecked shift chart has no rows in {len(unchecked)} of {len(result.diffs)} "
+            f"games, e.g. {_examples(unchecked)}, while the tables' copy has shifts. The NHL "
+            "answers an empty chart for a game it doesn't serve one for, so these are failed "
+            "rechecks of the chart, tried again on later runs (#237). Their tables are compared "
+            "with the tables' chart on both sides, so they show only the play-by-play's and "
+            "the boxscore's changes.",
+        ]
     fields = changes.filter(~pl.col("field").is_in([ADDED, REMOVED, CHANGED]))
     if fields.height:
         by_field = (
@@ -120,12 +142,21 @@ def markdown_report(result: Corrections) -> str:
     return "\n".join(lines)
 
 
+def _examples(game_ids: list[int]) -> str:
+    return ", ".join(str(game_id) for game_id in game_ids[:EXAMPLES])
+
+
 def problems(result: Corrections) -> list[str]:
     found = []
     missing = result.missing
     if missing:
-        examples = ", ".join(str(game_id) for game_id in missing[:EXAMPLES])
-        found.append(f"{len(missing)} games due for a recheck have none, e.g. {examples}")
+        found.append(f"{len(missing)} games due for a recheck have none, e.g. {_examples(missing)}")
+    unchecked = result.charts_not_rechecked
+    if unchecked:
+        found.append(
+            f"{len(unchecked)} games' rechecked shift chart has no rows, e.g. "
+            f"{_examples(unchecked)}: their charts are not rechecked yet"
+        )
     changes = _changes(result).filter(pl.col("field") != CHANGED)
     beyond = changes.filter(~((pl.col("table") == SCORER[0]) & (pl.col("field") == SCORER[1])))
     for (game_id,), rows in beyond.sort("game_id").group_by("game_id", maintain_order=True):

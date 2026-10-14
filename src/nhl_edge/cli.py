@@ -218,6 +218,13 @@ def recheck(
     )
     for missing in summary.not_found:
         typer.echo(f"warning: no {missing} to recheck", err=True)
+    if summary.empty_charts:
+        examples = ", ".join(str(game_id) for game_id in summary.empty_charts[:5])
+        typer.echo(
+            f"warning: {len(summary.empty_charts)} rechecked shift charts have no rows (e.g. "
+            f"{examples}); later runs fetch them again (#237)",
+            err=True,
+        )
 
 
 @app.command("toi-reports")
