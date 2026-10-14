@@ -164,6 +164,13 @@ def chart_complete_or_settled(game_id: int, game_date: date) -> Reuse:
     return reuse
 
 
+def has_shifts(body: bytes) -> bool:
+    """Whether a shift chart response lists any row. For a chart it doesn't serve, the NHL answers
+    {"data": [], "total": 0}, as it did a week later for 47 of this season's first 52 games
+    (#237)."""
+    return bool(json.loads(body).get("data"))
+
+
 def feed_url(kind: str, game_id: int) -> str:
     """The URL of one of a game's per-game feeds (FEED_KINDS)."""
     if kind == "shiftcharts":
@@ -297,14 +304,21 @@ class NhlApi:
         url = feed_url("shiftcharts", game_id)
         return self.fetch("shiftcharts", f"{season}/{game_id}", url, reuse)
 
-    def recheck(self, kind: str, season: int, game_id: int, after: datetime) -> Response:
+    def recheck(
+        self, kind: str, season: int, game_id: int, after: datetime, *, listed: bool = False
+    ) -> Response:
         """A later copy of one of a game's feeds, fetched at or after `after` (#30). It is stored
         under <kind>-recheck, so the per-game tables, which read the copies under <kind>, never
-        parse it: they keep the copy the nightly ingest read, as live does (ADR 0004)."""
+        parse it: they keep the copy the nightly ingest read, as live does (ADR 0004). With
+        listed, for a shift chart whose first copy has shifts, a cached copy without any is not
+        reused, so the next run fetches it again (#237)."""
         url = feed_url(kind, game_id)
-        return self.fetch(
-            f"{kind}{RECHECK_SUFFIX}", f"{season}/{game_id}", url, fetched_after(after)
-        )
+        later = fetched_after(after)
+
+        def reuse(body: bytes, meta: dict[str, Any]) -> bool:
+            return later(body, meta) and (not listed or has_shifts(body))
+
+        return self.fetch(f"{kind}{RECHECK_SUFFIX}", f"{season}/{game_id}", url, reuse)
 
     def toi_report(self, season: int, game_id: int, side: str) -> Response:
         """One team's HTML time-on-ice report (#68), side "home" or "visitor", stored under

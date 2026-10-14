@@ -321,3 +321,79 @@ def test_only_live_games_a_week_and_a_night_after_their_copy_are_due(tmp_path: P
     result = audit.corrections(store, both, lineups, date(2026, 10, 7))
     assert sorted(result.due) == sorted(OPENING_WEEK_GAMES) and result.diffs == []
     assert audit.markdown_report(audit.Corrections([], [])).startswith("No live-season game")
+
+
+# An empty rechecked shift chart (#237)
+
+EMPTY_CHART = b'{"data": [], "total": 0}'
+
+
+def empty_chart(body: bytes) -> bytes:
+    return EMPTY_CHART
+
+
+def test_an_empty_rechecked_chart_is_no_copy_and_is_fetched_again(tmp_path: Path) -> None:
+    store = RawStore(tmp_path)
+    store_first_copies(store)
+    now = FIRST + timedelta(days=7, hours=1)
+    empty = Server({"shiftcharts": empty_chart})
+    summary = recheck(api(store, empty, now), games(), fetched(), now, 3, first_season=20102011)
+    assert sorted(summary.empty_charts) == sorted(OPENING_WEEK_GAMES)
+    # The next run reuses the play-by-play and boxscore, but fetches the charts again.
+    later = now + timedelta(days=1)
+    served = Server()
+    again = recheck(api(store, served, later), games(), fetched(), later, 3, first_season=20102011)
+    assert served.calls == {"shiftcharts": 3} and again.empty_charts == []
+    assert (again.fetched, again.reused) == (3, 6)
+    # A chart with rows is a copy, reused from then on.
+    last = recheck(api(store, Server(), later), games(), fetched(), later, 3, first_season=20102011)
+    assert (last.fetched, last.reused) == (0, 9)
+
+
+def test_an_empty_first_chart_makes_an_empty_recheck_a_copy(tmp_path: Path) -> None:
+    store = RawStore(tmp_path)
+    store_first_copies(store)
+    # The lookback's newer copy, just as empty, is the one the tables read.
+    newer = FIRST + timedelta(minutes=1)
+    for game in games().iter_rows(named=True):
+        key = f"shiftcharts/{game['season']}/{game['game_id']}/{newer:%Y%m%dT%H%M%SZ}"
+        store.put("nhl", key, EMPTY_CHART, {"fetched_utc": newer.isoformat()})
+    now = FIRST + timedelta(days=7, hours=1)
+    server = Server({"shiftcharts": empty_chart})
+    summary = recheck(api(store, server, now), games(), fetched(), now, 3, first_season=20102011)
+    assert summary.empty_charts == []
+    again = recheck(api(store, server, now), games(), fetched(), now, 3, first_season=20102011)
+    assert (again.fetched, again.reused) == (0, 9)
+    diff = diff_game(store, games_row(GAME))
+    assert diff is not None and diff.chart_rechecked and diff.changes.is_empty()
+
+
+def test_an_empty_rechecked_chart_removes_no_shifts(tmp_path: Path) -> None:
+    diff = rechecked(tmp_path, {"shiftcharts": empty_chart})
+    assert diff is not None and not diff.chart_rechecked
+    assert diff.changes.is_empty()
+    # The other two feeds are still compared, against the tables' chart.
+    moved = rechecked(
+        tmp_path / "moved",
+        {"shiftcharts": empty_chart, "play-by-play": credit_first_goal_to(8_000_001)},
+    )
+    assert counts(moved) == {("shots", GOAL_SCORER): 1, ("shots", CHANGED): 1}
+
+
+def test_the_report_lists_a_chart_not_rechecked_apart_from_corrections(tmp_path: Path) -> None:
+    unchanged = rechecked(tmp_path / "a", {})
+    empty = rechecked(tmp_path / "b", {"shiftcharts": empty_chart})
+    assert unchanged is not None and empty is not None
+    diffs = [
+        GameDiff(2026020001, unchanged.rows, unchanged.changes),
+        GameDiff(2026020002, empty.rows, empty.changes, empty.chart_rechecked),
+    ]
+    result = audit.Corrections(due=[2026020001, 2026020002], diffs=diffs)
+    report = audit.markdown_report(result)
+    assert f"| shifts | 1 | {unchanged.rows['shifts']:,} | 0 |" in report
+    assert "| shots | 2 |" in report
+    assert "no rows in 1 of 2 games, e.g. 2026020002" in report
+    assert audit.problems(result) == [
+        "1 games' rechecked shift chart has no rows, e.g. 2026020002: their charts are not "
+        "rechecked yet"
+    ]
