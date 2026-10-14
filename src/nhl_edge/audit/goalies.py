@@ -14,15 +14,21 @@ use a report only once it has fetched it. Daily Faceoff names goalies, matched t
 name in players without accents, case, punctuation or spaces.
 """
 
-import re
-import unicodedata
+from datetime import time
 
 import polars as pl
+
+from nhl_edge.backtest.metrics import Estimate, bootstrap
+from nhl_edge.ingest.odds import ET
+from nhl_edge.lineup import confirmed
+from nhl_edge.lineup.confirmed import name_key as name_key
 
 # A game whose last poll came earlier than this before the start is a problem: the polls exist to
 # catch the confirmations of the last hour (docs/plan.md section 10). A reporting threshold only.
 LAST_HOUR_MIN = 60
 CONFIRMED = "Confirmed"
+# Policy v2's decision (ADR 0037): 12:45 ET on the game date.
+DECISION_ET = time(12, 45)
 
 TEAM_GAME_SCHEMA = {
     "game_id": pl.Int64,
@@ -35,17 +41,8 @@ TEAM_GAME_SCHEMA = {
 }
 
 
-def name_key(name: str | None) -> str | None:
-    """A goalie's name without accents, case, punctuation or spaces, for matching across sources:
-    Ukko-Pekka Luukkonen and Ukko Pekka Luukkonen are one goalie."""
-    if name is None:
-        return None
-    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z]", "", ascii_name.lower())
-
-
 def _key(column: str) -> pl.Expr:
-    return pl.col(column).map_elements(name_key, return_dtype=pl.String)
+    return confirmed.key(column)
 
 
 def _minutes_before() -> pl.Expr:
@@ -144,6 +141,131 @@ def team_games(
         )
         .with_columns(pl.col("nhl_polls", "dfo_polls").fill_null(0))
     )
+
+
+def decision_utc() -> pl.Expr:
+    """DECISION_ET on each row's game date, in UTC."""
+    at = pl.duration(hours=DECISION_ET.hour, minutes=DECISION_ET.minute)
+    local = pl.col("game_date").cast(pl.Datetime("us")) + at
+    return local.dt.replace_time_zone(ET.key).dt.convert_time_zone("UTC")
+
+
+def midday_snapshots(odds: pl.DataFrame) -> pl.DataFrame:
+    """Each ET date's midday odds snapshot (game_date, moment_utc): the decision's input cutoff,
+    which the midday goalie poll precedes in the same dispatch."""
+    midday = odds.filter(pl.col("slot") == "midday")
+    return midday.group_by(
+        game_date=pl.col("snapshot_utc").dt.convert_time_zone(ET.key).dt.date()
+    ).agg(moment_utc=pl.col("snapshot_utc").min())
+
+
+def at_decision(
+    starters: pl.DataFrame,
+    nhl: pl.DataFrame,
+    dailyfaceoff: pl.DataFrame,
+    decisions: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """Each team-game with a known starter, from the first date either source was polled, that
+    starts after policy v2's decision, with each source's call at its latest poll before then, as
+    the decision reads them (confirmed.calls), and whether the called goalie started: nhl_right
+    where the NHL flagged one, dfo_right where Daily Faceoff named one. The decision is the date's
+    midday odds snapshot (decisions: game_date, moment_utc), else 12:45 ET. The season comes from
+    the game id."""
+    polled = pl.concat([nhl.select("game_date"), dailyfaceoff.select("game_date")])
+    first = polled["game_date"].min()
+    if first is None:
+        return confirmed.calls(
+            starters.clear().with_columns(moment_utc=decision_utc()), nhl, dailyfaceoff
+        )
+    moments = starters.filter(pl.col("game_date") >= first)
+    if decisions is not None:
+        moments = moments.join(
+            decisions.select("game_date", midday="moment_utc"), on="game_date", how="left"
+        )
+    else:
+        moments = moments.with_columns(midday=pl.lit(None, pl.Datetime("us", "UTC")))
+    moments = (
+        moments.with_columns(moment_utc=pl.coalesce("midday", decision_utc()))
+        .drop("midday")
+        .filter(pl.col("start_utc") > pl.col("moment_utc"))
+    )
+    start_year = pl.col("game_id") // 1_000_000
+    return confirmed.calls(moments, nhl, dailyfaceoff).with_columns(
+        season=(start_year * 10_000 + start_year + 1).cast(pl.Int32),
+        nhl_right=pl.col("nhl_id") == pl.col("starter_id"),
+        dfo_right=_key("dfo_name") == _key("starter_name"),
+    )
+
+
+def decision_share(frame: pl.DataFrame, call: pl.Expr, right: str) -> Estimate | None:
+    """The share of the team-games with the call whose called goalie started, with its weekly
+    block bootstrap interval (hard rule 7); None without any."""
+    rows = frame.filter(call).with_columns(pl.col(right).cast(pl.Float64))
+    return bootstrap(rows, right) if rows.height else None
+
+
+def _share_row(label: str, share: Estimate | None) -> str:
+    if share is None:
+        return f"| {label} | 0 | - | - |"
+    right = round(share.mean * share.games)
+    return (
+        f"| {label} | {share.games} | {right} | "
+        f"{share.mean:.3f} [{share.low:.3f}, {share.high:.3f}] |"
+    )
+
+
+def decision_markdown(frame: pl.DataFrame) -> str:
+    """The calls at 12:45 ET: how many team-games had each, and the share right, with intervals.
+    Daily Faceoff's Likely share is ADR 0037's L, fixed at v2's freeze."""
+    if frame.is_empty():
+        return "No team-game with a known starter started after 12:45 ET since the polls began."
+    status = pl.col("dfo_status")
+    flagged = pl.col("nhl_id").is_not_null()
+    called = status.is_in([confirmed.DFO_CONFIRMED, confirmed.DFO_LIKELY]).fill_null(False)
+    neither = ~flagged & ~called
+    lines = [
+        f"**At policy v2's 12:45 ET decision (ADR 0037):** each source's call at its latest poll "
+        "before the date's midday odds snapshot, the decision's input cutoff (12:45 ET on a date "
+        f"without one), for the {frame.height} team-games starting after it. "
+        "Right means the called goalie started. Shares carry 95% weekly block bootstrap "
+        "intervals.",
+        "",
+        "| Call at 12:45 ET | Team-games | Right | Share right |",
+        "| --- | --- | --- | --- |",
+        _share_row("NHL starter flag", decision_share(frame, flagged, "nhl_right")),
+        _share_row(
+            "Daily Faceoff, Confirmed",
+            decision_share(frame, status == confirmed.DFO_CONFIRMED, "dfo_right"),
+        ),
+        _share_row(
+            "Daily Faceoff, Likely (ADR 0037's L)",
+            decision_share(frame, status == confirmed.DFO_LIKELY, "dfo_right"),
+        ),
+        f"| No call from either | {frame.filter(neither).height} | - | - |",
+    ]
+    return "\n".join(lines)
+
+
+def decision_problems(frame: pl.DataFrame) -> list[str]:
+    """Every team-game whose call at 12:45 ET named a goalie who didn't start: a flag or a
+    Confirmed that v2 would take as certain, or a Likely."""
+    found = []
+    for row in frame.iter_rows(named=True):
+        who = f"{row['game_date']} {row['team']} ({row['game_id']})"
+        if row["nhl_right"] is False:
+            found.append(
+                f"{who}: the NHL flagged {row['nhl_id']} at 12:45 ET, "
+                f"{row['starter_name']} ({row['starter_id']}) started"
+            )
+        if row["dfo_right"] is False and row["dfo_status"] in (
+            confirmed.DFO_CONFIRMED,
+            confirmed.DFO_LIKELY,
+        ):
+            found.append(
+                f"{who}: Daily Faceoff had {row['dfo_name']} {row['dfo_status']} at 12:45 ET, "
+                f"{row['starter_name']} started"
+            )
+    return found
 
 
 def _source_row(frame: pl.DataFrame, label: str, named: str, right: str, last: str | None) -> str:

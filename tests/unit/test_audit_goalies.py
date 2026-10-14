@@ -200,3 +200,54 @@ def test_the_report_says_when_the_nhl_named_no_starter() -> None:
     assert "| Daily Faceoff, Confirmed | 1 of 4 | 20 | 1 of 1 | - |" in text
     assert "named no starter before any start" in text
     assert "Games with a poll in the last 60 minutes before the start: 1 of 2." in text
+
+
+def test_the_calls_at_1245_et_give_each_sources_share_right() -> None:
+    # 12:45 EDT on 2026-10-03 is 16:45 UTC, 375 minutes before the 23:00 start and 495 before
+    # the late one's. Dobeš is confirmed and starts; Woll is likely and doesn't; Jarry is likely
+    # and starts; VAN has no call. A Confirmed after 12:45 ET isn't the call at the decision.
+    frame = goalies.at_decision(
+        STARTERS,
+        nhl_polls([]),
+        dfo_polls(
+            [
+                ("MTL", START, 400, "Jakub Dobeš", "Confirmed"),
+                ("TOR", START, 400, "Joseph Woll", "Likely"),
+                ("TOR", START, 300, "Anthony Stolarz", "Confirmed"),
+                ("EDM", LATE, 600, "Tristan Jarry", "Likely"),
+            ]
+        ),
+    )
+    assert frame.height == 4
+    likely = goalies.decision_share(frame, pl.col("dfo_status") == "Likely", "dfo_right")
+    assert likely is not None and (likely.mean, likely.games) == (0.5, 2)
+    report = goalies.decision_markdown(frame)
+    assert "| Daily Faceoff, Confirmed | 1 | 1 | 1.000 [1.000, 1.000] |" in report
+    assert "| Daily Faceoff, Likely (ADR 0037's L) | 2 | 1 |" in report
+    assert "| NHL starter flag | 0 | - | - |" in report
+    assert "| No call from either | 1 | - | - |" in report
+    assert goalies.decision_problems(frame) == [
+        f"{DAY} TOR (1): Daily Faceoff had Joseph Woll Likely at 12:45 ET, Anthony Stolarz started"
+    ]
+
+
+def test_a_game_starting_by_1245_et_has_no_call_at_the_decision() -> None:
+    early = STARTERS.with_columns(start_utc=pl.lit(datetime(2026, 10, 3, 16, 30, tzinfo=UTC)))
+    assert goalies.at_decision(early, nhl_polls([]), dfo_polls([])).is_empty()
+
+
+def test_the_decision_is_the_dates_midday_snapshot_which_its_goalie_poll_precedes() -> None:
+    # The midday dispatch polls the goalies, then snapshots the odds at 16:47 UTC: a Confirmed
+    # polled at 16:46 is the call at the decision, though it is after 12:45:00 ET.
+    snapshot = datetime(2026, 10, 3, 16, 47, tzinfo=UTC)
+    odds = pl.DataFrame(
+        {"slot": ["morning", "midday"], "snapshot_utc": [snapshot.replace(hour=11), snapshot]}
+    )
+    decisions = goalies.midday_snapshots(odds)
+    assert decisions.rows() == [(DAY, snapshot)]
+    polls = dfo_polls([("TOR", START, 374, "Anthony Stolarz", "Confirmed")])
+    frame = goalies.at_decision(STARTERS, nhl_polls([]), polls, decisions)
+    tor = team(frame, "TOR")
+    assert (tor["moment_utc"], tor["dfo_status"], tor["dfo_right"]) == (snapshot, "Confirmed", True)
+    # Without the snapshot, 12:45 ET stands and the poll comes too late.
+    assert team(goalies.at_decision(STARTERS, nhl_polls([]), polls), "TOR")["dfo_status"] is None
