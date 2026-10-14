@@ -85,7 +85,7 @@ export type LiveReport = {
     clv_stake_weighted: Figure | null;
     fair_move_per_bet: Figure;
     floor: { required: number; share_with_proxy: number | null };
-    bound: Record<string, { stand_in: number; imputed: number; clv_per_bet: Figure }>;
+    bound: Record<string, { stand_in: number | null; imputed: number; clv_per_bet: Figure }>;
   };
   comparisons: Record<string, { difference: Figure; left_out: number }>;
   calibration: {

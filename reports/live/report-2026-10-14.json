@@ -39,7 +39,7 @@
           "weeks": 2
         },
         "imputed": 0,
-        "stand_in": -0.04299064455030703
+        "stand_in": null
       },
       "p90": {
         "clv_per_bet": {
@@ -47,14 +47,17 @@
           "weeks": 2
         },
         "imputed": 0,
-        "stand_in": 0.0012866339939273767
+        "stand_in": null
       }
     },
     "clv_per_bet": {
       "games": 17,
       "weeks": 2
     },
-    "clv_stake_weighted": null,
+    "clv_stake_weighted": {
+      "games": 17,
+      "weeks": 2
+    },
     "fair_move_per_bet": {
       "games": 17,
       "weeks": 2

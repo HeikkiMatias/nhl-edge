@@ -169,6 +169,14 @@ def test_too_few_weeks_give_counts_and_no_estimate() -> None:
     assert "mean" not in result["comparisons"]["BLEND - B1"]["difference"]
     assert "at" not in result["calibration"]
     assert "too few weeks for an estimate" in lr.markdown(result)
+    # The stake-weighted CLV and the bounds' percentiles of the observed CLV are withheld too,
+    # their counts kept (Codex on #235).
+    value = result["closing_value"]
+    assert value["clv_stake_weighted"] == {"games": 45, "weeks": 3}
+    assert all(bound["stand_in"] is None for bound in value["bound"].values())
+    text = lr.markdown(result)
+    assert "Stake-weighted CLV: 45 bets over 3 weeks" in text
+    assert "withheld until 4 weeks" in text
 
 
 def test_an_interim_report_gives_no_verdict_and_the_review_does() -> None:

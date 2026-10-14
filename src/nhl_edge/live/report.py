@@ -109,11 +109,16 @@ def enough(frame: pl.DataFrame) -> bool:
     return weeks(frame) >= MIN_WEEKS
 
 
+def counts(frame: pl.DataFrame) -> dict[str, Any]:
+    """A figure's counts alone, for one over fewer than MIN_WEEKS weeks."""
+    return {"games": frame.height, "weeks": weeks(frame)}
+
+
 def estimate(frame: pl.DataFrame, value: str) -> dict[str, Any]:
     """value's mean over the frame's games with its weekly block bootstrap interval, or only the
     counts when they span fewer than MIN_WEEKS weeks."""
     if not enough(frame):
-        return {"games": frame.height, "weeks": weeks(frame)}
+        return counts(frame)
     return bootstrap(frame, value).to_dict()
 
 
@@ -230,7 +235,10 @@ def closing_value(bets: pl.DataFrame) -> dict[str, Any]:
     share = valued.height / eligible.height if eligible.height else None
     result: dict[str, Any] = {
         "clv_per_bet": estimate(valued, "clv"),
-        "clv_stake_weighted": stake_weighted(valued) if enough(valued) else None,
+        # Over fewer than MIN_WEEKS weeks, only its counts (Codex on #235).
+        "clv_stake_weighted": (stake_weighted(valued) if enough(valued) else counts(valued))
+        if valued.height
+        else None,
         "fair_move_per_bet": estimate(valued, "fair_move"),
         "floor": {"required": FLOOR, "share_with_proxy": share},
         "bound": {},
@@ -238,8 +246,12 @@ def closing_value(bets: pl.DataFrame) -> dict[str, Any]:
     if valued.is_empty():
         return result
     for percentile in BOUND:
-        stand_in = float(np.percentile(valued["clv"].to_numpy(), percentile))
-        imputed = eligible.with_columns(clv_bound=pl.col("clv").fill_null(stand_in))
+        # A percentile of the observed CLV is withheld too until MIN_WEEKS weeks (Codex on #235).
+        stand_in = (
+            float(np.percentile(valued["clv"].to_numpy(), percentile)) if enough(valued) else None
+        )
+        bound = pl.col("clv") if stand_in is None else pl.col("clv").fill_null(stand_in)
+        imputed = eligible.with_columns(clv_bound=bound)
         result["bound"][f"p{percentile}"] = {
             "stand_in": stand_in,
             "imputed": eligible.height - valued.height,
@@ -531,6 +543,10 @@ def report(
     return result
 
 
+def _stand_in(value: float | None) -> str:
+    return f"{value:+.4f}" if value is not None else f"withheld until {MIN_WEEKS} weeks"
+
+
 def _fmt(figure: dict[str, Any] | None, unit: str = "games", digits: int = 4) -> str:
     """A figure as text: its value and interval, or its counts when too few weeks."""
     if figure is None:
@@ -606,7 +622,7 @@ def markdown(result: dict[str, Any]) -> str:
         "",
         "- **CLV per bet** against Pinnacle's fair closing proxy: "
         + _fmt(value["clv_per_bet"], "bets"),
-        f"- Stake-weighted CLV: {_fmt(value['clv_stake_weighted'])}",
+        f"- Stake-weighted CLV: {_fmt(value['clv_stake_weighted'], 'bets')}",
         f"- Fair move per bet: {_fmt(value['fair_move_per_bet'], 'bets')}",
     ]
     share = value["floor"]["share_with_proxy"]
@@ -618,7 +634,7 @@ def markdown(result: dict[str, Any]) -> str:
     )
     for name, bound in value["bound"].items():
         lines.append(
-            f"- Bound at the {name[1:]}th percentile ({bound['stand_in']:+.4f} for each of "
+            f"- Bound at the {name[1:]}th percentile ({_stand_in(bound['stand_in'])} for each of "
             f"{bound['imputed']} eligible bets without a proxy): "
             f"{_fmt(bound['clv_per_bet'], 'bets')}"
         )
