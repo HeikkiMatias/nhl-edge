@@ -202,7 +202,7 @@ export function Results({ bets }: { bets: Bet[] }) {
   if (bets.length === 0) return <p className="muted">No paper bet yet.</p>;
   const days = bankroll(bets);
   const names = policyNames(bets);
-  const starts = policyStarts(days);
+  const starts = policyStarts(bets, days);
   const r = record(bets);
   const withClv = bets.filter((b) => b.clv !== null);
   // The review line is drawn once the bankroll has fallen half way to it; before that it would
@@ -228,10 +228,11 @@ export function Results({ bets }: { bets: Bet[] }) {
             title="Paper bankroll after each settled day, in units"
             points={days.map((d) => ({ label: shortDate(d.date), value: d.balance }))}
             format={(v) => v.toFixed(1)}
-            markers={starts.map((i) => ({
-              index: i,
-              label: `${names.get(days[i].policy)} from ${shortDate(days[i].date)}`,
-            }))}
+            markers={starts.flatMap((s) =>
+              s.index === null
+                ? []
+                : [{ index: s.index, label: `${names.get(s.policy)} from ${shortDate(s.date)}` }],
+            )}
             reference={
               nearReview
                 ? {
@@ -241,11 +242,10 @@ export function Results({ bets }: { bets: Bet[] }) {
                 : undefined
             }
           />
-          {starts.map((i) => (
-            <p className="muted" key={days[i].date}>
-              {names.get(days[i].policy)}&apos;s bets start on {days[i].date}. The bankroll carries
-              on from {names.get(days[i - 1].policy)}&apos;s balance: one paper bankroll runs through
-              every policy.
+          {starts.map((s) => (
+            <p className="muted" key={s.policy}>
+              {names.get(s.policy)}&apos;s bets start on {s.date}. The bankroll carries on from{" "}
+              {names.get(s.previous)}&apos;s balance: one paper bankroll runs through every policy.
             </p>
           ))}
           {nearReview ? null : (

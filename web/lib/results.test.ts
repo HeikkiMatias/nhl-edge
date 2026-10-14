@@ -125,7 +125,30 @@ test("one bankroll runs through the policies, and each later policy's first day 
   ]);
   expect(days[1].balance).toBeCloseTo(START + 2 - 1, 10);
   expect(days[1].peak).toBe(START + 2);
-  expect(policyStarts(days)).toEqual([1]);
+  expect(policyStarts(bets, days)).toEqual([
+    { policy: V2, previous: V1, date: "2026-10-15", index: 1 },
+  ]);
   // One policy only: no marker.
-  expect(policyStarts(bankroll([bet("2026-10-14", 1, won(2))]))).toEqual([]);
+  const one = [bet("2026-10-14", 1, won(2))];
+  expect(policyStarts(one, bankroll(one))).toEqual([]);
+});
+
+test("a policy starts on its first bet, even a void or unsettled one (Codex on #246)", () => {
+  // v2's first day was void and its second awaits a result: the start is still its first bet,
+  // and the marker waits for a settled day on or after it.
+  const bets = [
+    bet("2026-10-14", 1, won(2)),
+    bet("2026-10-15", 2, { settlement: "void", profit: 0, policy_version: V2 }),
+    bet("2026-10-16", 3, { policy_version: V2 }),
+  ];
+  expect(policyStarts(bets, bankroll(bets))).toEqual([
+    { policy: V2, previous: V1, date: "2026-10-15", index: null },
+  ]);
+  const later = [...bets, bet("2026-10-17", 4, { ...won(1), policy_version: V2 })];
+  expect(policyStarts(later, bankroll(later))[0]).toEqual({
+    policy: V2,
+    previous: V1,
+    date: "2026-10-15",
+    index: 1,
+  });
 });

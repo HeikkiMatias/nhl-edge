@@ -53,18 +53,30 @@ export function bankroll(bets: Bet[]): Day[] {
 /** Each policy's short name, v1, v2 and on, in the order of its first bet. One paper bankroll
  * runs through them all: a new policy carries on the earlier one's balance (ADR 0037). */
 export function policyNames(bets: Bet[]): Map<string, string> {
+  const versions = [...new Set(bets.map((b) => b.policy_version))];
+  const first = (v: string) =>
+    bets.reduce((d, b) => (b.policy_version === v && b.game_date < d ? b.game_date : d), "9999");
+  versions.sort((a, b) => (first(a) < first(b) ? -1 : first(a) > first(b) ? 1 : 0));
+  return new Map(versions.map((version, i) => [version, `v${i + 1}`]));
+}
+
+/** Where each policy after the first begins: the date of its first bet, whatever its result,
+ * the policy before it, and the first settled day in days on or after that date for the chart's
+ * marker (null until one is settled). */
+export function policyStarts(
+  bets: Bet[],
+  days: Day[],
+): { policy: string; previous: string; date: string; index: number | null }[] {
   const first = new Map<string, string>();
   for (const b of bets) {
     const seen = first.get(b.policy_version);
     if (seen === undefined || b.game_date < seen) first.set(b.policy_version, b.game_date);
   }
   const order = [...first.entries()].sort(([, a], [, b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return new Map(order.map(([version], i) => [version, `v${i + 1}`]));
-}
-
-/** The settled days where a new policy's bets begin, by their index in days. */
-export function policyStarts(days: Day[]): number[] {
-  return days.flatMap((d, i) => (i > 0 && d.policy !== days[i - 1].policy ? [i] : []));
+  return order.slice(1).map(([policy, date], i) => {
+    const index = days.findIndex((d) => d.date >= date);
+    return { policy, previous: order[i][0], date, index: index < 0 ? null : index };
+  });
 }
 
 /** The bets' record: won, lost, void and awaiting a result, the settled stakes and profit, and
