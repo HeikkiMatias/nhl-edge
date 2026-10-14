@@ -1,6 +1,6 @@
 # 0030. The frozen policy's live inputs: the blend fitted on the close, and u as on history
 
-- Status: Accepted (by the owner, 2026-10-05); amended by the owner's ruling of the same day on live B3, recorded on 2026-10-07 (PR #178)
+- Status: Accepted (by the owner, 2026-10-05); amended by the owner's ruling of the same day on live B3, recorded on 2026-10-07 (PR #178). For policy v2, its rules on live B3 and on u are superseded by 0037; policy v1's record keeps them.
 - Date: 2026-10-05
 
 ## Context

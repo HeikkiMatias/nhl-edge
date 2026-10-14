@@ -272,12 +272,20 @@ def _goalie_section(lake: Lake, games: pl.DataFrame, as_of: date) -> Section:
     polls = [lake.read(table) for table in ("pregame_goalies", "dailyfaceoff_goalies")]
     before = [poll.filter(pl.col("game_date") <= as_of) for poll in polls]
     frame = goalie_audit.team_games(starters, *before)
+    odds = lake.read("odds_snapshots").filter(pl.col("snapshot_utc").dt.date() <= as_of)
+    nhl, dailyfaceoff = before
+    decided = goalie_audit.at_decision(
+        starters, nhl, dailyfaceoff, goalie_audit.midday_snapshots(odds)
+    )
     body = (
         "Each pre-game goalie poll (#42, #48) against the starter in `actual_lineups`: when "
         "each source first named a goalie, and whether it was the starter.\n\n"
         + goalie_audit.markdown_report(frame)
+        + "\n\n"
+        + goalie_audit.decision_markdown(decided)
     )
-    return Section("Starting goalies", body, goalie_audit.problems(frame))
+    problems = goalie_audit.problems(frame) + goalie_audit.decision_problems(decided)
+    return Section("Starting goalies", body, problems)
 
 
 def _corrections_section(

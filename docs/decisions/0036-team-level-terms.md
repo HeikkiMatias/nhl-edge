@@ -1,6 +1,6 @@
 # 0036. Policy v2's B3: team strength, a new coach and penalty drawing beyond the power play
 
-- Status: Proposed: none of the three terms passes its rule (backtest evidence below)
+- Status: Accepted (by the owner, 2026-10-11): none of the three terms passes its rule (backtest evidence below)
 - Date: 2026-10-10
 - Part of: policy v2 (#225), which the owner decided on 2026-10-10 (#222)
 
