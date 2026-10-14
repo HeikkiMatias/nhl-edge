@@ -385,7 +385,7 @@ export function Report({ report }: { report: LiveReport | null }) {
           <strong>CLV per bet</strong> against Pinnacle&apos;s fair closing proxy:{" "}
           {estimate(value.clv_per_bet, "bets")}
         </li>
-        <li>Stake-weighted: {estimate(value.clv_stake_weighted)}</li>
+        <li>Stake-weighted: {estimate(value.clv_stake_weighted, "bets")}</li>
         <li>Fair move per bet: {estimate(value.fair_move_per_bet, "bets")}</li>
         <li>
           Coverage floor:{" "}
@@ -396,8 +396,9 @@ export function Report({ report }: { report: LiveReport | null }) {
         </li>
         {Object.entries(value.bound).map(([name, bound]) => (
           <li key={name}>
-            Bound at the {name.slice(1)}th percentile ({signed(bound.stand_in)} for each of{" "}
-            {bound.imputed} without a proxy): {estimate(bound.clv_per_bet, "bets")}
+            Bound at the {name.slice(1)}th percentile (
+            {bound.stand_in === null ? "withheld until 4 weeks" : signed(bound.stand_in)} for each
+            of {bound.imputed} without a proxy): {estimate(bound.clv_per_bet, "bets")}
           </li>
         ))}
         <li>Verdict: {report.verdicts.closing_value}.</li>
