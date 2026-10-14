@@ -1,7 +1,19 @@
 import { expect, test } from "vitest";
 
-import { bankroll, betsPerDay, record, result, scoreLine, START } from "./results.ts";
+import {
+  bankroll,
+  betsPerDay,
+  policyNames,
+  policyStarts,
+  record,
+  result,
+  scoreLine,
+  START,
+} from "./results.ts";
 import type { Bet } from "./types.ts";
+
+const V1 = "policy-20261005-8ec5cf3";
+const V2 = "policy-20261014-e15db87";
 
 function bet(game_date: string, game_id: number, settled: Partial<Bet>): Bet {
   return {
@@ -23,6 +35,7 @@ function bet(game_date: string, game_id: number, settled: Partial<Bet>): Bet {
     close_status: null,
     clv: null,
     fair_move: null,
+    policy_version: V1,
     ...settled,
   };
 }
@@ -89,4 +102,53 @@ test("a score reads away first, with overtime or a shootout marked", () => {
     "DAL 2–3 BUF (SO)",
   );
   expect(scoreLine(b, undefined)).toBe("");
+});
+
+test("one bankroll runs through the policies, and each later policy's first day is marked", () => {
+  // ADR 0037: v2 carries on from v1's balance, so its days continue the same line.
+  const bets = [
+    bet("2026-10-15", 3, { ...lost(1), policy_version: V2 }),
+    bet("2026-10-14", 1, won(2)),
+    bet("2026-10-16", 4, { ...won(0.5), policy_version: V2 }),
+    bet("2026-10-17", 5, { policy_version: V2 }), // awaiting its result
+  ];
+  const names = policyNames(bets);
+  expect([...names.entries()]).toEqual([
+    [V1, "v1"],
+    [V2, "v2"],
+  ]);
+  const days = bankroll(bets);
+  expect(days.map((d) => [d.date, d.policy])).toEqual([
+    ["2026-10-14", V1],
+    ["2026-10-15", V2],
+    ["2026-10-16", V2],
+  ]);
+  expect(days[1].balance).toBeCloseTo(START + 2 - 1, 10);
+  expect(days[1].peak).toBe(START + 2);
+  expect(policyStarts(bets, days)).toEqual([
+    { policy: V2, previous: V1, date: "2026-10-15", index: 1 },
+  ]);
+  // One policy only: no marker.
+  const one = [bet("2026-10-14", 1, won(2))];
+  expect(policyStarts(one, bankroll(one))).toEqual([]);
+});
+
+test("a policy starts on its first bet, even a void or unsettled one (Codex on #246)", () => {
+  // v2's first day was void and its second awaits a result: the start is still its first bet,
+  // and the marker waits for a settled day on or after it.
+  const bets = [
+    bet("2026-10-14", 1, won(2)),
+    bet("2026-10-15", 2, { settlement: "void", profit: 0, policy_version: V2 }),
+    bet("2026-10-16", 3, { policy_version: V2 }),
+  ];
+  expect(policyStarts(bets, bankroll(bets))).toEqual([
+    { policy: V2, previous: V1, date: "2026-10-15", index: null },
+  ]);
+  const later = [...bets, bet("2026-10-17", 4, { ...won(1), policy_version: V2 })];
+  expect(policyStarts(later, bankroll(later))[0]).toEqual({
+    policy: V2,
+    previous: V1,
+    date: "2026-10-15",
+    index: 1,
+  });
 });

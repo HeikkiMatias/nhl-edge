@@ -18,6 +18,14 @@ export const GLOSSARY = {
       "The paper money. The bankroll started at 100 units with the first bet on 2026-10-08. " +
       "Every stake is a small share of the bankroll at the time.",
   },
+  policy: {
+    term: "Policy (v1, v2)",
+    meaning:
+      "The frozen rules that decide and size every bet. v1 placed the bets of 2026-10-08 to " +
+      "10-14. v2 places them from 10-15: the same rules, but it also reads the day's confirmed " +
+      "starting goalies. Each policy's CLV is judged on its own bets, while one bankroll runs " +
+      "through both: v2 carries on from v1's balance.",
+  },
   price: {
     term: "Price",
     meaning:

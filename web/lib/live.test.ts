@@ -42,6 +42,7 @@ function bet(g: LiveGame, side: "home" | "away"): Bet {
     close_status: null,
     clv: null,
     fair_move: null,
+    policy_version: "policy-20261005-8ec5cf3",
   };
 }
 

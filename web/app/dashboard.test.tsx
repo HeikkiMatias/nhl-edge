@@ -115,6 +115,7 @@ const TABLES = {
       close_status: null,
       clv: null,
       fair_move: null,
+      policy_version: "policy-20261005-8ec5cf3",
     },
     {
       game_date: "2026-10-07",
@@ -135,6 +136,7 @@ const TABLES = {
       close_status: "proxy",
       clv: 0.031,
       fair_move: 0.012,
+      policy_version: "policy-20261005-8ec5cf3",
     },
   ],
   live_reports: [stored],
@@ -344,6 +346,39 @@ test("the bankroll chart's readout follows the keys", async () => {
   const readout = await screen.findByRole("status");
   expect(readout.textContent).toContain("101.0");
   expect(readout.textContent).toContain("Oct 7");
+});
+
+test("each bet shows its policy, and the bankroll chart marks where v2 starts", async () => {
+  // ADR 0037: v2's bets carry on v1's bankroll. Here PIT at WSH, settled, is v2's first bet.
+  const [later, earlier] = TABLES.paper_bets as Record<string, unknown>[];
+  const v2 = {
+    ...later,
+    game_date: "2026-10-15",
+    settled_utc: "2026-10-16T05:01:12+00:00",
+    settlement: "settled",
+    won: false,
+    profit: -0.75,
+    policy_version: "policy-20261014-e15db87",
+  };
+  const { supabase } = client(owner, (sent) =>
+    sent.url.pathname.endsWith("/paper_bets")
+      ? { body: Number(sent.url.searchParams.get("offset") ?? 0) > 0 ? [] : [v2, earlier] }
+      : undefined,
+  );
+  render(<Signed client={supabase} />);
+  await screen.findByText("Results and bankroll");
+  const tagged = [...document.querySelectorAll("td[title^='policy-']")];
+  expect(tagged.map((c) => [c.textContent, c.getAttribute("title")])).toEqual([
+    // The bankroll's day table, oldest first, then the bets, newest first.
+    ["v1", "policy-20261005-8ec5cf3"],
+    ["v2", "policy-20261014-e15db87"],
+    ["v2", "policy-20261014-e15db87"],
+    ["v1", "policy-20261005-8ec5cf3"],
+  ]);
+  expect(screen.getByText("v2 from Oct 15")).toBeTruthy();
+  expect(screen.getByText(/v2's bets start on 2026-10-15\. The bankroll carries on from v1's/)).toBeTruthy();
+  // The bankroll after v2's first day: 100 + 0.9592 - 0.75.
+  expect(screen.getAllByText("100.21").length).toBe(2);
 });
 
 test("before the games migration, results show and say why the scores don't", async () => {

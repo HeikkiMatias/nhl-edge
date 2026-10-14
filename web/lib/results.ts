@@ -9,7 +9,7 @@ export const START = 100;
 /** The drawdown from the peak at which plan §11 calls for a review of the data and code. */
 export const REVIEW_DRAWDOWN = 0.2;
 
-/** The bankroll after a settled game day. */
+/** The bankroll after a settled game day, and the policy that placed its bets. */
 export type Day = {
   date: string;
   bets: number;
@@ -17,6 +17,7 @@ export type Day = {
   balance: number;
   peak: number;
   drawdown: number;
+  policy: string;
 };
 
 /** The bankroll after each game day with a settled bet, oldest first: 100 units plus the
@@ -29,10 +30,11 @@ export type Day = {
  * results are all public before the next day's. The report's drawdown alert, which steps by each
  * result rather than by day, stays the one that triggers the review. */
 export function bankroll(bets: Bet[]): Day[] {
-  const byDay = new Map<string, { bets: number; profit: number }>();
+  const byDay = new Map<string, { bets: number; profit: number; policy: string }>();
   for (const b of bets) {
     if (b.settlement !== "settled" || b.profit === null) continue;
-    const day = byDay.get(b.game_date) ?? { bets: 0, profit: 0 };
+    // A day's bets are one decision, so one policy's.
+    const day = byDay.get(b.game_date) ?? { bets: 0, profit: 0, policy: b.policy_version };
     day.bets += 1;
     day.profit += b.profit;
     byDay.set(b.game_date, day);
@@ -46,6 +48,35 @@ export function bankroll(bets: Bet[]): Day[] {
       peak = Math.max(peak, balance);
       return { date, ...day, balance, peak, drawdown: balance / peak - 1 };
     });
+}
+
+/** Each policy's short name, v1, v2 and on, in the order of its first bet. One paper bankroll
+ * runs through them all: a new policy carries on the earlier one's balance (ADR 0037). */
+export function policyNames(bets: Bet[]): Map<string, string> {
+  const versions = [...new Set(bets.map((b) => b.policy_version))];
+  const first = (v: string) =>
+    bets.reduce((d, b) => (b.policy_version === v && b.game_date < d ? b.game_date : d), "9999");
+  versions.sort((a, b) => (first(a) < first(b) ? -1 : first(a) > first(b) ? 1 : 0));
+  return new Map(versions.map((version, i) => [version, `v${i + 1}`]));
+}
+
+/** Where each policy after the first begins: the date of its first bet, whatever its result,
+ * the policy before it, and the first settled day in days on or after that date for the chart's
+ * marker (null until one is settled). */
+export function policyStarts(
+  bets: Bet[],
+  days: Day[],
+): { policy: string; previous: string; date: string; index: number | null }[] {
+  const first = new Map<string, string>();
+  for (const b of bets) {
+    const seen = first.get(b.policy_version);
+    if (seen === undefined || b.game_date < seen) first.set(b.policy_version, b.game_date);
+  }
+  const order = [...first.entries()].sort(([, a], [, b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return order.slice(1).map(([policy, date], i) => {
+    const index = days.findIndex((d) => d.date >= date);
+    return { policy, previous: order[i][0], date, index: index < 0 ? null : index };
+  });
 }
 
 /** The bets' record: won, lost, void and awaiting a result, the settled stakes and profit, and

@@ -3,6 +3,8 @@ import { GLOSSARY, type TermKey } from "@/lib/glossary";
 import {
   bankroll,
   betsPerDay,
+  policyNames,
+  policyStarts,
   record,
   result,
   REVIEW_DRAWDOWN,
@@ -89,12 +91,14 @@ export function Slate({
  * settled (ADR 0034). scores is null while the owner can't read the games' scores. */
 export function Ledger({ bets, scores }: { bets: Bet[]; scores: Record<number, Score> | null }) {
   if (bets.length === 0) return <p className="muted">No paper bet yet.</p>;
+  const names = policyNames(bets);
   return (
     <div className="scroll">
       <table>
         <thead>
           <tr>
             <th>Date</th>
+            <th>Policy</th>
             <th>Game</th>
             <th>Side</th>
             <th className="number">Price</th>
@@ -113,6 +117,7 @@ export function Ledger({ bets, scores }: { bets: Bet[]; scores: Record<number, S
           {bets.map((b) => (
             <tr key={key(b.game_date, b.game_id)}>
               <td>{b.game_date}</td>
+              <td title={b.policy_version}>{names.get(b.policy_version)}</td>
               <td>
                 {b.away} at {b.home}
               </td>
@@ -141,7 +146,7 @@ export function Ledger({ bets, scores }: { bets: Bet[]; scores: Record<number, S
       ) : null}
       <Explain
         terms={[
-          "side", "price", "p", "ev", "hurdle", "u", "stake",
+          "policy", "side", "price", "p", "ev", "hurdle", "u", "stake",
           "result", "score", "profit", "close", "clv", "fairMove",
         ]}
       />
@@ -196,6 +201,8 @@ export function Headline({ bets, report }: { bets: Bet[]; report: LiveReport | n
 export function Results({ bets }: { bets: Bet[] }) {
   if (bets.length === 0) return <p className="muted">No paper bet yet.</p>;
   const days = bankroll(bets);
+  const names = policyNames(bets);
+  const starts = policyStarts(bets, days);
   const r = record(bets);
   const withClv = bets.filter((b) => b.clv !== null);
   // The review line is drawn once the bankroll has fallen half way to it; before that it would
@@ -221,6 +228,11 @@ export function Results({ bets }: { bets: Bet[] }) {
             title="Paper bankroll after each settled day, in units"
             points={days.map((d) => ({ label: shortDate(d.date), value: d.balance }))}
             format={(v) => v.toFixed(1)}
+            markers={starts.flatMap((s) =>
+              s.index === null
+                ? []
+                : [{ index: s.index, label: `${names.get(s.policy)} from ${shortDate(s.date)}` }],
+            )}
             reference={
               nearReview
                 ? {
@@ -230,6 +242,12 @@ export function Results({ bets }: { bets: Bet[] }) {
                 : undefined
             }
           />
+          {starts.map((s) => (
+            <p className="muted" key={s.policy}>
+              {names.get(s.policy)}&apos;s bets start on {s.date}. The bankroll carries on from{" "}
+              {names.get(s.previous)}&apos;s balance: one paper bankroll runs through every policy.
+            </p>
+          ))}
           {nearReview ? null : (
             <p className="muted">
               The review line, {(100 * REVIEW_DRAWDOWN).toFixed(0)}% below the peak, is off this
@@ -243,6 +261,7 @@ export function Results({ bets }: { bets: Bet[] }) {
                 <thead>
                   <tr>
                     <th>Day</th>
+                    <th>Policy</th>
                     <th className="number">Bets</th>
                     <th className="number">Profit</th>
                     <th className="number">Bankroll</th>
@@ -253,6 +272,7 @@ export function Results({ bets }: { bets: Bet[] }) {
                   {days.map((d) => (
                     <tr key={d.date}>
                       <td>{d.date}</td>
+                      <td title={d.policy}>{names.get(d.policy)}</td>
                       <td className="number">{d.bets}</td>
                       <td className="number">{signedUnits(d.profit)}</td>
                       <td className="number">{d.balance.toFixed(2)}</td>
@@ -294,7 +314,7 @@ export function Results({ bets }: { bets: Bet[] }) {
           </p>
         </>
       )}
-      <Explain terms={["units", "result", "profit", "drawdown", "luck", "ev", "clv"]} />
+      <Explain terms={["units", "policy", "result", "profit", "drawdown", "luck", "ev", "clv"]} />
     </>
   );
 }
