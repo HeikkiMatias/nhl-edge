@@ -38,6 +38,8 @@ export type Bet = {
   close_status: string | null;
   clv: number | null;
   fair_move: number | null;
+  /** The frozen policy that placed the bet: v1 to 2026-10-14, v2 from 10-15 (ADR 0037). */
+  policy_version: string;
 };
 
 /** A game's final score (public.games): full-game, so a shootout adds one goal for its winner. */

@@ -8,7 +8,7 @@ export const PREDICTION_COLUMNS =
 // With each bet's result and profit, shown during the season (ADR 0034).
 export const BET_COLUMNS =
   "game_date, game_id, start_utc, home, away, side, price, p_side, ev, bankroll, stake, " +
-  "settled_utc, settlement, won, profit, close_status, clv, fair_move";
+  "settled_utc, settlement, won, profit, close_status, clv, fair_move, policy_version";
 export const SCORE_COLUMNS = "game_id, home_score, away_score, decided_in";
 // Postgres's "permission denied": the games read migration (#210) isn't applied yet.
 const NOT_GRANTED = "42501";

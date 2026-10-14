@@ -167,6 +167,12 @@ button.link {
   stroke-dasharray: 4 3;
 }
 
+.chart .marker {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
 .chart .crosshair {
   stroke: var(--axis);
   stroke-width: 1;

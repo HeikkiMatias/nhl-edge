@@ -97,19 +97,22 @@ function xLabels(count: number, width: number): number[] {
 export type LinePoint = { label: string; value: number; low?: number; high?: number };
 
 /** A line over the points, in their order: with its interval as a 10% band when the points carry
- * one, and a reference line (such as the drawdown review line) when given. The readout follows
- * the nearest point. */
+ * one, a reference line (such as the drawdown review line) when given, and a dashed vertical
+ * marker at each of markers' points (such as where a new policy starts). The readout follows the
+ * nearest point. */
 export function LineChart({
   title,
   points,
   format,
   reference,
+  markers = [],
   zero = false,
 }: {
   title: string;
   points: LinePoint[];
   format: (v: number) => string;
   reference?: { values: number[]; label: string };
+  markers?: { index: number; label: string }[];
   zero?: boolean;
 }) {
   const { ref, width } = useWidth();
@@ -190,6 +193,26 @@ export function LineChart({
             </text>
           </>
         ) : null}
+        {markers.map((m) => (
+          <g key={m.index}>
+            <line
+              className="marker"
+              x1={x(m.index)}
+              x2={x(m.index)}
+              y1={MARGIN.top}
+              y2={HEIGHT - MARGIN.bottom}
+            />
+            <text
+              className="tick"
+              x={x(m.index) + (x(m.index) > width / 2 ? -4 : 4)}
+              y={MARGIN.top}
+              dy="0.8em"
+              textAnchor={x(m.index) > width / 2 ? "end" : "start"}
+            >
+              {m.label}
+            </text>
+          </g>
+        ))}
         <path className="line" d={path(points.map((p) => p.value))} />
         {shown ? (
           <line
