@@ -103,7 +103,7 @@
 
 **The rest:**
 - **v1:** its decisions of 2026-10-08 to 2026-10-14 stay on record under `policy-20261005-8ec5cf3`. `nhl live report --policy` reports them apart.
-- **The bankroll:** the paper bankroll carries on from v1's balance, since it is one paper account per season (ADR 0028).
+- **The bankroll:** the paper bankroll carries on from v1's balance, since it is one paper account per season (ADR 0028). Its drawdown review counts both policies' bets.
 - **The fits:** v2 reuses v1's live blend and attribution levels (`selection.FIT_POLICY`).
 
 ## Backtest evidence
