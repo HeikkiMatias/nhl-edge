@@ -159,7 +159,22 @@ class Season:
             history,
             SCALE,
             as_of,
+            changes.pop("policy", POLICY_VERSION),
         )
+
+
+def test_an_earlier_policys_record_is_reported_apart(tmp_path: Any) -> None:
+    # v1's decisions stay on record under v1 after v2's freeze (ADR 0037): each policy's report
+    # counts its own rows, and an earlier one's files sit beside the frozen policy's.
+    from nhl_edge.betting.selection import POLICY_V1
+
+    season = Season(n_weeks=2)
+    older = season.ledger.with_columns(policy_version=pl.lit(POLICY_V1))
+    assert season.report(ledger=older)["coverage"]["slate_games"] == 0
+    v1 = season.report(ledger=older, policy=POLICY_V1)
+    assert v1["policy_version"] == POLICY_V1 and v1["coverage"]["slate_games"] == 60
+    json_path, md_path = lr.write(v1, tmp_path)
+    assert md_path.name == f"report-2026-12-31-{POLICY_V1}.md" and json_path.exists()
 
 
 def test_too_few_weeks_give_counts_and_no_estimate() -> None:
@@ -292,6 +307,25 @@ def test_the_drawdown_review_says_when_never_how_much_until_the_end() -> None:
     assert (dd["triggered"], dd["first_utc"]) == (True, twenty_first)
     assert "max_drawdown" not in dd
     assert "drawdown review is triggered" in lr.markdown(season.report(settlements=lost))
+
+
+def test_the_drawdown_follows_the_seasons_bankroll_across_policies() -> None:
+    # A new policy carries on the earlier one's bankroll (ADR 0037), so its drawdown review counts
+    # the earlier policy's losses too: here the 21st loss of the season, not v2's own 21st.
+    from nhl_edge.betting.selection import POLICY_V1
+
+    season = Season(n_weeks=6)
+    lost = season.settlements.with_columns(profit=pl.lit(-1.0))
+    first_week = pl.col("game_date") < date(2026, 10, 19)
+    ledger = season.ledger.with_columns(
+        policy_version=pl.when(first_week)
+        .then(pl.lit(POLICY_V1))
+        .otherwise(pl.col("policy_version"))
+    )
+    assert 0 < ledger.filter(first_week, pl.col("bet")).height < 21
+    dd = season.report(ledger=ledger, settlements=lost)["alerts"]["drawdown"]
+    twenty_first = lost.sort("result_utc")["result_utc"][20]
+    assert (dd["triggered"], dd["first_utc"]) == (True, twenty_first)
 
 
 def test_u_outside_its_training_range_is_counted() -> None:

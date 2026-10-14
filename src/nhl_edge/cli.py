@@ -2831,6 +2831,13 @@ def live_report(
             help="Also upsert the report into Supabase's live_reports for the dashboard (#168).",
         ),
     ] = False,
+    policy: Annotated[
+        str | None,
+        typer.Option(
+            help="An earlier policy's record instead of the frozen policy's, such as v1's "
+            "(ADR 0037). Never sent to the dashboard."
+        ),
+    ] = None,
 ) -> None:
     """The weekly live report (#166, ADR 0032): coverage, CLV against Pinnacle's closing proxy
     with the coverage floor and bound, the model comparisons, the blend's calibration band, the
@@ -2840,6 +2847,7 @@ def live_report(
     import json
     from datetime import UTC
 
+    from nhl_edge.betting.selection import POLICY_VERSION
     from nhl_edge.ingest.odds import ET
     from nhl_edge.lake.tables import Lake
     from nhl_edge.live import blend_fit
@@ -2847,6 +2855,9 @@ def live_report(
     from nhl_edge.live import report as lr
     from nhl_edge.settings import load_env
 
+    if policy is not None and policy != POLICY_VERSION and supabase:
+        # The dashboard keeps one report per date, the frozen policy's.
+        raise typer.BadParameter("an earlier policy's report stays off the dashboard")
     load_env()
     day = as_of.date() if as_of is not None else datetime.now(UTC).astimezone(ET).date()
     lake = Lake.from_env(mirror=r2)
@@ -2873,6 +2884,7 @@ def live_report(
         lr.sbr_history(lake.read("sbr_odds"), games),
         scale,
         day,
+        policy or POLICY_VERSION,
     )
     json_path, md_path = lr.write(result, out)
     if supabase:

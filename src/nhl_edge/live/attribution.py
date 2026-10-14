@@ -26,7 +26,7 @@ import polars as pl
 
 from nhl_edge.backtest import blend as blend_backtest
 from nhl_edge.backtest import e3
-from nhl_edge.betting.selection import POLICY_VERSION
+from nhl_edge.betting.selection import FIT_POLICY, POLICY_VERSION
 from nhl_edge.game import b2, b3, uncertainty
 from nhl_edge.live import blend_fit
 from nhl_edge.live import bundle as lb
@@ -177,7 +177,11 @@ def path_for(live_version: str, where: Path = blend_fit.REPORTS) -> Path | None:
 
 def load(record: dict[str, Any], live_version: str) -> dict[str, tuple[float, float]]:
     """The usual levels of each of e3.INPUTS, refused unless they are the live fit's."""
-    if record.get("live_fit") != live_version or record.get("policy") != POLICY_VERSION:
+    # Fitted under the current policy, or under the one whose live fit it reuses (ADR 0037).
+    if record.get("live_fit") != live_version or record.get("policy") not in {
+        POLICY_VERSION,
+        FIT_POLICY,
+    }:
         raise ValueError(
             f"{record.get('version')} holds the usual levels of {record.get('live_fit')}, not "
             f"{live_version}"

@@ -366,9 +366,9 @@ def test_the_feature_build_must_have_finished_before_the_decision_on_this_slate(
     assert lp.build_problems(local, slate, pf.DECISION, rows, committed=False) == []
 
 
-def test_no_confirmed_starter_is_read() -> None:
-    # ADR 0030: live B3 and u read the goalie-start model, never a confirmation, so the tables a
-    # run pulls hold no confirmation and the models' inputs can't take one.
+def test_no_confirmed_starter_is_read_from_the_lake() -> None:
+    # The lake's goalie polls are rebuilt only overnight: a v2 decision reads its day's raw polls
+    # (live/goalies.py, ADR 0037), so the tables a run pulls hold no confirmation.
     assert not {"pregame_goalies", "dailyfaceoff_goalies"} & set(lp.LAKE_TABLES)
 
 

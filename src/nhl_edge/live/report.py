@@ -88,11 +88,13 @@ SKIPPED = (lp.NO_SNAPSHOT, lp.LATE)
 ROLES = {"F": "forwards", "D": "defencemen"}
 
 
-def counted(ledger: pl.DataFrame, as_of: date) -> pl.DataFrame:
-    """The ledger rows the evidence counts: the frozen policy's regular-season slate games up to
-    as_of (ADR 0032; a new policy version starts its own record)."""
+def counted(ledger: pl.DataFrame, as_of: date, policy: str | None = POLICY_VERSION) -> pl.DataFrame:
+    """The ledger rows the evidence counts: one policy's regular-season slate games up to as_of,
+    the frozen policy's by default (ADR 0032; a new policy version starts its own record, and an
+    earlier one's stays on record under it, ADR 0037). With policy None, every policy's: the
+    season's one paper bankroll, which a new version carries on (ADR 0037)."""
     return ledger.filter(
-        pl.col("policy_version") == POLICY_VERSION,
+        pl.lit(policy is None) | (pl.col("policy_version") == policy),
         (pl.col("game_id") // 10_000 % 100) == REGULAR_SEASON,
         pl.col("game_date") <= as_of,
     ).sort("game_date", "game_id")
@@ -356,7 +358,8 @@ def gaps(rows: pl.DataFrame) -> list[dict[str, Any]]:
 
 def drawdown(bets: pl.DataFrame, season_over: bool) -> dict[str, Any]:
     """The DRAWDOWN check on the paper bankroll, each settled bet's profit applied when its result
-    became public: whether and when the bankroll first fell DRAWDOWN below its peak. A review of
+    became public: whether and when the bankroll first fell DRAWDOWN below its peak. The bankroll
+    is the season's, so the bets are every policy's (counted with policy None). A review of
     data and code follows, never a model change. The drawdown's size, which shows the profit, only
     once the season is over (plan §11)."""
     settled = bets.filter(pl.col("settled") == ls.SETTLED)
@@ -491,10 +494,12 @@ def report(
     history: pl.DataFrame,
     scale: dict[str, dict[str, float]],
     as_of: date,
+    policy: str = POLICY_VERSION,
 ) -> dict[str, Any]:
-    """The live report as of as_of: ledger and settlements as written, games' results, the odds'
-    Pinnacle quotes, SBR's history (sbr_history) and the live fit's u scale (means, sds)."""
-    rows = counted(ledger, as_of)
+    """The live report of one policy, the frozen one by default, as of as_of: ledger and
+    settlements as written, games' results, the odds' Pinnacle quotes, SBR's history
+    (sbr_history) and the live fit's u scale (means, sds)."""
+    rows = counted(ledger, as_of, policy)
     bets = bets_of(rows, settlements)
     scored = with_results(rows, games)
     formal = as_of >= REVIEW_DATE
@@ -508,7 +513,7 @@ def report(
     }
     result: dict[str, Any] = {
         "as_of": as_of.isoformat(),
-        "policy_version": POLICY_VERSION,
+        "policy_version": policy,
         "blend_versions": sorted(set(rows["blend_version"].to_list())),
         "review_date": REVIEW_DATE.isoformat(),
         "kind": "formal review" if formal else "interim",
@@ -520,7 +525,7 @@ def report(
         "gaps": gaps(rows),
         "alerts": {
             "operations": operations(rows),
-            "drawdown": drawdown(bets, formal),
+            "drawdown": drawdown(bets_of(counted(ledger, as_of, None), settlements), formal),
             "u_range": u_range(rows, scale["means"], scale["sds"]),
         },
         "market_timing": market_timing(scored, history),
@@ -767,9 +772,11 @@ def record(result: dict[str, Any], code_version: str) -> dict[str, Any]:
 
 
 def write(result: dict[str, Any], out: Path) -> tuple[Path, Path]:
-    """The report as out/report-<as_of>.json and .md."""
+    """The report as out/report-<as_of>.json and .md, an earlier policy's as
+    out/report-<as_of>-<policy>.json and .md beside the frozen policy's."""
     out.mkdir(parents=True, exist_ok=True)
-    stem = out / f"report-{result['as_of']}"
+    suffix = "" if result["policy_version"] == POLICY_VERSION else f"-{result['policy_version']}"
+    stem = out / f"report-{result['as_of']}{suffix}"
     json_path, md_path = stem.with_suffix(".json"), stem.with_suffix(".md")
     json_path.write_text(json.dumps(result, indent=2, sort_keys=True, default=str) + "\n")
     md_path.write_text(markdown(result))

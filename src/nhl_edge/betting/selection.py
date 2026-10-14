@@ -20,18 +20,25 @@ import polars as pl
 HOME = "home"
 AWAY = "away"
 
-# The policy's freeze (#144): u (ADR 0026), the blend (ADR 0027), this policy (ADR 0028) and the
-# guard (ADR 0029) as on main at 8ec5cf3, with the live inputs of ADR 0030. Live games count from
-# the day after FROZEN_ON; any change is a new version, judged only on games after its own freeze
-# date.
-POLICY_VERSION = "policy-20261005-8ec5cf3"
-FROZEN_ON = date(2026, 10, 5)
+# Policy v1's freeze (#144): u (ADR 0026), the blend (ADR 0027), this policy (ADR 0028) and the
+# guard (ADR 0029) as on main at 8ec5cf3, with the live inputs of ADR 0030. Its decisions of
+# 2026-10-08 to 2026-10-14 stay on record under it.
+POLICY_V1 = "policy-20261005-8ec5cf3"
+# Policy v2's freeze (#222, ADR 0037): v1 with each slate team's starter at the decision, from the
+# NHL's flag and Daily Faceoff's statuses, as on main at e15db87. Live games count from the day
+# after FROZEN_ON; any change is a new version, judged only on games after its own freeze date.
+POLICY_VERSION = "policy-20261014-e15db87"
+FROZEN_ON = date(2026, 10, 14)
 # Live bets use the blend fitted on SBR's close (E1), applied to Pinnacle's 12:45 ET price
 # (ADR 0030).
 LIVE_BLEND_EXPERIMENT = "E1"
-# Policy v2's L (ADR 0037): the chance a Daily Faceoff "Likely" goalie starts, fixed at v2's
-# freeze. None under v1, whose decisions read no starter confirmation (ADR 0030).
-LIKELY_STARTS: float | None = None
+# The policy the live artifacts were fitted under: v2 reuses v1's live blend and its attribution
+# levels unchanged, since v2's B3 on history is v1's (ADR 0037).
+FIT_POLICY = POLICY_V1
+# Policy v2's L (ADR 0037): the chance a Daily Faceoff "Likely" goalie starts. Its 45 calls at
+# the decisions of 2026-09-29 to 2026-10-13 all named the starter (#238); the owner chose the
+# rule of succession, (45 + 1) / (45 + 2), on 2026-10-14, so a Likely keeps a little doubt.
+LIKELY_STARTS: float | None = 46 / 47
 
 
 @dataclass(frozen=True)
