@@ -601,8 +601,7 @@ def predict(
                 likely_share,
             )
             seen = [poll.filter(pl.col("observed_utc") < cutoff) for poll in polls]
-            calls = {"goalie_starters": starters, "pregame_goalies": seen[0]}
-            calls["dailyfaceoff_goalies"] = seen[1]
+            calls = dict(zip(lb.CALL_INPUTS, (starters, *seen), strict=True))
             for row in starters.iter_rows(named=True):
                 typer.echo(
                     f"starter {row['team']} ({row['game_id']}): {row['goalie_id']}, "

@@ -22,6 +22,7 @@ LINEUPS = pl.DataFrame(
         "team": ["MTL", "MTL", "TOR", "EDM", "VAN"],
         "player_id": [10, 11, 20, 30, 40],
         "starting_goalie": [True, False, True, True, True],
+        "role": ["G", "G", "G", "G", "G"],
     }
 )
 PLAYERS = pl.DataFrame(
@@ -261,3 +262,14 @@ def test_a_pick_with_another_first_name_is_the_starter_by_surname() -> None:
     )
     mtl = team(frame, "MTL")
     assert (mtl["dfo_confirmed_right"], mtl["dfo_last_right"]) == (True, True)
+    # When the team dressed another goalie of that surname, a surname alone names neither
+    # (Codex on #239).
+    twins = PLAYERS.with_columns(
+        name=pl.when(pl.col("player_id") == 11).then(pl.lit("Jan Dobeš")).otherwise("name")
+    )
+    shared = goalies.team_games(
+        goalies.starters(GAMES, LINEUPS, twins),
+        nhl_polls([]),
+        dfo_polls([("MTL", START, 30, "Jake Dobes", "Confirmed")]),
+    )
+    assert team(shared, "MTL")["dfo_confirmed_right"] is False

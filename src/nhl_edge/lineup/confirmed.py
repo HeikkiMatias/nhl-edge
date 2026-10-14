@@ -72,11 +72,6 @@ def surname(column: str) -> pl.Expr:
     return pl.col(column).map_elements(surname_key, return_dtype=pl.String)
 
 
-def same_goalie(a: str, b: str) -> pl.Expr:
-    """Whether two name columns name one goalie: the same name_key, or the same surname."""
-    return (key(a) == key(b)) | (surname(a) == surname(b))
-
-
 def calls(team_games: pl.DataFrame, nhl: pl.DataFrame, dailyfaceoff: pl.DataFrame) -> pl.DataFrame:
     """team_games (game_id, game_date, team, start_utc, moment_utc) with what each source said at
     its latest poll observed before moment_utc: the NHL's flagged starter (nhl_id, null when none)
