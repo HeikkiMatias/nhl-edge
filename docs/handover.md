@@ -9,7 +9,7 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 3. **Otherwise carry on with phase 5 (#14).** Its plan is approved and lives in `docs/plans/phase-5.md`. See "Phase 5: where it stands" below.
    - Phase 4 is done. Gate 3 is not met (ADR 0031): the blend adds no information beyond the recalibrated market on history. As the owner decided, phase 5 paper-trades the frozen policy anyway, and live 2026-27 is the remaining test.
    - Gate 1 (#79) is still open. It is a checkpoint, not a stop (ADR 0002).
-   - **The clock runs:** the policy was frozen on 2026-10-05, and live games count from 2026-10-06. Every game without a logged pre-game prediction is a paper bet the live test can't use.
+   - **The clock runs:** policy v2 was frozen on 2026-10-14, and its live games count from 2026-10-15. v1's record (2026-10-06 to 10-14) is kept and reported apart. Every game without a logged pre-game prediction is a paper bet the live test can't use.
 4. **Take over the scheduled check-ins.** They are Routines bound to the session that created them, so they keep firing into the old session, not a new one. List them (`list_triggers`), create each again bound to the new session with the same time and prompt, then delete the old one. On 2026-10-09 they were:
    - Mondays 10:20 UTC: the weekly live report;
    - 2026-10-13 10:30 UTC: #9 and #42;
@@ -88,10 +88,10 @@ Every deliverable merged under its own task issue:
 - 2022-23's one run (#145);
 - gate 3 (#146, ADR 0031).
 
-**The frozen policy, `policy-20261005-8ec5cf3`** (model card, "The freeze"):
+**The frozen policy v1, `policy-20261005-8ec5cf3`** (model card, "The freeze"), live from 2026-10-06 to 10-14:
 - **The blend:** logit p = a + b_m·logit p_mkt + (b_x + b_u·u)·logit p_B3, fitted per whole-season fold on earlier folds' out-of-sample predictions.
   - Live bets use **E1's fit**, learned against SBR's close and fed Pinnacle's 12:45 ET price (ADR 0030).
-- **u:** goalie doubt, availability doubt and rookie minutes, equally weighted. Live, its goalie doubt reads the goalie-start model, never a confirmation (ADR 0030).
+- **u:** goalie doubt, availability doubt and rookie minutes, equally weighted. Under v1, its goalie doubt reads the goalie-start model, never a confirmation (ADR 0030).
 - **Selection and staking:**
   - a hurdle of 2.5% expected return plus 1 point per standard deviation of u above average;
   - a quarter of Kelly divided by (1 + u⁺);
@@ -100,6 +100,12 @@ Every deliverable merged under its own task issue:
 - **Bets** are placed at 12:45 ET at Pinnacle's price, with the best EU book logged beside it.
 - **The guard** skips a bet whose side fell more than 5.35 points between Pinnacle's 07:05 and 12:45 quotes.
 - `betting/selection.py` holds `POLICY_VERSION`, `FROZEN_ON` and `LIVE_BLEND_EXPERIMENT`, and `tests/unit/test_freeze.py` fails if a frozen number changes.
+
+**The frozen policy v2, `policy-20261014-e15db87`** (#222, ADR 0037; model card, "Policy v2"), live from 2026-10-15: v1 plus the day's confirmed goalies.
+- **The starter at the decision,** from the polls seen before the midday snapshot: the NHL's starter flag, else Daily Faceoff "Confirmed", else Daily Faceoff "Likely", else the goalie-start mix.
+- **Its chance:** 1 when confirmed or flagged; for a Likely starter, the larger of L = 46/47 and his model chance. u's goalie doubt follows, so a confirmed starter brings it to 0.
+- **B2, B3 and u** read the starters only through the slate games' goalie rows (`live/goalies.py`). The live blend and attribution levels are v1's fits (`FIT_POLICY`), and the bankroll carries on from v1's balance.
+- `nhl live report --policy policy-20261005-8ec5cf3` reports v1's record apart.
 
 **Gate 3 (ADR 0031): not met.** The pooled figures combine 2021-22 and 2022-23 (`reports/backtest/accepted.json`):
 - **BLEND minus B1:** E1 -0.0002 [-0.0037, +0.0032] and E2 -0.0027 [-0.0072, +0.0019]. 2022-23 alone loses on both.
@@ -120,7 +126,7 @@ Every deliverable merged under its own task issue:
 - It covers the daily pipeline, the live blend fit, `nhl predict` with a write-once paper ledger, the closing proxy, settlement and CLV, the live report, attribution, Supabase and the dashboard, and a raw backup.
 - **The owner's rulings of 2026-10-05:**
   - 2022-23's predict-only rebuild for the live blend is not a second run.
-  - Live B3 uses no confirmed starter.
+  - Live B3 uses no confirmed starter. Policy v2 (ADR 0037, frozen 2026-10-14) changes that from 2026-10-15.
 
 **Order of work:**
 1. **The owner's [priority] issues come first under CLAUDE.md:**
@@ -213,8 +219,8 @@ Every deliverable merged under its own task issue:
   - A change to B2 or B3 now needs the owner and an ADR.
 - **Gate 2 (ADR 0024):** B3 is phase 4's model against the market. B2 stays in every report as B3's reference.
 - **Phase 4 (ADRs 0025 to 0031):**
-  - The policy is frozen as `policy-20261005-8ec5cf3`. Live games count from 2026-10-06.
-  - Live bets use E1's blend fit and Pinnacle's 12:45 ET price, and u never reads a confirmation (ADR 0030). Codex's P0s on #155 and #159, "closing odds in a tradable prediction" for E1's fit, are won't-fix by the owner's decision: the fit reads only earlier seasons' closes.
+  - The policy was frozen as `policy-20261005-8ec5cf3`, with live games from 2026-10-06. Policy v2 (`policy-20261014-e15db87`, ADR 0037) adds the day's confirmed goalies and counts from 2026-10-15; v1's record stays separate.
+  - Live bets use E1's blend fit and Pinnacle's 12:45 ET price, and under v1 u never reads a confirmation (ADR 0030). Codex's P0s on #155 and #159, "closing odds in a tradable prediction" for E1's fit, are won't-fix by the owner's decision: the fit reads only earlier seasons' closes.
   - Gate 3 is not met, and phase 5 goes ahead regardless (ADR 0031).
   - u stays frozen although its revisit trigger fired: live evidence decides.
 - **Data:**

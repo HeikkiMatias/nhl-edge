@@ -35,7 +35,7 @@ from nhl_edge.backtest import one_time, walk_forward
 from nhl_edge.backtest.market import Experiment, market_prices
 from nhl_edge.backtest.seasons import blend_training_seasons
 from nhl_edge.backtest.walk_forward import B1_METHOD, NO_METHOD, b0, outcomes
-from nhl_edge.betting.selection import LIVE_BLEND_EXPERIMENT, POLICY_VERSION
+from nhl_edge.betting.selection import FIT_POLICY, LIVE_BLEND_EXPERIMENT, POLICY_VERSION
 from nhl_edge.game import b2, b3, uncertainty
 from nhl_edge.market import blend, recalibration
 from nhl_edge.market.blend import Kind
@@ -357,7 +357,11 @@ def load(record: dict[str, Any]) -> LiveFit:
         fold_start=datetime.fromisoformat(record["fold_start"]),
         train_cutoff=datetime.fromisoformat(record["train_cutoff"]),
     )
-    if record.get("season") != LIVE_SEASON or record.get("policy") != POLICY_VERSION:
+    # The current policy's own fit, or the fit it reuses (v2 reuses v1's, ADR 0037).
+    if record.get("season") != LIVE_SEASON or record.get("policy") not in {
+        POLICY_VERSION,
+        FIT_POLICY,
+    }:
         raise ValueError(
             f"{live.version} is a fit of {record.get('season')} under {record.get('policy')}, "
             f"not of {LIVE_SEASON} under {POLICY_VERSION}"

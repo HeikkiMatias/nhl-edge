@@ -4,7 +4,7 @@ Current production model, how it scored, and its known weaknesses. It is updated
 
 ## Current model
 
-None in production: gate 3 is not met (ADR 0031). The blend adds no information beyond the recalibrated market on history, and phase 5 paper-trades the frozen policy (`policy-20261005-8ec5cf3`) on live 2026-27. The backtest has the two market baselines, phase 2's model and phase 3's:
+None in production: gate 3 is not met (ADR 0031). The blend adds no information beyond the recalibrated market on history, and phase 5 paper-trades the frozen policy on live 2026-27: v1 (`policy-20261005-8ec5cf3`) from 2026-10-08 to 2026-10-14, and v2 (`policy-20261014-e15db87`, ADR 0037), which adds the day's confirmed starting goalies, from 2026-10-15. The backtest has the two market baselines, phase 2's model and phase 3's:
 - **B0** is the de-vigged SBR moneyline, with nothing fitted, under the default multiplicative method (ADR 0008).
 - **B1** is the recalibrated market, a logistic regression on B0's log-odds fitted per test season on the earlier seasons.
 - **B2** is the team and goalie model (ADR 0013). It is an L2 logistic regression on team strength, goalie effects, rest and travel and empty seats, with the season home edge as a fixed term. Each fold fits it on earlier games with their actual starters. It predicts by averaging over the goalie-start model's pairs of starters, and reads no price. Gate 1 (#79) judges it against B1.
@@ -77,7 +77,20 @@ The gaps of both seasons were reviewed by hand: one data error, no bug.
 
 ## The freeze
 
-The policy was frozen on 2026-10-05 as **`policy-20261005-8ec5cf3`** (#144). It is recorded as `POLICY_VERSION`, `FROZEN_ON` and `LIVE_BLEND_EXPERIMENT` in `betting/selection.py`.
+**Policy v2** was frozen on 2026-10-14 as **`policy-20261014-e15db87`** (#222, ADR 0037). It counts from 2026-10-15, and its record starts there. It is v1, below, with each slate team's starter at the decision:
+- **The order:**
+  1. the NHL's starter flag;
+  2. Daily Faceoff's "Confirmed", which makes that goalie certain;
+  3. Daily Faceoff's "Likely", which makes him start with probability max(L, his p_start), L = 46/47, the rest going to the other candidates in the model's proportions;
+  4. otherwise, v1's goalie-start mix.
+- **Where they go:** the starters replace the slate games' goalie rows that B2, B3 and u read. A confirmed team's goalie doubt is 0, and a likely one's is 1 − his chance.
+- **Unchanged:** the blend, selection, staking and the guard. v2 reuses v1's live fit, since v2's B3 on history is v1's.
+- **L:** #238's audit found 45 of 45 Likely calls right at the decision, and the owner chose the rule of succession.
+- **No backtest is possible:** confirmations don't exist on history (hard rule 9).
+- **The bankroll** carries on from v1's balance.
+- **v1's record:** 2026-10-08 to 2026-10-14 stays under v1 (`nhl live report --policy policy-20261005-8ec5cf3`).
+
+**Policy v1** was frozen on 2026-10-05 as **`policy-20261005-8ec5cf3`** (#144). It is recorded as `POLICY_VERSION`, `FROZEN_ON` and `LIVE_BLEND_EXPERIMENT` in `betting/selection.py`.
 - **When:** after the owner accepted ADRs 0026 to 0030, and after three checks of `backtest-20261004-6f74840` found no bug: the leakage check, the backtest review and the hand review of the blend's gaps.
   - The backtest review found two places where the live policy wasn't fixed. ADR 0030 settles both.
 - **What is frozen:** the code on main at 8ec5cf3 in `game/uncertainty.py`, `market/blend.py` and `betting/`, with ADR 0030's live inputs:
@@ -218,7 +231,7 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - On E2, BLEND minus B1 is -0.0042 [-0.0078, -0.0007]. It also beats the B2 blend (-0.0033 [-0.0062, -0.0002]) and the market-only control (-0.0049 [-0.0087, -0.0011]), so the gain is not only recalibration.
   - On E1, against the close, it is -0.0015 [-0.0043, +0.0018].
   - The E2 blend's log loss, 0.6410, is about that of the recalibrated close.
-- **u leans the wrong way.** Its weight b_u is +0.22 [-0.06, +0.51] on E2 in 2021-22's fit (from the fit's standard errors): the model is trusted more as doubt grows. In 2022-23's fit it is +0.25 [+0.02, +0.49], which is ADR 0026's revisit trigger. The owner kept u frozen: live evidence decides (ADR 0031). In 2021-22, u reaches 5.3 standard deviations among the bets. The policy still reads u in its hurdle and stake. Live u is history's quantity (ADR 0030), so the fit isn't pushed outside its range by confirmations.
+- **u leans the wrong way.** Its weight b_u is +0.22 [-0.06, +0.51] on E2 in 2021-22's fit (from the fit's standard errors): the model is trusted more as doubt grows. In 2022-23's fit it is +0.25 [+0.02, +0.49], which is ADR 0026's revisit trigger. The owner kept u frozen: live evidence decides (ADR 0031). In 2021-22, u reaches 5.3 standard deviations among the bets. The policy still reads u in its hurdle and stake. Under v1, live u is history's quantity (ADR 0030). Under v2 a confirmed starter sets his team's goalie doubt to 0, which pushes u about 1.7 standard deviations below the training games when both are confirmed (ADR 0037). The fit's weights are then applied outside the range they were fitted on.
 - **The bets don't beat the close.**
   - The policy bets 465 of 1,306 games at the opener, mostly away teams and underdogs, at a mean expected return of 7.7%.
   - The return per unit staked is +6.1% [-0.5%, +13.3%].
@@ -248,7 +261,7 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
 - **Gaps above 8 points against B1:** 17 on E1 and 49 on E2, against B3's 208 in 2021-22 on E1. All were reviewed by hand, and no bug was found.
 
 **Phase 4's inputs:**
-- **The uncertainty score u (ADR 0026):** history's goalie doubt comes from the goalie-start model alone, since no historical starter confirmations exist. Live, u reads the same goalie-start probabilities and ignores confirmations (ADR 0030), so it stays the quantity the blend was fitted on. Live B3 uses no confirmed starter either (the owner's ruling, 2026-10-05, ADR 0030).
+- **The uncertainty score u (ADR 0026):** history's goalie doubt comes from the goalie-start model alone, since no historical starter confirmations exist. Under v1, live u reads the same goalie-start probabilities and ignores confirmations (ADR 0030), and so does live B3. Under v2, from 2026-10-15, both read the day's confirmed and likely starters (ADR 0037).
 
 **Held-out seasons seen for data format only** (#96, PR #108):
 - **What was seen:** the first draft of the `penalties` and `faceoffs` tables surveyed every cached season, 2023-24, 2025-26 and the first 2026-27 games included. It recorded which penalty codes exist and which fields can be blank, and it checked the faceoff zones of 200 games of 2023-24.

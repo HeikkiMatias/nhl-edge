@@ -1,6 +1,6 @@
 # 0037. Policy v2: confirmed starting goalies in live B3 and in u
 
-- Status: Accepted (by the owner, 2026-10-11)
+- Status: Accepted (by the owner, 2026-10-11); frozen 2026-10-14 as `policy-20261014-e15db87`, with L = 46/47 (the owner, 2026-10-14)
 - Date: 2026-10-11
 - Part of: policy v2 (#225), which replaces v1 from its freeze date (the owner, 2026-10-10, #222 option 1)
 
@@ -85,6 +85,26 @@
 **Unchanged from v1:**
 - the blend, `blend-live-20261007-89ec631`, which v2 reuses without a refit: its training rows are v1's, since no confirmation exists on history to refit on;
 - selection, staking, the guard, the decision time and Pinnacle's price (ADRs 0028 to 0030, 0033).
+
+## The freeze (2026-10-14)
+
+**#238's audit,** with polls from 2026-09-29 to 2026-10-13. Each source's call was taken at the date's midday odds snapshot, the decision's input cutoff.
+- **The NHL's flag** named no starter in any of 210 team-games, so Daily Faceoff is the source in practice.
+- **Daily Faceoff's "Confirmed"** named the starter in 85 of 85 team-games.
+- **Its "Likely"** named him in 45 of 45, with a weekly block bootstrap interval of [1.000, 1.000]. A bootstrap can't show doubt when every call was right; an exact binomial interval for 45 of 45 is [0.921, 1.000].
+- **No call** by the decision: 78 team-games.
+- **Later in the day,** after the decisions, one "Confirmed" proved wrong: ANA on 2026-10-10, posted 15 minutes before the start.
+
+**L.** The rule above would give L = 1, which makes a "Likely" as certain as a "Confirmed", against the owner's intent that it keep more doubt.
+- **The owner's choice:** on 2026-10-14 the owner chose the rule of succession, L = (45 + 1) / (45 + 2) = 46/47, about 0.979.
+- **It is fixed:** `selection.LIKELY_STARTS` holds it for the season.
+
+**The version:** `policy-20261014-e15db87`, `FROZEN_ON` 2026-10-14. v2 counts from 2026-10-15.
+
+**The rest:**
+- **v1:** its decisions of 2026-10-08 to 2026-10-14 stay on record under `policy-20261005-8ec5cf3`. `nhl live report --policy` reports them apart.
+- **The bankroll:** the paper bankroll carries on from v1's balance, since it is one paper account per season (ADR 0028). Its drawdown review counts both policies' bets.
+- **The fits:** v2 reuses v1's live blend and attribution levels (`selection.FIT_POLICY`).
 
 ## Backtest evidence
 
