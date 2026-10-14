@@ -849,7 +849,7 @@ def test_input_terms_join_their_rows_and_take_the_later_known_time() -> None:
     away = epp.filter(~pl.col("is_home")).select("game_id", a="drawn_index")
     want = home.join(away, on="game_id").select("game_id", want=pl.col("h") - pl.col("a"))
     check = joined.join(want, on="game_id")
-    assert (check["drawn_diff"] - check["want"]).abs().max() < 1e-12
+    assert check.height and ((check["drawn_diff"] - check["want"]).abs() < 1e-12).all()
     with pytest.raises(ValueError, match="team_strength"):
         b3.with_terms(league, inputs, b3.Terms(team=True))
 
