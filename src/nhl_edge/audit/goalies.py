@@ -102,7 +102,7 @@ def team_games(
         )
     )
     reported = pl.col("status").is_not_null()
-    confirmed = pl.col("status") == CONFIRMED
+    is_confirmed = pl.col("status") == CONFIRMED
     # A Daily Faceoff listing is a game by its start and team. One page can list a team twice on
     # a date, such as a stale listing of a re-timed game, so each listing keeps its own polls.
     dfo_side = (
@@ -116,11 +116,12 @@ def team_games(
             dfo_last_name=pl.col("goalie_name").last(),
             dfo_reported_min=pl.col("minutes").filter(reported).first(),
             dfo_reported_key=pl.col("key").filter(reported).first(),
-            dfo_confirmed_min=pl.col("minutes").filter(confirmed).first(),
-            dfo_confirmed_key=pl.col("key").filter(confirmed).first(),
+            dfo_reported_name=pl.col("goalie_name").filter(reported).first(),
+            dfo_confirmed_min=pl.col("minutes").filter(is_confirmed).first(),
+            dfo_confirmed_key=pl.col("key").filter(is_confirmed).first(),
+            dfo_confirmed_name=pl.col("goalie_name").filter(is_confirmed).first(),
         )
     )
-    starter = pl.col("starter_key")
     return (
         starters.filter(pl.col("game_date") >= first)
         .with_columns(starter_key=_key("starter_name"))
@@ -135,9 +136,10 @@ def team_games(
         .with_columns(
             nhl_named_right=pl.col("nhl_named_id") == pl.col("starter_id"),
             nhl_last_right=pl.col("nhl_last_id") == pl.col("starter_id"),
-            dfo_reported_right=pl.col("dfo_reported_key") == starter,
-            dfo_confirmed_right=pl.col("dfo_confirmed_key") == starter,
-            dfo_last_right=pl.col("dfo_last_key") == starter,
+            # One goalie by name or, as v2 matches him, by surname (ADR 0037).
+            dfo_reported_right=confirmed.same_goalie("dfo_reported_name", "starter_name"),
+            dfo_confirmed_right=confirmed.same_goalie("dfo_confirmed_name", "starter_name"),
+            dfo_last_right=confirmed.same_goalie("dfo_last_name", "starter_name"),
         )
         .with_columns(pl.col("nhl_polls", "dfo_polls").fill_null(0))
     )
@@ -193,7 +195,7 @@ def at_decision(
     return confirmed.calls(moments, nhl, dailyfaceoff).with_columns(
         season=(start_year * 10_000 + start_year + 1).cast(pl.Int32),
         nhl_right=pl.col("nhl_id") == pl.col("starter_id"),
-        dfo_right=_key("dfo_name") == _key("starter_name"),
+        dfo_right=confirmed.same_goalie("dfo_name", "starter_name"),
     )
 
 

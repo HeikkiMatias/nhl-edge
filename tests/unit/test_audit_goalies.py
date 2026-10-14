@@ -251,3 +251,13 @@ def test_the_decision_is_the_dates_midday_snapshot_which_its_goalie_poll_precede
     assert (tor["moment_utc"], tor["dfo_status"], tor["dfo_right"]) == (snapshot, "Confirmed", True)
     # Without the snapshot, 12:45 ET stands and the poll comes too late.
     assert team(goalies.at_decision(STARTERS, nhl_polls([]), polls), "TOR")["dfo_status"] is None
+
+
+def test_a_pick_with_another_first_name_is_the_starter_by_surname() -> None:
+    # Daily Faceoff's Matthew Murray is the NHL's Matt Murray: the same surname is the starter,
+    # as policy v2 matches him (ADR 0037).
+    frame = goalies.team_games(
+        STARTERS, nhl_polls([]), dfo_polls([("MTL", START, 30, "Jake Dobes", "Confirmed")])
+    )
+    mtl = team(frame, "MTL")
+    assert (mtl["dfo_confirmed_right"], mtl["dfo_last_right"]) == (True, True)

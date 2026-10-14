@@ -182,6 +182,18 @@ def replay_pregame_goalies(
     """Rebuild pregame_goalies for the given game dates (every stored date when None) from the raw
     pre-game boxscores. Each requested date's partition is replaced, and deleted when the date has
     no rows, so a parser fix leaves nothing stale. Never calls the NHL API."""
+    table, report = stored_pregame_goalies(store, dates)
+    requested = sorted(dates) if dates is not None else report.dates
+    lake.replace_dates(TABLE, table, requested)
+    return report
+
+
+def stored_pregame_goalies(
+    store: RawStore, dates: Collection[date] | None = None
+) -> tuple[pl.DataFrame, ReplayReport]:
+    """pregame_goalies' rows for the given game dates (every stored date when None), parsed from
+    the raw pre-game boxscores without writing the lake, as a live decision reads its day's polls
+    (ADR 0037). Never calls the NHL API."""
     report = ReplayReport()
     frames = []
     root = store.base_dir / BOXSCORE_PREFIX
@@ -206,6 +218,4 @@ def replay_pregame_goalies(
             frames.append(frame)
     table = pl.concat(frames) if frames else pl.DataFrame(schema=dtypes(PregameGoalies))
     report.rows = table.height
-    requested = sorted(dates) if dates is not None else report.dates
-    lake.replace_dates(TABLE, table, requested)
-    return report
+    return table, report

@@ -255,6 +255,18 @@ def replay_starting_goalies(
     """Rebuild dailyfaceoff_goalies for the given page dates (every stored date when None) from
     the raw pages. Each requested date's partition is replaced, and deleted when it has no rows.
     Never calls Daily Faceoff."""
+    table, report = stored_starting_goalies(store, dates)
+    requested = sorted(dates) if dates is not None else report.dates
+    lake.replace_dates(TABLE, table, requested)
+    return report
+
+
+def stored_starting_goalies(
+    store: RawStore, dates: Collection[date] | None = None
+) -> tuple[pl.DataFrame, ReplayReport]:
+    """dailyfaceoff_goalies' rows for the given page dates (every stored date when None), parsed
+    from the raw pages without writing the lake, as a live decision reads its day's polls (ADR
+    0037). Never calls Daily Faceoff."""
     report = ReplayReport()
     frames = []
     root = store.base_dir / PREFIX
@@ -277,9 +289,7 @@ def replay_starting_goalies(
             report.pages += 1
     table = pl.concat(frames) if frames else pl.DataFrame(schema=dtypes(DailyFaceoffGoalies))
     report.rows = table.height
-    requested = sorted(dates) if dates is not None else report.dates
-    lake.replace_dates(TABLE, table, requested)
-    return report
+    return table, report
 
 
 def page_lines(body: bytes) -> dict[str, Any]:

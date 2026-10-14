@@ -47,9 +47,12 @@
 3. **Otherwise, Daily Faceoff's "Likely":** a likely starter, below.
 4. **Otherwise, unconfirmed:** the goalie-start model's mix, as in v1. An empty status counts as none.
 
-**Daily Faceoff's name** is matched to an NHL goalie in two steps:
+**Daily Faceoff's name** is matched to an NHL goalie in three steps:
 1. A unique match, ignoring case, accents and punctuation, among the team's goalie-start candidates for the game.
-2. Otherwise, a unique match among goalies with earlier NHL games.
+2. Otherwise, a unique surname among them.
+   - **Why:** a first name can differ between the sources. #238's audit found Daily Faceoff's "Matthew Murray" for the NHL's "Matt Murray" (8483575), and the NHL lists two goalies by that name.
+   - **Recorded:** added on 2026-10-14 before the freeze, and the audit counts a call right by the same match.
+3. Otherwise, a unique match among goalies with earlier NHL games.
 
 **A confirmed starter in B3:**
 - He replaces the mix: his scenario has probability 1, and B3's other inputs are unchanged.

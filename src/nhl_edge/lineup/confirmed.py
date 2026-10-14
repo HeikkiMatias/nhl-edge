@@ -9,9 +9,11 @@ the 12:45 ET decision, from the pre-game polls, and the goalie rows B2, B3 and u
 
 **The starter**, in ADR 0037's order: the NHL's flag; else Daily Faceoff's Confirmed; else its
 Likely; else none, and the goalie-start model's mix stands.
-- **Daily Faceoff's name** is an NHL goalie when it matches one by name_key, uniquely, among the
-  team's candidates for the game, else among the goalies with an earlier goalie-effect row. A
-  name matching neither is UNKNOWN_GOALIE, rated as a goalie with no earlier game.
+- **Daily Faceoff's name** is an NHL goalie when it matches one uniquely, in this order: by
+  name_key among the team's candidates for the game; by surname among them, since a first name
+  can differ between sources (Matthew Murray for the NHL's Matt Murray); by name_key among the
+  goalies with an earlier goalie-effect row. A name matching none is UNKNOWN_GOALIE, rated as a
+  goalie with no earlier game.
 - **His chance of starting** is 1 when the NHL flags him or Daily Faceoff confirms him. When
   Daily Faceoff calls him Likely, it is the larger of likely_share (L, measured once before the
   freeze) and the goalie-start model's own p_start for him.
@@ -53,9 +55,26 @@ def name_key(name: str | None) -> str | None:
     return re.sub(r"[^a-z]", "", ascii_name.lower())
 
 
+def surname_key(name: str | None) -> str | None:
+    """name_key of a name's last word: Matthew Murray and Matt Murray share one."""
+    if name is None or not name.split():
+        return None
+    return name_key(name.split()[-1])
+
+
 def key(column: str) -> pl.Expr:
     """name_key of a name column."""
     return pl.col(column).map_elements(name_key, return_dtype=pl.String)
+
+
+def surname(column: str) -> pl.Expr:
+    """surname_key of a name column."""
+    return pl.col(column).map_elements(surname_key, return_dtype=pl.String)
+
+
+def same_goalie(a: str, b: str) -> pl.Expr:
+    """Whether two name columns name one goalie: the same name_key, or the same surname."""
+    return (key(a) == key(b)) | (surname(a) == surname(b))
 
 
 def calls(team_games: pl.DataFrame, nhl: pl.DataFrame, dailyfaceoff: pl.DataFrame) -> pl.DataFrame:
@@ -95,12 +114,12 @@ def calls(team_games: pl.DataFrame, nhl: pl.DataFrame, dailyfaceoff: pl.DataFram
     )
 
 
-def _ids(names: pl.DataFrame, by: list[str]) -> pl.DataFrame:
-    """The names (by, goalie_id, name) whose name_key is unique within by: by, name key, id."""
-    keyed = names.with_columns(name_key=key("name")).unique([*by, "goalie_id"])
-    unique = keyed.group_by([*by, "name_key"]).agg(
-        goalie_id=pl.col("goalie_id").first(), n=pl.len()
-    )
+def _ids(names: pl.DataFrame, by: list[str], keyed_by: str = "name_key") -> pl.DataFrame:
+    """The names (by, goalie_id, name) whose key (name_key, or surname_key) is unique within by:
+    by, the key, id."""
+    keys = {"name_key": key("name"), "surname_key": surname("name")}
+    keyed = names.with_columns(keys[keyed_by].alias(keyed_by)).unique([*by, "goalie_id"])
+    unique = keyed.group_by([*by, keyed_by]).agg(goalie_id=pl.col("goalie_id").first(), n=pl.len())
     return unique.filter(pl.col("n") == 1).drop("n")
 
 
@@ -125,16 +144,21 @@ def starters(
         .when(status == DFO_LIKELY)
         .then(pl.lit(LIKELY)),
         name_key=key("dfo_name"),
+        surname_key=surname("dfo_name"),
     ).filter(pl.col("source").is_not_null())
     on_team = _ids(candidates, ["game_id", "team"]).rename({"goalie_id": "team_id"})
+    by_surname = _ids(candidates, ["game_id", "team"], "surname_key").rename(
+        {"goalie_id": "surname_id"}
+    )
     anyone = _ids(goalies, []).rename({"goalie_id": "league_id"})
     named = (
         sourced.join(on_team, on=["game_id", "team", "name_key"], how="left")
+        .join(by_surname, on=["game_id", "team", "surname_key"], how="left")
         .join(anyone, on="name_key", how="left")
         .with_columns(
             goalie_id=pl.when(pl.col("source") == NHL)
             .then(pl.col("nhl_id"))
-            .otherwise(pl.coalesce("team_id", "league_id", pl.lit(UNKNOWN_GOALIE)))
+            .otherwise(pl.coalesce("team_id", "surname_id", "league_id", pl.lit(UNKNOWN_GOALIE)))
             .cast(pl.Int64),
             known_utc=pl.when(pl.col("source") == NHL)
             .then(pl.col("nhl_utc"))

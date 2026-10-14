@@ -88,6 +88,11 @@ def test_poll_stores_the_page_raw_and_replay_rebuilds_the_table(tmp_path: Path) 
     raw_key = store.latest("dailyfaceoff/starting-goalies/2026-09-29")
     assert raw_key is not None and store.get(raw_key) == PAGE
     assert "4 teams, 1 with a status, 1 confirmed" in messages[0]
+    # A live decision parses the day's page without writing the lake (ADR 0037).
+    from nhl_edge.ingest.dailyfaceoff import stored_starting_goalies
+
+    parsed, _ = stored_starting_goalies(store, [date(2026, 9, 29)])
+    assert parsed.height == 4 and not (tmp_path / "lake").exists()
     lake = Lake(tmp_path / "lake")
     report = replay_starting_goalies(store, lake)
     assert (report.pages, report.rows) == (1, 4)

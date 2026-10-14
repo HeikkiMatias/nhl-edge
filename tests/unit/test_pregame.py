@@ -176,9 +176,17 @@ def test_replay_rebuilds_the_table_from_the_raw_polls(tmp_path: Path) -> None:
     store.put("nhl", f"{key}/20260929T204500Z", flagged, {"fetched_utc": near.isoformat()})
     late = START + timedelta(minutes=2)
     store.put("nhl", f"{key}/20260929T210200Z", flagged, {"fetched_utc": late.isoformat()})
+    # A live decision parses the day's polls without writing the lake (ADR 0037).
+    from nhl_edge.ingest.pregame import stored_pregame_goalies
+
+    parsed, _ = stored_pregame_goalies(store, [START.date()])
+    assert parsed.height == 4 and not (tmp_path / "lake").exists()
     lake = Lake(tmp_path / "lake")
     report = replay_pregame_goalies(store, lake)
     assert (report.responses, report.rows, report.after_start) == (3, 4, 1)
+    assert parsed.sort("observed_utc", "team").equals(
+        lake.read("pregame_goalies").sort("observed_utc", "team")
+    )
     table = lake.read("pregame_goalies")
     assert table["observed_utc"].unique().sort().to_list() == [MORNING, near]
     confirmed = table.filter(pl.col("starter_id").is_not_null())
