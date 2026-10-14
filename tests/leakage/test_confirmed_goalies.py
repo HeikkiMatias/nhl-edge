@@ -90,6 +90,7 @@ def test_the_audits_decision_measure_reads_polls_before_1245_et_only() -> None:
             "start_utc": [start],
             "starter_id": [20],
             "starter_name": ["Anthony Stolarz"],
+            "surname_unique": [True],
         }
     )
     polls = dailyfaceoff(

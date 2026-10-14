@@ -38,6 +38,7 @@ TEAM_GAME_SCHEMA = {
     "start_utc": pl.Datetime("us", "UTC"),
     "starter_id": pl.Int64,
     "starter_name": pl.String,
+    "surname_unique": pl.Boolean,
 }
 
 
@@ -63,14 +64,21 @@ def starters(games: pl.DataFrame, lineups: pl.DataFrame, players: pl.DataFrame) 
     started = lineups.filter(pl.col("starting_goalie")).select(
         "game_id", "team", starter_id="player_id"
     )
+    # Whether no other goalie dressed by the team shares the starter's surname: only then does a
+    # call by surname name him, as policy v2 matches the team's candidates (ADR 0037).
+    names = players.select("player_id", "name")
+    surnames = (
+        lineups.filter(pl.col("role") == "G")
+        .join(names, on="player_id", how="left")
+        .group_by("game_id", "team", surname=confirmed.surname("name"))
+        .agg(dressed=pl.len())
+    )
     return (
         sides.join(started, on=["game_id", "team"])
-        .join(
-            players.select("player_id", starter_name="name"),
-            left_on="starter_id",
-            right_on="player_id",
-            how="left",
-        )
+        .join(names.rename({"name": "starter_name"}), left_on="starter_id", right_on="player_id")
+        .with_columns(surname=confirmed.surname("starter_name"))
+        .join(surnames, on=["game_id", "team", "surname"], how="left")
+        .with_columns(surname_unique=pl.col("dressed").fill_null(1) == 1)
         .select(list(TEAM_GAME_SCHEMA))
         .cast(TEAM_GAME_SCHEMA)  # type: ignore[arg-type]
         .sort("start_utc", "game_id", "team")
@@ -102,7 +110,7 @@ def team_games(
         )
     )
     reported = pl.col("status").is_not_null()
-    confirmed = pl.col("status") == CONFIRMED
+    is_confirmed = pl.col("status") == CONFIRMED
     # A Daily Faceoff listing is a game by its start and team. One page can list a team twice on
     # a date, such as a stale listing of a re-timed game, so each listing keeps its own polls.
     dfo_side = (
@@ -116,11 +124,12 @@ def team_games(
             dfo_last_name=pl.col("goalie_name").last(),
             dfo_reported_min=pl.col("minutes").filter(reported).first(),
             dfo_reported_key=pl.col("key").filter(reported).first(),
-            dfo_confirmed_min=pl.col("minutes").filter(confirmed).first(),
-            dfo_confirmed_key=pl.col("key").filter(confirmed).first(),
+            dfo_reported_name=pl.col("goalie_name").filter(reported).first(),
+            dfo_confirmed_min=pl.col("minutes").filter(is_confirmed).first(),
+            dfo_confirmed_key=pl.col("key").filter(is_confirmed).first(),
+            dfo_confirmed_name=pl.col("goalie_name").filter(is_confirmed).first(),
         )
     )
-    starter = pl.col("starter_key")
     return (
         starters.filter(pl.col("game_date") >= first)
         .with_columns(starter_key=_key("starter_name"))
@@ -135,12 +144,22 @@ def team_games(
         .with_columns(
             nhl_named_right=pl.col("nhl_named_id") == pl.col("starter_id"),
             nhl_last_right=pl.col("nhl_last_id") == pl.col("starter_id"),
-            dfo_reported_right=pl.col("dfo_reported_key") == starter,
-            dfo_confirmed_right=pl.col("dfo_confirmed_key") == starter,
-            dfo_last_right=pl.col("dfo_last_key") == starter,
+            # One goalie by name or, as v2 matches him, by a surname unique on the team.
+            dfo_reported_right=called_right("dfo_reported_name"),
+            dfo_confirmed_right=called_right("dfo_confirmed_name"),
+            dfo_last_right=called_right("dfo_last_name"),
         )
         .with_columns(pl.col("nhl_polls", "dfo_polls").fill_null(0))
     )
+
+
+def called_right(name: str) -> pl.Expr:
+    """Whether the goalie Daily Faceoff named in the column started: the starter's name, or his
+    surname when no other goalie the team dressed shares it, as policy v2 resolves a call among
+    the team's candidates (ADR 0037; Codex on #239)."""
+    by_name = confirmed.key(name) == confirmed.key("starter_name")
+    by_surname = confirmed.surname(name) == confirmed.surname("starter_name")
+    return by_name | (by_surname & pl.col("surname_unique"))
 
 
 def decision_utc() -> pl.Expr:
@@ -193,7 +212,7 @@ def at_decision(
     return confirmed.calls(moments, nhl, dailyfaceoff).with_columns(
         season=(start_year * 10_000 + start_year + 1).cast(pl.Int32),
         nhl_right=pl.col("nhl_id") == pl.col("starter_id"),
-        dfo_right=_key("dfo_name") == _key("starter_name"),
+        dfo_right=called_right("dfo_name"),
     )
 
 

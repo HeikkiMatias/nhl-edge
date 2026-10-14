@@ -29,6 +29,9 @@ FROZEN_ON = date(2026, 10, 5)
 # Live bets use the blend fitted on SBR's close (E1), applied to Pinnacle's 12:45 ET price
 # (ADR 0030).
 LIVE_BLEND_EXPERIMENT = "E1"
+# Policy v2's L (ADR 0037): the chance a Daily Faceoff "Likely" goalie starts, fixed at v2's
+# freeze. None under v1, whose decisions read no starter confirmation (ADR 0030).
+LIKELY_STARTS: float | None = None
 
 
 @dataclass(frozen=True)

@@ -182,3 +182,19 @@ def test_no_call_leaves_the_goalie_rows_as_they_are() -> None:
         frames, (goalie_starts(), goalie_effects(), goal_multipliers()), strict=True
     ):
         assert got.equals(want)
+
+
+def test_a_first_name_that_differs_matches_by_surname_on_the_team() -> None:
+    # Daily Faceoff wrote Matthew Murray for the NHL's Matt Murray (#238): a surname unique
+    # among the team's candidates is the goalie.
+    starters = named([], [("MTL", at(16, 30), "Jake Dobes", "Confirmed")])
+    assert row(starters, "MTL")["goalie_id"] == 11
+    # Two candidates sharing the surname: no surname match, and the name matches no one else.
+    twins = candidates().with_columns(
+        name=pl.when(pl.col("goalie_id") == 10).then(pl.lit("Jan Dobeš")).otherwise("name")
+    )
+    called = confirmed.calls(
+        TEAM_GAMES, nhl([]), dailyfaceoff([("MTL", at(16, 30), "Jake Dobes", "Confirmed")])
+    )
+    ambiguous = confirmed.starters(called, twins, goalies(), L)
+    assert row(ambiguous, "MTL")["goalie_id"] == confirmed.UNKNOWN_GOALIE

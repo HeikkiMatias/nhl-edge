@@ -117,6 +117,9 @@ def prefix(day: date) -> str:
 
 # The rows every decision saves, and those it adds when its models were read (inputs()).
 BASE_INPUTS = ("slate", "feature_builds", "quotes")
+# Under policy v2, the day's starters and the polls they came from, saved beside the rows the
+# models read (ADR 0037, live/goalies.py). A v1 run has none.
+CALL_INPUTS = ("goalie_starters", "pregame_goalies", "dailyfaceoff_goalies")
 MODEL_INPUTS = (
     "team_strength",
     "schedule_terms",
@@ -320,9 +323,11 @@ def finish(
     missing = [name for name in wanted if f"inputs/{name}.parquet" not in stored]
     if missing:
         raise ValueError(f"{where}: missing {', '.join(missing)}, so it can't be finished")
+    # A v2 run's calls are stored beside its rows, and finished with them (Codex on #239).
+    calls = [name for name in CALL_INPUTS if f"inputs/{name}.parquet" in stored]
     files = {
         name: store.get(f"{where}/{name}")
-        for name in [FITS, *(f"inputs/{name}.parquet" for name in wanted)]
+        for name in [FITS, *(f"inputs/{name}.parquet" for name in (*wanted, *calls))]
     }
     quotes = pl.read_parquet(files["inputs/quotes.parquet"])
 

@@ -460,6 +460,7 @@ def predict(
 
     from nhl_edge.backtest import reports
     from nhl_edge.backtest.walk_forward import outcomes
+    from nhl_edge.betting import selection
     from nhl_edge.betting.selection import POLICY_VERSION
     from nhl_edge.game import b2, b3, uncertainty
     from nhl_edge.ingest.odds import ET
@@ -468,6 +469,7 @@ def predict(
     from nhl_edge.live import blend_fit
     from nhl_edge.live import bundle as lb
     from nhl_edge.live import features as lf
+    from nhl_edge.live import goalies as live_goalies
     from nhl_edge.live import predict as lp
     from nhl_edge.live.slate import of_day
     from nhl_edge.settings import load_env
@@ -512,8 +514,13 @@ def predict(
     load_env()
     lake = Lake.from_env(mirror=r2)
     store = RawStore.from_env(mirror=r2, flag="--r2")
+    # Policy v2 reads the day's starters (ADR 0037); v1 never does (ADR 0030).
+    likely_share = selection.LIKELY_STARTS
     if r2:
-        pulled = sum(lake.pull(table) for table in lp.LAKE_TABLES)
+        pulled = sum(
+            lake.pull(table)
+            for table in (*lp.LAKE_TABLES, *(live_goalies.TABLES if likely_share else ()))
+        )
         restored = store.restore_from_r2(prefix=f"odds/{game_date.isoformat()}/")
         typer.echo(f"pulled {pulled:,} table files and the day's odds ({restored}) from R2")
     paths = [fit] if fit is not None else sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
@@ -554,6 +561,7 @@ def predict(
     games = lake.read("games")
     fitted = None
     read: tuple[b2.Tables, b3.Tables, uncertainty.Tables] | None = None
+    calls: dict[str, pl.DataFrame] = {}
     if not problems:
         tables = b2.Tables(
             games,
@@ -577,6 +585,28 @@ def predict(
             tables.actual_lineups,
             lake.read("player_league_seasons"),
         )
+        if likely_share is not None:
+            if r2:
+                for prefix in live_goalies.raw_prefixes(game_date):
+                    store.restore_from_r2(prefix=prefix)
+            polls = live_goalies.day_polls(store, game_date)
+            tables, b3_tables, u_tables, starters = live_goalies.with_starters(
+                tables,
+                b3_tables,
+                u_tables,
+                slate,
+                polls,
+                lake.read("players"),
+                cutoff,
+                likely_share,
+            )
+            seen = [poll.filter(pl.col("observed_utc") < cutoff) for poll in polls]
+            calls = dict(zip(lb.CALL_INPUTS, (starters, *seen), strict=True))
+            for row in starters.iter_rows(named=True):
+                typer.echo(
+                    f"starter {row['team']} ({row['game_id']}): {row['goalie_id']}, "
+                    f"{row['source']}, p {row['p']:.3f}"
+                )
         moments = slate.select("game_id", prediction_utc=pl.lit(cutoff))
         fitted = lp.models(tables, b3_tables, u_tables, slate, moments, live.fold_start)
         read = (tables, b3_tables, u_tables)
@@ -625,7 +655,8 @@ def predict(
     fits = {}
     if fitted is not None and fitted.b2_model is not None and fitted.b3_model is not None:
         fits = {"b2": fitted.b2_model, "b3": fitted.b3_model}
-    rows = lb.inputs(slate, record, quotes, read)
+    # Under v2, the starters and the polls they came from are saved beside the rows read.
+    rows = lb.inputs(slate, record, quotes, read) | calls
     if dry_run:
         bundles: lb.Store = lb.LocalStore(out)
     else:

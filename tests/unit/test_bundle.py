@@ -334,6 +334,25 @@ def test_a_run_stopped_after_its_ledger_is_finished_and_replays(
         lb.finish(store, pf.DAY, ledger, "x", {}, inputs.live, FIT.name, sha)
 
 
+def test_a_v2_runs_calls_are_finished_with_its_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A v2 run saves its starters and polls beside its rows (ADR 0037): finished later, the
+    # bundle keeps them (Codex on #239).
+    store = lb.LocalStore(tmp_path)
+    inputs = pf.day(published_utc=pf.DECISION + timedelta(minutes=4), bankroll=98.5)
+    ledger = lp.ledger(lp.decide(inputs), inputs)
+    calls = {name: pl.DataFrame({"game_id": [1], "team": ["MTL"]}) for name in lb.CALL_INPUTS}
+    rows = lb.inputs(inputs.slate, RECORD, inputs.quotes, None) | calls
+    lb.write_files(store, pf.DAY, rows, {})
+    monkeypatch.setattr(lb, "models", lambda _: inputs.fitted)
+    sha = lb.sha256(FIT.read_bytes())
+    lb.finish(store, pf.DAY, ledger, "x", {}, inputs.live, FIT.name, sha)
+    saved = lb.read(store, pf.DAY)
+    for name in lb.CALL_INPUTS:
+        assert saved.inputs[name].equals(calls[name])
+
+
 def test_a_bundle_missing_an_input_is_never_finished(tmp_path: Path) -> None:
     sha = lb.sha256(FIT.read_bytes())
     inputs, ledger = stopped_after_the_ledger(lb.LocalStore(tmp_path / "none"))
