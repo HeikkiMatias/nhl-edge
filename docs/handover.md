@@ -6,8 +6,7 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 
 1. **Read** CLAUDE.md, this file and `docs/model-card.md`.
 2. **Take over the scheduled check-ins.** They are Routines bound to the session that created them, so they keep firing into the old session, not a new one. List them (`list_triggers`), create each again bound to the new session with the same time and prompt, then delete the old one. A check-in whose time has passed in the old session needs doing by hand: check its result first. On 2026-10-14 they were:
-   - 2026-10-14 17:15 UTC: merge the v2 freeze after v1's last decision (done once #240 is merged);
-   - 2026-10-15, after the 12:45 ET decision: v2's first decision checked (created by the check-in above);
+   - 2026-10-15, after the 12:45 ET decision: v2's first decision checked, and v1's final report;
    - Mondays 10:20 UTC: the weekly live report;
    - 2026-10-22 10:30 UTC: #30, then gate 1;
    - 2026-11-05 10:40 UTC: #121 step 3, which also revisits #120's early-exit gap.
@@ -22,7 +21,7 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 
 | Item | Ready when | Then |
 | --- | --- | --- |
-| The v2 freeze, #240 (closes #222), and this handover, #245 | 2026-10-14, once the 12:45 ET (16:45 UTC) decision is published | Check that the `odds-snapshots` midday run wrote 2026-10-14's ledger under `policy-20261005-8ec5cf3`. Then squash-merge #240, and this handover after it. Merging before the decision would have made 2026-10-14 v2's day. |
+| The v2 freeze, #240 (closes #222) | Done 2026-10-14 | v1's last decision was published at 16:49 UTC, under `policy-20261005-8ec5cf3`: 2 games, no bet. #240 merged after it, so 2026-10-15 is v2's first day. |
 | v2's first decision | 2026-10-15, after 16:45 UTC | In the midday run's Predict step, check three things. The day's starters are logged with their source. The ledger rows carry `policy-20261014-e15db87`. A confirmed starter's goalie doubt is 0. `nhl live replay --r2` reproduces the ledger from the run bundle, whose `goalie_starters`, `pregame_goalies` and `dailyfaceoff_goalies` files hold the calls and the polls the decision read. Then comment on #222 and close #225. |
 | v1's final report | After the 2026-10-15 nightly (09:00 UTC) settles 2026-10-14's bets | Run `uv run nhl live report --r2 --policy policy-20261005-8ec5cf3`. It writes `reports/live/report-<date>-policy-20261005-8ec5cf3.md` and `.json`. Commit them on a branch, then PR and merge. `--supabase` refuses an earlier policy, so the dashboard keeps the current one. |
 | The weekly live report | Mondays 10:20 UTC | As the Routine's prompt says: v2's report, reviewed and committed. It gives counts only, no estimate, until a policy has 4 weeks of games (#235). |
@@ -172,7 +171,7 @@ Every deliverable merged under its own task issue:
   - `audit/goalies.py`: the decision measure.
 
 **The live record so far:**
-- **v1:** 21 bets on 2026-10-08 to 10-13, plus 2026-10-14's. The paper bankroll stood at 103.77 units at the 2026-10-13 decision.
+- **v1:** 21 bets on 2026-10-08 to 10-13. Its last decision, on 2026-10-14, gave no bet on 2 games. The paper bankroll stood at 103.77 units at the 2026-10-13 decision.
 - **The first weekly report** (`reports/live/report-2026-10-14.md`, #235): no operational problem.
   - Both ANA–CGY games had u's rookie share beyond 3 training standard deviations. That is ANA's young lineup, with no data gap (#236).
   - Availability doubt passed 3 standard deviations once (MIN at FLA on 2026-10-10).
