@@ -22,7 +22,7 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 | Item | Ready when | Then |
 | --- | --- | --- |
 | The v2 freeze, #240 (closes #222) | Done 2026-10-14 | v1's last decision was published at 16:49 UTC, under `policy-20261005-8ec5cf3`: 2 games, no bet. #240 merged after it, so 2026-10-15 is v2's first day. |
-| v2's first decision | 2026-10-15, after 16:45 UTC | In the midday run's Predict step, check three things. The day's starters are logged with their source. The ledger rows carry `policy-20261014-e15db87`. A confirmed starter's goalie doubt is 0. `nhl live replay --r2` reproduces the ledger from the run bundle, whose `goalie_starters`, `pregame_goalies` and `dailyfaceoff_goalies` files hold the calls and the polls the decision read. Then comment on #222 and close #225. |
+| v2's first decision | 2026-10-15, after the 12:45 ET (16:45 UTC) decision is published | In the midday run's Predict step, check three things. The day's starters are logged with their source. The ledger rows carry `policy-20261014-e15db87`. A confirmed starter's goalie doubt is 0. `nhl live replay --r2` reproduces the ledger from the run bundle, whose `goalie_starters`, `pregame_goalies` and `dailyfaceoff_goalies` files hold the calls and the polls the decision read. Then comment on #222 and close #225. |
 | v1's final report | After the 2026-10-15 nightly (09:00 UTC) settles 2026-10-14's bets | Run `uv run nhl live report --r2 --policy policy-20261005-8ec5cf3`. It writes `reports/live/report-<date>-policy-20261005-8ec5cf3.md` and `.json`. Commit them on a branch, then PR and merge. `--supabase` refuses an earlier policy, so the dashboard keeps the current one. |
 | The weekly live report | Mondays 10:20 UTC | As the Routine's prompt says: v2's report, reviewed and committed. It gives counts only, no estimate, until a policy has 4 weeks of games (#235). |
 | #30, post-game corrections | Two weeks of rechecked 2026-27 games: about **2026-10-22**. The nightly runs `nhl recheck --recent 3 --r2`. | Run `nhl audit report` after bringing the lake up to R2, and review its corrections section on #30. If corrections change more than scorer credit on more than a few games a season, reopen ADR 0004 with the owner. Then close #30. **Limit:** the NHL served no shift chart a week later for games 2026020006 to 2026020052 (#237). The report lists them as charts not rechecked, never as shifts removed, and compares their play-by-play and boxscore only. If the NHL serves them again after they leave the nightly window, `nhl recheck --recent 30 --r2` fetches them once. |
@@ -154,17 +154,16 @@ Every deliverable merged under its own task issue:
   - The owner signs in with a password (#206). The owner applied every migration in `supabase/migrations/`.
 
 **Policy v2 (#222, #225; ADRs 0035 to 0037).**
-- **No new B3 term passed** (#223, #224). The arena term (ADR 0035) and the team-level terms (ADR 0036) were each scored once, pre-registered, on 2018-19, 2021-22, 2023-24 and 2024-25. None passed, so v2's B3 is v1's.
+- **No new B3 term passed** (#223, #224). The arena term (ADR 0035) and the team-level terms (ADR 0036) were each scored under a pre-registered ADR on 2018-19, 2021-22, 2023-24 and 2024-25. The coach run was repeated twice after two fixes from Codex on #227, with the same figures to the last digit; all three runs stay logged. None passed, so v2's B3 is v1's.
 - **What v2 adds: the day's confirmed goalies** (ADR 0037). The policy constants (`betting/selection.py`) are:
   - `POLICY_VERSION = policy-20261014-e15db87` and `FROZEN_ON = 2026-10-14`;
   - `LIKELY_STARTS = 46/47`;
   - `FIT_POLICY = POLICY_V1`, so v2 reuses v1's live blend and attribution levels.
 
   `tests/unit/test_freeze.py` fails if any of them changes.
-- **The evidence for the sources and L** (#238, `reports/audit/2026-10-13.md`), each source's call at the decision snapshot:
-  - the NHL's flag named no starter in 210 team-games;
-  - Daily Faceoff's "Confirmed" was right in 85 of 85;
-  - its "Likely" was right in 45 of 45.
+- **The evidence for the sources and L** (#238, `reports/audit/2026-10-13.md`):
+  - the NHL's flag named no starter before any start, in all 210 team-games with a known starter;
+  - at the decision snapshot, for the 208 team-games starting after it, Daily Faceoff's "Confirmed" was right in 85 of 85 and its "Likely" in 45 of 45; 78 had no call.
 - **The code:**
   - `lineup/confirmed.py`: the calls, the name match to NHL ids, the starters, and a goalie outside the candidates;
   - `live/goalies.py`: the day's polls into the goalie rows that B2, B3 and u read;
@@ -179,8 +178,7 @@ Every deliverable merged under its own task issue:
 
 **What's left in phase 5:**
 - #169, task 9: a second copy of `raw/` outside R2. The owner chose, on 2026-10-09, to keep it on their own computer, set up later. The steps are on the issue (`nhl lake restore-raw` with a read-only R2 token).
-- #244: the dashboard tags each bet with its policy, and marks v2's start on the bankroll chart (PR #246).
-- #247: a small dashboard axis bug.
+- #247: a small dashboard axis bug. (#244, each bet's policy and v2's marker on the bankroll chart, is done: #246.)
 - #173, after #30; #121 step 3, on 2026-11-05; #67, around 2027-04-17.
 
 ## The owner's standing decisions
@@ -271,7 +269,7 @@ Every deliverable merged under its own task issue:
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
 - **Open, waiting:** #30, #79 and #11 (P2); #225 until v2's first decision is checked.
 - **Open, for the owner:** #169, the raw backup on the owner's own computer (P5).
-- **Open, next:** #244 (PR #246) and #247, both on the dashboard.
+- **Open, next:** #247, a small dashboard axis bug.
 - **Parked for the next model version:** #125 and #134 (P6, label `next-model-version`).
 - **Open, later:** phase 5's #14, #67 (in April 2027), #121 (step 3 on 2026-11-05) and #173 (after #30); #15 and #186 (P6).
 
@@ -299,7 +297,7 @@ Every deliverable merged under its own task issue:
   - It answers as a review with findings, a 👍 reaction, or a comment saying it found no major issues. Check all three.
   - It doesn't always start on its own. If nothing has arrived about 15 minutes after a PR opens, comment `@codex review`. A "Something went wrong" reply is an error, not a review round: ask again.
   - Reply to every finding with "Fixed in <sha>", "Follow-up #n" or "Won't fix: <reason>". A won't-fix on a P0 needs the owner first.
-- **A frozen policy's code:** a PR that changes what the decision reads or computes changes the frozen policy, and only a new version may do that. Docs, audit, dashboard and ingest fixes can merge any time. A change meant to start with the next day's decision merges after 16:45 UTC, once that day's decision is published.
+- **A frozen policy's code:** a PR that changes what the decision reads or computes changes the frozen policy, and only a new version may do that. Docs, audit, dashboard and ingest fixes can merge any time. A change meant to start with the next day's decision merges only once that day's 12:45 ET decision is published: check the day's ledger, not the clock. 12:45 ET is 16:45 UTC in daylight time and 17:45 UTC in standard time, from 2026-11-01.
 - **The NHL's empty shift charts** (#237): a week after their games, the NHL served `{"data": [], "total": 0}` for 2026020006 to 2026020052 and full charts for the rest. The tables' first copies are complete. `nhl recheck` never takes an empty chart as a copy.
 - **The cloud session's Bash guard:** it blocks commands that combine `data/raw/` or `tests/golden/` with a write, any `rm -rf`, and any command whose text contains `.env`. That includes jq paths such as `.environment`. The Write tool can't write `.env` files. Split such a command, put the text in a file and run the file, or read through the project's own code.
 - **The GitHub API from a cloud session:** GraphQL is unavailable and the search endpoints return 403. Use repo-scoped REST endpoints through `gh api`, and the GitHub MCP tools for review threads (replying and resolving).
