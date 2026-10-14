@@ -13,6 +13,7 @@ from b2_fixtures import feature_tables
 from b3_fixtures import league
 from polars.testing import assert_frame_equal
 
+from nhl_edge import reference
 from nhl_edge.backtest.seasons import HOCKEY_ROLES, ONE_TIME_SEASONS, season_role
 from nhl_edge.backtest.walk_forward import HOCKEY, fold_start, hockey_only
 from nhl_edge.features import team_strength as ts
@@ -447,6 +448,7 @@ def test_team_strength_retuned_after_the_fold_start_refuses_the_team_terms_fold(
     # retuned after its start move the tuning cutoff past it (Codex on #227). v1's B3 doesn't
     # read the table, so its fold stands.
     # The fixture's team strength has no season or train_cutoff; the lake's has both.
+    assert TERMS.team_strength is not None
     strength = TERMS.team_strength.join(LEAGUE.games.select("game_id", "season"), on="game_id")
     tuned = strength.with_columns(train_cutoff=pl.lit(b3.TUNED_CUTOFF, UTC_TYPE))
     retuned = strength.with_columns(
@@ -500,9 +502,9 @@ def test_a_game_reading_a_new_coach_is_known_no_earlier_than_the_morning_after_h
     teams = pl.concat([LEAGUE.games["home"], LEAGUE.games["away"]]).unique().to_list()
     old = pl.DataFrame({"team": teams, "first_game": [day(2010, 9, 1)] * len(teams)})
     coaches = pl.concat([old, pl.DataFrame({"team": [team], "first_game": [takeover]})])
-    monkeypatch.setattr(b3.reference, "load_coaches", lambda: coaches)
-    monkeypatch.setattr(b3.reference, "lineage", lambda _: {t: t for t in teams})
-    monkeypatch.setattr(b3.reference, "load_teams", lambda: pl.DataFrame())
+    monkeypatch.setattr(reference, "load_coaches", lambda: coaches)
+    monkeypatch.setattr(reference, "lineage", lambda _: {t: t for t in teams})
+    monkeypatch.setattr(reference, "load_teams", lambda: pl.DataFrame())
     # Every other input known early, so only the coach's stint can move a game's known time.
     early = datetime(2015, 1, 1, tzinfo=UTC)
     plain = b3.game_inputs(TERMS).with_columns(observed_utc=pl.lit(early, UTC_TYPE))

@@ -175,6 +175,13 @@ def test_the_report_shows_figures_for_shown_seasons_only() -> None:
     assert np.isclose(sum(r["shots"] for r in report.group_report(shots, "rush")), shots.height)
 
 
+def test_distance_bands_are_right_closed() -> None:
+    # Polars 2.0's bin_intervals replaces cut with the same bands (#241).
+    distances = pl.DataFrame({"d": [0.0, 10.0, 10.5, 45.0, 60.0, 60.5]})
+    bands = distances.select(report.distance_band(pl.col("d")).cast(pl.String))["d"].to_list()
+    assert bands == ["0-10 ft", "0-10 ft", "10-20 ft", "30-45 ft", "45-60 ft", "60+ ft"]
+
+
 def test_no_held_out_seasons_goals_can_be_read_off_the_fits() -> None:
     # With 2011-12 held out, the 2012-13 fit's totals less the 2011-12 fit's would give 2011-12's
     # goals (leakage check on #73), so the report hides them.
