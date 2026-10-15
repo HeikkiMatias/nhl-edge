@@ -28,6 +28,9 @@ It covers the frozen policy's regular-season paper decisions (ADR 0032):
 - **Entry to close (#251),** a diagnostic with no verdict: over every predicted game with a close,
   whether Pinnacle's fair price moved toward each model's disagreement with it at the decision
   (live/movement.py).
+- **Shadow evaluations (#252),** paper only and with no verdict: the frozen rules on the
+  market-only control, and the policy's own bets at the best fresh price of the other books
+  (live/shadow.py).
 - **Return at the taken price,** and the drawdown's size, only from REVIEW_DATE on (plan §11).
 
 It reads ledgers, settlements, results and prices only: nothing here feeds a decision.
@@ -57,7 +60,7 @@ from nhl_edge.backtest.metrics import (
 from nhl_edge.backtest.walk_forward import B1_METHOD, b0, bounds, implausible, outcomes
 from nhl_edge.betting.selection import POLICY, POLICY_VERSION
 from nhl_edge.game.uncertainty import PARTS
-from nhl_edge.live import movement
+from nhl_edge.live import movement, shadow
 from nhl_edge.live import predict as lp
 from nhl_edge.live import settle as ls
 from nhl_edge.market import closing
@@ -509,6 +512,41 @@ def entry_to_close(moves: pl.DataFrame) -> dict[str, Any]:
     }
 
 
+def shadows(started: pl.DataFrame, moves: pl.DataFrame, odds: pl.DataFrame) -> dict[str, Any]:
+    """#252's paper shadows over the started predicted games (live/shadow.py), with no verdict:
+    the market-only control's bets against the policy's own, and the policy's bets at the best
+    fresh price of the other books, each valued against the same close as the policy's."""
+    keys = ["game_date", "game_id"]
+    policy_bets = started.filter(pl.col("bet").fill_null(False))
+    own = shadow.valued(policy_bets, moves)
+    market = shadow.valued(shadow.market_only(started), moves)
+    priced = shadow.best_price(policy_bets, odds, moves)
+    better = priced.filter(pl.col("better_bookmaker"))
+    return {
+        "market_only": {
+            "bets": market.height,
+            "policy_bets": own.height,
+            "both": own.join(market, on=keys, how="semi").height,
+            "clv_per_bet": estimate(market, "clv"),
+            "policy_clv_per_bet": estimate(own, "clv"),
+            # The two groups share games, so resampling them apart widens the interval.
+            "policy_minus_market_only": difference(own, market, "clv").to_dict()
+            if enough(own) and enough(market)
+            else None,
+        },
+        "best_price": {
+            "bets": priced.height,
+            "better_bookmaker": better.height,
+            "better_any": priced.filter(pl.col("better_any")).height,
+            "books": _counts(better, "best_bookmaker_book"),
+            "clv_bookmaker": estimate(priced, "clv_bookmaker"),
+            "gain_bookmaker": estimate(priced, "gain_bookmaker"),
+            "clv_any": estimate(priced, "clv_any"),
+            "gain_any": estimate(priced, "gain_any"),
+        },
+    }
+
+
 def operations(rows: pl.DataFrame) -> dict[str, Any]:
     """Alerts on how the days ran, never a reason to change the policy: the days skipped and the
     games without a fresh Pinnacle price, and how often the guard stopped a picked bet."""
@@ -556,6 +594,10 @@ def report(
     now = now or datetime.combine(as_of + timedelta(days=1), time(12), UTC)
     rows = counted(ledger, as_of, policy)
     bets = bets_of(rows, settlements)
+    # Every predicted game started by now, with a result or not yet (Codex on #261): its close
+    # is final once it has started.
+    started = scoreable(rows, games).filter(pl.col("start_utc") <= now)
+    moves = movement.table(started, ls.closes(odds, now))
     scored = with_results(rows, games)
     formal = as_of >= REVIEW_DATE
     value = closing_value(bets)
@@ -584,13 +626,8 @@ def report(
             "u_range": u_range(rows, scale["means"], scale["sds"]),
         },
         "market_timing": market_timing(scored, history),
-        # Every predicted game started by now, with a result or not yet (Codex on #261): its
-        # close is final once it has started.
-        "entry_to_close": entry_to_close(
-            movement.table(
-                scoreable(rows, games).filter(pl.col("start_utc") <= now), ls.closes(odds, now)
-            )
-        ),
+        "entry_to_close": entry_to_close(moves),
+        "shadows": shadows(started, moves, odds),
         "verdicts": {
             "closing_value": INTERIM
             if not formal
@@ -849,6 +886,41 @@ def markdown(result: dict[str, Any]) -> str:
         "",
         "The slope is in log-odds on both sides: 0 when the disagreement says nothing about the "
         "move, 1 when the market moves all the way to the model by the close.",
+    ]
+    market = result["shadows"]["market_only"]
+    best = result["shadows"]["best_price"]
+    gap = market["policy_minus_market_only"]
+    books = ", ".join(f"{book} {n}" for book, n in best["books"].items())
+    lines += [
+        "",
+        "## Shadow evaluations (#252)",
+        "",
+        "Paper shadows with no verdict, each valued against the same Pinnacle closing proxy as "
+        "the policy's bets, with the ledger's predictions as written.",
+        "",
+        "**Market-only selection:** the frozen selection, guard and staking on the market-only "
+        "control in place of the blend, at the same price, u and bankroll.",
+        "",
+        f"- Bets with a close: {market['bets']}, against the policy's {market['policy_bets']}; "
+        f"{market['both']} games bet by both.",
+        f"- CLV per bet, market-only: {_fmt(market['clv_per_bet'], 'bets')}",
+        f"- CLV per bet, the policy: {_fmt(market['policy_clv_per_bet'], 'bets')}",
+        "- The policy minus market-only, resampled apart: "
+        + (_fmt(gap) if gap else f"withheld until {MIN_WEEKS} weeks of both"),
+        "",
+        "**Best-price execution:** the policy's own bets at the best fresh price of the other "
+        "books when it beats Pinnacle's. An upper bound: a logged quote shows neither the stake a "
+        "book would take nor that the price was still there, and an exchange's is before its "
+        "commission.",
+        "",
+        f"- Bets with a close: {best['bets']}. A better fresh bookmaker price: "
+        f"{_share(best['better_bookmaker'], best['bets'])}"
+        + (f" ({books})" if books else "")
+        + f"; counting the exchanges: {best['better_any']}.",
+        f"- At the best bookmaker price, CLV per bet: {_fmt(best['clv_bookmaker'], 'bets')}; "
+        f"gain over Pinnacle's: {_fmt(best['gain_bookmaker'], 'bets')}",
+        "- With the exchanges, before their commission, CLV per bet: "
+        f"{_fmt(best['clv_any'], 'bets')}; gain: {_fmt(best['gain_any'], 'bets')}",
     ]
     if "returns" in result:
         ret = result["returns"]

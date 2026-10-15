@@ -756,3 +756,15 @@ def test_the_report_shows_entry_to_close_and_why_games_have_no_close() -> None:
     assert early["without_close"] == {closing.MISSING: 5}
     assert f"Without a close: {closing.MISSING} 60." in text
     assert "| B3 | 0 games, 0 weeks: too few |" in text
+
+
+def test_the_report_shows_the_shadows_apart_from_its_verdicts() -> None:
+    # Without odds no game has a close, so neither shadow values a bet yet (#252).
+    result = Season(n_weeks=2).report()
+    shadows = result["shadows"]
+    assert shadows["market_only"]["bets"] == 0 and shadows["best_price"]["bets"] == 0
+    assert shadows["market_only"]["policy_minus_market_only"] is None
+    assert "shadows" not in result["verdicts"]
+    text = lr.markdown(result)
+    assert "## Shadow evaluations (#252)" in text
+    assert "withheld until 4 weeks of both" in text
