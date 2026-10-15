@@ -30,6 +30,7 @@ from nhl_edge.lake.schemas import (
     PREGAME_GOALIES_KEY,
     SBR_KEY,
     ActualLineups,
+    ChallengerPredictions,
     DailyFaceoffGoalies,
     DailyFaceoffLines,
     ExpectedPowerPlays,
@@ -126,6 +127,12 @@ TABLES: dict[str, Table] = {
     "paper_ledger": Table(PaperLedger, ("game_date", "game_id"), BY_DATE),
     # Its bets settled, with their CLV against Pinnacle's closing proxy (#165).
     "paper_settlements": Table(PaperSettlements, ("game_date", "game_id"), BY_DATE),
+    # Registered challengers' probabilities, scored on each day's run bundle (#255, ADR 0038).
+    "challenger_predictions": Table(
+        ChallengerPredictions,
+        ("game_date", "game_id", "challenger", "challenger_version"),
+        BY_DATE,
+    ),
 }
 # Partition columns replace_dates can replace a date at a time.
 DATE_PARTITIONS = ("game_date", "snapshot_date")

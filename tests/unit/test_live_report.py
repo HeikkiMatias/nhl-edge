@@ -155,6 +155,7 @@ class Season:
             as_of,
             changes.pop("policy", POLICY_VERSION),
             now=changes.pop("now", None),
+            challenger_outputs=changes.pop("challenger_outputs", None),
         )
 
 
@@ -170,6 +171,101 @@ def test_an_earlier_policys_record_is_reported_apart(tmp_path: Any) -> None:
     assert v1["policy_version"] == POLICY_V1 and v1["coverage"]["slate_games"] == 60
     json_path, md_path = lr.write(v1, tmp_path)
     assert md_path.name == f"report-2026-12-31-{POLICY_V1}.md" and json_path.exists()
+
+
+def test_every_registered_challenger_is_reported_from_the_day_after_its_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADR 0038: each registered challenger, failures included, over the counted games of the
+    # days after its registration, against the blend and B1 on the same games.
+    from dataclasses import replace
+
+    from nhl_edge.lake.schemas import ChallengerPredictions
+    from nhl_edge.live import challengers as lc
+
+    season = Season(n_weeks=6)
+    registered = FIRST + timedelta(days=6)
+    shifted = replace(lc.REGISTRY[0], name="shifted", registered_on=registered)
+    silent = replace(lc.REGISTRY[0], name="silent", registered_on=registered)
+    monkeypatch.setattr(lc, "REGISTRY", (shifted, silent))
+    # Every game's output, those of the registration's week too: only later days count.
+    outputs = ChallengerPredictions.validate(
+        season.ledger.select(
+            "game_date",
+            "season",
+            "game_id",
+            challenger=pl.lit("shifted"),
+            challenger_version=pl.lit("1"),
+            adr=pl.lit("0038"),
+            p_home=(pl.col("p_blend") + 0.05).clip(upper_bound=0.99),
+            status=pl.lit(lp.PREDICTED),
+            bundle_sha256=pl.lit("0" * 64),
+            input_cutoff_utc=pl.col("decision_snapshot_utc"),
+            reads=pl.lit("{}"),
+            code_version=pl.lit("challengers-20261016-abc1234"),
+            computed_utc=pl.col("published_utc") + timedelta(hours=12),
+        )
+    )
+    result = season.report(challenger_outputs=outputs)["challengers"]
+    assert result["registered"] == 2
+    counted = season.ledger.filter(pl.col("game_date") > registered)
+    shifted_result = result["challengers"]["shifted/1"]
+    assert shifted_result["games"] == shifted_result["predicted"] == counted.height
+    assert shifted_result["days"] == counted["game_date"].n_unique()
+    # The paired difference, the challenger's log loss less the blend's, on the same games.
+    scored = counted.join(
+        season.games.select(
+            "game_id", home_win=(pl.col("home_score") > pl.col("away_score")).cast(pl.Int8)
+        ),
+        on="game_id",
+    )
+    p = (scored["p_blend"] + 0.05).clip(upper_bound=0.99).to_numpy()
+    q, y = scored["p_blend"].to_numpy(), scored["home_win"].to_numpy()
+    expected = np.mean(
+        -(y * np.log(p) + (1 - y) * np.log(1 - p)) + y * np.log(q) + (1 - y) * np.log(1 - q)
+    )
+    for model in ("BLEND", "B1"):
+        figure = shifted_result["comparisons"][model]["difference"]
+        assert figure["mean"] == pytest.approx(expected)
+        assert figure["games"] == counted.height
+    # No closes in the odds, so no shadow bet is valued.
+    assert shifted_result["shadow"]["bets"] == 0
+    assert shifted_result["missing_days"] == shifted_result["pending_days"] == []
+    # A challenger without the outputs of its days is withheld, never shown on fewer days.
+    days = sorted(counted["game_date"].unique().to_list())
+    silent_result = result["challengers"]["silent/1"]
+    assert silent_result["games"] == 0 and "comparisons" not in silent_result
+    assert silent_result["missing_days"] == [day.isoformat() for day in days]
+    assert silent_result["pending_days"] == []
+    # One day without its output withholds every figure (Codex on #265).
+    holed = season.report(challenger_outputs=outputs.filter(pl.col("game_date") != days[3]))
+    entry = holed["challengers"]["challengers"]["shifted/1"]
+    assert entry["missing_days"] == [days[3].isoformat()] and "comparisons" not in entry
+    # The latest day is pending only until the end of the next UTC day: the nightly scores it
+    # the night after its decision. After that it is missing too, the season's last day or not.
+    unscored = outputs.filter(pl.col("game_date") != days[-1])
+    night_after = at(days[-1] + timedelta(days=1), 9, 30)
+    entry = season.report(challenger_outputs=unscored, now=night_after)["challengers"]
+    entry = entry["challengers"]["shifted/1"]
+    assert entry["pending_days"] == [days[-1].isoformat()] and "comparisons" in entry
+    later = season.report(challenger_outputs=unscored)["challengers"]["challengers"]["shifted/1"]
+    assert later["missing_days"] == [days[-1].isoformat()] and "comparisons" not in later
+    text = lr.markdown(season.report(challenger_outputs=outputs))
+    assert "## Challengers (ADR 0038)" in text and "Registered: 2, each reported." in text
+    assert (
+        f"- **shifted** version 1 (ADR 0038), registered 2026-10-18: {shifted_result['days']} days"
+        in text
+    )
+    assert "- **silent** version 1 (ADR 0038), registered 2026-10-18: 0 days" in text
+    assert f"**Withheld:** {len(days)} decision days after its registration" in text
+    assert "**Withheld:**" in lr.markdown(holed)
+    pending_text = lr.markdown(season.report(challenger_outputs=unscored, now=night_after))
+    assert f"Pending, scored the night after the decision: {days[-1].isoformat()}." in pending_text
+    # A new version under the same name is reported beside the old one (Codex on #265).
+    monkeypatch.setattr(lc, "REGISTRY", (shifted, replace(shifted, version="2")))
+    both = season.report(challenger_outputs=outputs)["challengers"]["challengers"]
+    assert sorted(both) == ["shifted/1", "shifted/2"]
+    assert both["shifted/1"]["games"] == counted.height and both["shifted/2"]["games"] == 0
 
 
 def test_too_few_weeks_give_counts_and_no_estimate() -> None:
@@ -443,6 +539,7 @@ def test_nhl_live_report_and_slate(tmp_path: Any, monkeypatch: pytest.MonkeyPatc
         "odds_snapshots": TABLES["odds_snapshots"].empty(),
         "sbr_odds": TABLES["sbr_odds"].empty(),
         "lineup_replacements": pl.DataFrame(schema=dtypes(LineupReplacements)),
+        "challenger_predictions": TABLES["challenger_predictions"].empty(),
     }
 
     def read(self: Lake, table: str, seasons: Any = None) -> pl.DataFrame:
@@ -483,6 +580,7 @@ def test_nhl_live_report_upserts_the_report_into_supabase(
         "games": season.games,
         "odds_snapshots": TABLES["odds_snapshots"].empty(),
         "sbr_odds": TABLES["sbr_odds"].empty(),
+        "challenger_predictions": TABLES["challenger_predictions"].empty(),
     }
     monkeypatch.setattr(Lake, "read", lambda self, table, seasons=None: tables[table])
     monkeypatch.setattr(lr, "sbr_history", lambda sbr, games: pl.DataFrame(schema=HISTORY))

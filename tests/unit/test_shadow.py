@@ -58,6 +58,17 @@ def test_the_market_only_shadow_applies_the_frozen_rules_unchanged() -> None:
         assert row["ev"] >= row["hurdle"]
 
 
+def test_the_frozen_rules_on_the_blend_itself_make_the_policys_own_bets() -> None:
+    # shadow.selected, as a challenger's shadow bets use it (ADR 0038): on p_blend, the ledger's
+    # own bets, and on the market-only control, #252's.
+    decided = ledger()
+    own = decided.filter(pl.col("bet"))
+    columns = ["game_id", "side", "price", "ev", "hurdle", "fraction", "stake"]
+    again = shadow.selected(decided, "p_blend")
+    assert again.select(columns).sort("game_id").equals(own.select(columns).sort("game_id"))
+    assert shadow.selected(decided, "p_blend_market").equals(shadow.market_only(decided))
+
+
 def test_a_shadow_bet_is_valued_as_settlement_values_the_policys() -> None:
     decided = ledger()
     quotes = odds()

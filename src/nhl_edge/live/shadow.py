@@ -15,6 +15,8 @@ part constant, and each is valued against the same Pinnacle closing proxy as the
   apart: an exchange's price is before its commission, and neither shows the stake a book would
   take or that the price was still there when bet, so both are upper bounds.
 
+The same rules value a registered challenger's shadow bets (live/challengers.py, ADR 0038).
+
 Nothing here feeds a decision, and no figure here is part of ADR 0032's verdicts.
 """
 
@@ -26,7 +28,7 @@ from nhl_edge.live.predict import BOOK, MAX_PUBLISHED_AGE, MAX_QUOTE_AGE
 
 # Betting exchanges among the Odds API's books: their prices are quoted before commission.
 EXCHANGES = frozenset({"matchbook", "betfair_ex_eu", "betfair_ex_uk", "smarkets"})
-# The policy's own decision columns, chosen again by the market-only shadow.
+# The policy's own decision columns, chosen again by a shadow.
 DECISION = (
     "side",
     "price",
@@ -42,18 +44,23 @@ DECISION = (
 )
 
 
-def market_only(rows: pl.DataFrame) -> pl.DataFrame:
+def selected(rows: pl.DataFrame, column: str) -> pl.DataFrame:
     """The bets the frozen selection, guard and staking would make on the predicted rows with
-    p_blend_market in place of p_blend: side, price, p_side, ev, fraction and stake, at each
-    row's own bankroll."""
-    games = rows.filter(pl.col("p_blend_market").is_not_null()).drop(DECISION, strict=False)
-    chosen = selection.select(games.with_columns(p_home=pl.col("p_blend_market")), POLICY)
+    column's home probability in place of p_blend: side, price, p_side, ev, fraction and stake,
+    at each row's own Pinnacle price, u and bankroll. On p_blend itself, the policy's own bets."""
+    games = rows.filter(pl.col(column).is_not_null()).drop(DECISION, strict=False)
+    chosen = selection.select(games.with_columns(p_home=pl.col(column)), POLICY)
     # Without both of the day's quotes the guard reads no move and doesn't apply (ADR 0029).
     guarded = guard.guard(chosen.drop("p_home")).with_columns(pl.col("guarded").fill_null(False))
     bets = guarded.filter(pl.col("picked") & ~pl.col("guarded"))
     return staking.fractions(bets, POLICY).with_columns(
         stake=pl.col("fraction") * pl.col("bankroll")
     )
+
+
+def market_only(rows: pl.DataFrame) -> pl.DataFrame:
+    """The bets the frozen rules would make on the market-only control (#252)."""
+    return selected(rows, "p_blend_market")
 
 
 def _side(home: pl.Expr) -> pl.Expr:

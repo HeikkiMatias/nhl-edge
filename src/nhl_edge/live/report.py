@@ -31,6 +31,9 @@ It covers the frozen policy's regular-season paper decisions (ADR 0032):
 - **Shadow evaluations (#252),** paper only and with no verdict: the frozen rules on the
   market-only control, and the policy's own bets at the best fresh price of the other books
   (live/shadow.py).
+- **Challengers (ADR 0038),** with no verdict: every registered challenger over the decision days
+  after its registration (live/challengers.py), against the blend and B1 by paired log loss, its
+  shadow bets under the frozen rules, and its disagreement against the move to the close.
 - **Return at the taken price,** and the drawdown's size, only from REVIEW_DATE on (plan §11).
 
 It reads ledgers, settlements, results and prices only: nothing here feeds a decision.
@@ -60,6 +63,7 @@ from nhl_edge.backtest.metrics import (
 from nhl_edge.backtest.walk_forward import B1_METHOD, b0, bounds, implausible, outcomes
 from nhl_edge.betting.selection import POLICY, POLICY_VERSION
 from nhl_edge.game.uncertainty import PARTS
+from nhl_edge.live import challengers as lc
 from nhl_edge.live import movement, shadow
 from nhl_edge.live import predict as lp
 from nhl_edge.live import settle as ls
@@ -76,6 +80,9 @@ BAND = 0.025
 BAND_AT = (0.35, 0.50, 0.65)
 GAP = b2_report.GAP
 DRAWDOWN = 0.20
+# How long a challenger's day without its output is pending, from the day's UTC midnight: the
+# nightly scores it the night after its decision (live/challengers.py).
+PENDING_FOR = timedelta(days=2)
 # u's distance from its training mean, in its training standard deviations, that the report
 # counts: under a normal spread about 4.6% and 0.3% of games lie beyond them.
 U_LIMITS = (2.0, 3.0)
@@ -547,6 +554,93 @@ def shadows(started: pl.DataFrame, moves: pl.DataFrame, odds: pl.DataFrame) -> d
     }
 
 
+def _challenger_figures(
+    own: pl.DataFrame, started: pl.DataFrame, scored: pl.DataFrame, moves: pl.DataFrame
+) -> dict[str, Any]:
+    """A challenger's figures over its outputs own: paired log loss against the blend and B1 on
+    the games with a result, the shadow bets the frozen rules would make on it with a close
+    (live/shadow.py), and whether the market moved toward its disagreement at the decision
+    (#251)."""
+    keys = ["game_date", "game_id"]
+    probability = own.filter(pl.col("p_home").is_not_null()).select(*keys, p_challenger="p_home")
+    with_p = scored.join(probability, on=keys)
+    compared = {}
+    for name, column in (("BLEND", "p_blend"), ("B1", "p_b1")):
+        both = with_p.filter(pl.col(column).is_not_null())
+        paired = both.with_columns(
+            difference=log_loss(pl.col("p_challenger"), pl.col("home_win"))
+            - log_loss(pl.col(column), pl.col("home_win"))
+        )
+        compared[name] = {
+            "difference": estimate(paired, "difference"),
+            "left_out": with_p.height - both.height,
+        }
+    bets = shadow.valued(shadow.selected(started.join(probability, on=keys), "p_challenger"), moves)
+    moved = (
+        moves.filter(pl.col("move").is_not_null())
+        .join(probability, on=keys)
+        .with_columns(
+            d_challenger=(pl.col("p_challenger") / (1 - pl.col("p_challenger"))).log()
+            - (pl.col("p_decision") / (1 - pl.col("p_decision"))).log()
+        )
+    )
+    return {
+        "comparisons": compared,
+        "shadow": {"bets": bets.height, "clv_per_bet": estimate(bets, "clv")},
+        "toward_close": _toward(moved, "d_challenger"),
+    }
+
+
+def challengers(
+    rows: pl.DataFrame,
+    started: pl.DataFrame,
+    scored: pl.DataFrame,
+    moves: pl.DataFrame,
+    outputs: pl.DataFrame,
+    registry: tuple[lc.Challenger, ...],
+    now: datetime,
+) -> dict[str, Any]:
+    """Every registered challenger, by name and version, over the counted games of the decision
+    days after its registration (ADR 0038), with no verdict, failures included: its days and
+    games, and its figures (_challenger_figures). Every such day counts, so a day without its
+    output withholds the figures (Codex on #265): a challenger that fails on some days would
+    otherwise choose its own sample. A day is pending rather than missing only until the end of
+    the next UTC day by the report's clock now, since the nightly scores it the night after its
+    decision."""
+    keys = ["game_date", "game_id"]
+
+    def pending(day: date) -> bool:
+        return now < datetime.combine(day, time(0), UTC) + PENDING_FOR
+
+    result = {}
+    for challenger in registry:
+        own = outputs.filter(
+            pl.col("challenger") == challenger.name,
+            pl.col("challenger_version") == challenger.version,
+            pl.col("game_date") > challenger.registered_on,
+        ).join(rows.select(keys), on=keys, how="semi")
+        decided = rows.filter(pl.col("game_date") > challenger.registered_on)["game_date"]
+        scored_days = set(own["game_date"].to_list())
+        without = sorted(set(decided.to_list()) - scored_days)
+        missing = [day.isoformat() for day in without if not pending(day)]
+        entry: dict[str, Any] = {
+            "name": challenger.name,
+            "version": challenger.version,
+            "adr": challenger.adr,
+            "registered_on": challenger.registered_on.isoformat(),
+            "days": len(scored_days),
+            "games": own.height,
+            "predicted": own.filter(pl.col("p_home").is_not_null()).height,
+            "not_predicted": _counts(own.filter(pl.col("status") != lc.PREDICTED), "status"),
+            "missing_days": missing,
+            "pending_days": [day.isoformat() for day in without if pending(day)],
+        }
+        if not missing:
+            entry |= _challenger_figures(own, started, scored, moves)
+        result[f"{challenger.name}/{challenger.version}"] = entry
+    return {"registered": len(registry), "challengers": result}
+
+
 def operations(rows: pl.DataFrame) -> dict[str, Any]:
     """Alerts on how the days ran, never a reason to change the policy: the days skipped and the
     games without a fresh Pinnacle price, and how often the guard stopped a picked bet."""
@@ -586,11 +680,13 @@ def report(
     as_of: date,
     policy: str = POLICY_VERSION,
     now: datetime | None = None,
+    challenger_outputs: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
     """The live report of one policy, the frozen one by default, as of as_of: ledger and
     settlements as written, games' results, the odds' Pinnacle quotes, SBR's history
-    (sbr_history) and the live fit's u scale (means, sds). now is the report's clock, noon UTC
-    the day after as_of by default: entry to close counts the games started by then."""
+    (sbr_history), the live fit's u scale (means, sds) and the registered challengers' stored
+    outputs (challenger_predictions, none by default). now is the report's clock, noon UTC the
+    day after as_of by default: entry to close counts the games started by then."""
     now = now or datetime.combine(as_of + timedelta(days=1), time(12), UTC)
     rows = counted(ledger, as_of, policy)
     bets = bets_of(rows, settlements)
@@ -628,6 +724,15 @@ def report(
         "market_timing": market_timing(scored, history),
         "entry_to_close": entry_to_close(moves),
         "shadows": shadows(started, moves, odds),
+        "challengers": challengers(
+            rows,
+            started,
+            scored,
+            moves,
+            challenger_outputs if challenger_outputs is not None else lc.empty(),
+            lc.REGISTRY,
+            now,
+        ),
         "verdicts": {
             "closing_value": INTERIM
             if not formal
@@ -922,6 +1027,7 @@ def markdown(result: dict[str, Any]) -> str:
         "- With the exchanges, before their commission, CLV per bet: "
         f"{_fmt(best['clv_any'], 'bets')}; gain: {_fmt(best['gain_any'], 'bets')}",
     ]
+    lines += _challenger_lines(result["challengers"])
     if "returns" in result:
         ret = result["returns"]
         lines += [
@@ -933,6 +1039,62 @@ def markdown(result: dict[str, Any]) -> str:
             f"- Return per bet: {_fmt(ret['return_per_bet'], 'bets')}",
         ]
     return "\n".join(lines) + "\n"
+
+
+def _challenger_lines(section: dict[str, Any]) -> list[str]:
+    """The challengers section (ADR 0038) as markdown lines."""
+    lines = [
+        "",
+        "## Challengers (ADR 0038)",
+        "",
+        f"Registered: {section['registered']}, each reported. Each is scored on the decision days "
+        "after its registration from the day's run bundle, never as part of the decision, and "
+        "with no verdict before the formal review. Every such day counts: a day without its "
+        "output withholds the challenger's figures. A difference in log loss is the "
+        "challenger's less the other model's, negative favouring the challenger; its shadow bets "
+        "are the frozen selection, guard and staking on its probability, valued at the same "
+        "closing proxy.",
+    ]
+    for c in section["challengers"].values():
+        head = (
+            f"- **{c['name']}** version {c['version']} (ADR {c['adr']}), registered "
+            f"{c['registered_on']}"
+        )
+        pending = (
+            f" Pending, scored the night after the decision: {', '.join(c['pending_days'])}."
+            if c["pending_days"]
+            else ""
+        )
+        if not c["games"] and not c["missing_days"]:
+            lines += ["", f"{head}: no decision day after its registration scored yet.{pending}"]
+            continue
+        not_predicted = ", ".join(f"{reason} {n}" for reason, n in c["not_predicted"].items())
+        lines += [
+            "",
+            f"{head}: {c['days']} day{'' if c['days'] == 1 else 's'}, {c['games']} games, "
+            f"{c['predicted']} predicted"
+            + (f"; not predicted: {not_predicted}" if not_predicted else "")
+            + f".{pending}",
+        ]
+        if c["missing_days"]:
+            lines.append(
+                f"  - **Withheld:** {len(c['missing_days'])} decision days after its "
+                f"registration have no output ({', '.join(c['missing_days'])}). Score them, or "
+                "say why they can't be, before any figure is shown."
+            )
+            continue
+        lines += [
+            *(
+                f"  - Against {model}: {_fmt(compared['difference'])}"
+                + (f", {compared['left_out']} games left out" if compared["left_out"] else "")
+                for model, compared in c["comparisons"].items()
+            ),
+            f"  - Shadow bets with a close: {c['shadow']['bets']}; CLV per bet: "
+            f"{_fmt(c['shadow']['clv_per_bet'], 'bets')}",
+            "  - Slope of the move to the close on its disagreement: "
+            f"{_fmt(c['toward_close']['slope'])}",
+        ]
+    return lines
 
 
 def record(result: dict[str, Any], code_version: str) -> dict[str, Any]:
