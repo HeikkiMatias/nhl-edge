@@ -27,20 +27,20 @@
 
 ## Decision: option 3 (the owner, 2026-10-15)
 
-1. **The start:** the first decision day on or after **2026-11-16** on which the start rule held at the latest weekly report. A start later in November is as good (the owner), for example while the venue is made ready. If the rule fails, it is checked again each week.
+1. **The start:** the first decision day from **2026-11-16 to 2026-11-30** on which the start rule held at the latest weekly report. A start later in November is as good (the owner), for example while the venue is made ready. If the rule fails, it is checked again each week. If it hasn't held by November's last decision day, no real stake starts, and a later start needs a new decision by the owner (Codex on #272).
 2. **The start rule,** fixed now, before the evidence:
-   - (a) v2's CLV per bet has an interval over at least 4 weeks, and its upper bound is above 0;
+   - (a) v2's CLV per bet, under ADR 0032's safeguards: its interval over at least 4 weeks has its upper bound above 0, the coverage floor holds (at least 90% of the eligible bets have a closing proxy), and the pessimistic bound has its upper bound above 0 too (each eligible bet without a proxy counted at the 10th percentile of the observed CLV) (Codex on #272);
    - (b) the season's paper bankroll is above its 100 units (the owner's condition);
    - (c) the operations are clean: every decision day's run bundle is complete, no day was skipped without a reason, and the 20% drawdown review has not been triggered.
    - (d) the venue is ready (#266): its terms are confirmed for a Finnish resident, and either its API access is granted or manual placement from alerts works.
 3. **What is bet:** exactly the frozen policy's paper bets, unchanged (v2, ADRs 0028, 0029 and 0037):
-   - each bet's stake is its paper fraction (at most 1.5%) of the real bankroll;
-   - a bet is placed only at a price where its EV still clears the hurdle (`p × odds − 1`, hard rule 4);
+   - each bet is placed only at an executable price where its EV still clears the hurdle (`p × odds − 1`, hard rule 4);
+   - its fraction is the frozen staking rule (`betting/staking.fractions`) computed again at that executable price, with the day's cap applied again. It is never more than the paper fraction, so a worse price stakes less, and a better one no more (Codex on #272);
    - never once the game has started, and never twice.
-4. **The real bankroll:** **100 €** (the owner), an amount the owner can afford to lose entirely. It is not topped up during the season. A stake is the paper fraction of the real bankroll at the decision, so at most 1.50 €. It is rounded down to the venue's stake increment. A stake below the venue's minimum isn't placed, and is logged as skipped beside its paper twin; rounding it up would break the 1.5% cap.
+4. **The real bankroll:** **100 €** (the owner), an amount the owner can afford to lose entirely. It is not topped up during the season. A stake is its fraction (item 3) of the real bankroll at the decision: at most 1.5% of it, so 1.50 € at the start, rising and falling with the bankroll (Codex on #272). It is rounded down to the venue's stake increment. A stake below the venue's minimum isn't placed, and is logged as skipped beside its paper twin; rounding it up would break the 1.5% cap.
 5. **Stop rules:** real bets stop, and the paper ledger goes on, if either happens:
-   - the real bankroll falls 20% from its start;
-   - v2's CLV per bet interval falls entirely below 0.
+   - the real bankroll falls 20% from its start. This is checked before every day's alerts or placement, from the real ledger's settled balance, not only weekly (Codex on #272);
+   - v2's CLV per bet interval falls entirely below 0, at a weekly report.
 
    Restarting needs the owner.
 6. **Venue and placement:** chosen in #266.
@@ -68,7 +68,7 @@ As in Context: CLV −1.23% [−2.01%, −0.46%] per bet on history, at SBR's op
 
 ## Revisit when
 
-- The start rule fails at three weekly checks in a row.
+- The start rule hasn't held by November's last decision day.
 - A stop rule fires.
 - No venue can be confirmed.
 - The formal review on 2027-04-12.
