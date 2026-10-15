@@ -31,6 +31,9 @@ It covers the frozen policy's regular-season paper decisions (ADR 0032):
 - **Shadow evaluations (#252),** paper only and with no verdict: the frozen rules on the
   market-only control, and the policy's own bets at the best fresh price of the other books
   (live/shadow.py).
+- **Challengers (ADR 0038),** with no verdict: every registered challenger over the decision days
+  after its registration (live/challengers.py), against the blend and B1 by paired log loss, its
+  shadow bets under the frozen rules, and its disagreement against the move to the close.
 - **Return at the taken price,** and the drawdown's size, only from REVIEW_DATE on (plan §11).
 
 It reads ledgers, settlements, results and prices only: nothing here feeds a decision.
@@ -60,6 +63,7 @@ from nhl_edge.backtest.metrics import (
 from nhl_edge.backtest.walk_forward import B1_METHOD, b0, bounds, implausible, outcomes
 from nhl_edge.betting.selection import POLICY, POLICY_VERSION
 from nhl_edge.game.uncertainty import PARTS
+from nhl_edge.live import challengers as lc
 from nhl_edge.live import movement, shadow
 from nhl_edge.live import predict as lp
 from nhl_edge.live import settle as ls
@@ -547,6 +551,68 @@ def shadows(started: pl.DataFrame, moves: pl.DataFrame, odds: pl.DataFrame) -> d
     }
 
 
+def challengers(
+    rows: pl.DataFrame,
+    started: pl.DataFrame,
+    scored: pl.DataFrame,
+    moves: pl.DataFrame,
+    outputs: pl.DataFrame,
+    registry: tuple[lc.Challenger, ...],
+) -> dict[str, Any]:
+    """Every registered challenger over the counted games of the days after its registration
+    (ADR 0038), with no verdict, failures included: its days and games, its paired log loss
+    against the blend and B1 on the games with a result, the shadow bets the frozen rules would
+    make on it with a close (live/shadow.py), and whether the market moved toward its
+    disagreement at the decision (#251)."""
+    keys = ["game_date", "game_id"]
+    result = {}
+    for challenger in registry:
+        own = outputs.filter(
+            pl.col("challenger") == challenger.name,
+            pl.col("challenger_version") == challenger.version,
+            pl.col("game_date") > challenger.registered_on,
+        ).join(rows.select(keys), on=keys, how="semi")
+        probability = own.filter(pl.col("p_home").is_not_null()).select(
+            *keys, p_challenger="p_home"
+        )
+        with_p = scored.join(probability, on=keys)
+        compared = {}
+        for name, column in (("BLEND", "p_blend"), ("B1", "p_b1")):
+            both = with_p.filter(pl.col(column).is_not_null())
+            paired = both.with_columns(
+                difference=log_loss(pl.col("p_challenger"), pl.col("home_win"))
+                - log_loss(pl.col(column), pl.col("home_win"))
+            )
+            compared[name] = {
+                "difference": estimate(paired, "difference"),
+                "left_out": with_p.height - both.height,
+            }
+        bets = shadow.valued(
+            shadow.selected(started.join(probability, on=keys), "p_challenger"), moves
+        )
+        moved = (
+            moves.filter(pl.col("move").is_not_null())
+            .join(probability, on=keys)
+            .with_columns(
+                d_challenger=(pl.col("p_challenger") / (1 - pl.col("p_challenger"))).log()
+                - (pl.col("p_decision") / (1 - pl.col("p_decision"))).log()
+            )
+        )
+        result[challenger.name] = {
+            "version": challenger.version,
+            "adr": challenger.adr,
+            "registered_on": challenger.registered_on.isoformat(),
+            "days": own["game_date"].n_unique(),
+            "games": own.height,
+            "predicted": probability.height,
+            "not_predicted": _counts(own.filter(pl.col("status") != lc.PREDICTED), "status"),
+            "comparisons": compared,
+            "shadow": {"bets": bets.height, "clv_per_bet": estimate(bets, "clv")},
+            "toward_close": _toward(moved, "d_challenger"),
+        }
+    return {"registered": len(registry), "challengers": result}
+
+
 def operations(rows: pl.DataFrame) -> dict[str, Any]:
     """Alerts on how the days ran, never a reason to change the policy: the days skipped and the
     games without a fresh Pinnacle price, and how often the guard stopped a picked bet."""
@@ -586,11 +652,13 @@ def report(
     as_of: date,
     policy: str = POLICY_VERSION,
     now: datetime | None = None,
+    challenger_outputs: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
     """The live report of one policy, the frozen one by default, as of as_of: ledger and
     settlements as written, games' results, the odds' Pinnacle quotes, SBR's history
-    (sbr_history) and the live fit's u scale (means, sds). now is the report's clock, noon UTC
-    the day after as_of by default: entry to close counts the games started by then."""
+    (sbr_history), the live fit's u scale (means, sds) and the registered challengers' stored
+    outputs (challenger_predictions, none by default). now is the report's clock, noon UTC the
+    day after as_of by default: entry to close counts the games started by then."""
     now = now or datetime.combine(as_of + timedelta(days=1), time(12), UTC)
     rows = counted(ledger, as_of, policy)
     bets = bets_of(rows, settlements)
@@ -628,6 +696,14 @@ def report(
         "market_timing": market_timing(scored, history),
         "entry_to_close": entry_to_close(moves),
         "shadows": shadows(started, moves, odds),
+        "challengers": challengers(
+            rows,
+            started,
+            scored,
+            moves,
+            challenger_outputs if challenger_outputs is not None else lc.empty(),
+            lc.REGISTRY,
+        ),
         "verdicts": {
             "closing_value": INTERIM
             if not formal
@@ -922,6 +998,7 @@ def markdown(result: dict[str, Any]) -> str:
         "- With the exchanges, before their commission, CLV per bet: "
         f"{_fmt(best['clv_any'], 'bets')}; gain: {_fmt(best['gain_any'], 'bets')}",
     ]
+    lines += _challenger_lines(result["challengers"])
     if "returns" in result:
         ret = result["returns"]
         lines += [
@@ -933,6 +1010,45 @@ def markdown(result: dict[str, Any]) -> str:
             f"- Return per bet: {_fmt(ret['return_per_bet'], 'bets')}",
         ]
     return "\n".join(lines) + "\n"
+
+
+def _challenger_lines(section: dict[str, Any]) -> list[str]:
+    """The challengers section (ADR 0038) as markdown lines."""
+    lines = [
+        "",
+        "## Challengers (ADR 0038)",
+        "",
+        f"Registered: {section['registered']}, each reported. Each is scored on the decision days "
+        "after its registration from the day's run bundle, never as part of the decision, and "
+        "with no verdict before the formal review. A difference in log loss is the challenger's "
+        "less the other model's, negative favouring the challenger; its shadow bets are the "
+        "frozen selection, guard and staking on its probability, valued at the same closing proxy.",
+    ]
+    for name, c in section["challengers"].items():
+        head = (
+            f"- **{name}** version {c['version']} (ADR {c['adr']}), registered {c['registered_on']}"
+        )
+        if not c["games"]:
+            lines += ["", f"{head}: no decision day after its registration scored yet."]
+            continue
+        missing = ", ".join(f"{reason} {n}" for reason, n in c["not_predicted"].items())
+        slope_of = c["toward_close"]["slope"]
+        lines += [
+            "",
+            f"{head}: {c['days']} day{'' if c['days'] == 1 else 's'}, {c['games']} games, "
+            f"{c['predicted']} predicted"
+            + (f"; not predicted: {missing}" if missing else "")
+            + ".",
+            *(
+                f"  - Against {model}: {_fmt(compared['difference'])}"
+                + (f", {compared['left_out']} games left out" if compared["left_out"] else "")
+                for model, compared in c["comparisons"].items()
+            ),
+            f"  - Shadow bets with a close: {c['shadow']['bets']}; CLV per bet: "
+            f"{_fmt(c['shadow']['clv_per_bet'], 'bets')}",
+            f"  - Slope of the move to the close on its disagreement: {_fmt(slope_of)}",
+        ]
+    return lines
 
 
 def record(result: dict[str, Any], code_version: str) -> dict[str, Any]:

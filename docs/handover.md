@@ -136,7 +136,7 @@ Every deliverable merged under its own task issue:
   - the odds replay, with each game's closing proxy;
   - `nhl live settle` and the Supabase copy;
   - the goalie replays and the day's slate feature rows;
-  - the live report to Supabase, and the run bundle check.
+  - the live report to Supabase, the run bundle check, and the challengers (#255).
 
 **The pieces, all merged:**
 - **The live data,** each with its task:
@@ -180,6 +180,19 @@ Every deliverable merged under its own task issue:
 - #169, task 9: a second copy of `raw/` outside R2. The owner chose, on 2026-10-09, to keep it on their own computer, set up later. The steps are on the issue (`nhl lake restore-raw` with a read-only R2 token).
 - #247: a small dashboard axis bug. (#244, each bet's policy and v2's marker on the bankroll chart, is done: #246.)
 - #173, after #30; #121 step 3, on 2026-11-05; #67, around 2027-04-17.
+
+## Phase 6: the review agenda (#250)
+
+An external review on 2026-10-15 gave the agenda in #250. Its P5 diagnostics are in the weekly live report, with no verdict:
+- **Entry to close** (#251): whether the market moved toward each model's disagreement.
+- **Shadows** (#252): market-only selection, and best-price execution.
+- **Still open:** #253, selected-bet calibration, and #254, the proxy's lead and its cost.
+
+**Challengers (#255, ADR 0038).** New models are judged only on decision days after their registration, never on history again.
+- **Where:** each is an entry in `live/challengers.py`, scored nightly by `nhl live challengers --r2` from the day's run bundle, and reported in the live report's Challengers section.
+- **The rules (ADR 0038):** its ADR is fixed before its first scored game; nothing is backfilled; every registered challenger is reported; and one enters a policy only through a new policy version and the owner.
+- **Registered:** `market_only`, from 2026-10-15, a check of the mechanism; its output equals the ledger's `p_blend_market`.
+- **Next:** #256 to #260, each with its own ADR registering it.
 
 ## The owner's standing decisions
 

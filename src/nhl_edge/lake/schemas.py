@@ -605,6 +605,53 @@ class PaperSettlements(pa.DataFrameModel):
         return data.lazyframe.select((pl.col("profit") - expected).abs() < 1e-9)
 
 
+class ChallengerPredictions(pa.DataFrameModel):
+    """One slate game's probability from a registered challenger (nhl live challengers, #255, ADR
+    0038): a candidate model scored after the decision on the day's run bundle, never part of a
+    decision. p_home is its full-game home probability (OT and shootout included, hard rule 2),
+    with status "predicted", or null with the reason in status. bundle_sha256 is the sha256 of
+    the day's bundle manifest and input_cutoff_utc its input cutoff. reads maps each lake table
+    read beyond the bundle, point in time, to the sha256 of the rows read, as JSON. Each
+    challenger, version and day is written once to R2
+    (challengers/live/<name>/<version>/<date>.parquet), and the table is rebuilt from them, only
+    for days after the challenger's registration.
+    """
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    challenger: pl.String
+    challenger_version: pl.String
+    adr: pl.String
+    p_home: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    status: pl.String
+    bundle_sha256: pl.String = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    input_cutoff_utc: UtcDatetime
+    reads: pl.String
+    code_version: pl.String
+    computed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = [  # noqa: RUF012 (pandera config)
+            "game_date",
+            "game_id",
+            "challenger",
+            "challenger_version",
+        ]
+
+    @pa.dataframe_check
+    def a_probability_only_when_predicted(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("p_home").is_not_null() == (pl.col("status") == "predicted")
+        )
+
+    @pa.dataframe_check
+    def computed_after_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("computed_utc") > pl.col("input_cutoff_utc"))
+
+
 class FeatureBuilds(pa.DataFrameModel):
     """One table a live feature build (nhl live features, #162) wrote for a game date's slate: the
     record a prediction checks before it reads the slate's feature rows (#170).

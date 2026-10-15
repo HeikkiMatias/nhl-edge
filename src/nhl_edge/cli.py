@@ -2708,6 +2708,111 @@ def live_replay(
     typer.echo(f"the ledger is reproduced, every column, floats within {lb.TOLERANCE:g}")
 
 
+@live_app.command("challengers")
+def live_challengers(
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="The bundles, ledgers and outputs in R2; the lake's challenger_predictions is "
+            "rebuilt from them and mirrored there.",
+        ),
+    ] = False,
+    source: Annotated[
+        Path | None,
+        typer.Option("--from", help="A dry run's --out directory instead, written there."),
+    ] = None,
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check",
+            help="Recompute every stored output from its bundle and compare; write nothing.",
+        ),
+    ] = False,
+) -> None:
+    """Score the registered challengers (#255, ADR 0038): for each complete run bundle of a day
+    after a challenger's registration without its output yet, the day replayed with the
+    committed live fit it names, refused unless it reproduces the day's ledger, and the
+    challenger's probability for every slate game, written once. Never part of a decision.
+    --check recomputes every stored output instead and exits 1 on a difference."""
+    import io
+    from datetime import UTC, date
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import challengers as lc
+    from nhl_edge.live import predict as lp
+    from nhl_edge.settings import load_env
+
+    if r2 == (source is not None):
+        raise typer.BadParameter("pass --r2 or --from, one of them")
+    now = datetime.now(UTC)
+    code_version = reports.version("challengers", now)
+    if r2 and not check and code_version.endswith("-dirty"):
+        raise typer.BadParameter("commit first: a challenger's output names its commit")
+    load_env()
+    if source is not None:
+        store: lb.Store = lb.LocalStore(source)
+        lake = Lake.from_env(mirror=False)
+
+        def ledger_of(day: date) -> pl.DataFrame:
+            return pl.read_parquet(source / f"{day.isoformat()}.parquet")
+    else:
+        lake = Lake.from_env(mirror=True)
+        assert lake.objects is not None and lake.bucket is not None
+        store = lb.R2Store(lake.objects, lake.bucket)
+        for table in sorted({table for c in lc.REGISTRY for table in c.reads}):
+            lake.pull(table)
+
+        def ledger_of(day: date) -> pl.DataFrame:
+            return pl.read_parquet(io.BytesIO(store.get(lp.ledger_key(day))))
+
+    if check:
+        stored = set(store.keys(lc.PREFIX))
+        pairs = [
+            (c, day) for c in lc.REGISTRY for day in lc.complete_days(store) if c.key(day) in stored
+        ]
+    else:
+        pairs = lc.due(store, lc.REGISTRY)
+    failed = 0
+    for challenger, day in pairs:
+        label = f"{challenger.name} {challenger.version}, {day}"
+        try:
+            bundle, sha = lc.load(store, day)
+            live = lc.live_fit(bundle)
+            if check:
+                problems = lc.check(store, challenger, day, live, lake, now, ledger_of(day))
+                for problem in problems:
+                    typer.echo(f"{label}: {problem}", err=True)
+                failed += bool(problems)
+                if not problems:
+                    typer.echo(f"{label}: recomputed from its bundle, identical")
+                continue
+            output = lc.run(challenger, bundle, sha, live, lake, code_version, now, ledger_of(day))
+            key = lc.write(store, challenger, day, output)
+        except (OSError, ValueError) as exc:
+            typer.echo(f"{label}: {exc}", err=True)
+            failed += 1
+            continue
+        predicted = output.filter(pl.col("status") == lc.PREDICTED).height
+        typer.echo(f"{label}: {output.height} games, {predicted} predicted, written to {key}")
+    if r2 and not check:
+        synced = lc.sync(store)
+        if synced.height:
+            lake.replace_dates(
+                "challenger_predictions", synced, synced["game_date"].unique().to_list()
+            )
+    typer.echo(
+        f"{len(lc.REGISTRY)} challengers registered; {len(pairs) - failed} of {len(pairs)} "
+        + ("stored outputs reproduced" if check else "due outputs written")
+    )
+    if failed:
+        raise typer.Exit(code=1)
+
+
 @live_app.command("settle")
 def live_settle(
     r2: Annotated[
@@ -2858,6 +2963,8 @@ def live_report(
     from nhl_edge.ingest.odds import ET
     from nhl_edge.lake.tables import Lake
     from nhl_edge.live import blend_fit
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import challengers as lc
     from nhl_edge.live import predict as lp
     from nhl_edge.live import report as lr
     from nhl_edge.settings import load_env
@@ -2873,10 +2980,12 @@ def live_report(
         tables = ("games", "odds_snapshots", "paper_settlements", "sbr_odds")
         pulled = sum(lake.pull(table) for table in tables)
         typer.echo(f"pulled {pulled:,} table files from R2")
-        # The ledgers in R2 are the record.
+        # The ledgers in R2 are the record, and so are the challengers' outputs.
         ledger = lp.sync_ledgers(lake.objects, lake.bucket, blend_fit.LIVE_SEASON)
+        outputs = lc.sync(lb.R2Store(lake.objects, lake.bucket))
     else:
         ledger = lake.read("paper_ledger", seasons=[blend_fit.LIVE_SEASON])
+        outputs = lake.read("challenger_predictions")
     paths = sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
     if len(paths) != 1:
         typer.echo(f"expected the season's one live fit, found {len(paths)}", err=True)
@@ -2893,6 +3002,7 @@ def live_report(
         day,
         policy or POLICY_VERSION,
         now=datetime.now(UTC),
+        challenger_outputs=outputs,
     )
     json_path, md_path = lr.write(result, out)
     if supabase:
