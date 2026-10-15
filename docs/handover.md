@@ -30,6 +30,7 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 | #173, whether corrections change predictions | After #30 | As the issue says: check feasibility first, and never turn "not measured" into "small". |
 | #121 step 3, Daily Faceoff's injury statuses | **2026-11-05** | As the Routine's prompt says. Any use needs an ADR and a later policy version. |
 | #67, `EXPECTED_GAMES` for 2026-27 | The regular season's end, about **2027-04-17** | See "Keep an eye on". |
+| Real money (ADR 0039) | The first decision day on or after **2026-11-16**, later in November as good, on which the start rule held at the latest weekly report | Before then: the venue (#266), and the build issues ADR 0039 lists. Check the start rule at each weekly report from 2026-11-16 on. |
 | The formal review | **2027-04-12** | ADR 0032 judges v2 on its own games. v1's record is reported beside it. |
 
 ### Gate 1 as it stands
@@ -225,6 +226,11 @@ An external review on 2026-10-15 gave the agenda in #250. Its P5 diagnostics are
 - **One paper bankroll a season** runs through every policy. Each policy is judged on its own bets.
 - **Dependabot:** on 2026-10-14 the owner asked for the bumps to be checked and merged as needed. Polars 2.0 went in after the slow suite passed and every live day's bundle replayed identically (#230, #242).
 - **The dashboard shows results during the season (ADR 0034).** If the results start pulling toward a policy change, hiding them again is the remedy, never changing the policy.
+- **Real money from mid to late November 2026 (ADR 0039, the owner, 2026-10-15).**
+  - **The real bankroll:** 100 €. It bets the frozen policy's paper bets at their paper fractions, so at most 1.50 € a bet, beside the paper ledger, which continues.
+  - **The start:** the first decision day on or after 2026-11-16 (later in November is as good) on which the start rule held at the latest weekly report. The rule: v2's CLV interval has its upper bound above 0, the paper bankroll is above 100, the operations are clean, and the venue is ready (#266).
+  - **The stops:** the real bankroll falls 20%, or v2's CLV interval falls entirely below 0.
+  - **Placement:** manual from alerts until an API venue is confirmed.
 - **The repository is public** since 2026-10-09, so Actions minutes are free (#213 has the history).
 - **Dependabot's four patch bumps of 2026-10-05** (#174 to #177) were closed at the owner's request. None was a security fix.
 
