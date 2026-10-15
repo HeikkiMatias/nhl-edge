@@ -2892,6 +2892,7 @@ def live_report(
         scale,
         day,
         policy or POLICY_VERSION,
+        now=datetime.now(UTC),
     )
     json_path, md_path = lr.write(result, out)
     if supabase:

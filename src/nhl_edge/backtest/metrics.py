@@ -11,6 +11,7 @@ such as two eras of seasons.
 
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -112,6 +113,40 @@ def bootstrap(frame: pl.DataFrame, value: str, draws: int = DRAWS, seed: int = S
         games=frame.height,
         weeks=_weeks(frame).height,
     )
+
+
+def slope(frame: pl.DataFrame, x: str, y: str, draws: int = DRAWS, seed: int = SEED) -> Interval:
+    """The least-squares slope of y on x, with an intercept, over the frame's games, with a
+    weekly block bootstrap interval: each draw refits the slope on the resampled weeks' sums. The
+    frame needs season and game_date."""
+    if frame.height < 2:
+        raise ValueError(f"too few games to estimate the slope of {y} on {x}")
+    sums = {
+        "sx": pl.col(x).sum(),
+        "sy": pl.col(y).sum(),
+        "sxy": (pl.col(x) * pl.col(y)).sum(),
+        "sxx": (pl.col(x) * pl.col(x)).sum(),
+    }
+    totals = {name: np.zeros(draws) for name in (*sums, "n")}
+    weekly = _weeks(frame, *(expr.alias(name) for name, expr in sums.items()))
+    for season, picks in _picks(weekly, draws, np.random.default_rng(seed)):
+        for name in sums:
+            totals[name] += season[name].to_numpy()[picks].sum(axis=1)
+        totals["n"] += season["games"].to_numpy()[picks].sum(axis=1)
+
+    def fit(n: Any, sx: Any, sy: Any, sxy: Any, sxx: Any) -> Any:
+        return (n * sxy - sx * sy) / (n * sxx - sx * sx)
+
+    whole = {k: float(v) for k, v in frame.select(**sums, n=pl.len()).row(0, named=True).items()}
+    if whole["n"] * whole["sxx"] - whole["sx"] ** 2 <= 0:
+        raise ValueError(f"{x} has no spread to estimate the slope of {y} on")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        resampled = fit(**totals)
+    # A resample whose weeks all share one value of x has no slope, and is left out.
+    finite = resampled[np.isfinite(resampled)]
+    if finite.size == 0:
+        raise ValueError(f"no resample of {x} has the spread to estimate the slope of {y} on")
+    return interval(fit(**whole), finite)
 
 
 def difference(
