@@ -27,10 +27,11 @@ function useWidth() {
   return { ref, width };
 }
 
-/** Round tick values covering [low, high]: about four, at 1, 2 or 5 times a power of ten. */
-export function ticks(low: number, high: number, count = 4): number[] {
+/** Round tick values covering [low, high]: about four, at 1, 2 or 5 times a power of ten, and
+ * never closer than minStep (1 for counts, so no tick falls between two whole numbers). */
+export function ticks(low: number, high: number, count = 4, minStep = 0): number[] {
   if (high === low) return [low];
-  const raw = (high - low) / count;
+  const raw = Math.max((high - low) / count, minStep);
   const power = 10 ** Math.floor(Math.log10(raw));
   const step = [1, 2, 5, 10].map((m) => m * power).find((s) => s >= raw) ?? raw;
   const out: number[] = [];
@@ -241,15 +242,18 @@ export function LineChart({
   );
 }
 
-/** Columns from a zero baseline, one per item, each its own hit target. */
+/** Columns from a zero baseline, one per item, each its own hit target. With counts, the axis
+ * ticks only at whole numbers (#247). */
 export function ColumnChart({
   title,
   bars,
   format,
+  counts = false,
 }: {
   title: string;
   bars: { label: string; value: number }[];
   format: (v: number) => string;
+  counts?: boolean;
 }) {
   const { ref, width } = useWidth();
   const [active, setActive] = useState<number | null>(null);
@@ -273,7 +277,7 @@ export function ColumnChart({
   return (
     <div className="chart" ref={ref}>
       <svg width={width} height={HEIGHT} role="img" aria-label={title}>
-        <YAxis values={ticks(0, high)} y={y} width={width} format={format} />
+        <YAxis values={ticks(0, high, 4, counts ? 1 : 0)} y={y} width={width} format={format} />
         {bars.map((b, i) => (
           <g key={b.label}>
             <path className={active === i ? "column lifted" : "column"} d={column(i, b.value)} />

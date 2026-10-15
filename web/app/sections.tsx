@@ -290,6 +290,7 @@ export function Results({ bets }: { bets: Bet[] }) {
         title="Paper bets per game day"
         bars={betsPerDay(bets).map((d) => ({ label: shortDate(d.date), value: d.bets }))}
         format={(v) => v.toFixed(0)}
+        counts
       />
       <h3>Expected return against CLV</h3>
       {withClv.length === 0 ? (
