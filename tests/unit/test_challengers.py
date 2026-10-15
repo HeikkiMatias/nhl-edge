@@ -224,3 +224,36 @@ def test_nhl_live_challengers_writes_the_due_days_once_and_checks_them(
     assert "p_home differs" in check.output
     # One of --r2 and --from.
     assert runner.invoke(app, ["live", "challengers"]).exit_code != 0
+
+
+def test_one_broken_challenger_never_stops_the_others_and_check_reads_every_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+
+    out = tmp_path / "dry"
+    store = lb.LocalStore(out)
+    ledger = decided(store, monkeypatch)
+    ledger.write_parquet(out / f"{pf.DAY.isoformat()}.parquet")
+
+    def broken(bundle: Any, replayed: pl.DataFrame, live: Any, lake: Any) -> pl.DataFrame:
+        raise IndexError("a bug in the challenger")
+
+    # Codex on #265: an error of any kind is reported per pair, and the others still run.
+    monkeypatch.setattr(
+        lc, "REGISTRY", (replace(MARKET_ONLY, name="broken", predict=broken), MARKET_ONLY)
+    )
+    runner = CliRunner()
+    result = runner.invoke(app, ["live", "challengers", "--from", str(out)])
+    assert result.exit_code == 1
+    assert "broken 1, 2026-10-07: a bug in the challenger" in result.output
+    assert "market_only 1, 2026-10-07: 3 games, 3 predicted" in result.output
+    assert "1 of 2 due outputs written" in result.output
+    # A stored output whose bundle has gone is checked, and fails (Codex on #265).
+    (out / lb.prefix(pf.DAY) / lb.MANIFEST).unlink()
+    check = runner.invoke(app, ["live", "challengers", "--check", "--from", str(out)])
+    assert check.exit_code == 1
+    assert "market_only 1, 2026-10-07:" in check.output and "no manifest" in check.output
+    assert "0 of 1 stored outputs reproduced" in check.output

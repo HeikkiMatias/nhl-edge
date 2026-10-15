@@ -2770,13 +2770,8 @@ def live_challengers(
         def ledger_of(day: date) -> pl.DataFrame:
             return pl.read_parquet(io.BytesIO(store.get(lp.ledger_key(day))))
 
-    if check:
-        stored = set(store.keys(lc.PREFIX))
-        pairs = [
-            (c, day) for c in lc.REGISTRY for day in lc.complete_days(store) if c.key(day) in stored
-        ]
-    else:
-        pairs = lc.due(store, lc.REGISTRY)
+    # --check reads every stored output, its bundle complete or not: load() names one gone missing.
+    pairs = lc.stored(store, lc.REGISTRY) if check else lc.due(store, lc.REGISTRY)
     failed = 0
     for challenger, day in pairs:
         label = f"{challenger.name} {challenger.version}, {day}"
@@ -2793,7 +2788,9 @@ def live_challengers(
                 continue
             output = lc.run(challenger, bundle, sha, live, lake, code_version, now, ledger_of(day))
             key = lc.write(store, challenger, day, output)
-        except (OSError, ValueError) as exc:
+        except Exception as exc:
+            # One broken challenger or day never stops the others (Codex on #265); the run
+            # still exits 1.
             typer.echo(f"{label}: {exc}", err=True)
             failed += 1
             continue

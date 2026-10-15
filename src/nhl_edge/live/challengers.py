@@ -168,6 +168,19 @@ def due(store: lb.Store, registry: tuple[Challenger, ...]) -> list[tuple[Challen
     ]
 
 
+def stored(store: lb.Store, registry: tuple[Challenger, ...]) -> list[tuple[Challenger, date]]:
+    """Each registered challenger and day with a stored output, whether or not its bundle is still
+    complete."""
+    keys = set(store.keys(PREFIX))
+    return [
+        (challenger, date.fromisoformat(key.rsplit("/", 1)[1].removesuffix(".parquet")))
+        for challenger in registry
+        for key in sorted(keys)
+        if key.startswith(f"{PREFIX}/{challenger.name}/{challenger.version}/")
+        and key.endswith(".parquet")
+    ]
+
+
 def load(store: lb.Store, day: date) -> tuple[lb.Bundle, str]:
     """The day's complete bundle and its manifest's sha256."""
     bundle = lb.read(store, day)
