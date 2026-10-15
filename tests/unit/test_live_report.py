@@ -10,6 +10,7 @@ import polars as pl
 import pytest
 
 from nhl_edge.betting.selection import POLICY_VERSION
+from nhl_edge.ingest.odds import ODDS_FRAME_SCHEMA
 from nhl_edge.lake.schemas import PaperLedger, dtypes
 from nhl_edge.live import predict as lp
 from nhl_edge.live import report as lr
@@ -141,15 +142,8 @@ class Season:
         return self
 
     def report(self, as_of: date = date(2026, 12, 31), **changes: Any) -> dict[str, Any]:
-        odds = pl.DataFrame(
-            schema={
-                "event_id": pl.String,
-                "book": pl.String,
-                "market": pl.String,
-                "snapshot_utc": pl.Datetime("us", "UTC"),
-                "last_update_utc": pl.Datetime("us", "UTC"),
-            }
-        )
+        # The lake's odds_snapshots, with each event's game_id.
+        odds = changes.pop("odds", pl.DataFrame(schema=ODDS_FRAME_SCHEMA | {"game_id": pl.Int64}))
         history = changes.pop("history", pl.DataFrame(schema=HISTORY))
         return lr.report(
             changes.pop("ledger", self.ledger),
@@ -691,3 +685,57 @@ def test_a_report_row_has_the_live_reports_columns() -> None:
     # The kinds the migration's check admits.
     assert re.search(r"kind in \('interim', 'formal review'\)", migration)
     assert row["kind"] in ("interim", "formal review")
+
+
+def moves(n_weeks: int, toward: float, per_week: int = 30, seed: int = 11) -> pl.DataFrame:
+    """movement.table's rows for a synthetic season (#251): each game's B3 disagreement at the
+    decision, and a move to the close of toward times it plus noise, in log-odds."""
+    rng = np.random.default_rng(seed)
+    n = n_weeks * per_week
+    d = rng.normal(0, 0.3, n)
+    move = toward * d + rng.normal(0, 0.05, n)
+    p_decision = 0.5
+    return pl.DataFrame(
+        {
+            "season": [20262027] * n,
+            "game_date": [FIRST + timedelta(days=7 * (i // per_week) + i % 7) for i in range(n)],
+            "close_status": [closing.PROXY] * n,
+            "p_decision": [p_decision] * n,
+            "p_close": 1 / (1 + np.exp(-move)),
+            "move": move,
+            "u_sd": np.where(np.arange(n) % 2 == 0, -0.5, 0.5),
+            "d_B3": d,
+            "d_BLEND": 0.5 * d,
+        }
+    )
+
+
+def test_a_market_moving_toward_b3_shows_as_its_slope_share_and_points() -> None:
+    result = lr.entry_to_close(moves(n_weeks=6, toward=0.4))
+    b3 = result["models"]["B3"]
+    assert b3["slope"]["low"] < 0.4 < b3["slope"]["high"]
+    assert b3["share_toward"]["low"] > 0.5 and b3["points_toward"]["low"] > 0
+    # The blend's disagreement is half B3's here, so the market closes twice its share of it.
+    assert result["models"]["BLEND"]["slope"]["value"] == pytest.approx(2 * b3["slope"]["value"])
+    halves = result["b3_by_u"]
+    assert halves["u at or below average"]["slope"]["games"] == 90
+    # A market that ignores B3: the slope's interval holds 0.
+    ignored = lr.entry_to_close(moves(n_weeks=6, toward=0.0))["models"]["B3"]["slope"]
+    assert ignored["low"] < 0 < ignored["high"]
+
+
+def test_entry_to_close_gives_counts_only_under_four_weeks() -> None:
+    result = lr.entry_to_close(moves(n_weeks=3, toward=0.4))
+    assert result["models"]["B3"]["slope"] == {"games": 90, "weeks": 3}
+    assert "mean" not in result["move_points"]
+
+
+def test_the_report_shows_entry_to_close_and_why_games_have_no_close() -> None:
+    # Without any odds, no game has a close: each counts as missing, and the section says so.
+    result = Season(n_weeks=2).report()
+    moved = result["entry_to_close"]
+    assert moved["games"] == 0 and moved["without_close"] == {closing.MISSING: 60}
+    text = lr.markdown(result)
+    assert "## Entry to close (#251)" in text
+    assert f"Without a close: {closing.MISSING} 60." in text
+    assert "| B3 | 0 games, 0 weeks: too few |" in text

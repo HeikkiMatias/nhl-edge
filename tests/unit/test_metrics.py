@@ -9,6 +9,7 @@ from nhl_edge.backtest.metrics import (
     bootstrap,
     difference,
     resampled_means,
+    slope,
 )
 
 
@@ -52,3 +53,19 @@ def test_resampling_needs_games() -> None:
     empty = frame().clear()
     with pytest.raises(ValueError, match="no games"):
         resampled_means(empty, "value", np.random.default_rng(SEED))
+
+
+def test_a_slope_refits_on_each_resample_of_the_weeks() -> None:
+    # y = 0.4 x + noise: the slope comes back with an interval around it (#251).
+    rng = np.random.default_rng(3)
+    lines = frame().with_columns(x=pl.Series(rng.normal(0, 0.3, 200)))
+    lines = lines.with_columns(y=0.4 * pl.col("x") + pl.Series(rng.normal(0, 0.05, 200)))
+    fit = slope(lines, "x", "y")
+    x, y = lines["x"].to_numpy(), lines["y"].to_numpy()
+    assert fit.value == pytest.approx(np.polyfit(x, y, 1)[0])
+    assert fit.low < 0.4 < fit.high and fit.high - fit.low < 0.1
+    # An exact line gives the same slope on every resample.
+    exact = lines.with_columns(y=2 * pl.col("x") + 1)
+    assert (slope(exact, "x", "y").low, slope(exact, "x", "y").high) == pytest.approx((2, 2))
+    with pytest.raises(ValueError, match="too few games"):
+        slope(lines.head(1), "x", "y")

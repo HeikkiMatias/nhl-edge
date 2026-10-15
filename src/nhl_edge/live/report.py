@@ -25,6 +25,9 @@ It covers the frozen policy's regular-season paper decisions (ADR 0032):
   of data and code.
 - **ADR 0030's other check:** whether Pinnacle's 12:45 price sits nearer SBR's opener or its
   close, by B0's log loss.
+- **Entry to close (#251),** a diagnostic with no verdict: over every predicted game with a close,
+  whether Pinnacle's fair price moved toward each model's disagreement with it at the decision
+  (live/movement.py).
 - **Return at the taken price,** and the drawdown's size, only from REVIEW_DATE on (plan §11).
 
 It reads ledgers, settlements, results and prices only: nothing here feeds a decision.
@@ -32,7 +35,7 @@ It reads ledgers, settlements, results and prices only: nothing here feeds a dec
 
 import json
 import math
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -48,11 +51,13 @@ from nhl_edge.backtest.metrics import (
     difference,
     interval,
     log_loss,
+    slope,
     week_of,
 )
 from nhl_edge.backtest.walk_forward import B1_METHOD, b0, bounds, implausible, outcomes
 from nhl_edge.betting.selection import POLICY, POLICY_VERSION
 from nhl_edge.game.uncertainty import PARTS
+from nhl_edge.live import movement
 from nhl_edge.live import predict as lp
 from nhl_edge.live import settle as ls
 from nhl_edge.market import closing
@@ -93,8 +98,9 @@ def counted(ledger: pl.DataFrame, as_of: date, policy: str | None = POLICY_VERSI
     the frozen policy's by default (ADR 0032; a new policy version starts its own record, and an
     earlier one's stays on record under it, ADR 0037). With policy None, every policy's: the
     season's one paper bankroll, which a new version carries on (ADR 0037)."""
+    of_policy = pl.lit(True) if policy is None else pl.col("policy_version") == policy
     return ledger.filter(
-        pl.lit(policy is None) | (pl.col("policy_version") == policy),
+        of_policy,
         (pl.col("game_id") // 10_000 % 100) == REGULAR_SEASON,
         pl.col("game_date") <= as_of,
     ).sort("game_date", "game_id")
@@ -457,6 +463,49 @@ def market_timing(scored: pl.DataFrame, history: pl.DataFrame) -> dict[str, Any]
     return result
 
 
+def _toward(frame: pl.DataFrame, disagreement: str) -> dict[str, Any]:
+    """Whether the market moved toward a disagreement at the decision: the slope of the move on
+    it (0 when it says nothing about the move, 1 when the market moves all the way to the model),
+    the share of games that moved its way among those where both are non-zero, and the mean move
+    in its direction in points of the home side's fair probability."""
+    known = frame.filter(pl.col(disagreement).is_not_null())
+    leaning = known.filter(pl.col(disagreement) != 0)
+    moving = leaning.filter(pl.col("move") != 0).with_columns(
+        toward=((pl.col("move") > 0) == (pl.col(disagreement) > 0)).cast(pl.Float64)
+    )
+    pointed = leaning.with_columns(
+        points=(pl.col("p_close") - pl.col("p_decision")) * pl.col(disagreement).sign() * 100
+    )
+    return {
+        "slope": slope(known, disagreement, "move").to_dict() | counts(known)
+        if enough(known)
+        else counts(known),
+        "share_toward": estimate(moving, "toward"),
+        "points_toward": estimate(pointed, "points"),
+    }
+
+
+def entry_to_close(moves: pl.DataFrame) -> dict[str, Any]:
+    """#251's diagnostic, with no verdict, over movement.table's games with a valid close: how far
+    Pinnacle's fair price moved from the decision to the close, and whether it moved toward each
+    model's disagreement with it at the decision, B3's also by u below or above its training
+    mean."""
+    valid = moves.filter(pl.col("move").is_not_null())
+    sized = valid.with_columns(points=(pl.col("p_close") - pl.col("p_decision")).abs() * 100)
+    with_u = valid.filter(pl.col("u_sd").is_not_null())
+    return {
+        "games": valid.height,
+        "unmoved": valid.filter(pl.col("move") == 0).height,
+        "without_close": _counts(moves.filter(pl.col("move").is_null()), "close_status"),
+        "move_points": estimate(sized, "points"),
+        "models": {name: _toward(valid, f"d_{name}") for name in movement.MODELS},
+        "b3_by_u": {
+            "u at or below average": _toward(with_u.filter(pl.col("u_sd") <= 0), "d_B3"),
+            "u above average": _toward(with_u.filter(pl.col("u_sd") > 0), "d_B3"),
+        },
+    }
+
+
 def operations(rows: pl.DataFrame) -> dict[str, Any]:
     """Alerts on how the days ran, never a reason to change the policy: the days skipped and the
     games without a fresh Pinnacle price, and how often the guard stopped a picked bet."""
@@ -529,6 +578,12 @@ def report(
             "u_range": u_range(rows, scale["means"], scale["sds"]),
         },
         "market_timing": market_timing(scored, history),
+        # Every game with a result has started by noon UTC after as_of, so its close is final.
+        "entry_to_close": entry_to_close(
+            movement.table(
+                scored, ls.closes(odds, datetime.combine(as_of + timedelta(days=1), time(12), UTC))
+            )
+        ),
         "verdicts": {
             "closing_value": INTERIM
             if not formal
@@ -565,6 +620,15 @@ def _fmt(figure: dict[str, Any] | None, unit: str = "games", digits: int = 4) ->
         low, high = figure["low"], figure["high"]
         return f"{figure['value']:+.{digits}f} [{low:+.{digits}f}, {high:+.{digits}f}]"
     return f"{figure['games']} {unit} over {figure['weeks']} weeks: too few weeks for an estimate"
+
+
+def _cell(figure: dict[str, Any], digits: int = 2, scale: float = 1.0, suffix: str = "") -> str:
+    """A figure for a table cell: its value and interval, or its counts when too few weeks."""
+    centre = figure.get("mean", figure.get("value"))
+    if centre is None:
+        return f"{figure['games']} games, {figure['weeks']} weeks: too few"
+    low, high = figure["low"] * scale, figure["high"] * scale
+    return f"{centre * scale:+.{digits}f}{suffix} [{low:+.{digits}f}, {high:+.{digits}f}]"
 
 
 def _share(n: int, of: int) -> str:
@@ -746,6 +810,39 @@ def markdown(result: dict[str, Any]) -> str:
             f"- Pinnacle minus SBR's opener: {_fmt(timing['pinnacle_minus_opener'])}",
             f"- Pinnacle minus SBR's close: {_fmt(timing['pinnacle_minus_close'])}",
         ]
+    moved = result["entry_to_close"]
+    missing = ", ".join(f"{reason} {n}" for reason, n in moved["without_close"].items())
+    lines += [
+        "",
+        "## Entry to close (#251)",
+        "",
+        "A diagnostic with no verdict. Over the predicted games with a valid closing proxy after "
+        "their decision: how far Pinnacle's fair price moved by the close, and whether it moved "
+        "toward each model's disagreement with it at the decision. The close is an outcome "
+        "here, never an input.",
+        "",
+        f"- Games: {moved['games']}, {moved['unmoved']} of them without a move. Without a "
+        f"close: {missing or 'none'}.",
+        f"- Mean size of the move: {_fmt(moved['move_points'], digits=2)} points of the home "
+        "side's fair probability.",
+        "",
+        "| Disagreement at the decision | Slope of the move on it | Moves toward it | "
+        "Mean move toward it, points |",
+        "| --- | --- | --- | --- |",
+    ]
+    groups = {"B3": moved["models"]["B3"], "Blend": moved["models"]["BLEND"]} | {
+        f"B3, {name}": group for name, group in moved["b3_by_u"].items()
+    }
+    lines += [
+        f"| {name} | {_cell(g['slope'])} | {_cell(g['share_toward'], 1, 100, '%')} | "
+        f"{_cell(g['points_toward'])} |"
+        for name, g in groups.items()
+    ]
+    lines += [
+        "",
+        "The slope is in log-odds on both sides: 0 when the disagreement says nothing about the "
+        "move, 1 when the market moves all the way to the model by the close.",
+    ]
     if "returns" in result:
         ret = result["returns"]
         lines += [
