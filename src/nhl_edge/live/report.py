@@ -551,6 +551,43 @@ def shadows(started: pl.DataFrame, moves: pl.DataFrame, odds: pl.DataFrame) -> d
     }
 
 
+def _challenger_figures(
+    own: pl.DataFrame, started: pl.DataFrame, scored: pl.DataFrame, moves: pl.DataFrame
+) -> dict[str, Any]:
+    """A challenger's figures over its outputs own: paired log loss against the blend and B1 on
+    the games with a result, the shadow bets the frozen rules would make on it with a close
+    (live/shadow.py), and whether the market moved toward its disagreement at the decision
+    (#251)."""
+    keys = ["game_date", "game_id"]
+    probability = own.filter(pl.col("p_home").is_not_null()).select(*keys, p_challenger="p_home")
+    with_p = scored.join(probability, on=keys)
+    compared = {}
+    for name, column in (("BLEND", "p_blend"), ("B1", "p_b1")):
+        both = with_p.filter(pl.col(column).is_not_null())
+        paired = both.with_columns(
+            difference=log_loss(pl.col("p_challenger"), pl.col("home_win"))
+            - log_loss(pl.col(column), pl.col("home_win"))
+        )
+        compared[name] = {
+            "difference": estimate(paired, "difference"),
+            "left_out": with_p.height - both.height,
+        }
+    bets = shadow.valued(shadow.selected(started.join(probability, on=keys), "p_challenger"), moves)
+    moved = (
+        moves.filter(pl.col("move").is_not_null())
+        .join(probability, on=keys)
+        .with_columns(
+            d_challenger=(pl.col("p_challenger") / (1 - pl.col("p_challenger"))).log()
+            - (pl.col("p_decision") / (1 - pl.col("p_decision"))).log()
+        )
+    )
+    return {
+        "comparisons": compared,
+        "shadow": {"bets": bets.height, "clv_per_bet": estimate(bets, "clv")},
+        "toward_close": _toward(moved, "d_challenger"),
+    }
+
+
 def challengers(
     rows: pl.DataFrame,
     started: pl.DataFrame,
@@ -559,12 +596,14 @@ def challengers(
     outputs: pl.DataFrame,
     registry: tuple[lc.Challenger, ...],
 ) -> dict[str, Any]:
-    """Every registered challenger over the counted games of the days after its registration
-    (ADR 0038), with no verdict, failures included: its days and games, its paired log loss
-    against the blend and B1 on the games with a result, the shadow bets the frozen rules would
-    make on it with a close (live/shadow.py), and whether the market moved toward its
-    disagreement at the decision (#251)."""
+    """Every registered challenger, by name and version, over the counted games of the decision
+    days after its registration (ADR 0038), with no verdict, failures included: its days and
+    games, and its figures (_challenger_figures). Every such day counts, so a day without its
+    output withholds the figures (Codex on #265): a challenger that fails on some days would
+    otherwise choose its own sample. Only the latest decision day, scored the night after it,
+    is pending rather than missing."""
     keys = ["game_date", "game_id"]
+    latest = rows["game_date"].max()
     result = {}
     for challenger in registry:
         own = outputs.filter(
@@ -572,44 +611,25 @@ def challengers(
             pl.col("challenger_version") == challenger.version,
             pl.col("game_date") > challenger.registered_on,
         ).join(rows.select(keys), on=keys, how="semi")
-        probability = own.filter(pl.col("p_home").is_not_null()).select(
-            *keys, p_challenger="p_home"
-        )
-        with_p = scored.join(probability, on=keys)
-        compared = {}
-        for name, column in (("BLEND", "p_blend"), ("B1", "p_b1")):
-            both = with_p.filter(pl.col(column).is_not_null())
-            paired = both.with_columns(
-                difference=log_loss(pl.col("p_challenger"), pl.col("home_win"))
-                - log_loss(pl.col(column), pl.col("home_win"))
-            )
-            compared[name] = {
-                "difference": estimate(paired, "difference"),
-                "left_out": with_p.height - both.height,
-            }
-        bets = shadow.valued(
-            shadow.selected(started.join(probability, on=keys), "p_challenger"), moves
-        )
-        moved = (
-            moves.filter(pl.col("move").is_not_null())
-            .join(probability, on=keys)
-            .with_columns(
-                d_challenger=(pl.col("p_challenger") / (1 - pl.col("p_challenger"))).log()
-                - (pl.col("p_decision") / (1 - pl.col("p_decision"))).log()
-            )
-        )
-        result[challenger.name] = {
+        decided = rows.filter(pl.col("game_date") > challenger.registered_on)["game_date"]
+        scored_days = set(own["game_date"].to_list())
+        without = sorted(set(decided.to_list()) - scored_days)
+        missing = [day.isoformat() for day in without if day != latest]
+        entry: dict[str, Any] = {
+            "name": challenger.name,
             "version": challenger.version,
             "adr": challenger.adr,
             "registered_on": challenger.registered_on.isoformat(),
-            "days": own["game_date"].n_unique(),
+            "days": len(scored_days),
             "games": own.height,
-            "predicted": probability.height,
+            "predicted": own.filter(pl.col("p_home").is_not_null()).height,
             "not_predicted": _counts(own.filter(pl.col("status") != lc.PREDICTED), "status"),
-            "comparisons": compared,
-            "shadow": {"bets": bets.height, "clv_per_bet": estimate(bets, "clv")},
-            "toward_close": _toward(moved, "d_challenger"),
+            "missing_days": missing,
+            "pending_days": [day.isoformat() for day in without if day == latest],
         }
+        if not missing:
+            entry |= _challenger_figures(own, started, scored, moves)
+        result[f"{challenger.name}/{challenger.version}"] = entry
     return {"registered": len(registry), "challengers": result}
 
 
@@ -1020,25 +1040,41 @@ def _challenger_lines(section: dict[str, Any]) -> list[str]:
         "",
         f"Registered: {section['registered']}, each reported. Each is scored on the decision days "
         "after its registration from the day's run bundle, never as part of the decision, and "
-        "with no verdict before the formal review. A difference in log loss is the challenger's "
-        "less the other model's, negative favouring the challenger; its shadow bets are the "
-        "frozen selection, guard and staking on its probability, valued at the same closing proxy.",
+        "with no verdict before the formal review. Every such day counts: a day without its "
+        "output withholds the challenger's figures. A difference in log loss is the "
+        "challenger's less the other model's, negative favouring the challenger; its shadow bets "
+        "are the frozen selection, guard and staking on its probability, valued at the same "
+        "closing proxy.",
     ]
-    for name, c in section["challengers"].items():
+    for c in section["challengers"].values():
         head = (
-            f"- **{name}** version {c['version']} (ADR {c['adr']}), registered {c['registered_on']}"
+            f"- **{c['name']}** version {c['version']} (ADR {c['adr']}), registered "
+            f"{c['registered_on']}"
         )
-        if not c["games"]:
-            lines += ["", f"{head}: no decision day after its registration scored yet."]
+        pending = (
+            f" {', '.join(c['pending_days'])} is scored the night after its decision."
+            if c["pending_days"]
+            else ""
+        )
+        if not c["games"] and not c["missing_days"]:
+            lines += ["", f"{head}: no decision day after its registration scored yet.{pending}"]
             continue
-        missing = ", ".join(f"{reason} {n}" for reason, n in c["not_predicted"].items())
-        slope_of = c["toward_close"]["slope"]
+        not_predicted = ", ".join(f"{reason} {n}" for reason, n in c["not_predicted"].items())
         lines += [
             "",
             f"{head}: {c['days']} day{'' if c['days'] == 1 else 's'}, {c['games']} games, "
             f"{c['predicted']} predicted"
-            + (f"; not predicted: {missing}" if missing else "")
-            + ".",
+            + (f"; not predicted: {not_predicted}" if not_predicted else "")
+            + f".{pending}",
+        ]
+        if c["missing_days"]:
+            lines.append(
+                f"  - **Withheld:** {len(c['missing_days'])} decision days after its "
+                f"registration have no output ({', '.join(c['missing_days'])}). Score them, or "
+                "say why they can't be, before any figure is shown."
+            )
+            continue
+        lines += [
             *(
                 f"  - Against {model}: {_fmt(compared['difference'])}"
                 + (f", {compared['left_out']} games left out" if compared["left_out"] else "")
@@ -1046,7 +1082,8 @@ def _challenger_lines(section: dict[str, Any]) -> list[str]:
             ),
             f"  - Shadow bets with a close: {c['shadow']['bets']}; CLV per bet: "
             f"{_fmt(c['shadow']['clv_per_bet'], 'bets')}",
-            f"  - Slope of the move to the close on its disagreement: {_fmt(slope_of)}",
+            "  - Slope of the move to the close on its disagreement: "
+            f"{_fmt(c['toward_close']['slope'])}",
         ]
     return lines
 

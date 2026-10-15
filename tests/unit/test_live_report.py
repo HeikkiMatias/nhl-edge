@@ -209,7 +209,7 @@ def test_every_registered_challenger_is_reported_from_the_day_after_its_registra
     result = season.report(challenger_outputs=outputs)["challengers"]
     assert result["registered"] == 2
     counted = season.ledger.filter(pl.col("game_date") > registered)
-    shifted_result = result["challengers"]["shifted"]
+    shifted_result = result["challengers"]["shifted/1"]
     assert shifted_result["games"] == shifted_result["predicted"] == counted.height
     assert shifted_result["days"] == counted["game_date"].n_unique()
     # The paired difference, the challenger's log loss less the blend's, on the same games.
@@ -230,20 +230,36 @@ def test_every_registered_challenger_is_reported_from_the_day_after_its_registra
         assert figure["games"] == counted.height
     # No closes in the odds, so no shadow bet is valued.
     assert shifted_result["shadow"]["bets"] == 0
-    assert result["challengers"]["silent"]["games"] == 0
+    assert shifted_result["missing_days"] == shifted_result["pending_days"] == []
+    # A challenger without the outputs of its days is withheld, never shown on fewer days.
+    days = sorted(counted["game_date"].unique().to_list())
+    silent_result = result["challengers"]["silent/1"]
+    assert silent_result["games"] == 0 and "comparisons" not in silent_result
+    assert silent_result["missing_days"] == [day.isoformat() for day in days[:-1]]
+    assert silent_result["pending_days"] == [days[-1].isoformat()]
+    # One earlier day without its output withholds every figure (Codex on #265); the latest
+    # day alone, scored the night after its decision, is pending.
+    holed = season.report(challenger_outputs=outputs.filter(pl.col("game_date") != days[3]))
+    entry = holed["challengers"]["challengers"]["shifted/1"]
+    assert entry["missing_days"] == [days[3].isoformat()] and "comparisons" not in entry
+    latest = season.report(challenger_outputs=outputs.filter(pl.col("game_date") != days[-1]))
+    entry = latest["challengers"]["challengers"]["shifted/1"]
+    assert entry["pending_days"] == [days[-1].isoformat()] and "comparisons" in entry
     text = lr.markdown(season.report(challenger_outputs=outputs))
     assert "## Challengers (ADR 0038)" in text and "Registered: 2, each reported." in text
-    assert "- **silent** version 1 (ADR 0038), registered 2026-10-18: no decision day" in text
     assert (
         f"- **shifted** version 1 (ADR 0038), registered 2026-10-18: {shifted_result['days']} days"
         in text
     )
-    # Without stored outputs, every registered challenger is still reported.
-    empty = season.report()["challengers"]
-    assert {name: c["games"] for name, c in empty["challengers"].items()} == {
-        "shifted": 0,
-        "silent": 0,
-    }
+    assert "- **silent** version 1 (ADR 0038), registered 2026-10-18: 0 days" in text
+    assert f"**Withheld:** {len(days) - 1} decision days after its registration" in text
+    assert f"{days[-1].isoformat()} is scored the night after its decision." in text
+    assert "**Withheld:**" in lr.markdown(holed)
+    # A new version under the same name is reported beside the old one (Codex on #265).
+    monkeypatch.setattr(lc, "REGISTRY", (shifted, replace(shifted, version="2")))
+    both = season.report(challenger_outputs=outputs)["challengers"]["challengers"]
+    assert sorted(both) == ["shifted/1", "shifted/2"]
+    assert both["shifted/1"]["games"] == counted.height and both["shifted/2"]["games"] == 0
 
 
 def test_too_few_weeks_give_counts_and_no_estimate() -> None:
