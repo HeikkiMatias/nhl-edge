@@ -69,3 +69,6 @@ def test_a_slope_refits_on_each_resample_of_the_weeks() -> None:
     assert (slope(exact, "x", "y").low, slope(exact, "x", "y").high) == pytest.approx((2, 2))
     with pytest.raises(ValueError, match="too few games"):
         slope(lines.head(1), "x", "y")
+    # A constant x has no slope: refused, not divided by zero (Codex on #261).
+    with pytest.raises(ValueError, match="no spread"):
+        slope(lines.with_columns(x=pl.lit(0.0)), "x", "y")

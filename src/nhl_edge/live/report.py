@@ -470,6 +470,9 @@ def _toward(frame: pl.DataFrame, disagreement: str) -> dict[str, Any]:
     in its direction in points of the home side's fair probability."""
     known = frame.filter(pl.col(disagreement).is_not_null())
     leaning = known.filter(pl.col(disagreement) != 0)
+    # A disagreement without spread, such as a model that always matches the market, has no
+    # slope (Codex on #261).
+    fitted = enough(known) and known[disagreement].n_unique() > 1
     moving = leaning.filter(pl.col("move") != 0).with_columns(
         toward=((pl.col("move") > 0) == (pl.col(disagreement) > 0)).cast(pl.Float64)
     )
@@ -478,7 +481,7 @@ def _toward(frame: pl.DataFrame, disagreement: str) -> dict[str, Any]:
     )
     return {
         "slope": slope(known, disagreement, "move").to_dict() | counts(known)
-        if enough(known)
+        if fitted
         else counts(known),
         "share_toward": estimate(moving, "toward"),
         "points_toward": estimate(pointed, "points"),
@@ -544,10 +547,13 @@ def report(
     scale: dict[str, dict[str, float]],
     as_of: date,
     policy: str = POLICY_VERSION,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """The live report of one policy, the frozen one by default, as of as_of: ledger and
     settlements as written, games' results, the odds' Pinnacle quotes, SBR's history
-    (sbr_history) and the live fit's u scale (means, sds)."""
+    (sbr_history) and the live fit's u scale (means, sds). now is the report's clock, noon UTC
+    the day after as_of by default: entry to close counts the games started by then."""
+    now = now or datetime.combine(as_of + timedelta(days=1), time(12), UTC)
     rows = counted(ledger, as_of, policy)
     bets = bets_of(rows, settlements)
     scored = with_results(rows, games)
@@ -578,10 +584,11 @@ def report(
             "u_range": u_range(rows, scale["means"], scale["sds"]),
         },
         "market_timing": market_timing(scored, history),
-        # Every game with a result has started by noon UTC after as_of, so its close is final.
+        # Every predicted game started by now, with a result or not yet (Codex on #261): its
+        # close is final once it has started.
         "entry_to_close": entry_to_close(
             movement.table(
-                scored, ls.closes(odds, datetime.combine(as_of + timedelta(days=1), time(12), UTC))
+                scoreable(rows, games).filter(pl.col("start_utc") <= now), ls.closes(odds, now)
             )
         ),
         "verdicts": {

@@ -154,6 +154,7 @@ class Season:
             SCALE,
             as_of,
             changes.pop("policy", POLICY_VERSION),
+            now=changes.pop("now", None),
         )
 
 
@@ -724,6 +725,14 @@ def test_a_market_moving_toward_b3_shows_as_its_slope_share_and_points() -> None
     assert ignored["low"] < 0 < ignored["high"]
 
 
+def test_a_disagreement_without_spread_gives_counts_not_a_slope() -> None:
+    # A blend that always matches the market (Codex on #261): no slope, and the report stands.
+    flat = moves(n_weeks=6, toward=0.4).with_columns(d_BLEND=pl.lit(0.0))
+    blend = lr.entry_to_close(flat)["models"]["BLEND"]
+    assert blend["slope"] == {"games": 180, "weeks": 6}
+    assert blend["share_toward"] == {"games": 0, "weeks": 0}
+
+
 def test_entry_to_close_gives_counts_only_under_four_weeks() -> None:
     result = lr.entry_to_close(moves(n_weeks=3, toward=0.4))
     assert result["models"]["B3"]["slope"] == {"games": 90, "weeks": 3}
@@ -737,5 +746,13 @@ def test_the_report_shows_entry_to_close_and_why_games_have_no_close() -> None:
     assert moved["games"] == 0 and moved["without_close"] == {closing.MISSING: 60}
     text = lr.markdown(result)
     assert "## Entry to close (#251)" in text
+    # A started game counts before its result is in (Codex on #261).
+    season = Season(n_weeks=2)
+    season.games = season.games.head(50)
+    assert season.report()["entry_to_close"]["without_close"] == {closing.MISSING: 60}
+    # A game not started by the report's clock doesn't count yet: by 23:30 on the first day,
+    # only that day's five 23:00 games have.
+    early = Season(n_weeks=2).report(now=at(FIRST, 23, 30))["entry_to_close"]
+    assert early["without_close"] == {closing.MISSING: 5}
     assert f"Without a close: {closing.MISSING} 60." in text
     assert "| B3 | 0 games, 0 weeks: too few |" in text

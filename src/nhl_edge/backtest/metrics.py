@@ -137,10 +137,16 @@ def slope(frame: pl.DataFrame, x: str, y: str, draws: int = DRAWS, seed: int = S
     def fit(n: Any, sx: Any, sy: Any, sxy: Any, sxx: Any) -> Any:
         return (n * sxy - sx * sy) / (n * sxx - sx * sx)
 
-    whole = frame.select(**sums, n=pl.len()).row(0, named=True)
+    whole = {k: float(v) for k, v in frame.select(**sums, n=pl.len()).row(0, named=True).items()}
+    if whole["n"] * whole["sxx"] - whole["sx"] ** 2 <= 0:
+        raise ValueError(f"{x} has no spread to estimate the slope of {y} on")
     with np.errstate(divide="ignore", invalid="ignore"):
         resampled = fit(**totals)
-    return interval(float(fit(**whole)), resampled[np.isfinite(resampled)])
+    # A resample whose weeks all share one value of x has no slope, and is left out.
+    finite = resampled[np.isfinite(resampled)]
+    if finite.size == 0:
+        raise ValueError(f"no resample of {x} has the spread to estimate the slope of {y} on")
+    return interval(fit(**whole), finite)
 
 
 def difference(
