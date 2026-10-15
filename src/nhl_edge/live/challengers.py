@@ -9,10 +9,11 @@ evidence on this season's decision days alongside the frozen policy, without tou
   first scored game; a changed challenger is a new version with a new registration.
 - **Evidence:** only decision days after the registration date, never backfilled. A day's
   output comes from the day's complete run bundle (live/bundle.py), the day replayed with the
-  committed live fit it names (and refused unless it reproduces the day's ledger), and lake rows
-  known before the bundle's input cutoff (PointInTime), each table read recorded by the sha256
-  of its rows. The lake is mutable: the nightly rewrites a date's rows once its games are final,
-  so the slate's own inputs come from the bundle, and the lake gives only rows of earlier games.
+  committed live fit it names (and refused unless it reproduces the day's ledger), and the lake
+  read point in time (PointInTime): only the tables in READERS, each through its reviewed
+  reader, and each read recorded by the sha256 of its rows. The lake is mutable: the nightly
+  rewrites a date's rows once its games are final, so the slate's own inputs come from the
+  bundle, and the lake gives only rows of earlier games.
 - **Output:** one row per slate game (ChallengerPredictions), written once per challenger,
   version and day under PREFIX in R2 and rebuilt into the lake's challenger_predictions. check()
   recomputes a stored day and names what differs.
@@ -31,8 +32,8 @@ from typing import Protocol
 
 import polars as pl
 
+from nhl_edge.ingest.games import results_known_at, schedule_known_at
 from nhl_edge.lake.schemas import ChallengerPredictions, dtypes
-from nhl_edge.lake.tables import known_at
 from nhl_edge.live import blend_fit
 from nhl_edge.live import bundle as lb
 from nhl_edge.live import predict as lp
@@ -42,9 +43,10 @@ PREDICTED = lp.PREDICTED
 # A null probability the challenger gave no reason for, and a slate game it left out.
 NO_PROBABILITY = "no probability"
 LEFT_OUT = "not returned by the challenger"
-# The column that says when a table's row became known, for a point-in-time read: observed_utc
-# (lake/tables.known_at) but for the odds, known at their snapshot.
-KNOWN = {"odds_snapshots": "snapshot_utc"}
+# Odds columns set after a quote was observed (Codex on #265): the closing proxy flag, set once the
+# game has started, and the game a quote was matched to, which follows a postponement to the
+# rescheduled game (lake/schemas.LakeOddsSnapshots).
+ODDS_AFTERWARDS = ("is_closing_proxy", "game_id", "game_type")
 
 
 class Reader(Protocol):
@@ -53,29 +55,45 @@ class Reader(Protocol):
     def read(self, table: str, seasons: Collection[int] | None = None) -> pl.DataFrame: ...
 
 
+def _odds(frame: pl.DataFrame, cutoff: datetime, predicting: tuple[int, ...]) -> pl.DataFrame:
+    """The quotes observed before the cutoff, as they were then: by their event, without the
+    columns set afterwards."""
+    return frame.filter(pl.col("snapshot_utc") < cutoff).drop(ODDS_AFTERWARDS)
+
+
+# The lake tables a challenger may read, each through a reader that returns only what was known
+# before the cutoff, given the slate's games (predicting). Not every table is safe by its
+# observed_utc alone (Codex on #265): the schedule holds only games that went on to be played,
+# and the odds carry columns set after the fact. Any other table is refused until a challenger's
+# ADR reviews it and adds its reader here, with a test in tests/leakage/test_challengers.py.
+READERS: dict[str, Callable[[pl.DataFrame, datetime, tuple[int, ...]], pl.DataFrame]] = {
+    # Results public before the cutoff.
+    "games": lambda frame, cutoff, predicting: results_known_at(frame, cutoff),
+    # Games already played, and the slate's own once their schedule is public.
+    "schedule": lambda frame, cutoff, predicting: schedule_known_at(frame, cutoff, predicting),
+    "odds_snapshots": _odds,
+}
+
+
 @dataclass
 class PointInTime:
-    """The lake as a challenger may read it for one bundle: only the tables it registered, and of
-    those only the rows known before the bundle's input cutoff. reads records the sha256 of the
-    rows each read returned, so a later change to them shows when the day is checked."""
+    """The lake as a challenger may read it for one bundle: only the tables it registered, each
+    through its reader in READERS at the bundle's input cutoff, for the slate's games
+    (predicting). reads records the sha256 of the rows each read returned, so a later change to
+    them shows when the day is checked."""
 
     lake: Reader
     cutoff: datetime
     allowed: tuple[str, ...]
+    predicting: tuple[int, ...] = ()
     reads: dict[str, str] = field(default_factory=dict)
 
     def read(self, table: str, seasons: Collection[int] | None = None) -> pl.DataFrame:
         if table not in self.allowed:
             raise ValueError(f"{table} is not among the tables the challenger registered")
-        frame = self.lake.read(table, seasons)
-        column = KNOWN.get(table, "observed_utc")
-        if column not in frame.columns:
-            raise ValueError(f"{table} has no {column}, so it can't be read point in time")
-        rows = (
-            known_at(frame, self.cutoff)
-            if column == "observed_utc"
-            else frame.filter(pl.col(column) < self.cutoff)
-        )
+        if table not in READERS:
+            raise ValueError(f"{table} has no point-in-time reader, so a challenger can't read it")
+        rows = READERS[table](self.lake.read(table, seasons), self.cutoff, self.predicting)
         name = table if seasons is None else f"{table}:{','.join(map(str, sorted(seasons)))}"
         self.reads[name] = lb.sha256(lb.parquet(rows))
         return rows
@@ -95,6 +113,11 @@ class Challenger:
     registered_on: date
     reads: tuple[str, ...]
     predict: Predict
+
+    def __post_init__(self) -> None:
+        unread = sorted(set(self.reads) - set(READERS))
+        if unread:
+            raise ValueError(f"{self.name}: no point-in-time reader for {', '.join(unread)}")
 
     def counts(self, day: date) -> bool:
         """Whether a decision day is evidence: only days after the registration (ADR 0038)."""
@@ -185,14 +208,14 @@ def run(
         if problems:
             raise ValueError(f"{day}: the bundle doesn't replay the ledger ({'; '.join(problems)})")
     cutoff = datetime.fromisoformat(bundle.manifest["input_cutoff"])
-    reader = PointInTime(lake, cutoff, challenger.reads)
+    slate = bundle.inputs["slate"]
+    reader = PointInTime(lake, cutoff, challenger.reads, tuple(slate["game_id"].to_list()))
     predicted = challenger.predict(bundle, replayed, live, reader)
     if "status" not in predicted.columns:
         predicted = predicted.with_columns(status=pl.lit(None, pl.String))
     p = pl.col("p_home")
     rows = (
-        bundle.inputs["slate"]
-        .select("game_date", "season", "game_id")
+        slate.select("game_date", "season", "game_id")
         .join(predicted.select("game_id", "p_home", "status"), on="game_id", how="left")
         .with_columns(
             status=pl.when(p.is_not_null())

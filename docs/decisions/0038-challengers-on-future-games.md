@@ -35,9 +35,9 @@ Option 2, under these rules.
    - A changed challenger is a new version with a new registration, and its evidence restarts.
 2. **Evidence:**
    - Only decision days after the registration date count, and nothing is ever backfilled.
-   - A day's output is computed from the day's run bundle and the committed live fit. Any lake rows beyond the bundle must be known before the bundle's input cutoff, and the output records which were read.
+   - A day's output is computed from the day's run bundle and the committed live fit. Any lake rows beyond the bundle must be known before the bundle's input cutoff, read through a reviewed point-in-time reader for their table, and the output records which were read. A table is readable only once its reader and a leakage test exist, since not every table is safe by its observed time alone.
    - It is written once per challenger, version and day, and it replays from its bundle.
-   - Every such day counts: a decision day without its output withholds the challenger's figures until it is scored, so a challenger that fails on some days never chooses its own sample. The latest day, scored the night after its decision, is pending rather than missing.
+   - Every such day counts: a decision day without its output withholds the challenger's figures until it is scored, so a challenger that fails on some days never chooses its own sample. A day is pending rather than missing only until the end of the next UTC day, since the nightly scores it the night after its decision.
 3. **Measures:**
    - paired log loss against the frozen blend and against B1, on the same games;
    - the shadow bets the frozen selection, guard and staking (ADRs 0028 and 0029) would make on its probability, valued at Pinnacle's closing proxy (CLV), as #252 does for the market-only control;

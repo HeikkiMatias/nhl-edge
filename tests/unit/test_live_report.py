@@ -235,16 +235,21 @@ def test_every_registered_challenger_is_reported_from_the_day_after_its_registra
     days = sorted(counted["game_date"].unique().to_list())
     silent_result = result["challengers"]["silent/1"]
     assert silent_result["games"] == 0 and "comparisons" not in silent_result
-    assert silent_result["missing_days"] == [day.isoformat() for day in days[:-1]]
-    assert silent_result["pending_days"] == [days[-1].isoformat()]
-    # One earlier day without its output withholds every figure (Codex on #265); the latest
-    # day alone, scored the night after its decision, is pending.
+    assert silent_result["missing_days"] == [day.isoformat() for day in days]
+    assert silent_result["pending_days"] == []
+    # One day without its output withholds every figure (Codex on #265).
     holed = season.report(challenger_outputs=outputs.filter(pl.col("game_date") != days[3]))
     entry = holed["challengers"]["challengers"]["shifted/1"]
     assert entry["missing_days"] == [days[3].isoformat()] and "comparisons" not in entry
-    latest = season.report(challenger_outputs=outputs.filter(pl.col("game_date") != days[-1]))
-    entry = latest["challengers"]["challengers"]["shifted/1"]
+    # The latest day is pending only until the end of the next UTC day: the nightly scores it
+    # the night after its decision. After that it is missing too, the season's last day or not.
+    unscored = outputs.filter(pl.col("game_date") != days[-1])
+    night_after = at(days[-1] + timedelta(days=1), 9, 30)
+    entry = season.report(challenger_outputs=unscored, now=night_after)["challengers"]
+    entry = entry["challengers"]["shifted/1"]
     assert entry["pending_days"] == [days[-1].isoformat()] and "comparisons" in entry
+    later = season.report(challenger_outputs=unscored)["challengers"]["challengers"]["shifted/1"]
+    assert later["missing_days"] == [days[-1].isoformat()] and "comparisons" not in later
     text = lr.markdown(season.report(challenger_outputs=outputs))
     assert "## Challengers (ADR 0038)" in text and "Registered: 2, each reported." in text
     assert (
@@ -252,9 +257,10 @@ def test_every_registered_challenger_is_reported_from_the_day_after_its_registra
         in text
     )
     assert "- **silent** version 1 (ADR 0038), registered 2026-10-18: 0 days" in text
-    assert f"**Withheld:** {len(days) - 1} decision days after its registration" in text
-    assert f"{days[-1].isoformat()} is scored the night after its decision." in text
+    assert f"**Withheld:** {len(days)} decision days after its registration" in text
     assert "**Withheld:**" in lr.markdown(holed)
+    pending_text = lr.markdown(season.report(challenger_outputs=unscored, now=night_after))
+    assert f"Pending, scored the night after the decision: {days[-1].isoformat()}." in pending_text
     # A new version under the same name is reported beside the old one (Codex on #265).
     monkeypatch.setattr(lc, "REGISTRY", (shifted, replace(shifted, version="2")))
     both = season.report(challenger_outputs=outputs)["challengers"]["challengers"]

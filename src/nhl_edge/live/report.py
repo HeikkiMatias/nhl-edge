@@ -80,6 +80,9 @@ BAND = 0.025
 BAND_AT = (0.35, 0.50, 0.65)
 GAP = b2_report.GAP
 DRAWDOWN = 0.20
+# How long a challenger's day without its output is pending, from the day's UTC midnight: the
+# nightly scores it the night after its decision (live/challengers.py).
+PENDING_FOR = timedelta(days=2)
 # u's distance from its training mean, in its training standard deviations, that the report
 # counts: under a normal spread about 4.6% and 0.3% of games lie beyond them.
 U_LIMITS = (2.0, 3.0)
@@ -595,15 +598,20 @@ def challengers(
     moves: pl.DataFrame,
     outputs: pl.DataFrame,
     registry: tuple[lc.Challenger, ...],
+    now: datetime,
 ) -> dict[str, Any]:
     """Every registered challenger, by name and version, over the counted games of the decision
     days after its registration (ADR 0038), with no verdict, failures included: its days and
     games, and its figures (_challenger_figures). Every such day counts, so a day without its
     output withholds the figures (Codex on #265): a challenger that fails on some days would
-    otherwise choose its own sample. Only the latest decision day, scored the night after it,
-    is pending rather than missing."""
+    otherwise choose its own sample. A day is pending rather than missing only until the end of
+    the next UTC day by the report's clock now, since the nightly scores it the night after its
+    decision."""
     keys = ["game_date", "game_id"]
-    latest = rows["game_date"].max()
+
+    def pending(day: date) -> bool:
+        return now < datetime.combine(day, time(0), UTC) + PENDING_FOR
+
     result = {}
     for challenger in registry:
         own = outputs.filter(
@@ -614,7 +622,7 @@ def challengers(
         decided = rows.filter(pl.col("game_date") > challenger.registered_on)["game_date"]
         scored_days = set(own["game_date"].to_list())
         without = sorted(set(decided.to_list()) - scored_days)
-        missing = [day.isoformat() for day in without if day != latest]
+        missing = [day.isoformat() for day in without if not pending(day)]
         entry: dict[str, Any] = {
             "name": challenger.name,
             "version": challenger.version,
@@ -625,7 +633,7 @@ def challengers(
             "predicted": own.filter(pl.col("p_home").is_not_null()).height,
             "not_predicted": _counts(own.filter(pl.col("status") != lc.PREDICTED), "status"),
             "missing_days": missing,
-            "pending_days": [day.isoformat() for day in without if day == latest],
+            "pending_days": [day.isoformat() for day in without if pending(day)],
         }
         if not missing:
             entry |= _challenger_figures(own, started, scored, moves)
@@ -723,6 +731,7 @@ def report(
             moves,
             challenger_outputs if challenger_outputs is not None else lc.empty(),
             lc.REGISTRY,
+            now,
         ),
         "verdicts": {
             "closing_value": INTERIM
@@ -1052,7 +1061,7 @@ def _challenger_lines(section: dict[str, Any]) -> list[str]:
             f"{c['registered_on']}"
         )
         pending = (
-            f" {', '.join(c['pending_days'])} is scored the night after its decision."
+            f" Pending, scored the night after the decision: {', '.join(c['pending_days'])}."
             if c["pending_days"]
             else ""
         )
