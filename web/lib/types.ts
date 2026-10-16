@@ -139,3 +139,40 @@ export type ReportRow = {
   report: LiveReport;
   code_version: string;
 };
+
+/** A paper bet of a day as alerted for a real stake, or a practice one before the start
+ * (public.real_alerts, #268, ADR 0039). status is "alerted", or why it was skipped. stakes lists
+ * the stake in euros at each price from min_price up to the paper price; above it the stake is
+ * max_stake. */
+export type RealAlert = {
+  game_date: string;
+  game_id: number;
+  start_utc: string;
+  home: string;
+  away: string;
+  mode: "practice" | "real" | "paused" | "stopped" | "closed";
+  venue: string;
+  status: string;
+  side: "home" | "away";
+  paper_price: number;
+  min_price: number;
+  max_stake: number;
+  bankroll: number;
+  stakes: { price: number; stake: number }[];
+  alert_utc: string;
+};
+
+/** What the owner did with an alerted bet, from the form (public.real_entries). late is whether
+ * it was recorded at or after the game's start; the database sets it and the entry time. */
+export type RealEntry = {
+  game_date: string;
+  game_id: number;
+  outcome: "placed" | "not placed";
+  matched_price: number | null;
+  stake: number | null;
+  bet_id: string | null;
+  placed_utc: string | null;
+  reason: string | null;
+  entered_utc: string;
+  late: boolean;
+};

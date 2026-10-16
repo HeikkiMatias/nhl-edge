@@ -8,6 +8,7 @@ import { load, type Data } from "@/lib/load";
 import { supabase } from "@/lib/supabase";
 
 import { LiveScores } from "./live";
+import { RealBets } from "./real";
 import { ClvHistory, Glossary, Headline, Ledger, Report, Results, Slate } from "./sections";
 
 /** The page: the sign-in form, or the board for a signed-in user, read through the client made
@@ -174,12 +175,17 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
   return (
     <>
       {signOut}
+      {/* First, where the day's Telegram alert links to (#268). */}
+      <h2>Real bets</h2>
+      <RealBets client={client} />
+
+      <h2>Paper trading</h2>
       <p className="notice">
         {data.report?.kind === "formal review"
           ? "The formal review (ADR 0032)."
-          : `Interim: no verdict, promotion or real stake follows before the formal review on ${
+          : `Interim: no verdict or promotion follows before the formal review on ${
               data.report?.review_date ?? "2027-04-12"
-            } (ADR 0032). The results below are mostly luck over this few bets: CLV is the measure (ADR 0034).`}
+            } (ADR 0032), and real stakes only by ADR 0039's start rule. The results below are mostly luck over this few bets: CLV is the measure (ADR 0034).`}
       </p>
       <Headline bets={data.bets} report={data.report} />
 

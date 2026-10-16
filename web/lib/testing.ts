@@ -2,6 +2,8 @@
 // tests see the requests the dashboard sends and how it reads the answers. Only tests import it.
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
+import type { RealAlert } from "./types.ts";
+
 export const SUPABASE_URL = "https://abcdefghijklmnop.supabase.co";
 let clients = 0;
 
@@ -20,6 +22,8 @@ export type Tables = {
   paper_bets?: unknown[];
   live_reports?: StoredReport[];
   games?: unknown[];
+  real_alerts?: unknown[];
+  real_entries?: unknown[];
 };
 
 /**
@@ -82,3 +86,27 @@ function postgrest(tables: Tables, owners: ReadonlySet<string>, sent: Sent): Ans
   const limit = params.has("limit") ? Number(params.get("limit")) : rows.length;
   return { body: rows.slice(offset, offset + limit) };
 }
+
+/** A practice alert of a game day (public.real_alerts, #268), as the real bets tests give it. */
+export const ALERT: RealAlert = {
+  game_date: "2026-11-17",
+  game_id: 2026020250,
+  start_utc: "2026-11-18T00:00:00Z",
+  home: "TOR",
+  away: "CHI",
+  mode: "practice",
+  venue: "practice",
+  status: "alerted",
+  side: "home",
+  paper_price: 2.15,
+  min_price: 2.05,
+  max_stake: 1.5,
+  bankroll: 100,
+  stakes: [
+    { price: 2.05, stake: 0.6 },
+    { price: 2.08, stake: 0.9 },
+    { price: 2.12, stake: 1.5 },
+    { price: 2.15, stake: 1.5 },
+  ],
+  alert_utc: "2026-11-17T17:50:00Z",
+};
