@@ -4262,6 +4262,25 @@ def _real_record(r2: bool) -> "tuple[Lake, Any]":
     return lake, lb.LocalStore(DEFAULT_REAL_LOCAL)
 
 
+def _insert_if_set_up(client: Any, table: str, rows: list[Any], key: Any) -> bool:
+    """Insert rows once into one of the real record's dashboard tables; before the real record
+    migration is applied, say so and return False, R2 staying the record."""
+    from nhl_edge.lake.supabase import SupabaseError
+
+    try:
+        sent = client.insert_new_records(table, rows, key)
+    except SupabaseError as exc:
+        if "PGRST205" not in str(exc):
+            raise
+        typer.echo(
+            f"the dashboard's {table} isn't set up yet: apply "
+            "supabase/migrations/20261016150000_real_record.sql"
+        )
+        return False
+    typer.echo(f"{sent} rows sent to the dashboard's {table} (new ones inserted)")
+    return True
+
+
 def _new_entries(store: Any) -> int:
     """Copy the dashboard's new entries (Supabase real_entries) to the record, each once."""
     from nhl_edge.lake.supabase import Supabase
@@ -4492,11 +4511,33 @@ def real_sync(
     with the corrections applied."""
     from nhl_edge.live import real_ledger as rl
 
+    if supabase and not r2:
+        # Only the record in R2 goes to the dashboard's insert-only tables (Codex on #278).
+        raise typer.BadParameter("--supabase copies the record in R2: pass --r2 too")
     lake, store = _real_record(r2)
     if supabase:
         typer.echo(f"{_new_entries(store)} new entries copied from the dashboard")
     alerted = rl.alerts(store)
-    record = rl.bets(alerted, rl.entries(store), rl.corrections(store))
+    corrected = rl.corrections(store)
+    record = rl.bets(alerted, rl.entries(store), corrected)
+    if supabase:
+        from nhl_edge.lake.supabase import Supabase
+
+        # The record's rows, each inserted once, parents first: the alerts, so a day whose
+        # alert copy failed is filled in before a correction of it (Codex on #278), then each
+        # day's mode, so a day without bets shows its start, pause or stop (#270), then the
+        # corrections. Before the real record migration the last two wait, R2 staying the record.
+        client = Supabase.from_env()
+        sent = client.insert_new_records(
+            "real_alerts", rl.supabase_alerts(alerted), ("game_date", "game_id")
+        )
+        typer.echo(f"{sent} alert rows sent to the dashboard (new ones inserted)")
+        for table, rows, key in (
+            ("real_days", rl.supabase_days(rl.days(store)), ("game_date",)),
+            ("real_corrections", rl.supabase_corrections(corrected), rl.CORRECTION_KEY),
+        ):
+            if not _insert_if_set_up(client, table, rows, key):
+                break
     lake.replace("real_alerts", alerted)
     lake.replace("real_bets", record)
     counts = record.group_by("mode", "outcome").len().sort("mode", "outcome").iter_rows()
@@ -4512,6 +4553,14 @@ def real_settle(
         bool,
         typer.Option("--r2", help="The real record in R2; the games pulled from it first."),
     ] = False,
+    supabase: Annotated[
+        bool,
+        typer.Option(
+            "--supabase",
+            help="Copy every settlement revision to the dashboard's real_settlements, each once "
+            "(needs the real settlements migration).",
+        ),
+    ] = False,
 ) -> None:
     """Append a settlement for each placed bet whose game is final and result public (#268, ADR
     0039): the result on the full game, OT and shootout included, and the profit at the matched
@@ -4524,6 +4573,9 @@ def real_settle(
     from nhl_edge.live import real_ledger as rl
     from nhl_edge.live.blend_fit import LIVE_SEASON
 
+    if supabase and not r2:
+        # Only the record in R2 goes to the dashboard's insert-only tables (Codex on #278).
+        raise typer.BadParameter("--supabase copies the record in R2: pass --r2 too")
     now = datetime.now(UTC)
     version = reports.version("real-settle", now)
     if r2 and version.endswith("-dirty"):
@@ -4538,6 +4590,17 @@ def real_settle(
     every = rl.settlements(store)
     lake.replace("real_settlements", every)
     typer.echo(f"real_settlements: {new.height} appended, {every.height} in all")
+    if supabase:
+        from nhl_edge.lake.supabase import Supabase
+
+        # Every revision, each inserted once: a rerun sends nothing twice, the first backfills.
+        # Their alerts reach the dashboard first, through nhl real sync, which runs before.
+        _insert_if_set_up(
+            Supabase.from_env(),
+            "real_settlements",
+            rl.supabase_settlements(every),
+            rl.SETTLEMENT_KEY,
+        )
     for (mode,), rows in every.sort("settled_utc", "revision").group_by(
         "mode", maintain_order=True
     ):

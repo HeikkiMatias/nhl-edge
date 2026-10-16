@@ -23,16 +23,27 @@ const team = (a: RealAlert) => (a.side === "home" ? a.home : a.away);
 
 /** The latest alerted day's real bets (#268): each one's minimum price and stake at the price
  * offered, and the form that records what the owner did. */
-export function RealBets({ client }: { client: SupabaseClient }) {
+export function RealBets({
+  client,
+  onRecorded,
+}: {
+  client: SupabaseClient;
+  /** Told when an entry is recorded, so the real record beside it reads it too (#270). */
+  onRecorded?: () => void;
+}) {
   const [state, setState] = useState<RealState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const refresh = useCallback(
+  const load = useCallback(
     () => loadReal(client).then(setState, (e: Error) => setError(e.message)),
     [client],
   );
+  const refresh = useCallback(() => {
+    load();
+    onRecorded?.();
+  }, [load, onRecorded]);
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    load();
+  }, [load]);
   // The clock the bets are shown against, read again every 30 seconds: a page left open past a
   // game's start stops offering its bet (Codex on #277).
   const [now, setNow] = useState(() => Date.now());

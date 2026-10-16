@@ -432,3 +432,71 @@ def test_the_statement_reads_each_bets_settlement_or_awaits_it() -> None:
     assert "settled, +1.65 €, bankroll 101.65 €" in lines[0]
     assert lines[1].endswith(": awaiting the result")
     assert lines[-1] == "practice bankroll from the settlements: 101.65 €"
+
+
+def test_the_settlements_sent_are_the_real_settlements_migrations_columns() -> None:
+    import re
+    from pathlib import Path
+
+    migration = Path("supabase/migrations/20261016150000_real_record.sql").read_text()
+    body = re.search(r"create table public\.real_settlements \((.*?)\n\);", migration, re.S)
+    assert body is not None
+    types = "bigint|integer|smallint|text|date|timestamptz|numeric|boolean|double precision"
+    column = re.compile(rf"^  ([a-z_0-9]+) (?:{types})\b")
+    found = {m.group(1) for line in body.group(1).splitlines() if (m := column.match(line))}
+    bucket = rf.alerted_store()
+    rl.store_entries(bucket, [rf.entry(FIRST, stake=1.5)])
+    record = rl.bets(rl.alerts(bucket), rl.entries(bucket))
+    settled = rl.settle(record, rf.games(), rl.settlements(bucket), rf.later(20), rf.CODE)
+    sent = rl.supabase_settlements(settled)
+    assert set(sent[0]) == found - {"created_at"}
+    assert sent[0]["result_utc"] == "2026-10-08T06:00:00+00:00"
+    assert re.search(r"primary key \((.*?)\)", body.group(1)).group(1).split(", ") == list(  # type: ignore[union-attr]
+        rl.SETTLEMENT_KEY
+    )
+
+
+def test_a_correction_keeps_the_venues_precision() -> None:
+    # A finer price or stake would settle differently in the dashboard's tables (Codex on #278).
+    bucket = rf.alerted_store()
+    rl.store_entries(bucket, [rf.entry(FIRST, stake=1.5)])
+    now = datetime(2026, 10, 12, 10, tzinfo=UTC)
+    with pytest.raises(ValueError, match="stake has more than 2 decimals"):
+        rl.correct(bucket, pf.DAY, FIRST, {"stake": 1.005}, "statement", now)
+    with pytest.raises(ValueError, match="matched_price has more than 3 decimals"):
+        rl.correct(bucket, pf.DAY, FIRST, {"matched_price": 2.1234}, "statement", now)
+    rl.correct(bucket, pf.DAY, FIRST, {"matched_price": 2.105, "stake": 1.25}, "statement", now)
+    sent = rl.supabase_corrections(rl.corrections(bucket))
+    assert sent == [
+        {
+            "game_date": "2026-10-07",
+            "game_id": FIRST,
+            "n": 0,
+            "changes": {"matched_price": 2.105, "stake": 1.25},
+            "reason": "statement",
+            "corrected_utc": now.isoformat(),
+        }
+    ]
+
+
+def test_each_alerted_day_reaches_the_dashboard_even_without_bets() -> None:
+    import re
+    from pathlib import Path
+
+    bucket = rf.alerted_store()
+    # A day with no paper bets still writes its record, with its mode (Codex on #278).
+    no_bets = rf.ledger().with_columns(bet=pl.lit(False))
+    empty = rl.bets(rf.alert_rows().clear(), [])
+    alert = rl.prepare(date(2026, 10, 8), no_bets, [], empty, rf.games(), rf.ALERT, rf.CODE)
+    rl.write_alert(bucket, alert)
+    sent = rl.supabase_days(rl.days(bucket))
+    assert [(d["game_date"], d["mode"], d["bets"]) for d in sent] == [
+        ("2026-10-07", rl.PRACTICE, 3),
+        ("2026-10-08", rl.PRACTICE, 0),
+    ]
+    migration = Path("supabase/migrations/20261016150000_real_record.sql").read_text()
+    body = re.search(r"create table public\.real_days \((.*?)\n\);", migration, re.S)
+    assert body is not None
+    column = re.compile(r"^  ([a-z_0-9]+) (?:date|text|double precision|timestamptz|integer)\b")
+    found = {m.group(1) for line in body.group(1).splitlines() if (m := column.match(line))}
+    assert set(sent[0]) == found - {"created_at"}

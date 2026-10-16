@@ -157,3 +157,13 @@ test("a bet whose game has started is offered no more, but a bet placed before c
   fireEvent.click(screen.getByText("Record placed bet"));
   await waitFor(() => expect(requests.some((r) => r.method === "POST")).toBe(true));
 });
+
+test("a recorded entry tells the board, so the real record beside it reads it at once", async () => {
+  const { supabase } = board();
+  const told = vi.fn();
+  render(<RealBets client={supabase} onRecorded={told} />);
+  const select = (await screen.findAllByRole("combobox"))[0];
+  fireEvent.change(select, { target: { value: "missed it" } });
+  fireEvent.click(screen.getAllByText("Record not placed")[0]);
+  await waitFor(() => expect(told).toHaveBeenCalledTimes(1));
+});

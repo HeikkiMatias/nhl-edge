@@ -243,6 +243,32 @@ export const GLOSSARY = {
       "recorded after its game started is accepted and marked late, if it was placed before " +
       "the start.",
   },
+  realBankroll: {
+    term: "Real bankroll",
+    meaning:
+      "The real money: 100 € at the start, plus the profit of every settled real bet at its " +
+      "matched price and stake. It is never topped up, and practice bets never count in it.",
+  },
+  stopLine: {
+    term: "The stop line",
+    meaning:
+      "80 €, 20% below the real bankroll's start. At or below it real bets stop, checked " +
+      "before every day's alert, and restarting needs your decision. The paper ledger goes on.",
+  },
+  realTwin: {
+    term: "Real twin",
+    meaning:
+      "What happened to a paper bet with real money: placed, at what price and stake; not " +
+      "placed, and why; skipped by the alert, such as a stake below the venue's minimum; or " +
+      "not recorded.",
+  },
+  priceGap: {
+    term: "Price against the paper price",
+    meaning:
+      "The price you got at the venue less the price the paper bet took. In total, what the " +
+      "won bets made at the prices you got less what the same stakes would have made at the " +
+      "paper prices: positive means you beat the paper price.",
+  },
 } satisfies Record<string, Term>;
 
 export type TermKey = keyof typeof GLOSSARY;

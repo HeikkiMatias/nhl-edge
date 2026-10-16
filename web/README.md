@@ -13,6 +13,13 @@ The paper-trading dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.j
   - the bankroll after each settled day, with its table;
   - the bets per day;
   - each bet's expected return at the decision against its CLV at the close.
+- **The real record** (#270, ADR 0039), beside the paper one and never mixed with it:
+  - the start rule from the latest report until real bets start: its verdict, each condition, your veto and the drawdown review;
+  - the real bankroll from 100 € with the 80 € stop line, and its record, from each bet's latest settlement revision;
+  - each paper bet's real twin: placed (flagged late or outside the rule), not placed, skipped, not recorded, or no alert that day;
+  - the price the real bets got against the paper price, per bet and in total.
+
+  Until real bets start it shows the practice record, labelled; practice never counts in the real bankroll.
 - **Live scores** (#211) for the slate's games:
   - each game's score, period and time left;
   - the paper bet's team in bold;
@@ -38,7 +45,7 @@ The paper-trading dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.j
 - **The browser holds only the public anon key.** The service role key stays in the GitHub workflows' secrets.
   - The app's one server route, `app/api/scores`, relays the NHL's public scoreboard. It holds no secret and reads no Supabase data.
   - It serves only dates within two days of today, and Vercel's CDN caches its answers for 20 seconds.
-- **Row-level security decides what a signed-in user can read.** Only the users in `public.dashboard_owners` can read `predictions`, `paper_bets`, `live_reports`, `real_alerts` and `real_entries`, and, from `games`, the scores of the bets' games. Anon reads nothing.
+- **Row-level security decides what a signed-in user can read.** Only the users in `public.dashboard_owners` can read `predictions`, `paper_bets`, `live_reports`, `real_alerts`, `real_entries`, `real_settlements`, `real_corrections` and `real_days`, and, from `games`, the scores of the bets' games. Anon reads nothing.
 - **The one write is the real bets form** (#268): an owner may insert into `real_entries`, only its entry's own columns. The database sets the entry's time, lateness and author, refuses a second entry and a placed time outside the bet's alert and start, and grants no update or delete (`supabase/migrations/20261016120000_real_bets.sql`).
 - **Sign-in is by password, or by email link,** and only for users who already exist: sign-ups are off, and the link never creates a user (`shouldCreateUser: false`). Any other signed-in account is told it is not an owner, and is shown its user id.
 - **A link that comes back signed out says why,** in Supabase's words from the client's initialization: an expired or used-up link (as when a mail scanner opened it first), or a code it couldn't exchange, as in a browser other than the one that asked for it. A sign-in clears the message.
@@ -62,6 +69,7 @@ Without them the build still succeeds, and the page says it isn't configured.
    - `supabase/migrations/20261008140000_live_reports.sql`;
    - `supabase/migrations/20261009120000_games_owner_reads.sql` (#210): lets an owner read the final scores. Until it is applied, the page says so and shows the results without scores.
    - `supabase/migrations/20261016120000_real_bets.sql` (#268): the day's real bets from the Telegram alert, and the form's entries. It enforces the form's rules itself: one entry per bet, and a bet placed before its game's start.
+   - `supabase/migrations/20261016150000_real_record.sql` (#270): the real bets' settlements, the weekly check's corrections and each alerted day's mode, for the real record. Until it is applied, the record shows its bets and twins without the bankroll or the corrections.
 2. **Your user.**
    - Authentication → Users → Add user → Create new user, with your email and a password, and "Auto Confirm User" ticked. You sign in with those.
    - A user made without a password: delete it and add it again with one, then put its new id in `dashboard_owners` (step 2's insert). Or set the password through Supabase Auth's admin API, which hashes it as Auth does, never with SQL on `auth.users`:

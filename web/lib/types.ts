@@ -60,10 +60,38 @@ export type Figure = {
   weeks?: number;
 };
 
+/** ADR 0039's start rule and weekly CLV stop as a live report states them (live/real.py, #267):
+ * each condition with whether it holds, the two signals that block a start, and the verdict. */
+export type RealStakes = {
+  window: [string, string];
+  weekly: boolean;
+  verdict: string;
+  failing: string[];
+  conditions: {
+    a: {
+      measured: boolean;
+      holds: boolean;
+      /** CLV per bet with its weekly block bootstrap interval, or only its counts. */
+      clv_per_bet: Figure;
+      /** The pessimistic bound's CLV per bet, likewise; null without an eligible bet. */
+      bound: Figure | null;
+      share_with_proxy: number | null;
+      floor: number;
+    };
+    c: { holds: boolean; undecided_days: string[]; unfinished_bundles: string[] | null };
+    d: { holds: boolean; venue: string | null };
+  };
+  veto: { paper_bankroll: number; start: number; applies: boolean };
+  drawdown_review: { applies: boolean };
+  clv_stop: { measured: boolean; weekly: boolean; stop: boolean | null; pause: boolean | null };
+};
+
 /** The live report (nhl live report, src/nhl_edge/live/report.py), as stored in live_reports. */
 export type LiveReport = {
   as_of: string;
   kind: string;
+  /** The frozen policy's real-stakes section; absent from an earlier policy's report. */
+  real_stakes?: RealStakes | null;
   policy_version: string;
   blend_versions: string[];
   review_date: string;
@@ -175,4 +203,41 @@ export type RealEntry = {
   reason: string | null;
   entered_utc: string;
   late: boolean;
+};
+
+/** A settlement revision of a placed real or practice bet (public.real_settlements, #270): on the
+ * full game at the matched price and stake placed. The latest revision of each bet counts. */
+export type RealSettlement = {
+  game_date: string;
+  game_id: number;
+  revision: number;
+  mode: "practice" | "real";
+  side: "home" | "away";
+  matched_price: number;
+  stake: number;
+  status: "settled" | "void" | "cancelled";
+  won: boolean | null;
+  profit: number;
+  result_utc: string;
+  bankroll_after: number;
+};
+
+/** A correction to a bet's entry (public.real_corrections, #270), applied in order over
+ * real_entries, as the R2 record's real_bets applies it. */
+export type RealCorrection = {
+  game_date: string;
+  game_id: number;
+  n: number;
+  changes: Partial<Pick<RealEntry, "outcome" | "matched_price" | "stake" | "bet_id" | "placed_utc" | "reason">>;
+  reason: string;
+  corrected_utc: string;
+};
+
+/** An alerted day's mode (public.real_days, #270): a day with no bets too, so a start, pause,
+ * stop or close on such a day is on record. */
+export type RealDayMode = {
+  game_date: string;
+  mode: RealAlert["mode"];
+  started: string | null;
+  reason: string;
 };

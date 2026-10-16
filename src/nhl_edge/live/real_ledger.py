@@ -583,6 +583,41 @@ def supabase_alerts(rows: pl.DataFrame) -> list[dict[str, Any]]:
     return out
 
 
+# The settlement's columns the dashboard's real_settlements holds (#270): all of them.
+SETTLEMENT_KEY = ("game_date", "game_id", "revision")
+
+
+def supabase_settlements(settled: pl.DataFrame) -> list[dict[str, Any]]:
+    """The settlement revisions as the dashboard's real_settlements holds them."""
+    return jsonable(settled.select(list(dtypes(RealSettlements))))
+
+
+CORRECTION_KEY = ("game_date", "game_id", "n")
+
+
+def days(store: lb.Store) -> list[dict[str, Any]]:
+    """Each alerted day's record, without its message and rows: its mode, start, reason,
+    bankroll, venue and alert time, and how many paper bets it had (#270)."""
+    keep = ("game_date", "mode", "started", "reason", "bankroll", "venue", "alert_utc")
+    out = []
+    for key in store.keys(f"{PREFIX}/alerts"):
+        record = json.loads(store.get(key))
+        out.append({name: record.get(name) for name in keep} | {"bets": len(record["rows"])})
+    return out
+
+
+def supabase_days(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The days as the dashboard's real_days holds them: one row a day, a day with no bets too,
+    so a start, pause, stop or close on such a day is still on record there (Codex on #278)."""
+    return [dict(record) | {"reason": record.get("reason") or ""} for record in records]
+
+
+def supabase_corrections(corrected: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The corrections as the dashboard's real_corrections holds them (#270)."""
+    keep = ("game_date", "game_id", "n", "changes", "reason", "corrected_utc")
+    return [{name: correction[name] for name in keep} for correction in corrected]
+
+
 def store_entries(store: lb.Store, entries: Sequence[Mapping[str, Any]]) -> int:
     """Copy the dashboard's entries to R2, each once: one already there with the same bytes
     counts as copied, with other bytes it is refused (an entry is never edited). Returns how many
@@ -619,6 +654,12 @@ def correct(
     wrong = sorted(set(changes) - set(CORRECTABLE))
     if wrong or not changes:
         raise ValueError(f"a correction changes some of {CORRECTABLE}, not {wrong or 'nothing'}")
+    # The venue's precision, as the entries and the dashboard's tables hold it: a finer value
+    # would settle differently there than in R2 (Codex on #278).
+    for name, places in (("matched_price", 3), ("stake", 2)):
+        value = changes.get(name)
+        if value is not None and abs(round(float(value), places) - float(value)) > 1e-9:
+            raise ValueError(f"{name} has more than {places} decimals: {value}")
     if not reason.strip():
         raise ValueError("a correction needs its reason")
     prefix = f"{PREFIX}/corrections/{game_date.isoformat()}/{game_id}-"
