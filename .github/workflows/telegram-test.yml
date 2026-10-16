@@ -1,8 +1,7 @@
 name: Telegram test
 
-# A manual check of the real bets setup (#268). The logs are public, so it prints no token, chat
-# id, address or message text, only whether each part is set; the details go to the owner's
-# Telegram chat.
+# A manual check of the real bets setup (#268, #270). The logs are public, so it prints only
+# whether each dashboard table answers, never a key, address or row.
 on:
   workflow_dispatch:
   push:
@@ -16,42 +15,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check the setup and send it to the owner
+      - name: Check the dashboard's real tables
         env:
-          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
-          SUPABASE_REAL: ${{ vars.SUPABASE_REAL }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           set -euo pipefail
-          api="https://api.telegram.org/bot$TOKEN"
-          if [ -z "$TOKEN" ] || [ -z "$CHAT_ID" ]; then
-            echo "::error::TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set."
-            exit 1
-          fi
-          # The real bets migration: does real_alerts answer the service role?
           auth=(-H "apikey: $SUPABASE_KEY")
           case "$SUPABASE_KEY" in eyJ*) auth+=(-H "Authorization: Bearer $SUPABASE_KEY");; esac
-          code=$(curl -s -o /dev/null -w '%{http_code}' "${auth[@]}" \
-            "$SUPABASE_URL/rest/v1/real_alerts?select=game_id&limit=1")
-          if [ "$code" = "200" ]; then migration="applied"; else migration="not applied yet (HTTP $code)"; fi
-          if [ "$SUPABASE_REAL" = "true" ]; then real="true"; else real="not set to true"; fi
-          if [ -n "$DASHBOARD_URL" ]; then
-            link="$DASHBOARD_URL"
-            page=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 15 "$DASHBOARD_URL" || true)
-            case "$page" in
-              "200 "*) reach="it opens without a Vercel login";;
-              *vercel.com/sso*|*vercel.com/login*) reach="it asks for a Vercel login: Vercel's deployment protection is on for it";;
-              *) reach="it answered: $page";;
-            esac
-          else
-            link="not set"; reach="-"
-          fi
-          text=$(printf 'nhl-edge setup check\n\nDashboard link (DASHBOARD_URL): %s\nOpened from GitHub: %s\nReal bets migration: %s\nSUPABASE_REAL: %s\n\nTap the link: it should open the dashboard you sign in to.' "$link" "$reach" "$migration" "$real")
-          if [ "$(curl -sS -X POST "$api/sendMessage" --data-urlencode "chat_id=$CHAT_ID" --data-urlencode "text=$text" -d disable_web_page_preview=true | jq -r '.ok')" != "true" ]; then
-            echo "::error::Telegram refused the message."
-            exit 1
-          fi
-          echo "::notice::Sent. DASHBOARD_URL $([ -n "$DASHBOARD_URL" ] && echo set || echo 'not set'); migration $([ "$code" = 200 ] && echo applied || echo "not applied ($code)"); SUPABASE_REAL $real."
+          report=""
+          missing=0
+          for table in real_alerts real_entries real_settlements real_corrections real_days; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "${auth[@]}" \
+              "$SUPABASE_URL/rest/v1/$table?select=game_date&limit=1")
+            if [ "$code" = "200" ]; then report="$report $table: ok;"; else report="$report $table: HTTP $code;"; missing=1; fi
+          done
+          echo "::notice::$report"
+          exit $missing
