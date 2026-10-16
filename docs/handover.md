@@ -228,7 +228,7 @@ An external review on 2026-10-15 gave the agenda in #250. Its P5 diagnostics are
 - **The dashboard shows results during the season (ADR 0034).** If the results start pulling toward a policy change, hiding them again is the remedy, never changing the policy.
 - **Real money from mid to late November 2026 (ADR 0039, the owner, 2026-10-15).**
   - **The real bankroll:** 100 €. It bets the frozen policy's paper bets, staked by the frozen rule at the executable price and never above the paper fraction: at most 1.5% of the bankroll, 1.50 € at the start. The paper ledger continues beside it.
-  - **The start:** the first decision day from 2026-11-16 to 2026-11-30 on which the start rule held at the latest weekly report. The rule: v2's CLV interval, its coverage floor and its pessimistic bound all hold (upper bounds above 0), the paper bankroll is above 100, the operations are clean, and the venue is ready (#266). Not held by November's end: no start without a new decision by the owner.
+  - **The start:** the first decision day from 2026-11-16 to 2026-11-30 on which the start rule held at the latest weekly report. The rule: v2's CLV interval, its coverage floor and its pessimistic bound all hold (upper bounds above 0), the paper bankroll is above 100 (the owner's veto, never a pass on its own), the operations are clean, and the venue is ready (#266). Not held by November's end: no start without a new decision by the owner.
   - **The stops:** the real bankroll falls 20%, checked before every day's bets; or v2's CLV interval falls entirely below 0, at a weekly report.
   - **Placement:** manual from alerts until an API venue is confirmed.
 - **The repository is public** since 2026-10-09, so Actions minutes are free (#213 has the history).

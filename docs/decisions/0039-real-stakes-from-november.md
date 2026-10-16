@@ -23,14 +23,14 @@
 
 1. **Keep ADR 0032: no real stake before the formal review.** The safest option, but no real money until April 2027.
 2. **Start on a date if the paper bankroll is up.** This is the owner's condition as stated. It is a point estimate: a losing policy passes about 4 times in 10, and hard rule 7 allows no pass on a point estimate alone.
-3. **Start on a date if the bankroll is up and the CLV interval isn't entirely negative,** with a capped real bankroll and a stop rule. It keeps the owner's condition, adds the measure that can tell a losing policy apart, and limits what can be lost.
+3. **Start on a date if the CLV interval isn't entirely negative and the bankroll is up,** with a capped real bankroll and a stop rule. The CLV interval is the test, the measure that can tell a losing policy apart. The owner's bankroll condition stays as a veto beside it, and the cap limits what can be lost.
 
 ## Decision: option 3 (the owner, 2026-10-15)
 
 1. **The start:** the first decision day from **2026-11-16 to 2026-11-30** on which the start rule held at the latest weekly report. A start later in November is as good (the owner), for example while the venue is made ready. If the rule fails, it is checked again each week. If it hasn't held by November's last decision day, no real stake starts, and a later start needs a new decision by the owner (Codex on #272).
 2. **The start rule,** fixed now, before the evidence:
    - (a) v2's CLV per bet, under ADR 0032's safeguards: its interval over at least 4 weeks has its upper bound above 0, the coverage floor holds (at least 90% of the eligible bets have a closing proxy), and the pessimistic bound has its upper bound above 0 too (each eligible bet without a proxy counted at the 10th percentile of the observed CLV) (Codex on #272);
-   - (b) the season's paper bankroll is above its 100 units (the owner's condition);
+   - (b) the season's paper bankroll is above its 100 units. This is the owner's own veto, not evidence: a single number, so it can only block a start, never start one on its own, and condition (a) is the actual test. Hard rule 7 allows no pass or fail on a point estimate alone; keeping it beside (a) is the owner's decision (2026-10-16, Codex's P0 on #272 answered won't-fix);
    - (c) the operations are clean: every decision day's run bundle is complete, no day was skipped without a reason, and the 20% drawdown review has not been triggered.
    - (d) the venue is ready (#266): its terms are confirmed for a Finnish resident, and either its API access is granted or manual placement from alerts works.
 3. **What is bet:** exactly the frozen policy's paper bets, unchanged (v2, ADRs 0028, 0029 and 0037):
