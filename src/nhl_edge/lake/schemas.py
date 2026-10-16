@@ -720,7 +720,8 @@ class RealBets(pa.DataFrameModel):
     matched price, the stake placed, the venue's bet id and when it was placed; "not placed", with
     the owner's reason, or none when no entry was made (never missing); or "skipped" when nothing
     was alerted (the alert's status). entered_utc is when the owner recorded it, late when that
-    was at or after the game's start; a placed bet was always placed before it. allowed_stake is
+    was at or after the game's start; a placed bet was always placed after its alert and before
+    the start. allowed_stake is
     the alert's stake at the matched price, and within_rule whether the matched price cleared the
     minimum and the stake placed was within the allowed one. corrections counts the corrections
     applied (real/live/corrections/), each appended at the weekly check against the venue's
@@ -768,6 +769,7 @@ class RealBets(pa.DataFrameModel):
             & pl.col("bet_id").is_not_null()
             & pl.col("placed_utc").is_not_null()
             & (pl.col("placed_utc") < pl.col("start_utc"))
+            & (pl.col("placed_utc") >= pl.col("alert_utc"))
             & (pl.col("status") == "alerted")
             & pl.col("mode").is_in(["practice", "real"])
         )

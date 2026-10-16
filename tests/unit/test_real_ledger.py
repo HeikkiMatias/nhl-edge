@@ -199,7 +199,8 @@ def test_entries_are_copied_once_and_never_edited() -> None:
 
 def test_every_alert_row_reads_placed_not_placed_or_skipped() -> None:
     rows = rf.alert_rows(now=datetime(2026, 10, 8, 0, tzinfo=UTC))  # the 23:30 games started
-    record = rl.bets(rows, [rf.entry(THIRD, price=2.40, stake=1.0)])
+    placed = datetime(2026, 10, 8, 0, 30, tzinfo=UTC)  # after the alert, before THIRD's start
+    record = rl.bets(rows, [rf.entry(THIRD, price=2.40, stake=1.0, placed=placed, entered=placed)])
     by_game = {row["game_id"]: row for row in record.iter_rows(named=True)}
     assert by_game[FIRST]["outcome"] == rl.SKIPPED
     third = by_game[THIRD]
@@ -355,3 +356,42 @@ def test_the_rows_sent_and_read_are_the_migrations_columns() -> None:
     from nhl_edge.lake.schemas import REAL_REASONS
 
     assert re.findall(r"'([^']+)'", reasons.group(1)) == list(REAL_REASONS)
+
+
+def test_a_game_starting_before_the_write_is_alerted_no_more() -> None:
+    # Built a minute before FIRST's start; by the check after it, FIRST has started, so the day
+    # is built again at that reading (Codex on #276).
+    readings = iter([pf.START - timedelta(minutes=1), pf.START, pf.START, pf.START])
+    empty = rl.bets(rf.alert_rows().clear(), [])
+
+    def build(at: datetime) -> rl.Alert:
+        return rl.prepare(pf.DAY, rf.ledger(), [], empty, rf.games(), at, rf.CODE)
+
+    alert = rl.publishable(build, lambda: next(readings))
+    status = dict(alert.rows.select("game_id", "status").iter_rows())
+    assert status[FIRST] == rl.SKIP_STARTED and status[THIRD] == rl.ALERTED
+    assert alert.alert_utc == pf.START
+
+
+def test_a_stored_alert_reads_back_as_written() -> None:
+    bucket = rf.alerted_store()
+    record = rl.alerted(bucket, pf.DAY)
+    assert record is not None
+    assert rl.stored_rows(record).equals(rl.alerts(bucket))
+
+
+def test_a_correction_never_places_a_bet_before_its_alert() -> None:
+    bucket = rf.alerted_store()
+    now = datetime(2026, 10, 12, 10, tzinfo=UTC)
+    early = {
+        "outcome": "placed",
+        "matched_price": 2.1,
+        "stake": 1.0,
+        "bet_id": "X1",
+        "placed_utc": (rf.ALERT - timedelta(minutes=1)).isoformat(),
+    }
+    with pytest.raises(ValueError, match="outside its alert"):
+        rl.correct(bucket, pf.DAY, FIRST, early, "on the statement", now)
+    assert rl.corrections(bucket) == []
+    with pytest.raises(ValueError, match="outside its alert"):
+        rl.bets(rl.alerts(bucket), [rf.entry(FIRST, placed=rf.ALERT - timedelta(seconds=1))])

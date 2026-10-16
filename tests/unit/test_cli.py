@@ -1641,3 +1641,49 @@ def test_the_real_alert_skips_a_cron_line_that_is_not_the_midday_slot() -> None:
     result = runner.invoke(app, ["real", "alert", "--r2", "--cron", "0 3 * * *"])
     assert result.exit_code == 0
     assert "is not today's midday slot: no alert" in result.output
+
+
+def test_a_rerun_of_an_alerted_day_writes_its_copies_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # The day's alert is written once; its copies are idempotent, so a rerun writes them again
+    # without sending the message, and --resend also sends it (Codex on #276).
+    import predict_fixtures as pf
+    import real_fixtures as rf
+
+    from nhl_edge import cli
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import real_ledger as rl
+    from nhl_edge.live import telegram
+
+    store = lb.LocalStore(tmp_path)
+    empty = rl.bets(rf.alert_rows().clear(), [])
+    alert = rl.prepare(pf.DAY, rf.ledger(), [], empty, rf.games(), rf.ALERT, rf.CODE)
+    rl.write_alert(store, alert)
+
+    class FakeLake:
+        def __init__(self) -> None:
+            self.copies: list[Any] = []
+
+        def replace_dates(self, table: str, frame: Any, dates: Any) -> None:
+            self.copies.append((table, frame.height, list(dates)))
+
+    lake = FakeLake()
+    sent: list[str] = []
+    monkeypatch.setattr(cli, "_real_record", lambda r2: (lake, store))
+    monkeypatch.setattr(telegram, "send", lambda text: sent.append(text))
+
+    from datetime import datetime
+
+    class Day(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> Any:
+            return rf.ALERT
+
+    monkeypatch.setattr(cli, "datetime", Day)
+    result = runner.invoke(app, ["real", "alert", "--r2"])
+    assert result.exit_code == 0, result.output
+    assert "already alerted: its copies were written again" in result.output
+    assert lake.copies == [("real_alerts", 3, [pf.DAY])] and sent == []
+    result = runner.invoke(app, ["real", "alert", "--r2", "--resend"])
+    assert result.exit_code == 0 and sent == [alert.message]

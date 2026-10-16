@@ -27,7 +27,7 @@
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -408,6 +408,29 @@ def prepare(
     return Alert(day, today, staked, venue, rows, text, now, code_version)
 
 
+def publishable(
+    build: Callable[[datetime], Alert], clock: Callable[[], datetime], tries: int = 5
+) -> Alert:
+    """The alert built at a clock reading, then checked against the clock again just before it is
+    written and sent: while an alerted game has started by then, the day is built again at the
+    later reading, so a game under way is never alerted (Codex on #276)."""
+    now = clock()
+    for _ in range(tries):
+        alert = build(now)
+        later = clock()
+        started = alert.rows.filter(pl.col("status") == ALERTED, pl.col("start_utc") <= later)
+        if started.is_empty():
+            return alert
+        now = later
+    raise ValueError(f"games kept starting while the alert was built ({tries} tries)")
+
+
+def stored_rows(record: Mapping[str, Any]) -> pl.DataFrame:
+    """A stored alert record's rows, as written."""
+    rows = frame(record["rows"], dtypes(RealAlerts))
+    return RealAlerts.validate(rows)  # type: ignore[return-value]
+
+
 def jsonable(frame: pl.DataFrame) -> list[dict[str, Any]]:
     """Rows as JSON-ready dicts, every instant and date in ISO form, exactly."""
     out = []
@@ -615,6 +638,10 @@ def bets(
         needed = ("matched_price", "stake", "bet_id", "placed_utc")
         if placed and any(entry.get(name) is None for name in needed):
             raise ValueError(f"a placed bet needs its {', '.join(needed)}: {key}")
+        when = _instant(entry.get("placed_utc")) if placed else None
+        # As the form's own rule: placed after its alert and before its game (Codex on #276).
+        if when is not None and not alert["alert_utc"] <= when < alert["start_utc"]:
+            raise ValueError(f"a bet placed outside its alert and its game's start: {key}")
         matched = float(entry["matched_price"]) if placed else None
         stake = float(entry["stake"]) if placed else None
         allowed = stake_at(json.loads(alert["stakes"]), matched) if matched is not None else None
@@ -630,7 +657,7 @@ def bets(
                 "matched_price": matched,
                 "stake": stake,
                 "bet_id": str(entry["bet_id"]) if placed else None,
-                "placed_utc": _instant(entry.get("placed_utc")) if placed else None,
+                "placed_utc": when,
                 "entered_utc": entered,
                 "late": late,
                 "allowed_stake": allowed,

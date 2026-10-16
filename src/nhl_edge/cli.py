@@ -4324,7 +4324,6 @@ def real_alert(
 
     from nhl_edge.backtest import reports
     from nhl_edge.ingest.odds import ET
-    from nhl_edge.lake.supabase import Supabase, SupabaseError
     from nhl_edge.live import predict as lp
     from nhl_edge.live import real_ledger as rl
     from nhl_edge.live import telegram
@@ -4346,20 +4345,28 @@ def real_alert(
         raise typer.BadParameter("a real run reads and writes R2: pass --r2, or --dry-run")
     game_date = day.date() if day is not None else now.astimezone(ET).date()
     code_version = reports.version("real", now)
-    if not dry_run and not resend and code_version.endswith("-dirty"):
-        raise typer.BadParameter("commit first: the alert names its commit")
     lake, store = _real_record(r2)
-    if resend:
-        record = rl.alerted(store, game_date)
-        if record is None:
-            typer.echo(f"{game_date} has no alert to send again", err=True)
+    stored = rl.alerted(store, game_date)
+    if stored is not None:
+        # The day is written once, but its copies are idempotent: a rerun writes them again from
+        # the stored alert, and --resend also sends its message (Codex on #276).
+        if dry_run:
+            typer.echo(stored["message"])
+            return
+        failed = _real_copies(lake, rl.stored_rows(stored), game_date, supabase)
+        if resend:
+            telegram.send(stored["message"])
+            typer.echo(f"{game_date}: the stored message was sent again")
+        else:
+            typer.echo(f"{game_date} is already alerted: its copies were written again")
+        if failed:
             raise typer.Exit(code=1)
-        telegram.send(record["message"])
-        typer.echo(f"{game_date}: the stored message was sent again")
         return
-    if rl.alerted(store, game_date) is not None:
-        typer.echo(f"{game_date} is already alerted: --resend sends its message again", err=True)
+    if resend:
+        typer.echo(f"{game_date} has no alert to send again", err=True)
         raise typer.Exit(code=1)
+    if not dry_run and code_version.endswith("-dirty"):
+        raise typer.BadParameter("commit first: the alert names its commit")
     ledger = None
     if r2:
         assert lake.objects is not None and lake.bucket is not None
@@ -4392,19 +4399,30 @@ def real_alert(
             telegram.send(text)
         typer.echo(f"{game_date}: the slate has games but no paper ledger was written", err=True)
         raise typer.Exit(code=1)
+
+    def clock() -> datetime:
+        return datetime.now(UTC)
+
     if dry_run and day is not None:
         # A past day's alert at its own clock: two minutes after its decision was published.
         published = ledger["published_utc"].max()
         assert isinstance(published, datetime)
-        now = published + timedelta(minutes=2)
-        typer.echo(f"the alert's clock: {now:%Y-%m-%d %H:%M} UTC")
+        fixed = published + timedelta(minutes=2)
+        typer.echo(f"the alert's clock: {fixed:%Y-%m-%d %H:%M} UTC")
+
+        def clock() -> datetime:
+            return fixed
+
     if supabase and not dry_run:
         typer.echo(f"{_new_entries(store)} new entries copied from the dashboard")
     games = lake.read("games", seasons=[LIVE_SEASON])
     record = rl.bets(rl.alerts(store), rl.entries(store), rl.corrections(store))
     url = optional("DASHBOARD_URL")
-    alert = rl.prepare(
-        game_date, ledger, rl.weekly_reports(), record, games, now, code_version, url
+    reports_ = rl.weekly_reports()
+    # Built at the clock after the reads, and built again while a game starts before the write.
+    alert = rl.publishable(
+        lambda at: rl.prepare(game_date, ledger, reports_, record, games, at, code_version, url),
+        clock,
     )
     if alert.today.name == rl.CLOSED and rl.closed_already(store):
         typer.echo(f"{game_date}: the start window closed and the owner was told: no alert")
@@ -4417,26 +4435,43 @@ def real_alert(
     if dry_run:
         typer.echo(alert.message)
         return
+    # The message goes right after the write, so no slower step comes between the last clock
+    # check and the send; the copies follow, and a rerun writes them again.
     typer.echo(f"written to R2 {rl.write_alert(store, alert)}")
-    lake.replace_dates("real_alerts", alert.rows, [game_date])
     failed = False
-    if supabase:
-        try:
-            sent = Supabase.from_env().insert_new_records(
-                "real_alerts", rl.supabase_alerts(alert.rows), ("game_date", "game_id")
-            )
-            typer.echo(f"{sent} alert rows sent to the dashboard")
-        except SupabaseError as exc:
-            typer.echo(f"the alert didn't reach the dashboard: {exc}", err=True)
-            failed = True
     try:
         telegram.send(alert.message)
         typer.echo("the message was sent")
     except telegram.TelegramError as exc:
         typer.echo(f"the message was not sent ({exc}): --resend --r2 sends it", err=True)
         failed = True
+    failed |= _real_copies(lake, alert.rows, game_date, supabase)
     if failed:
         raise typer.Exit(code=1)
+
+
+def _real_copies(lake: "Lake", rows: "pl.DataFrame", day: Any, supabase: bool) -> bool:
+    """The alert's copies, each idempotent: the lake's real_alerts for the day and, with
+    supabase, the dashboard's rows. Returns whether one failed; a rerun writes them again."""
+    from nhl_edge.lake.supabase import Supabase
+    from nhl_edge.live import real_ledger as rl
+
+    failed = False
+    try:
+        lake.replace_dates("real_alerts", rows, [day])
+    except Exception as exc:
+        typer.echo(f"the lake's copy of the alert failed: {exc}", err=True)
+        failed = True
+    if supabase:
+        try:
+            sent = Supabase.from_env().insert_new_records(
+                "real_alerts", rl.supabase_alerts(rows), ("game_date", "game_id")
+            )
+            typer.echo(f"{sent} alert rows sent to the dashboard")
+        except Exception as exc:
+            typer.echo(f"the alert didn't reach the dashboard: {exc}", err=True)
+            failed = True
+    return failed
 
 
 @real_app.command("sync")
