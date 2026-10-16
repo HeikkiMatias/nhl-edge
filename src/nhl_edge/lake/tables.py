@@ -53,6 +53,9 @@ from nhl_edge.lake.schemas import (
     Players,
     PregameGoalies,
     RapmTerms,
+    RealAlerts,
+    RealBets,
+    RealSettlements,
     SbrOdds,
     Schedule,
     ScheduleTerms,
@@ -133,6 +136,11 @@ TABLES: dict[str, Table] = {
         ("game_date", "game_id", "challenger", "challenger_version"),
         BY_DATE,
     ),
+    # Real stakes beside the paper ledger (#268, ADR 0039): each day's alert, what the owner did,
+    # and the placed bets' settlements, rebuilt from their write-once objects in R2 (real/live/).
+    "real_alerts": Table(RealAlerts, ("game_date", "game_id"), BY_DATE),
+    "real_bets": Table(RealBets, ("game_date", "game_id"), BY_DATE),
+    "real_settlements": Table(RealSettlements, ("game_date", "game_id", "revision"), BY_DATE),
 }
 # Partition columns replace_dates can replace a date at a time.
 DATE_PARTITIONS = ("game_date", "snapshot_date")

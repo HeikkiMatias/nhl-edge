@@ -73,6 +73,30 @@ class Supabase:
         """upsert for rows already JSON-ready, such as one holding a whole document (jsonb)."""
         return self._send(table, list(records), key, "merge-duplicates", "upsert into")
 
+    def insert_new_records(
+        self, table: str, records: Sequence[Mapping[str, Any]], key: Sequence[str]
+    ) -> int:
+        """insert_new for rows already JSON-ready, such as one holding a list (jsonb)."""
+        return self._send(table, list(records), key, "ignore-duplicates", "insert into")
+
+    def select(
+        self, table: str, columns: Sequence[str], order: str, page: int = 1000
+    ) -> list[dict[str, Any]]:
+        """Every row of the table's columns, ordered by order, a page at a time."""
+        rows: list[dict[str, Any]] = []
+        while True:
+            params = {
+                "select": ",".join(columns),
+                "order": order,
+                "limit": str(page),
+                "offset": str(len(rows)),
+            }
+            response = self._request(f"read from {table}", "GET", table, params=params)
+            batch = response.json()
+            rows += batch
+            if len(batch) < page:
+                return rows
+
     def _post(
         self, table: str, frame: pl.DataFrame, key: Sequence[str], resolution: str, action: str
     ) -> int:
@@ -97,13 +121,14 @@ class Supabase:
             )
         return len(rows)
 
-    def _request(self, what: str, method: str, table: str, **kwargs: Any) -> None:
+    def _request(self, what: str, method: str, table: str, **kwargs: Any) -> httpx.Response:
         try:
             response = self.client.request(method, f"{self.url}/rest/v1/{table}", **kwargs)
         except httpx.HTTPError as exc:
             raise SupabaseError(f"{what} failed: {type(exc).__name__}") from None
         if response.status_code not in (200, 201, 204):
             raise SupabaseError(f"{what} returned {response.status_code}: {response.text[:300]}")
+        return response
 
 
 def json_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
