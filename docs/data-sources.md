@@ -49,6 +49,9 @@ The Odds API (api.the-odds-api.com)
 
 SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
   GET /scoresoddsarchives/nhl-odds-{2010-11 .. 2022-23}/      # 2020-21 is nhl-odds-2021
+
+Telegram Bot API (api.telegram.org), outbound only: the owner's real-bets alert (#268)
+  POST /bot{token}/sendMessage            # chat_id, text; never logged
 ```
 
 ## Access rules
@@ -70,7 +73,7 @@ SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
 
 GitHub Actions runs every job, but GitHub's own `schedule` started this repo's runs 3 to 6 hours late in September 2026, while a `workflow_dispatch` starts within seconds (#50). So the Cloudflare Worker in `infra/timer` fires every five minutes and dispatches the workflows due at that minute (`infra/timer/src/schedule.js`):
 
-- `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input. After the midday snapshot, its Predict step runs `nhl predict --r2`, below.
+- `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input. After the midday snapshot, its Predict step runs `nhl predict --r2`, below, and then `nhl real alert --r2` sends the owner the day's real bets (#268, "Real stakes" below).
 - `pregame-goalies.yml` at :50 of every hour from 12:50 to 02:50 UTC.
 - `ingest-nightly.yml` at 09:00 UTC. After the ingest, it runs `nhl recheck --recent 3 --r2` (#30, below), the odds and goalie replays, and `nhl live features` for today's slate (#162, below).
 
@@ -373,6 +376,36 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   - **The usual levels** are each input part's least-squares line on logit p_mkt over the live fit's training games: E1's rows of 2018-19 to 2022-23, each game's parts from its own fold's B3 fit. Inputs and prices only, never a result.
   - **`nhl live attribution-levels --write`** fixes them once, from a committed checkout, in `reports/live/attribution-levels-<version>.json` beside the live fit, with their own version and `train_cutoff`. It refuses unless the rebuilt games are the live fit's own: the same count per season, and the live fit refitted from them gives back its recorded blends and u scale (to 1e-9). The record keeps a sha256 of the games. Without `--write` it is a dry run.
   - Nothing in the policy reads them.
+
+## Real stakes
+
+ADR 0039 bets the frozen policy's paper bets with real money, beside the paper ledger, which goes on unchanged. Placement is by hand from a Telegram alert until an API venue is confirmed (#266). The code is `live/real.py` (the start rule, the stops and the venues) and `live/real_ledger.py` (#268).
+
+- **The alert.** `nhl real alert --r2` runs in the midday job after the paper ledger is written, whatever Predict's outcome, and only reads it. It sends one Telegram message to the owner (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, both secrets; the token and chat id never reach a log): each paper bet's game, side, minimum price and stakes, or why there are none. A day with games but no paper ledger gets a message saying so, and fails the step.
+- **The mode,** from committed evidence only:
+  - **practice** before the start, labelled "PRACTICE, don't bet";
+  - **real** from the first weekly report (`reports/live/report-<date>.json`, the frozen policy's, a Monday) dated 2026-11-16 to 11-30 whose start rule holds (#267);
+  - **paused** while the latest weekly report's coverage floor fails;
+  - **stopped** once a weekly report's CLV stop says so, or the real bankroll is at or below 80 €. Restarting needs the owner.
+  - **closed:** without a start by 11-30, one message says a start needs the owner's decision, and the alerts end.
+- **The stake and the minimum price.**
+  - **The minimum price** is the lowest price, to the cent, at which p·o − 1 clears the bet's hurdle (hard rule 4).
+  - **The stake at a price** is the frozen staking rule recomputed there, with the day's other bets at their paper prices, never above the paper fraction. It is a share of the mode's bankroll at the decision, rounded down to the venue's increment, and none below its minimum stake (`real.VENUES`, set with `real.VENUE` in #266). Practice uses 0.01 € and no minimum.
+  - **The stake table** gives the stake at each price from the minimum to the paper price; above it the stake stays flat. The message shows up to four of its steps; the dashboard's form looks a price up in the stored table.
+  - **The bankroll** is 100 € plus the profit of the mode's placed bets whose results were public before the decision. Practice bets never count in the real one.
+- **The records.** R2 is the record, and every object is written once with `IfNoneMatch="*"`. The lake's tables are rebuilt from them.
+  - `real/live/alerts/<date>.json`: the day's mode, bankroll, venue, message and rows (lake `real_alerts`), written before the message is sent. A second run is refused; `--resend` sends the stored message again.
+  - `real/live/entries/<date>/<game_id>.json`: each entry from the dashboard's form, copied once (`nhl real sync`). An entry already there with other bytes is refused.
+  - `real/live/corrections/<date>/<game_id>-<n>.json`: `nhl real correct --r2`, at the weekly check against the venue's statement (`nhl real statement --r2`). An entry is never edited, and a correction that would leave the record invalid is refused.
+  - Lake `real_bets`: every alert row placed, not placed (with the owner's reason, or none recorded), or skipped, with the corrections applied, the stake the table allowed at the matched price, and whether the bet was within the rule.
+  - `real/live/settlements/<date>/<game_id>-<revision>.parquet` (lake `real_settlements`): `nhl real settle --r2`, nightly. One per placed bet whose result is public, on the full game (hard rule 2), at the matched price and stake placed; a postponed game voids it. A correction to a settled bet appends its next revision, cancelled if it was not placed after all, and each carries the mode's bankroll after it.
+- **The dashboard's form** (`supabase/migrations/20261016120000_real_bets.sql`, behind the repository variable `SUPABASE_REAL`):
+  - `real_alerts`: the alert rows, with the stakes as a list, inserted by the alert's run.
+  - `real_entries`: the owner's entries, inserted through the form only.
+  - **The rules hold in the database:** one entry per alerted bet; a placed bet needs its matched price, stake, bet id and time, after its alert, before its game's start and not in the future. An entry made after the start is accepted, marked late. Nothing is updated or deleted.
+  - **Who:** the owners in `dashboard_owners` read both and insert entries; the service role inserts alerts and reads entries; anon nothing.
+  - **When:** the alert copies the day's rows after its R2 write, and copies new entries first, so the bankroll counts them; the nightly copies them again before settling.
+- **`telegram-test.yml`** sends one test message from the Actions tab, after the bot's secrets change.
 
 ## Odds snapshots
 

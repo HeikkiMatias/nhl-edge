@@ -32,6 +32,7 @@ COMMANDS = [
     "lake",
     "audit",
     "live",
+    "real",
     "status",
     "toi-reports",
     "player-seasons",
@@ -1619,3 +1620,24 @@ def test_targets_must_be_a_slate_of_the_seasons_rated(tmp_path: Any) -> None:
         _slate_targets(lake, day, [20252026])
     with pytest.raises(typer.BadParameter, match="--tune"):
         _slate_targets(lake, day, [20262027], tune=True)
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["real", "alert"], "a real run reads and writes R2"),
+        (["real", "alert", "--r2", "--date", "2026-10-15"], "only a dry run takes a date"),
+        (["real", "correct", "--date", "2026-10-15", "--game-id", "1", "--note", "n"], "--r2"),
+    ],
+)
+def test_real_commands_refuse_bad_options_before_any_call(args: list[str], message: str) -> None:
+    result = runner.invoke(app, args)
+    assert result.exit_code == 2
+    assert message in plain(result.output)
+
+
+def test_the_real_alert_skips_a_cron_line_that_is_not_the_midday_slot() -> None:
+    # 03:00 UTC is never a slot, so nothing is read, written or sent.
+    result = runner.invoke(app, ["real", "alert", "--r2", "--cron", "0 3 * * *"])
+    assert result.exit_code == 0
+    assert "is not today's midday slot: no alert" in result.output

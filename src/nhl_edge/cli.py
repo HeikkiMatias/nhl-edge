@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, NoReturn
+from typing import TYPE_CHECKING, Annotated, Any, NoReturn
 
 import typer
 
@@ -37,6 +37,12 @@ live_app = typer.Typer(
     help="Phase 5's live path: the day's slate and its feature rows.", no_args_is_help=True
 )
 app.add_typer(live_app, name="live")
+real_app = typer.Typer(
+    help="Real stakes beside the paper ledger (ADR 0039): the alert, the owner's entries and "
+    "settlement.",
+    no_args_is_help=True,
+)
+app.add_typer(real_app, name="real")
 
 DEFAULT_BACKTEST_SEASONS = ",".join(str(season) for season in DEVELOPMENT_SEASONS)
 DEFAULT_BACKTEST_OUT = Path("reports/backtest")
@@ -4236,3 +4242,331 @@ def _status_against_r2(local: "list[TableState]") -> None:
     raw_drift = raw_behind or raw_ahead or polls_behind or polls_ahead
     if in_step and not (raw_drift or reports_behind or reports_ahead):
         typer.echo("  up to date with R2")
+
+
+# Where a run without --r2 keeps the real record: beside the lake, never committed.
+DEFAULT_REAL_LOCAL = Path("data/live/real")
+
+
+def _real_record(r2: bool) -> "tuple[Lake, Any]":
+    """The lake and the real record's store: R2 with --r2, else a local copy."""
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.settings import load_env
+
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    if r2:
+        assert lake.objects is not None and lake.bucket is not None
+        return lake, lb.R2Store(lake.objects, lake.bucket)
+    return lake, lb.LocalStore(DEFAULT_REAL_LOCAL)
+
+
+def _new_entries(store: Any) -> int:
+    """Copy the dashboard's new entries (Supabase real_entries) to the record, each once."""
+    from nhl_edge.lake.supabase import Supabase
+    from nhl_edge.live import real_ledger as rl
+
+    supabase = Supabase.from_env()
+    found = supabase.select("real_entries", ("id", *rl.ENTRY_FIELDS), "id")
+    return rl.store_entries(store, found)
+
+
+@real_app.command("alert")
+def real_alert(
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="Read the day's paper ledger and the real record from R2, and write the alert "
+            "there.",
+        ),
+    ] = False,
+    supabase: Annotated[
+        bool,
+        typer.Option(
+            "--supabase",
+            help="Copy the dashboard's new entries first, and the alert to the dashboard after "
+            "(needs the real bets migration).",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the message; write and send nothing.")
+    ] = False,
+    day: Annotated[
+        datetime | None,
+        typer.Option(
+            "--date",
+            formats=["%Y-%m-%d"],
+            help="A dry run's game date (ET), alerted 2 minutes after its decision was published.",
+        ),
+    ] = None,
+    resend: Annotated[
+        bool, typer.Option("--resend", help="Send the day's stored message again.")
+    ] = False,
+    cron: Annotated[
+        str | None,
+        typer.Option(
+            help="The odds workflow's fallback cron line: alert only if it is today's midday "
+            "slot, as nhl predict decides, and otherwise do nothing."
+        ),
+    ] = None,
+) -> None:
+    """Send the day's real bets to the owner by Telegram (#268, ADR 0039), after the 12:45 ET
+    paper decision is written: each paper bet with its minimum price and its stake at each price,
+    or practice ones before the start, or why there are none. The day is written once to R2
+    (real/live/alerts/<date>.json) before the message is sent; the paper ledger is only read."""
+    import io
+    from datetime import UTC, timedelta
+    from zoneinfo import ZoneInfo
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.supabase import Supabase, SupabaseError
+    from nhl_edge.live import predict as lp
+    from nhl_edge.live import real_ledger as rl
+    from nhl_edge.live import telegram
+    from nhl_edge.live.blend_fit import LIVE_SEASON
+    from nhl_edge.settings import optional
+
+    now = datetime.now(UTC)
+    if cron is not None:
+        from nhl_edge.ingest.odds import resolve_slot
+
+        today = now.astimezone(ZoneInfo("America/New_York")).date()
+        slot = resolve_slot("free-tier", cron, today)
+        if slot is None or slot.name != "midday":
+            typer.echo(f"{cron!r} is not today's midday slot: no alert")
+            return
+    if day is not None and not dry_run:
+        raise typer.BadParameter("only a dry run takes a date", param_hint="--date")
+    if not dry_run and not r2:
+        raise typer.BadParameter("a real run reads and writes R2: pass --r2, or --dry-run")
+    game_date = day.date() if day is not None else now.astimezone(ET).date()
+    code_version = reports.version("real", now)
+    if not dry_run and not resend and code_version.endswith("-dirty"):
+        raise typer.BadParameter("commit first: the alert names its commit")
+    lake, store = _real_record(r2)
+    if resend:
+        record = rl.alerted(store, game_date)
+        if record is None:
+            typer.echo(f"{game_date} has no alert to send again", err=True)
+            raise typer.Exit(code=1)
+        telegram.send(record["message"])
+        typer.echo(f"{game_date}: the stored message was sent again")
+        return
+    if rl.alerted(store, game_date) is not None:
+        typer.echo(f"{game_date} is already alerted: --resend sends its message again", err=True)
+        raise typer.Exit(code=1)
+    ledger = None
+    if r2:
+        assert lake.objects is not None and lake.bucket is not None
+        key = lp.ledger_key(game_date)
+        listed = lake.objects.list_objects_v2(Bucket=lake.bucket, Prefix=key).get("Contents", [])
+        if any(item["Key"] == key for item in listed):
+            body = lake.objects.get_object(Bucket=lake.bucket, Key=key)["Body"].read()
+            ledger = pl.read_parquet(io.BytesIO(body))
+        for table in ("slate", "feature_builds", "games"):
+            lake.pull(table, seasons=[LIVE_SEASON])
+    else:
+        found = lake.read("paper_ledger").filter(pl.col("game_date") == game_date)
+        ledger = found if found.height else None
+    if ledger is None:
+        # Only a feature build that found no games makes the day an off day, as nhl predict
+        # decides: without its record the build may have failed, and the owner is told.
+        marker = lake.read("feature_builds").filter(
+            pl.col("game_date") == game_date, pl.col("table") == "slate"
+        )
+        if marker.height and marker["slate_games"].max() == 0:
+            typer.echo(f"{game_date}: no games scheduled, nothing to alert")
+            return
+        text = (
+            f"NHL Edge · {game_date:%a} {game_date.day} {game_date:%b}\nNo paper decision was "
+            "published today, so there are no bets. The run is being looked into."
+        )
+        if dry_run:
+            typer.echo(text)
+        else:
+            telegram.send(text)
+        typer.echo(f"{game_date}: the slate has games but no paper ledger was written", err=True)
+        raise typer.Exit(code=1)
+    if dry_run and day is not None:
+        # A past day's alert at its own clock: two minutes after its decision was published.
+        published = ledger["published_utc"].max()
+        assert isinstance(published, datetime)
+        now = published + timedelta(minutes=2)
+        typer.echo(f"the alert's clock: {now:%Y-%m-%d %H:%M} UTC")
+    if supabase and not dry_run:
+        typer.echo(f"{_new_entries(store)} new entries copied from the dashboard")
+    games = lake.read("games", seasons=[LIVE_SEASON])
+    record = rl.bets(rl.alerts(store), rl.entries(store), rl.corrections(store))
+    url = optional("DASHBOARD_URL")
+    alert = rl.prepare(
+        game_date, ledger, rl.weekly_reports(), record, games, now, code_version, url
+    )
+    if alert.today.name == rl.CLOSED and rl.closed_already(store):
+        typer.echo(f"{game_date}: the start window closed and the owner was told: no alert")
+        return
+    alerted = alert.rows.filter(pl.col("status") == rl.ALERTED).height
+    typer.echo(
+        f"{game_date}: {alert.today.name}, bankroll {alert.bankroll:.2f} €, venue "
+        f"{alert.venue.name}: {alerted} of {alert.rows.height} paper bets alerted"
+    )
+    if dry_run:
+        typer.echo(alert.message)
+        return
+    typer.echo(f"written to R2 {rl.write_alert(store, alert)}")
+    lake.replace_dates("real_alerts", alert.rows, [game_date])
+    failed = False
+    if supabase:
+        try:
+            sent = Supabase.from_env().insert_new_records(
+                "real_alerts", rl.supabase_alerts(alert.rows), ("game_date", "game_id")
+            )
+            typer.echo(f"{sent} alert rows sent to the dashboard")
+        except SupabaseError as exc:
+            typer.echo(f"the alert didn't reach the dashboard: {exc}", err=True)
+            failed = True
+    try:
+        telegram.send(alert.message)
+        typer.echo("the message was sent")
+    except telegram.TelegramError as exc:
+        typer.echo(f"the message was not sent ({exc}): --resend --r2 sends it", err=True)
+        failed = True
+    if failed:
+        raise typer.Exit(code=1)
+
+
+@real_app.command("sync")
+def real_sync(
+    r2: Annotated[
+        bool, typer.Option("--r2", help="The real record in R2, and the lake mirrored there.")
+    ] = False,
+    supabase: Annotated[
+        bool,
+        typer.Option("--supabase", help="Copy the dashboard's new entries first."),
+    ] = False,
+) -> None:
+    """Copy the dashboard's new entries to the real record, each once (#268), and rebuild the
+    lake's real_alerts and real_bets from it: every alerted bet placed, not placed, or skipped,
+    with the corrections applied."""
+    from nhl_edge.live import real_ledger as rl
+
+    lake, store = _real_record(r2)
+    if supabase:
+        typer.echo(f"{_new_entries(store)} new entries copied from the dashboard")
+    alerted = rl.alerts(store)
+    record = rl.bets(alerted, rl.entries(store), rl.corrections(store))
+    lake.replace("real_alerts", alerted)
+    lake.replace("real_bets", record)
+    counts = record.group_by("mode", "outcome").len().sort("mode", "outcome").iter_rows()
+    typer.echo(
+        f"real_bets: {record.height} rows"
+        + "".join(f"; {mode} {outcome} {n}" for mode, outcome, n in counts)
+    )
+
+
+@real_app.command("settle")
+def real_settle(
+    r2: Annotated[
+        bool,
+        typer.Option("--r2", help="The real record in R2; the games pulled from it first."),
+    ] = False,
+) -> None:
+    """Append a settlement for each placed bet whose game is final and result public (#268, ADR
+    0039): the result on the full game, OT and shootout included, and the profit at the matched
+    price and stake placed, or the next revision of one a correction changed. Never rewrites one."""
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.live import real_ledger as rl
+    from nhl_edge.live.blend_fit import LIVE_SEASON
+
+    now = datetime.now(UTC)
+    version = reports.version("real-settle", now)
+    if r2 and version.endswith("-dirty"):
+        raise typer.BadParameter("commit first: the settlements name their commit")
+    lake, store = _real_record(r2)
+    if r2:
+        lake.pull("games", seasons=[LIVE_SEASON])
+    games = lake.read("games", seasons=[LIVE_SEASON])
+    record = rl.bets(rl.alerts(store), rl.entries(store), rl.corrections(store))
+    new = rl.settle(record, games, rl.settlements(store), now, version)
+    rl.write_settlements(store, new)
+    every = rl.settlements(store)
+    lake.replace("real_settlements", every)
+    typer.echo(f"real_settlements: {new.height} appended, {every.height} in all")
+    for (mode,), rows in every.sort("settled_utc", "revision").group_by(
+        "mode", maintain_order=True
+    ):
+        latest = rows.filter(pl.col("settled_utc") == rows["settled_utc"].max())
+        typer.echo(f"  {mode}: bankroll {latest['bankroll_after'][-1]:.2f} €")
+
+
+@real_app.command("statement")
+def real_statement(
+    r2: Annotated[bool, typer.Option("--r2", help="The real record in R2.")] = False,
+    practice: Annotated[
+        bool, typer.Option("--practice", help="The practice bets instead of the real ones.")
+    ] = False,
+) -> None:
+    """The placed bets with their settlements and the bankroll, for the weekly check against the
+    venue's statement (#268). A difference is fixed with nhl real correct."""
+    from nhl_edge.live import real_ledger as rl
+
+    _, store = _real_record(r2)
+    record = rl.bets(rl.alerts(store), rl.entries(store), rl.corrections(store))
+    for line in rl.statement(record, rl.settlements(store), rl.PRACTICE if practice else rl.REAL):
+        typer.echo(line)
+
+
+@real_app.command("correct")
+def real_correct(
+    game_date: Annotated[
+        datetime, typer.Option("--date", formats=["%Y-%m-%d"], help="The bet's game date (ET).")
+    ],
+    game_id: Annotated[int, typer.Option(help="The bet's game id.")],
+    note: Annotated[str, typer.Option(help="Why, such as what the venue's statement says.")],
+    outcome: Annotated[str | None, typer.Option(help="placed or not placed.")] = None,
+    matched_price: Annotated[float | None, typer.Option(help="The matched price.")] = None,
+    stake: Annotated[float | None, typer.Option(help="The stake placed, in euros.")] = None,
+    bet_id: Annotated[str | None, typer.Option(help="The venue's bet id.")] = None,
+    placed_utc: Annotated[
+        datetime | None,
+        typer.Option(formats=["%Y-%m-%dT%H:%M:%S%z"], help="When it was placed."),
+    ] = None,
+    reason: Annotated[str | None, typer.Option(help="Why a bet was not placed.")] = None,
+    r2: Annotated[bool, typer.Option("--r2", help="Append it to the real record in R2.")] = False,
+) -> None:
+    """Append a correction to a bet's entry (#268), found at the weekly check against the venue's
+    statement: the entry itself is never edited, and a settled bet gets its next revision at the
+    next nhl real settle."""
+    from datetime import UTC
+
+    from nhl_edge.live import real_ledger as rl
+
+    if not r2:
+        raise typer.BadParameter("a correction goes to the record in R2: pass --r2")
+    changes = {
+        name: value
+        for name, value in (
+            ("outcome", outcome),
+            ("matched_price", matched_price),
+            ("stake", stake),
+            ("bet_id", bet_id),
+            ("placed_utc", placed_utc.astimezone(UTC).isoformat() if placed_utc else None),
+            ("reason", reason),
+        )
+        if value is not None
+    }
+    _, store = _real_record(r2)
+    try:
+        key = rl.correct(store, game_date.date(), game_id, changes, note, datetime.now(UTC))
+    except Exception as exc:
+        typer.echo(f"not written: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"written to {key}")

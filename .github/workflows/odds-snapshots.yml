@@ -111,3 +111,27 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
           uv run nhl live supabase --r2 "${pick[@]}"
+      - name: Real bets alert
+        # The day's real bets, or practice ones before the start, to the owner by Telegram once
+        # the paper decision is written (ADR 0039, #268): each bet's minimum price and its stake
+        # at each price, or why there are none. It only reads the paper ledger, and runs whatever
+        # Predict's outcome, so a day without a decision is reported too. The day is written once
+        # to R2 before the message is sent. With SUPABASE_REAL true (the real bets migration
+        # applied), the dashboard's form gets the day's bets and its new entries are copied first.
+        if: always() && (github.event_name == 'schedule' || inputs.slot == 'midday')
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
+          SUPABASE_REAL: ${{ vars.SUPABASE_REAL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
+          if [ "$SUPABASE_REAL" = "true" ]; then sb=(--supabase); else sb=(); fi
+          uv run nhl real alert --r2 "${sb[@]}" "${pick[@]}"
