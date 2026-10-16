@@ -12,7 +12,7 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
    - **2026-11-05 10:40 UTC:** #121 step 3, which also revisits #120's early-exit gap.
 3. **Finish any waiting item whose date has come** (the next section). The SessionStart hook lists the open issues of the earliest milestone, P2 (#11, #30, #79). They wait on the calendar, not on work, so don't start them early.
 4. **Then the [priority] work for real money (#271):**
-   - #268, the real ledger and alerts, once the owner has answered its two questions (below);
+   - #268, the real ledger and alerts: the owner chose a Telegram push and a dashboard form (below);
    - #266, the venue, which waits on the owner's steps;
    - #269 and #270 after them.
 
@@ -28,7 +28,7 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 | Item | Ready when | Then |
 | --- | --- | --- |
 | `market_only`'s first challenger output (#255) | After the **2026-10-17** nightly (09:00 UTC) | As the 10:45 UTC task says. If it's missing or differs, read the nightly's "Challengers" step log first. |
-| The owner's answers for #268 | Asked 2026-10-16 | Two questions, both the owner's to answer. **The alert:** how the day's real bets reach the owner after the 12:45 ET decision: a push notification, an email or a dashboard panel. **Recording:** how the owner enters a placed bet's matched price, stake and bet id: a dashboard form, or another way. Then plan and build #268. |
+| #268, the real ledger and alerts | The owner answered on 2026-10-16 (#268's comment): **a Telegram push** for the alert and **a dashboard form** for recording a placed bet | The owner sets up the Telegram bot and stores `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as repository secrets (the steps are on #268). Then plan and build #268 before 2026-11-16. The token never goes in the repository or a log. |
 | The owner's venue steps (#266) | When the owner has time; a venue must be ready before the start | The owner's three steps, in the issue's comment: **(1)** start a Pinnacle sign-up and check that Finland is in its country list; **(2)** read its terms for API betting; **(3)** send the drafted email to `api@pinnacle.com`. If Pinnacle declines, Matchbook is next, then Betfair. Manual placement from alerts (#268) works at any venue meanwhile. When a venue is ready, set `live/real.VENUE` in a PR. |
 | The weekly live report | Mondays 10:20 UTC | As the Routine's prompt says: v2's report, reviewed and committed. It gives counts only, no estimate, until a policy has 4 weeks of games (#235). It is the run that decides ADR 0039's start rule and weekly CLV stop: it runs after Sunday's results are public at 10:00 UTC, while the 09:00 UTC nightly defers to it (#267). From 2026-11-16 it states the verdict, and the owner is told it. |
 | #30, post-game corrections | Two weeks of rechecked 2026-27 games: about **2026-10-22**. The nightly runs `nhl recheck --recent 3 --r2`. | Run `nhl audit report` after bringing the lake up to R2, and review its corrections section on #30. If corrections change more than scorer credit on more than a few games a season, reopen ADR 0004 with the owner. Then close #30. **Limit:** the NHL served no shift chart a week later for games 2026020006 to 2026020052 (#237). The report lists them as charts not rechecked, never as shifts removed, and compares their play-by-play and boxscore only. If the NHL serves them again after they leave the nightly window, `nhl recheck --recent 30 --r2` fetches them once. |
@@ -347,7 +347,7 @@ Every deliverable merged under its own task issue:
     - `npx wrangler@4 secret put GITHUB_TOKEN` stores a new token.
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
 - **Open, waiting:** #30, #79 and #11 (P2). Draft PR #93 holds gate 1.
-- **Open, for the owner:** #169, the raw backup on the owner's own computer (P5); #266's venue steps; #268's two questions.
+- **Open, for the owner:** #169, the raw backup on the owner's own computer (P5); #266's venue steps; #268's Telegram bot and secrets.
 - **Open, [priority]:** #271, the real-money tracking issue; #266, the venue; #268, the real ledger.
 - **Open, next:** #269 and #270 (real money); #264 (replay of v1 days); #253 and #254 (diagnostics); #256 to #260 (challengers, each with its own ADR).
 - **Parked for the next model version:** #125 and #134 (P6, label `next-model-version`).
