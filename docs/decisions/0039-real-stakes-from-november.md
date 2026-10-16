@@ -40,14 +40,15 @@
 4. **The real bankroll:** **100 €** (the owner), an amount the owner can afford to lose entirely. It is not topped up during the season. A stake is its fraction (item 3) of the real bankroll at the decision: at most 1.5% of it, so 1.50 € at the start, rising and falling with the bankroll (Codex on #272). It is rounded down to the venue's stake increment. A stake below the venue's minimum isn't placed, and is logged as skipped beside its paper twin; rounding it up would break the 1.5% cap.
 5. **Stop rules:** real bets stop, and the paper ledger goes on, if either happens:
    - the real bankroll falls 20% from its start. This is checked before every day's alerts or placement, from the real ledger's settled balance, not only weekly (Codex on #272);
-   - v2's CLV per bet interval falls entirely below 0, at a weekly report.
+   - at a weekly report, v2's CLV evidence turns adverse under the same safeguards as the start (Codex on #272): the CLV per bet interval falls entirely below 0, or the pessimistic bound's interval falls entirely below 0, or the coverage floor fails (fewer than 90% of the eligible bets with a closing proxy), which pauses real bets until the floor holds again.
 
    Restarting needs the owner.
 6. **Venue and placement:** chosen in #266.
    - **Manual by default:** until an API venue's terms and access are confirmed, each decision posts an alert (game, side, minimum price, stake) and the owner places the bet by hand.
    - **Automated placement** gets its own review before its first real bet.
 7. **Records:**
-   - **A real ledger** sits beside the paper one, with one row per real bet, written once. Each row holds the requested and matched price, the time and the venue's bet id.
+   - **A real ledger** sits beside the paper one, with one row per real bet, written once. Each row holds the requested and matched price, the stake actually placed, the time and the venue's bet id (Codex on #272).
+   - **Real settlements** are appended, never rewritten, as one row per settled real bet: the result on the full game (hard rule 2), the settlement time, the profit at the matched price and stake, and the bankroll after it. The daily 20% stop reads that settled bankroll, and the weekly reconciliation compares it with the venue's statement.
    - **The paper ledger** and its evidence are unchanged, and the formal review judges the paper record (ADR 0032).
    - **The frozen policy never changes** because of either record's results.
 
