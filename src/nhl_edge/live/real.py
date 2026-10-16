@@ -27,6 +27,7 @@ before every day's bets, from the real ledger (#268), not here.
 """
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
@@ -39,8 +40,34 @@ BANKROLL = 100.0
 STOP_DRAWDOWN = 0.20
 # The pessimistic bound's percentile (live/report.BOUND's lower one).
 PESSIMISTIC = "p10"
+
+
+@dataclass(frozen=True)
+class Venue:
+    """Where real bets are placed (#266): a stake is rounded down to increment euros, and one
+    below min_stake is skipped, never rounded up (ADR 0039)."""
+
+    name: str
+    min_stake: float
+    increment: float
+
+
+# The practice alerts before the start (#268): any stake to the cent.
+PRACTICE_VENUE = Venue("practice", 0.0, 0.01)
+# Each venue's stake rules, entered with VENUE once its terms are confirmed (#266).
+VENUES: dict[str, Venue] = {}
 # The venue real bets are placed at, once ready (#266). None until then.
 VENUE: str | None = None
+# A stop holds until the owner restarts real bets, by setting this to the first day they may
+# resume in a commit (ADR 0039): stops recorded before it no longer hold (#268).
+RESTARTED_ON: date | None = None
+
+
+def venue() -> Venue:
+    """The ready venue's stake rules: real bets need both VENUE and its entry in VENUES."""
+    if VENUE is None or VENUE not in VENUES:
+        raise ValueError(f"no stake rules for the venue {VENUE!r}: set VENUE and VENUES (#266)")
+    return VENUES[VENUE]
 
 
 def weekly(day: date) -> bool:

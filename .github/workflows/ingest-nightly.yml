@@ -73,6 +73,17 @@ jobs:
         # the paper ledger migration and set the repository variable SUPABASE_LEDGER to true.
         if: always() && vars.SUPABASE_LEDGER == 'true'
         run: uv run nhl live supabase --r2
+      - name: Real bets, entries and settlements
+        # ADR 0039 and #268: the owner's entries from the dashboard copied once each to R2, the
+        # record (once the real bets migration is applied and SUPABASE_REAL is true), then a
+        # settlement appended for each placed bet whose game is final, on the full game.
+        if: always()
+        env:
+          SUPABASE_REAL: ${{ vars.SUPABASE_REAL }}
+        run: |
+          if [ "$SUPABASE_REAL" = "true" ]; then sb=(--supabase); else sb=(); fi
+          uv run nhl real sync --r2 "${sb[@]}"
+          uv run nhl real settle --r2
       - name: Pre-game goalies into the lake
         # Pre-game goalie polls, NHL and Daily Faceoff (#42, #48), rebuilt from the raw copies:
         # today, which the evening slots poll ahead, and the three game dates before it, so two

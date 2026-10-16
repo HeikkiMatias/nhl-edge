@@ -61,6 +61,7 @@ Without them the build still succeeds, and the page says it isn't configured.
    - `supabase/migrations/20261008120000_paper_ledger.sql` (#167);
    - `supabase/migrations/20261008140000_live_reports.sql`;
    - `supabase/migrations/20261009120000_games_owner_reads.sql` (#210): lets an owner read the final scores. Until it is applied, the page says so and shows the results without scores.
+   - `supabase/migrations/20261016120000_real_bets.sql` (#268): the day's real bets from the Telegram alert, and the form's entries. It enforces the form's rules itself: one entry per bet, and a bet placed before its game's start.
 2. **Your user.**
    - Authentication → Users → Add user → Create new user, with your email and a password, and "Auto Confirm User" ticked. You sign in with those.
    - A user made without a password: delete it and add it again with one, then put its new id in `dashboard_owners` (step 2's insert). Or set the password through Supabase Auth's admin API, which hashes it as Auth does, never with SQL on `auth.users`:
@@ -68,6 +69,8 @@ Without them the build still succeeds, and the page says it isn't configured.
    - Authentication → Sign In / Providers: turn off "Allow new users to sign up".
    - In the SQL editor, run `insert into public.dashboard_owners (user_id) values ('<your user id>');`
 3. **The repository variable `SUPABASE_LEDGER=true`** (GitHub → Settings → Secrets and variables → Actions → Variables), if not already set for #167. The midday and nightly runs then copy the ledger, and the nightly run writes the live report.
+   - **`SUPABASE_REAL=true`,** once the real bets migration is applied: the midday alert then sends the day's bets to the dashboard, and copies your entries back to R2, the record.
+   - **`DASHBOARD_URL`,** the Vercel production URL: the alert's message links to it.
 4. **Vercel.**
    - New Project → import `HeikkiMatias/nhl-edge`.
    - Set Root Directory to `web`. The framework is detected as Next.js.

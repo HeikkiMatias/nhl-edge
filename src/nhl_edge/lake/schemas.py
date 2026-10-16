@@ -652,6 +652,190 @@ class ChallengerPredictions(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("computed_utc") > pl.col("input_cutoff_utc"))
 
 
+REAL_MODES = ("practice", "real", "paused", "stopped", "closed")
+REAL_OUTCOMES = ("placed", "not placed", "skipped")
+REAL_REASONS = ("the price fell under the minimum", "not matched", "missed it")
+
+
+class RealAlerts(pa.DataFrameModel):
+    """One paper bet of a day as alerted for a real stake (nhl real alert, #268, ADR 0039),
+    keyed on its paper twin (game_date, game_id, policy_version). mode is the day's: practice
+    before the start, real, or paused, stopped or closed, when nothing is alerted. status is
+    "alerted", or why the bet was skipped. min_price is the lowest price at which its expected
+    return clears its hurdle (hard rule 4); stakes, as JSON [[price, stake], ...], gives the stake
+    in euros at each price from it to the paper price, the frozen staking rule recomputed there
+    and never above the paper fraction, rounded down to the venue's increment; above the paper
+    price the stake stays at max_stake. bankroll is the mode's bankroll at the decision
+    (prediction_utc). Each day is written once to R2 (real/live/alerts/<date>.json)."""
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    policy_version: pl.String
+    prediction_utc: UtcDatetime
+    alert_utc: UtcDatetime
+    mode: pl.String = pa.Field(isin=REAL_MODES)
+    venue: pl.String
+    status: pl.String
+    side: pl.String = pa.Field(isin=["home", "away"])
+    paper_price: pl.Float64 = pa.Field(gt=1)
+    p_side: pl.Float64 = pa.Field(gt=0, lt=1)
+    hurdle: pl.Float64
+    paper_fraction: pl.Float64 = pa.Field(gt=0, le=0.015)
+    min_price: pl.Float64 = pa.Field(gt=1)
+    bankroll: pl.Float64 = pa.Field(gt=0)
+    max_stake: pl.Float64 = pa.Field(ge=0)
+    stakes: pl.String
+    code_version: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def alerted_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("status") != "alerted")
+            | (
+                (pl.col("alert_utc") < pl.col("start_utc"))
+                & pl.col("mode").is_in(["practice", "real"])
+                & (pl.col("max_stake") > 0)
+            )
+        )
+
+    @pa.dataframe_check
+    def the_minimum_price_clears_the_hurdle(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        ev = pl.col("p_side") * pl.col("min_price") - 1
+        return data.lazyframe.select(
+            (ev >= pl.col("hurdle") - 1e-9) & (pl.col("min_price") <= pl.col("paper_price"))
+        )
+
+
+class RealBets(pa.DataFrameModel):
+    """Every alert row with what the owner did (nhl real sync, #268): outcome "placed", with the
+    matched price, the stake placed, the venue's bet id and when it was placed; "not placed", with
+    the owner's reason, or none when no entry was made (never missing); or "skipped" when nothing
+    was alerted (the alert's status). entered_utc is when the owner recorded it, late when that
+    was at or after the game's start; a placed bet was always placed after its alert and before
+    the start. allowed_stake is
+    the alert's stake at the matched price, and within_rule whether the matched price cleared the
+    minimum and the stake placed was within the allowed one. corrections counts the corrections
+    applied (real/live/corrections/), each appended at the weekly check against the venue's
+    statement, never an edit."""
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    policy_version: pl.String
+    prediction_utc: UtcDatetime
+    alert_utc: UtcDatetime
+    mode: pl.String = pa.Field(isin=REAL_MODES)
+    venue: pl.String
+    status: pl.String
+    side: pl.String = pa.Field(isin=["home", "away"])
+    paper_price: pl.Float64 = pa.Field(gt=1)
+    min_price: pl.Float64 = pa.Field(gt=1)
+    max_stake: pl.Float64 = pa.Field(ge=0)
+    outcome: pl.String = pa.Field(isin=REAL_OUTCOMES)
+    reason: pl.String = pa.Field(isin=REAL_REASONS, nullable=True)
+    matched_price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    stake: pl.Float64 = pa.Field(gt=0, nullable=True)
+    bet_id: pl.String = pa.Field(nullable=True)
+    placed_utc: UtcDatetime = pa.Field(nullable=True)
+    entered_utc: UtcDatetime = pa.Field(nullable=True)
+    late: pl.Boolean = pa.Field(nullable=True)
+    allowed_stake: pl.Float64 = pa.Field(ge=0, nullable=True)
+    within_rule: pl.Boolean = pa.Field(nullable=True)
+    corrections: pl.Int32 = pa.Field(ge=0)
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def a_placed_bet_is_complete_and_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        placed = pl.col("outcome") == "placed"
+        complete = (
+            pl.col("matched_price").is_not_null()
+            & pl.col("stake").is_not_null()
+            & pl.col("bet_id").is_not_null()
+            & pl.col("placed_utc").is_not_null()
+            & (pl.col("placed_utc") < pl.col("start_utc"))
+            & (pl.col("placed_utc") >= pl.col("alert_utc"))
+            & (pl.col("status") == "alerted")
+            & pl.col("mode").is_in(["practice", "real"])
+        )
+        return data.lazyframe.select(~placed | complete.fill_null(False))
+
+    @pa.dataframe_check
+    def skipped_exactly_when_not_alerted(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("outcome") == "skipped") == (pl.col("status") != "alerted")
+        )
+
+
+class RealSettlements(pa.DataFrameModel):
+    """One settlement of a placed bet (nhl real settle, #268, ADR 0039), appended once its game is
+    final and its result public, never rewritten: the result on the full game, OT and shootout
+    included (hard rule 2), and the profit at the matched price and stake placed; a game played
+    more than 12 hours from its listed start voids the bet. A correction that changes a settled
+    bet appends its next revision, "cancelled" with no profit when it was not placed after all.
+    bankroll_after is the mode's bankroll counting every bet's latest revision up to this one.
+    Each revision is written once to R2
+    (real/live/settlements/<date>/<game_id>-<revision>.parquet)."""
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    revision: pl.Int32 = pa.Field(ge=0)
+    mode: pl.String = pa.Field(isin=["practice", "real"])
+    venue: pl.String
+    side: pl.String = pa.Field(isin=["home", "away"])
+    matched_price: pl.Float64 = pa.Field(gt=1)
+    stake: pl.Float64 = pa.Field(gt=0)
+    bet_id: pl.String
+    status: pl.String = pa.Field(isin=["settled", "void", "cancelled"])
+    home_win: pl.Int8 = pa.Field(isin=[0, 1], nullable=True)
+    won: pl.Boolean = pa.Field(nullable=True)
+    profit: pl.Float64
+    result_utc: UtcDatetime
+    settled_utc: UtcDatetime
+    bankroll_after: pl.Float64
+    code_version: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = [  # noqa: RUF012 (pandera config)
+            "game_date",
+            "game_id",
+            "revision",
+        ]
+
+    @pa.dataframe_check
+    def the_profit_follows_the_result(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        expected = (
+            pl.when(pl.col("status").is_in(["void", "cancelled"]))
+            .then(0.0)
+            .when(pl.col("won"))
+            .then(pl.col("stake") * (pl.col("matched_price") - 1))
+            .otherwise(-pl.col("stake"))
+        )
+        return data.lazyframe.select((pl.col("profit") - expected).abs() < 1e-9)
+
+    @pa.dataframe_check
+    def settled_after_the_result(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("settled_utc") >= pl.col("result_utc"))
+
+
 class FeatureBuilds(pa.DataFrameModel):
     """One table a live feature build (nhl live features, #162) wrote for a game date's slate: the
     record a prediction checks before it reads the slate's feature rows (#170).

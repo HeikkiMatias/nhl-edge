@@ -12,7 +12,7 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
    - **2026-11-05 10:40 UTC:** #121 step 3, which also revisits #120's early-exit gap.
 3. **Finish any waiting item whose date has come** (the next section). The SessionStart hook lists the open issues of the earliest milestone, P2 (#11, #30, #79). They wait on the calendar, not on work, so don't start them early.
 4. **Then the [priority] work for real money (#271):**
-   - #268, the real ledger and alerts: the owner chose a Telegram push and a dashboard form (below);
+   - #268, the real ledger and alerts: its pipeline is merged; its dashboard form is next (below);
    - #266, the venue, which waits on the owner's steps;
    - #269 and #270 after them.
 
@@ -28,7 +28,7 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 | Item | Ready when | Then |
 | --- | --- | --- |
 | `market_only`'s first challenger output (#255) | After the **2026-10-17** nightly (09:00 UTC) | As the 10:45 UTC task says. If it's missing or differs, read the nightly's "Challengers" step log first. |
-| #268, the real ledger and alerts | The owner answered on 2026-10-16 (#268's comment): **a Telegram push** for the alert and **a dashboard form** for recording a placed bet | The owner sets up the Telegram bot and stores `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` as repository secrets (the steps are on #268). Then plan and build #268 before 2026-11-16. The token never goes in the repository or a log. |
+| #268, the real ledger and alerts | The plan was approved on 2026-10-16 (#268's comment): a Telegram alert, a dashboard form, daily practice alerts until the start, late entries accepted and marked. The bot's secrets are stored and tested. | **PR 1, the pipeline:** `nhl real alert`, `sync`, `settle`, `statement` and `correct`, the migration and the workflow steps (docs/data-sources.md, "Real stakes"). Practice alerts arrive from the first decision day after its merge. **The owner, after it:** apply `supabase/migrations/20261016120000_real_bets.sql`, then set the repository variables `SUPABASE_REAL=true` and `DASHBOARD_URL` (`web/README.md`). **PR 2, next:** the dashboard's form, which closes #268. Both before 2026-11-16. |
 | The owner's venue steps (#266) | When the owner has time; a venue must be ready before the start | The owner's three steps, in the issue's comment: **(1)** start a Pinnacle sign-up and check that Finland is in its country list; **(2)** read its terms for API betting; **(3)** send the drafted email to `api@pinnacle.com`. If Pinnacle declines, Matchbook is next, then Betfair. Manual placement from alerts (#268) works at any venue meanwhile. When a venue is ready, set `live/real.VENUE` in a PR. |
 | The weekly live report | Mondays 10:20 UTC | As the Routine's prompt says: v2's report, reviewed and committed. It gives counts only, no estimate, until a policy has 4 weeks of games (#235). It is the run that decides ADR 0039's start rule and weekly CLV stop: it runs after Sunday's results are public at 10:00 UTC, while the 09:00 UTC nightly defers to it (#267). From 2026-11-16 it states the verdict, and the owner is told it. |
 | #30, post-game corrections | Two weeks of rechecked 2026-27 games: about **2026-10-22**. The nightly runs `nhl recheck --recent 3 --r2`. | Run `nhl audit report` after bringing the lake up to R2, and review its corrections section on #30. If corrections change more than scorer credit on more than a few games a season, reopen ADR 0004 with the owner. Then close #30. **Limit:** the NHL served no shift chart a week later for games 2026020006 to 2026020052 (#237). The report lists them as charts not rechecked, never as shifts removed, and compares their play-by-play and boxscore only. If the NHL serves them again after they leave the nightly window, `nhl recheck --recent 30 --r2` fetches them once. |
@@ -249,7 +249,7 @@ Every deliverable merged under its own task issue:
   - **Finland's licensed market** opens on 2027-07-01 (reported).
 - **The build:**
   - #267 is done (#273);
-  - #268: the real ledger, alerts, manual recording and settlement;
+  - #268: the real ledger, the Telegram alert, the dashboard's form and settlement (the pipeline in its first PR, the form in its second);
   - #269: API placement, once access is granted;
   - #270: the dashboard's real record.
 
@@ -289,6 +289,7 @@ Every deliverable merged under its own task issue:
   - **The start:** the first decision day from 2026-11-16 to 2026-11-30 on which the start rule held at the latest weekly report, Monday's at 10:20 UTC. The rule is three conditions: v2's CLV interval, its coverage floor and its pessimistic bound all hold (upper bounds above 0); the operations are clean; and the venue is ready (#266). Beside them, the owner's veto (the paper bankroll at or below 100) and the drawdown review each block a start, and never pass one. If the rule hasn't held by November's end, a start needs a new decision by the owner.
   - **The stops:** the real bankroll falls 20%, checked before every day's bets. Or, at a weekly report, v2's CLV interval or its pessimistic bound falls entirely below 0; a failed coverage floor pauses real bets.
   - **Placement:** manual from alerts until an API venue is confirmed.
+- **#268, the real ledger (the owner, 2026-10-16):** the day's real bets reach the owner as a Telegram message; placed bets are recorded on a dashboard form; practice alerts run daily until the start and never count in the real bankroll; a bet recorded after its game started is accepted and marked late, if it was placed before the start.
 - **Challengers (ADR 0038, the owner's approval of #255's plan, 2026-10-15):** pre-registered, judged on future decision days only, every one reported, and never a change to the frozen policy.
 - **The venue (2026-10-15):** any major sportsbook or exchange open to Finland that allows API betting may be used, under its own terms. Veikkaus itself matters little to the owner.
 - **The repository is public** since 2026-10-09, so Actions minutes are free (#213 has the history).
@@ -347,7 +348,7 @@ Every deliverable merged under its own task issue:
     - `npx wrangler@4 secret put GITHUB_TOKEN` stores a new token.
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
 - **Open, waiting:** #30, #79 and #11 (P2). Draft PR #93 holds gate 1.
-- **Open, for the owner:** #169, the raw backup on the owner's own computer (P5); #266's venue steps; #268's Telegram bot and secrets.
+- **Open, for the owner:** #169, the raw backup on the owner's own computer (P5); #266's venue steps, with the venue's minimum stake and stake increment; #268's migration and the variables `SUPABASE_REAL` and `DASHBOARD_URL`.
 - **Open, [priority]:** #271, the real-money tracking issue; #266, the venue; #268, the real ledger.
 - **Open, next:** #269 and #270 (real money); #264 (replay of v1 days); #253 and #254 (diagnostics); #256 to #260 (challengers, each with its own ADR).
 - **Parked for the next model version:** #125 and #134 (P6, label `next-model-version`).
