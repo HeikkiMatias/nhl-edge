@@ -156,6 +156,7 @@ class Season:
             changes.pop("policy", POLICY_VERSION),
             now=changes.pop("now", None),
             challenger_outputs=changes.pop("challenger_outputs", None),
+            unfinished_bundles=changes.pop("unfinished_bundles", None),
         )
 
 
@@ -266,6 +267,54 @@ def test_every_registered_challenger_is_reported_from_the_day_after_its_registra
     both = season.report(challenger_outputs=outputs)["challengers"]["challengers"]
     assert sorted(both) == ["shifted/1", "shifted/2"]
     assert both["shifted/1"]["games"] == counted.height and both["shifted/2"]["games"] == 0
+
+
+def test_the_real_stakes_section_states_adr_0039s_start_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #267: each condition with its figure, and the verdict, in the frozen policy's report only.
+    from nhl_edge.betting.selection import POLICY_V1
+    from nhl_edge.live import real
+
+    season = Season(n_weeks=5)
+    # Every settled bet won its stake: the paper bankroll ends above its 100 units.
+    season.settlements = season.settlements.with_columns(profit=pl.lit(1.0))
+    in_window = date(2026, 11, 16)
+    result = season.report(as_of=in_window, unfinished_bundles=[])
+    section = result["real_stakes"]
+    a, b, c, d = (section["conditions"][name] for name in "abcd")
+    assert a["measured"] and a["holds"] and a["share_with_proxy"] == 1.0
+    assert b["paper_bankroll"] == pytest.approx(100 + season.settlements.height)
+    assert b["holds"] and c["holds"] and not d["holds"]
+    assert section["verdict"] == "fails: (d)"
+    assert section["clv_stop"] == {"measured": True, "stop": False, "pause": False}
+    text = lr.markdown(result)
+    assert "## Real stakes (ADR 0039)" in text and "**Start rule: fails: (d).**" in text
+    assert "- (d) Venue: not ready (#266): fails." in text
+    assert "Real stakes follow only ADR 0039's start rule" in text
+    # With a venue ready, the rule holds; with the bundles unchecked, (c) fails.
+    monkeypatch.setattr(real, "VENUE", "pinnacle")
+    assert season.report(as_of=in_window, unfinished_bundles=[])["real_stakes"]["verdict"] == (
+        "holds"
+    )
+    unchecked = season.report(as_of=in_window)["real_stakes"]
+    assert unchecked["failing"] == ["c"]
+    assert "run bundles not checked" in lr.markdown(season.report(as_of=in_window))
+    # Before the window and after it.
+    early = season.report(as_of=date(2026, 11, 2), unfinished_bundles=[])["real_stakes"]
+    assert early["verdict"] == "not before 2026-11-16"
+    late = season.report(unfinished_bundles=[])["real_stakes"]
+    assert late["verdict"].startswith("the window has closed")
+    # The paper bankroll is the season's: an earlier policy's settled bets count in it.
+    older = season.ledger.with_columns(policy_version=pl.lit(POLICY_V1))
+    v1_only = season.report(as_of=in_window, ledger=older, unfinished_bundles=[])
+    assert v1_only["real_stakes"]["conditions"]["b"]["paper_bankroll"] == pytest.approx(
+        100 + season.settlements.height
+    )
+    # An earlier policy's report has no real stakes section.
+    v1 = season.report(as_of=in_window, ledger=older, policy=POLICY_V1, unfinished_bundles=[])
+    assert v1["real_stakes"] is None
+    assert "## Real stakes" not in lr.markdown(v1)
 
 
 def test_too_few_weeks_give_counts_and_no_estimate() -> None:

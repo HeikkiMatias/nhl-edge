@@ -2979,10 +2979,14 @@ def live_report(
         typer.echo(f"pulled {pulled:,} table files from R2")
         # The ledgers in R2 are the record, and so are the challengers' outputs.
         ledger = lp.sync_ledgers(lake.objects, lake.bucket, blend_fit.LIVE_SEASON)
-        outputs = lc.sync(lb.R2Store(lake.objects, lake.bucket))
+        store = lb.R2Store(lake.objects, lake.bucket)
+        outputs = lc.sync(store)
+        # ADR 0039's start rule reads whether every decision day's run bundle is complete.
+        unfinished = lb.unfinished(store, sorted(set(ledger["game_date"].to_list())))
     else:
         ledger = lake.read("paper_ledger", seasons=[blend_fit.LIVE_SEASON])
         outputs = lake.read("challenger_predictions")
+        unfinished = None
     paths = sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
     if len(paths) != 1:
         typer.echo(f"expected the season's one live fit, found {len(paths)}", err=True)
@@ -3000,6 +3004,7 @@ def live_report(
         policy or POLICY_VERSION,
         now=datetime.now(UTC),
         challenger_outputs=outputs,
+        unfinished_bundles=unfinished,
     )
     json_path, md_path = lr.write(result, out)
     if supabase:

@@ -34,6 +34,9 @@ It covers the frozen policy's regular-season paper decisions (ADR 0032):
 - **Challengers (ADR 0038),** with no verdict: every registered challenger over the decision days
   after its registration (live/challengers.py), against the blend and B1 by paired log loss, its
   shadow bets under the frozen rules, and its disagreement against the move to the close.
+- **Real stakes (ADR 0039, #267):** the start rule's conditions and verdict, with the paper
+  bankroll that its owner's veto reads, and the weekly CLV stop (live/real.py). The frozen
+  policy's report only.
 - **Return at the taken price,** and the drawdown's size, only from REVIEW_DATE on (plan §11).
 
 It reads ledgers, settlements, results and prices only: nothing here feeds a decision.
@@ -41,6 +44,7 @@ It reads ledgers, settlements, results and prices only: nothing here feeds a dec
 
 import json
 import math
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -64,7 +68,7 @@ from nhl_edge.backtest.walk_forward import B1_METHOD, b0, bounds, implausible, o
 from nhl_edge.betting.selection import POLICY, POLICY_VERSION
 from nhl_edge.game.uncertainty import PARTS
 from nhl_edge.live import challengers as lc
-from nhl_edge.live import movement, shadow
+from nhl_edge.live import movement, real, shadow
 from nhl_edge.live import predict as lp
 from nhl_edge.live import settle as ls
 from nhl_edge.market import closing
@@ -641,6 +645,29 @@ def challengers(
     return {"registered": len(registry), "challengers": result}
 
 
+def real_stakes(
+    value: dict[str, Any],
+    season_bets: pl.DataFrame,
+    rows: pl.DataFrame,
+    unfinished: Sequence[date] | None,
+    drawdown_triggered: bool,
+    as_of: date,
+    policy: str,
+) -> dict[str, Any] | None:
+    """ADR 0039's start rule and weekly CLV stop for the frozen policy (live/real.py), None for an
+    earlier policy's report. The paper bankroll is the season's, every policy's settled bets
+    (season_bets), as the owner's veto reads it; the skipped days are the policy's own."""
+    if policy != POLICY_VERSION:
+        return None
+    settled = season_bets.filter(pl.col("settled") == ls.SETTLED)
+    paper = POLICY.bankroll + (float(settled["profit"].sum()) if settled.height else 0.0)
+    skipped = sorted(rows.filter(pl.col("status").is_in(SKIPPED))["game_date"].unique().to_list())
+    rule = real.start_rule(
+        value, paper, POLICY.bankroll, unfinished, skipped, drawdown_triggered, as_of, real.VENUE
+    )
+    return rule | {"clv_stop": real.clv_stop(value)}
+
+
 def operations(rows: pl.DataFrame) -> dict[str, Any]:
     """Alerts on how the days ran, never a reason to change the policy: the days skipped and the
     games without a fresh Pinnacle price, and how often the guard stopped a picked bet."""
@@ -681,12 +708,15 @@ def report(
     policy: str = POLICY_VERSION,
     now: datetime | None = None,
     challenger_outputs: pl.DataFrame | None = None,
+    unfinished_bundles: Sequence[date] | None = None,
 ) -> dict[str, Any]:
     """The live report of one policy, the frozen one by default, as of as_of: ledger and
     settlements as written, games' results, the odds' Pinnacle quotes, SBR's history
     (sbr_history), the live fit's u scale (means, sds) and the registered challengers' stored
     outputs (challenger_predictions, none by default). now is the report's clock, noon UTC the
-    day after as_of by default: entry to close counts the games started by then."""
+    day after as_of by default: entry to close counts the games started by then.
+    unfinished_bundles are the decision days whose run bundle has no manifest, None when not
+    checked, which ADR 0039's start rule reads."""
     now = now or datetime.combine(as_of + timedelta(days=1), time(12), UTC)
     rows = counted(ledger, as_of, policy)
     bets = bets_of(rows, settlements)
@@ -697,6 +727,9 @@ def report(
     scored = with_results(rows, games)
     formal = as_of >= REVIEW_DATE
     value = closing_value(bets)
+    # The season's one paper bankroll runs through every policy (ADR 0037).
+    season_bets = bets_of(counted(ledger, as_of, None), settlements)
+    season_drawdown = drawdown(season_bets, formal)
     calibration = calibration_band(scored)
     cover = coverage(rows, bets, games)
     # The formal review covers every bet and game: with any still unsettled or without a
@@ -718,12 +751,21 @@ def report(
         "gaps": gaps(rows),
         "alerts": {
             "operations": operations(rows),
-            "drawdown": drawdown(bets_of(counted(ledger, as_of, None), settlements), formal),
+            "drawdown": season_drawdown,
             "u_range": u_range(rows, scale["means"], scale["sds"]),
         },
         "market_timing": market_timing(scored, history),
         "entry_to_close": entry_to_close(moves),
         "shadows": shadows(started, moves, odds),
+        "real_stakes": real_stakes(
+            value,
+            season_bets,
+            rows,
+            unfinished_bundles,
+            season_drawdown["triggered"],
+            as_of,
+            policy,
+        ),
         "challengers": challengers(
             rows,
             started,
@@ -795,8 +837,9 @@ def markdown(result: dict[str, Any]) -> str:
     alerts = result["alerts"]
     if result["kind"] == "interim":
         kind = (
-            f"**Interim report.** No verdict, promotion or real stake follows from it: the formal "
-            f"review is on {result['review_date']} (ADR 0032)."
+            f"**Interim report.** No verdict or promotion follows from it before the formal review "
+            f"on {result['review_date']} (ADR 0032). Real stakes follow only ADR 0039's start "
+            "rule, below."
         )
     else:
         kind = "**The formal review** (ADR 0032)."
@@ -864,8 +907,9 @@ def markdown(result: dict[str, Any]) -> str:
         if incomplete
         else ""
     )
+    lines += [f"- Verdict: {result['verdicts']['closing_value']}.{unfinished}"]
+    lines += _real_stakes_lines(result.get("real_stakes"))
     lines += [
-        f"- Verdict: {result['verdicts']['closing_value']}.{unfinished}",
         "",
         "## Model comparisons",
         "",
@@ -1039,6 +1083,63 @@ def markdown(result: dict[str, Any]) -> str:
             f"- Return per bet: {_fmt(ret['return_per_bet'], 'bets')}",
         ]
     return "\n".join(lines) + "\n"
+
+
+def _real_stakes_lines(section: dict[str, Any] | None) -> list[str]:
+    """ADR 0039's start rule and stops as markdown lines, or none for an earlier policy."""
+    if section is None:
+        return []
+    start, end = section["window"]
+    a, b, c, d = (section["conditions"][name] for name in "abcd")
+
+    def holds(condition: dict[str, Any]) -> str:
+        return "holds" if condition["holds"] else "fails"
+
+    share = a["share_with_proxy"]
+    coverage = f"{share:.1%}" if share is not None else "none yet"
+    clv = (
+        f"CLV per bet {_fmt(a['clv_per_bet'], 'bets')}; pessimistic bound "
+        f"{_fmt(a['bound'], 'bets')}; coverage {coverage} (at least {a['floor']:.0%})"
+        if a["measured"]
+        else f"not yet measured (an interval needs {MIN_WEEKS} weeks of bets)"
+    )
+    unfinished = c["unfinished_bundles"]
+    bundles = (
+        "not checked"
+        if unfinished is None
+        else "all complete"
+        if not unfinished
+        else f"unfinished on {', '.join(unfinished)}"
+    )
+    skipped = ", ".join(c["skipped_days"]) or "none"
+    stop = section["clv_stop"]
+    clv_stop = (
+        "not yet measured"
+        if not stop["measured"]
+        else "stop"
+        if stop["stop"]
+        else "pause, the coverage floor fails"
+        if stop["pause"]
+        else "none"
+    )
+    return [
+        "",
+        "## Real stakes (ADR 0039)",
+        "",
+        f"Real stakes start on the first decision day from {start} to {end} on which this rule "
+        "holds at the weekly report; the paper ledger goes on either way.",
+        "",
+        f"**Start rule: {section['verdict']}.**",
+        "",
+        f"- (a) CLV, under ADR 0032's safeguards: {clv}: {holds(a)}.",
+        f"- (b) Paper bankroll {b['paper_bankroll']:.2f} units, above its {b['start']:.0f} "
+        f"(the owner's veto, never a pass on its own): {holds(b)}.",
+        f"- (c) Operations: run bundles {bundles}; days skipped: {skipped}; drawdown review "
+        f"{'triggered' if c['drawdown_triggered'] else 'not triggered'}: {holds(c)}.",
+        f"- (d) Venue: {d['venue'] or 'not ready (#266)'}: {holds(d)}.",
+        f"- Weekly CLV stop: {clv_stop}. The 20% real bankroll stop is checked before every "
+        "day's bets, from the real ledger (#268).",
+    ]
 
 
 def _challenger_lines(section: dict[str, Any]) -> list[str]:
