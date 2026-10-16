@@ -438,7 +438,7 @@ def test_the_settlements_sent_are_the_real_settlements_migrations_columns() -> N
     import re
     from pathlib import Path
 
-    migration = Path("supabase/migrations/20261016150000_real_settlements.sql").read_text()
+    migration = Path("supabase/migrations/20261016150000_real_record.sql").read_text()
     body = re.search(r"create table public\.real_settlements \((.*?)\n\);", migration, re.S)
     assert body is not None
     types = "bigint|integer|smallint|text|date|timestamptz|numeric|boolean|double precision"
@@ -454,3 +454,26 @@ def test_the_settlements_sent_are_the_real_settlements_migrations_columns() -> N
     assert re.search(r"primary key \((.*?)\)", body.group(1)).group(1).split(", ") == list(  # type: ignore[union-attr]
         rl.SETTLEMENT_KEY
     )
+
+
+def test_a_correction_keeps_the_venues_precision() -> None:
+    # A finer price or stake would settle differently in the dashboard's tables (Codex on #278).
+    bucket = rf.alerted_store()
+    rl.store_entries(bucket, [rf.entry(FIRST, stake=1.5)])
+    now = datetime(2026, 10, 12, 10, tzinfo=UTC)
+    with pytest.raises(ValueError, match="stake has more than 2 decimals"):
+        rl.correct(bucket, pf.DAY, FIRST, {"stake": 1.005}, "statement", now)
+    with pytest.raises(ValueError, match="matched_price has more than 3 decimals"):
+        rl.correct(bucket, pf.DAY, FIRST, {"matched_price": 2.1234}, "statement", now)
+    rl.correct(bucket, pf.DAY, FIRST, {"matched_price": 2.105, "stake": 1.25}, "statement", now)
+    sent = rl.supabase_corrections(rl.corrections(bucket))
+    assert sent == [
+        {
+            "game_date": "2026-10-07",
+            "game_id": FIRST,
+            "n": 0,
+            "changes": {"matched_price": 2.105, "stake": 1.25},
+            "reason": "statement",
+            "corrected_utc": now.isoformat(),
+        }
+    ]

@@ -2,7 +2,7 @@
 // settlement revision, the price against the paper price, and practice kept apart from real.
 import { expect, test } from "vitest";
 
-import { priceGap, realBankroll, realRecord, twins, view } from "./real-record.ts";
+import { corrected, priceGap, realBankroll, realRecord, since, twins, view } from "./real-record.ts";
 import { ALERT } from "./testing.ts";
 import type { Bet, RealAlert, RealEntry, RealSettlement } from "./types.ts";
 
@@ -129,4 +129,45 @@ test("the view is practice until a day is alerted for real, and practice ends wh
   const bets = [bet(2, "2026-11-17"), bet(1, "2026-11-10")];
   expect(twins(bets, both, [], [], "real").map((t) => t.bet.game_id)).toEqual([2]);
   expect(twins(bets, both, [], [], "practice").map((t) => t.bet.game_id)).toEqual([1]);
+});
+
+test("corrections apply in order over the entries, as the R2 record applies them", () => {
+  const alerts = [alert(1), alert(2), alert(3)];
+  const entries = [placed(1, 2.2, 1.0), placed(3, 2.2, 1.0)];
+  const fixed = corrected(
+    entries,
+    [
+      { game_date: "2026-11-17", game_id: 1, n: 1, changes: { stake: 1.3 }, reason: "b", corrected_utc: "2026-11-23T10:01:00Z" },
+      { game_date: "2026-11-17", game_id: 1, n: 0, changes: { stake: 1.2 }, reason: "a", corrected_utc: "2026-11-23T10:00:00Z" },
+      // A bet placed but never recorded, added at the weekly check.
+      {
+        game_date: "2026-11-17",
+        game_id: 2,
+        n: 0,
+        changes: { outcome: "placed", matched_price: 2.1, stake: 1.0, bet_id: "X2", placed_utc: "2026-11-17T18:00:00Z" },
+        reason: "c",
+        corrected_utc: "2026-11-23T10:00:00Z",
+      },
+      { game_date: "2026-11-17", game_id: 3, n: 0, changes: { outcome: "not placed", reason: "not matched" }, reason: "d", corrected_utc: "2026-11-23T10:00:00Z" },
+    ],
+    alerts,
+  );
+  const rows = twins([bet(1), bet(2), bet(3)], alerts, fixed.entries, [], "real");
+  expect(rows.map((t) => [t.state, t.entry?.stake ?? null])).toEqual([
+    ["placed", 1.3],
+    ["placed", 1.0],
+    ["not placed", null],
+  ]);
+  expect(rows[1].entry?.late).toBe(true);
+  expect(fixed.counts.get("2026-11-17/1")).toBe(2);
+});
+
+test("a closed window's alerts end the practice history, and the start reads from the alerts", () => {
+  const closed = alert(1, { mode: "closed", status: "skipped: the start window closed without a start", game_date: "2026-12-01" });
+  expect(view([closed])).toBe("practice");
+  expect(twins([bet(1, "2026-12-01")], [closed], [], [], "practice").map((t) => t.state)).toEqual(["skipped"]);
+  expect(since([closed])).toBeNull();
+  const started = since([alert(1, { game_date: "2026-11-23" }), alert(2, { game_date: "2026-11-16", mode: "real" })]);
+  expect(started?.start).toBe("2026-11-16");
+  expect(started?.latest.game_date).toBe("2026-11-23");
 });

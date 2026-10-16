@@ -6,7 +6,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { every } from "./load.ts";
-import type { RealAlert, RealEntry, RealSettlement } from "./types.ts";
+import type { RealAlert, RealCorrection, RealEntry, RealSettlement } from "./types.ts";
 
 export const ALERT_COLUMNS =
   "game_date, game_id, start_utc, home, away, mode, venue, status, side, paper_price, " +
@@ -142,6 +142,7 @@ export type RealRecordState =
       ready: true;
       alerts: RealAlert[];
       entries: RealEntry[];
+      corrections: RealCorrection[];
       settlements: RealSettlement[] | null;
     };
 
@@ -174,6 +175,23 @@ export async function loadRecord(client: SupabaseClient): Promise<RealRecordStat
     if (NOT_SET_UP.has((error as { code?: string }).code ?? "")) return { ready: false };
     throw error;
   }
+  // Before the real record migration, there are no corrections or settlements to read.
+  let corrections: RealCorrection[] = [];
+  try {
+    corrections = await every((from, to) =>
+      client
+        .from("real_corrections")
+        .select("game_date, game_id, n, changes, reason, corrected_utc")
+        .order("corrected_utc")
+        .order("game_date")
+        .order("game_id")
+        .order("n")
+        .range(from, to)
+        .overrideTypes<RealCorrection[], { merge: false }>(),
+    );
+  } catch (error) {
+    if (!NOT_SET_UP.has((error as { code?: string }).code ?? "")) throw error;
+  }
   let settlements: RealSettlement[] | null;
   try {
     settlements = await every((from, to) =>
@@ -190,5 +208,5 @@ export async function loadRecord(client: SupabaseClient): Promise<RealRecordStat
     if (!NOT_SET_UP.has((error as { code?: string }).code ?? "")) throw error;
     settlements = null;
   }
-  return { ready: true, alerts, entries, settlements };
+  return { ready: true, alerts, entries, corrections, settlements };
 }

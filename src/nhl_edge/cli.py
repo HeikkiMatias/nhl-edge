@@ -4496,7 +4496,25 @@ def real_sync(
     if supabase:
         typer.echo(f"{_new_entries(store)} new entries copied from the dashboard")
     alerted = rl.alerts(store)
-    record = rl.bets(alerted, rl.entries(store), rl.corrections(store))
+    corrected = rl.corrections(store)
+    record = rl.bets(alerted, rl.entries(store), corrected)
+    if supabase and corrected:
+        from nhl_edge.lake.supabase import Supabase, SupabaseError
+
+        # The corrections to the dashboard's real record (#270), each once; before its migration
+        # is applied the copy is skipped with a note, R2 staying the record.
+        try:
+            sent = Supabase.from_env().insert_new_records(
+                "real_corrections", rl.supabase_corrections(corrected), rl.CORRECTION_KEY
+            )
+            typer.echo(f"{sent} corrections sent to the dashboard (new ones inserted)")
+        except SupabaseError as exc:
+            if "PGRST205" not in str(exc):
+                raise
+            typer.echo(
+                "the dashboard's real_corrections isn't set up yet: apply "
+                "supabase/migrations/20261016150000_real_record.sql"
+            )
     lake.replace("real_alerts", alerted)
     lake.replace("real_bets", record)
     counts = record.group_by("mode", "outcome").len().sort("mode", "outcome").iter_rows()
@@ -4560,7 +4578,7 @@ def real_settle(
                 raise
             typer.echo(
                 "the dashboard's real_settlements isn't set up yet: apply "
-                "supabase/migrations/20261016150000_real_settlements.sql"
+                "supabase/migrations/20261016150000_real_record.sql"
             )
             return
         typer.echo(f"{sent} settlement revisions sent to the dashboard (new ones inserted)")

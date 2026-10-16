@@ -68,7 +68,16 @@ export type RealStakes = {
   verdict: string;
   failing: string[];
   conditions: {
-    a: { measured: boolean; holds: boolean; share_with_proxy: number | null; floor: number };
+    a: {
+      measured: boolean;
+      holds: boolean;
+      /** CLV per bet with its weekly block bootstrap interval, or only its counts. */
+      clv_per_bet: Figure;
+      /** The pessimistic bound's CLV per bet, likewise; null without an eligible bet. */
+      bound: Figure | null;
+      share_with_proxy: number | null;
+      floor: number;
+    };
     c: { holds: boolean; undecided_days: string[]; unfinished_bundles: string[] | null };
     d: { holds: boolean; venue: string | null };
   };
@@ -211,4 +220,15 @@ export type RealSettlement = {
   profit: number;
   result_utc: string;
   bankroll_after: number;
+};
+
+/** A correction to a bet's entry (public.real_corrections, #270), applied in order over
+ * real_entries, as the R2 record's real_bets applies it. */
+export type RealCorrection = {
+  game_date: string;
+  game_id: number;
+  n: number;
+  changes: Partial<Pick<RealEntry, "outcome" | "matched_price" | "stake" | "bet_id" | "placed_utc" | "reason">>;
+  reason: string;
+  corrected_utc: string;
 };

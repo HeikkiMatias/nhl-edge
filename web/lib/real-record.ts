@@ -3,7 +3,7 @@
 // difference of stored columns (the alerts, the owner's entries and the settlements), so the
 // dashboard holds no rule of its own (ADR 0034). Practice and real are never mixed.
 
-import type { Bet, RealAlert, RealEntry, RealSettlement } from "./types.ts";
+import type { Bet, RealAlert, RealCorrection, RealEntry, RealSettlement } from "./types.ts";
 
 /** The real bankroll's start, in euros, and the fall from it that stops real bets (ADR 0039). */
 export const REAL_START = 100;
@@ -11,10 +11,66 @@ export const STOP_DRAWDOWN = 0.2;
 
 /** Which record a view shows: practice before the start, real from it. */
 export type View = "practice" | "real";
+// A window that closed without a start ends the practice history (Codex on #278).
 const MODES: Record<View, ReadonlySet<RealAlert["mode"]>> = {
-  practice: new Set(["practice"]),
+  practice: new Set(["practice", "closed"]),
   real: new Set(["real", "paused", "stopped"]),
 };
+
+/** Since when real bets run, and the latest real day's mode: null before the start. */
+export function since(alerts: RealAlert[]): { start: string; latest: RealAlert } | null {
+  const real = alerts.filter((a) => MODES.real.has(a.mode));
+  if (real.length === 0) return null;
+  const start = real.reduce((d, a) => (a.game_date < d ? a.game_date : d), real[0].game_date);
+  const latest = real.reduce((l, a) => (a.game_date > l.game_date ? a : l), real[0]);
+  return { start, latest };
+}
+
+/** The entries with the corrections applied in order, as the R2 record's real_bets applies
+ * them: a correction changes its entry's fields, or makes one for a bet placed but never
+ * recorded, entered at the correction's time. corrected counts them per bet. */
+export function corrected(
+  entries: RealEntry[],
+  corrections: RealCorrection[],
+  alerts: RealAlert[],
+): { entries: RealEntry[]; counts: Map<string, number> } {
+  const byKey = new Map(entries.map((e) => [key(e.game_date, e.game_id), { ...e }]));
+  const starts = new Map(alerts.map((a) => [key(a.game_date, a.game_id), a.start_utc]));
+  const counts = new Map<string, number>();
+  const ordered = [...corrections].sort((a, b) =>
+    a.corrected_utc !== b.corrected_utc
+      ? a.corrected_utc < b.corrected_utc ? -1 : 1
+      : a.game_date !== b.game_date
+        ? a.game_date < b.game_date ? -1 : 1
+        : a.game_id !== b.game_id
+          ? a.game_id - b.game_id
+          : a.n - b.n,
+  );
+  for (const c of ordered) {
+    const k = key(c.game_date, c.game_id);
+    const start = starts.get(k);
+    const base: RealEntry = byKey.get(k) ?? {
+      game_date: c.game_date,
+      game_id: c.game_id,
+      outcome: "placed",
+      matched_price: null,
+      stake: null,
+      bet_id: null,
+      placed_utc: null,
+      reason: null,
+      entered_utc: c.corrected_utc,
+      late: start !== undefined && new Date(c.corrected_utc) >= new Date(start),
+    };
+    const next = { ...base, ...c.changes };
+    // A bet found not placed keeps no placement, as the record's checks require.
+    if (next.outcome === "not placed") {
+      Object.assign(next, { matched_price: null, stake: null, bet_id: null, placed_utc: null });
+    }
+    byKey.set(k, next);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  return { entries: [...byKey.values()], counts };
+}
 
 /** The view the record shows: real once any day was alerted in a real mode, else practice. */
 export function view(alerts: RealAlert[]): View {

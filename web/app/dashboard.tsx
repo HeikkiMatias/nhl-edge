@@ -130,6 +130,8 @@ function SignIn({ client, problem }: { client: SupabaseClient; problem: string |
 function Board({ client, session }: { client: SupabaseClient; session: Session }) {
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped when the form records a bet, so the real record reads it at once.
+  const [recorded, setRecorded] = useState(0);
 
   useEffect(() => {
     load(client).then(setData, (e: Error) => setError(e.message));
@@ -178,10 +180,10 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
       {signOut}
       {/* First, where the day's Telegram alert links to (#268). */}
       <h2>Real bets</h2>
-      <RealBets client={client} />
+      <RealBets client={client} onRecorded={() => setRecorded((n) => n + 1)} />
 
       <h2>Real record</h2>
-      <RealRecord client={client} bets={data.bets} report={data.report} />
+      <RealRecord client={client} bets={data.bets} report={data.report} version={recorded} />
 
       <h2>Paper trading</h2>
       <p className="notice">
