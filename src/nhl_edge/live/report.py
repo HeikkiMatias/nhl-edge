@@ -65,7 +65,7 @@ from nhl_edge.backtest.metrics import (
     week_of,
 )
 from nhl_edge.backtest.walk_forward import B1_METHOD, b0, bounds, implausible, outcomes
-from nhl_edge.betting.selection import POLICY, POLICY_VERSION
+from nhl_edge.betting.selection import FROZEN_ON, POLICY, POLICY_VERSION
 from nhl_edge.game.uncertainty import PARTS
 from nhl_edge.live import challengers as lc
 from nhl_edge.live import movement, real, shadow
@@ -649,6 +649,8 @@ def real_stakes(
     value: dict[str, Any],
     season_bets: pl.DataFrame,
     rows: pl.DataFrame,
+    games: pl.DataFrame,
+    decided: Sequence[date],
     unfinished: Sequence[date] | None,
     drawdown_triggered: bool,
     as_of: date,
@@ -656,16 +658,40 @@ def real_stakes(
 ) -> dict[str, Any] | None:
     """ADR 0039's start rule and weekly CLV stop for the frozen policy (live/real.py), None for an
     earlier policy's report. The paper bankroll is the season's, every policy's settled bets
-    (season_bets), as the owner's veto reads it; the skipped days are the policy's own."""
+    (season_bets), as the owner's veto reads it. The days the policy should have decided are the
+    regular-season game dates after its freeze through as_of, from the games (Codex on #273): one
+    with no ledger (decided holds every policy's ledger dates) is a day skipped without a reason,
+    and only the bundles of days through as_of count. The days the policy skipped with a recorded
+    reason are listed with it."""
     if policy != POLICY_VERSION:
         return None
     settled = season_bets.filter(pl.col("settled") == ls.SETTLED)
     paper = POLICY.bankroll + (float(settled["profit"].sum()) if settled.height else 0.0)
-    skipped = sorted(rows.filter(pl.col("status").is_in(SKIPPED))["game_date"].unique().to_list())
-    rule = real.start_rule(
-        value, paper, POLICY.bankroll, unfinished, skipped, drawdown_triggered, as_of, real.VENUE
+    expected = games.filter(
+        (pl.col("game_id") // 10_000 % 100) == REGULAR_SEASON,
+        pl.col("game_date") > FROZEN_ON,
+        pl.col("game_date") <= as_of,
+    )["game_date"]
+    undecided = sorted(set(expected.to_list()) - set(decided))
+    skipped = dict(
+        rows.filter(pl.col("status").is_in(SKIPPED))
+        .group_by("game_date")
+        .agg(pl.col("status").first())
+        .iter_rows()
     )
-    return rule | {"clv_stop": real.clv_stop(value)}
+    through = None if unfinished is None else [day for day in unfinished if day <= as_of]
+    rule = real.start_rule(
+        value,
+        paper,
+        POLICY.bankroll,
+        through,
+        undecided,
+        skipped,
+        drawdown_triggered,
+        as_of,
+        real.VENUE,
+    )
+    return rule | {"clv_stop": real.clv_stop(value, as_of)}
 
 
 def operations(rows: pl.DataFrame) -> dict[str, Any]:
@@ -761,6 +787,8 @@ def report(
             value,
             season_bets,
             rows,
+            games,
+            sorted(set(ledger.filter(pl.col("game_date") <= as_of)["game_date"].to_list())),
             unfinished_bundles,
             season_drawdown["triggered"],
             as_of,
@@ -1090,7 +1118,8 @@ def _real_stakes_lines(section: dict[str, Any] | None) -> list[str]:
     if section is None:
         return []
     start, end = section["window"]
-    a, b, c, d = (section["conditions"][name] for name in "abcd")
+    a, c, d = (section["conditions"][name] for name in "acd")
+    veto = section["veto"]
 
     def holds(condition: dict[str, Any]) -> str:
         return "holds" if condition["holds"] else "fails"
@@ -1111,32 +1140,38 @@ def _real_stakes_lines(section: dict[str, Any] | None) -> list[str]:
         if not unfinished
         else f"unfinished on {', '.join(unfinished)}"
     )
-    skipped = ", ".join(c["skipped_days"]) or "none"
+    undecided = ", ".join(c["undecided_days"]) or "none"
+    skipped = "; ".join(f"{day} ({reason})" for day, reason in c["skipped_days"].items())
     stop = section["clv_stop"]
     clv_stop = (
         "not yet measured"
         if not stop["measured"]
+        else "decided at the weekly report"
+        if not stop["weekly"]
         else "stop"
         if stop["stop"]
         else "pause, the coverage floor fails"
         if stop["pause"]
         else "none"
     )
+    above = "above" if not veto["applies"] else "at or below"
     return [
         "",
         "## Real stakes (ADR 0039)",
         "",
         f"Real stakes start on the first decision day from {start} to {end} on which this rule "
-        "holds at the weekly report; the paper ledger goes on either way.",
+        "holds at the weekly report (Mondays'); the paper ledger goes on either way.",
         "",
         f"**Start rule: {section['verdict']}.**",
         "",
         f"- (a) CLV, under ADR 0032's safeguards: {clv}: {holds(a)}.",
-        f"- (b) Paper bankroll {b['paper_bankroll']:.2f} units, above its {b['start']:.0f} "
-        f"(the owner's veto, never a pass on its own): {holds(b)}.",
-        f"- (c) Operations: run bundles {bundles}; days skipped: {skipped}; drawdown review "
-        f"{'triggered' if c['drawdown_triggered'] else 'not triggered'}: {holds(c)}.",
+        f"- (c) Operations: run bundles {bundles}; days with games and no decision: {undecided}; "
+        f"drawdown review {'triggered' if c['drawdown_triggered'] else 'not triggered'}: "
+        f"{holds(c)}." + (f" Days skipped with a recorded reason: {skipped}." if skipped else ""),
         f"- (d) Venue: {d['venue'] or 'not ready (#266)'}: {holds(d)}.",
+        f"- The owner's veto: the paper bankroll, {veto['paper_bankroll']:.2f} units, is {above} "
+        f"its {veto['start']:.0f}, so the veto {'applies' if veto['applies'] else 'is lifted'}. "
+        "A point estimate, it can block a start and never pass one.",
         f"- Weekly CLV stop: {clv_stop}. The 20% real bankroll stop is checked before every "
         "day's bets, from the real ledger (#268).",
     ]
