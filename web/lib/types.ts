@@ -232,3 +232,12 @@ export type RealCorrection = {
   reason: string;
   corrected_utc: string;
 };
+
+/** An alerted day's mode (public.real_days, #270): a day with no bets too, so a start, pause,
+ * stop or close on such a day is on record. */
+export type RealDayMode = {
+  game_date: string;
+  mode: RealAlert["mode"];
+  started: string | null;
+  reason: string;
+};

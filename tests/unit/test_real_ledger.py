@@ -477,3 +477,26 @@ def test_a_correction_keeps_the_venues_precision() -> None:
             "corrected_utc": now.isoformat(),
         }
     ]
+
+
+def test_each_alerted_day_reaches_the_dashboard_even_without_bets() -> None:
+    import re
+    from pathlib import Path
+
+    bucket = rf.alerted_store()
+    # A day with no paper bets still writes its record, with its mode (Codex on #278).
+    no_bets = rf.ledger().with_columns(bet=pl.lit(False))
+    empty = rl.bets(rf.alert_rows().clear(), [])
+    alert = rl.prepare(date(2026, 10, 8), no_bets, [], empty, rf.games(), rf.ALERT, rf.CODE)
+    rl.write_alert(bucket, alert)
+    sent = rl.supabase_days(rl.days(bucket))
+    assert [(d["game_date"], d["mode"], d["bets"]) for d in sent] == [
+        ("2026-10-07", rl.PRACTICE, 3),
+        ("2026-10-08", rl.PRACTICE, 0),
+    ]
+    migration = Path("supabase/migrations/20261016150000_real_record.sql").read_text()
+    body = re.search(r"create table public\.real_days \((.*?)\n\);", migration, re.S)
+    assert body is not None
+    column = re.compile(r"^  ([a-z_0-9]+) (?:date|text|double precision|timestamptz|integer)\b")
+    found = {m.group(1) for line in body.group(1).splitlines() if (m := column.match(line))}
+    assert set(sent[0]) == found - {"created_at"}

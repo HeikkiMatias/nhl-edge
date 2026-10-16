@@ -25,6 +25,8 @@ export type Tables = {
   real_alerts?: unknown[];
   real_entries?: unknown[];
   real_settlements?: unknown[];
+  real_corrections?: unknown[];
+  real_days?: unknown[];
 };
 
 /**

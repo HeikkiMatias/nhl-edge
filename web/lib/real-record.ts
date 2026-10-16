@@ -3,7 +3,14 @@
 // difference of stored columns (the alerts, the owner's entries and the settlements), so the
 // dashboard holds no rule of its own (ADR 0034). Practice and real are never mixed.
 
-import type { Bet, RealAlert, RealCorrection, RealEntry, RealSettlement } from "./types.ts";
+import type {
+  Bet,
+  RealAlert,
+  RealCorrection,
+  RealDayMode,
+  RealEntry,
+  RealSettlement,
+} from "./types.ts";
 
 /** The real bankroll's start, in euros, and the fall from it that stops real bets (ADR 0039). */
 export const REAL_START = 100;
@@ -17,13 +24,16 @@ const MODES: Record<View, ReadonlySet<RealAlert["mode"]>> = {
   real: new Set(["real", "paused", "stopped"]),
 };
 
-/** Since when real bets run, and the latest real day's mode: null before the start. */
-export function since(alerts: RealAlert[]): { start: string; latest: RealAlert } | null {
-  const real = alerts.filter((a) => MODES.real.has(a.mode));
+/** Since when real bets run, and the latest real day with its mode: null before the start. */
+export function since(
+  alerts: RealAlert[],
+  days: RealDayMode[] = [],
+): { start: string; latest: string; mode: RealAlert["mode"] } | null {
+  const modes = dayModes(alerts, days);
+  const real = datesOf(modes, MODES.real);
   if (real.length === 0) return null;
-  const start = real.reduce((d, a) => (a.game_date < d ? a.game_date : d), real[0].game_date);
-  const latest = real.reduce((l, a) => (a.game_date > l.game_date ? a : l), real[0]);
-  return { start, latest };
+  const latest = real[real.length - 1];
+  return { start: real[0], latest, mode: modes.get(latest) ?? "real" };
 }
 
 /** The entries with the corrections applied in order, as the R2 record's real_bets applies
@@ -72,9 +82,21 @@ export function corrected(
   return { entries: [...byKey.values()], counts };
 }
 
+/** Each alerted day's mode: from real_days, which holds days without bets too (Codex on #278),
+ * and from the alert rows of any day it lacks. */
+export function dayModes(alerts: RealAlert[], days: RealDayMode[] = []): Map<string, RealAlert["mode"]> {
+  const out = new Map<string, RealAlert["mode"]>();
+  for (const a of alerts) out.set(a.game_date, a.mode);
+  for (const d of days) out.set(d.game_date, d.mode);
+  return out;
+}
+
+const datesOf = (modes: Map<string, RealAlert["mode"]>, wanted: ReadonlySet<RealAlert["mode"]>) =>
+  [...modes.entries()].filter(([, m]) => wanted.has(m)).map(([d]) => d).sort();
+
 /** The view the record shows: real once any day was alerted in a real mode, else practice. */
-export function view(alerts: RealAlert[]): View {
-  return alerts.some((a) => MODES.real.has(a.mode)) ? "real" : "practice";
+export function view(alerts: RealAlert[], days: RealDayMode[] = []): View {
+  return datesOf(dayModes(alerts, days), MODES.real).length ? "real" : "practice";
 }
 
 const key = (game_date: string, game_id: number) => `${game_date}/${game_id}`;
@@ -110,18 +132,26 @@ export function twins(
   entries: RealEntry[],
   settlements: RealSettlement[],
   shown: View,
+  days: RealDayMode[] = [],
 ): Twin[] {
+  const modes = dayModes(alerts, days);
+  const dates = datesOf(modes, MODES[shown]);
+  if (dates.length === 0) return [];
+  const first = dates[0];
+  // A practice view ends where the real record begins, or on the day the window closed, after
+  // which no alert runs (Codex on #278).
+  const real = datesOf(modes, MODES.real);
+  const closed = datesOf(modes, new Set(["closed"]));
+  const inView = (d: string) =>
+    d >= first &&
+    (shown === "real" ||
+      ((real.length === 0 || d < real[0]) && (closed.length === 0 || d <= closed[0])));
   const ours = alerts.filter((a) => MODES[shown].has(a.mode));
-  if (ours.length === 0) return [];
-  const first = ours.reduce((d, a) => (a.game_date < d ? a.game_date : d), ours[0].game_date);
-  // A practice view ends where the real record begins.
-  const real = alerts.filter((a) => MODES.real.has(a.mode)).map((a) => a.game_date);
-  const end = shown === "practice" && real.length ? real.reduce((d, x) => (x < d ? x : d)) : null;
   const byAlert = new Map(ours.map((a) => [key(a.game_date, a.game_id), a]));
   const byEntry = new Map(entries.map((e) => [key(e.game_date, e.game_id), e]));
   const settled = latest(settlements);
   return bets
-    .filter((b) => b.game_date >= first && (end === null || b.game_date < end))
+    .filter((b) => inView(b.game_date))
     .map((bet) => {
       const k = key(bet.game_date, bet.game_id);
       const alert = byAlert.get(k) ?? null;

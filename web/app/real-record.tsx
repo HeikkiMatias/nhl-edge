@@ -17,7 +17,7 @@ import {
   twins,
   view,
 } from "@/lib/real-record";
-import type { Bet, LiveReport, RealAlert, RealStakes } from "@/lib/types";
+import type { Bet, LiveReport, RealStakes } from "@/lib/types";
 
 import { LineChart } from "./charts";
 import { Explain } from "./sections";
@@ -50,18 +50,18 @@ export function RealRecord({
   if (error) return <p className="notice">Could not read the real record: {error}</p>;
   if (!state) return <p className="muted">Loading…</p>;
   if (!state.ready) return <p className="muted">Not set up yet (web/README.md).</p>;
-  const shown = view(state.alerts);
+  const shown = view(state.alerts, state.days);
   const settlements = state.settlements ?? [];
   // The weekly check's corrections apply over the entries, as in the R2 record (Codex on #278).
   const fixed = corrected(state.entries, state.corrections, state.alerts);
-  const rows = twins(bets, state.alerts, fixed.entries, settlements, shown);
+  const rows = twins(bets, state.alerts, fixed.entries, settlements, shown, state.days);
   const days = realBankroll(settlements, shown);
   const r = realRecord(settlements, shown);
   const gap = priceGap(rows);
   const stop = REAL_START * (1 - STOP_DRAWDOWN);
   return (
     <>
-      <StartRule section={report?.real_stakes ?? null} alerts={state.alerts} />
+      <StartRule section={report?.real_stakes ?? null} started={since(state.alerts, state.days)} />
       {shown === "practice" ? (
         <p className="notice">
           Practice: nothing here is real. The practice record shows the chain working until real
@@ -197,6 +197,8 @@ function outside(t: Twin): boolean {
 }
 
 function settlementText(t: Twin): string {
+  // A settled bet a correction found not placed keeps its cancelled revision (Codex on #278).
+  if (t.settlement?.status === "cancelled") return "Cancelled by a correction";
   if (t.state !== "placed") return "";
   const s = t.settlement;
   if (!s) return "Awaiting the result";
@@ -207,8 +209,13 @@ function settlementText(t: Twin): string {
 
 /** The start rule's state from the latest report until real bets start, with the CLV intervals
  * it rests on (hard rule 7); then the start date and the latest real day's mode (Codex on #278). */
-function StartRule({ section, alerts }: { section: RealStakes | null; alerts: RealAlert[] }) {
-  const started = since(alerts);
+function StartRule({
+  section,
+  started,
+}: {
+  section: RealStakes | null;
+  started: ReturnType<typeof since>;
+}) {
   if (started) {
     const now = {
       real: "real bets are running",
@@ -216,11 +223,11 @@ function StartRule({ section, alerts }: { section: RealStakes | null; alerts: Re
       stopped: "real bets are stopped; restarting needs your decision",
       practice: "",
       closed: "",
-    }[started.latest.mode];
+    }[started.mode];
     return (
       <p>
         Real bets started on <strong>{started.start}</strong> (ADR 0039). On{" "}
-        {started.latest.game_date}, {now}.
+        {started.latest}, {now}.
       </p>
     );
   }

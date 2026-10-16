@@ -595,6 +595,23 @@ def supabase_settlements(settled: pl.DataFrame) -> list[dict[str, Any]]:
 CORRECTION_KEY = ("game_date", "game_id", "n")
 
 
+def days(store: lb.Store) -> list[dict[str, Any]]:
+    """Each alerted day's record, without its message and rows: its mode, start, reason,
+    bankroll, venue and alert time, and how many paper bets it had (#270)."""
+    keep = ("game_date", "mode", "started", "reason", "bankroll", "venue", "alert_utc")
+    out = []
+    for key in store.keys(f"{PREFIX}/alerts"):
+        record = json.loads(store.get(key))
+        out.append({name: record.get(name) for name in keep} | {"bets": len(record["rows"])})
+    return out
+
+
+def supabase_days(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The days as the dashboard's real_days holds them: one row a day, a day with no bets too,
+    so a start, pause, stop or close on such a day is still on record there (Codex on #278)."""
+    return [dict(record) | {"reason": record.get("reason") or ""} for record in records]
+
+
 def supabase_corrections(corrected: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The corrections as the dashboard's real_corrections holds them (#270)."""
     keep = ("game_date", "game_id", "n", "changes", "reason", "corrected_utc")

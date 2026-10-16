@@ -169,5 +169,29 @@ test("a closed window's alerts end the practice history, and the start reads fro
   expect(since([closed])).toBeNull();
   const started = since([alert(1, { game_date: "2026-11-23" }), alert(2, { game_date: "2026-11-16", mode: "real" })]);
   expect(started?.start).toBe("2026-11-16");
-  expect(started?.latest.game_date).toBe("2026-11-23");
+  expect(started?.latest).toBe("2026-11-23");
+  // The practice history ends on the day the window closed: no alert runs after it.
+  const practice = alert(3, { mode: "practice", game_date: "2026-11-20" });
+  const rows = twins(
+    [bet(5, "2026-12-03"), bet(1, "2026-12-01"), bet(3, "2026-11-20")],
+    [practice, closed],
+    [],
+    [],
+    "practice",
+  );
+  expect(rows.map((t) => [t.bet.game_date, t.state])).toEqual([
+    ["2026-12-01", "skipped"],
+    ["2026-11-20", "not recorded"],
+  ]);
+});
+
+test("a day without bets still sets the record's mode, from real_days", () => {
+  // The start fell on a day without bets, and a later day without bets paused real bets.
+  const days = [
+    { game_date: "2026-11-16", mode: "real" as const, started: "2026-11-16", reason: "" },
+    { game_date: "2026-11-24", mode: "paused" as const, started: "2026-11-16", reason: "floor" },
+  ];
+  const alerts = [alert(1, { game_date: "2026-11-18" })];
+  expect(view([], days)).toBe("real");
+  expect(since(alerts, days)).toEqual({ start: "2026-11-16", latest: "2026-11-24", mode: "paused" });
 });

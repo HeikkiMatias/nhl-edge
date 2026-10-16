@@ -6,7 +6,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { every } from "./load.ts";
-import type { RealAlert, RealCorrection, RealEntry, RealSettlement } from "./types.ts";
+import type {
+  RealAlert,
+  RealCorrection,
+  RealDayMode,
+  RealEntry,
+  RealSettlement,
+} from "./types.ts";
 
 export const ALERT_COLUMNS =
   "game_date, game_id, start_utc, home, away, mode, venue, status, side, paper_price, " +
@@ -143,6 +149,7 @@ export type RealRecordState =
       alerts: RealAlert[];
       entries: RealEntry[];
       corrections: RealCorrection[];
+      days: RealDayMode[];
       settlements: RealSettlement[] | null;
     };
 
@@ -192,6 +199,19 @@ export async function loadRecord(client: SupabaseClient): Promise<RealRecordStat
   } catch (error) {
     if (!NOT_SET_UP.has((error as { code?: string }).code ?? "")) throw error;
   }
+  let days: RealDayMode[] = [];
+  try {
+    days = await every((from, to) =>
+      client
+        .from("real_days")
+        .select("game_date, mode, started, reason")
+        .order("game_date")
+        .range(from, to)
+        .overrideTypes<RealDayMode[], { merge: false }>(),
+    );
+  } catch (error) {
+    if (!NOT_SET_UP.has((error as { code?: string }).code ?? "")) throw error;
+  }
   let settlements: RealSettlement[] | null;
   try {
     settlements = await every((from, to) =>
@@ -208,5 +228,5 @@ export async function loadRecord(client: SupabaseClient): Promise<RealRecordStat
     if (!NOT_SET_UP.has((error as { code?: string }).code ?? "")) throw error;
     settlements = null;
   }
-  return { ready: true, alerts, entries, corrections, settlements };
+  return { ready: true, alerts, entries, corrections, days, settlements };
 }

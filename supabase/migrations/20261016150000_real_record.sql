@@ -8,6 +8,8 @@
 -- - real_corrections: each correction to an entry (real/live/corrections/), appended at the weekly
 --   check against the venue's statement and inserted once by `nhl real sync --r2 --supabase`; the
 --   dashboard applies them in order over real_entries, as real_bets does.
+-- - real_days: each alerted day's mode (real/live/alerts/<date>.json), a day with no bets too, so
+--   a start, pause, stop or close on such a day is on record; inserted once by `nhl real sync`.
 
 create table public.real_settlements (
   game_date date not null,
@@ -74,4 +76,26 @@ revoke all on table public.real_corrections from anon, authenticated, service_ro
 grant select, insert on table public.real_corrections to service_role;
 grant select on table public.real_corrections to authenticated;
 create policy real_corrections_owner_reads on public.real_corrections
+  for select to authenticated using (public.is_dashboard_owner());
+
+create table public.real_days (
+  game_date date primary key,
+  mode text not null check (mode in ('practice', 'real', 'paused', 'stopped', 'closed')),
+  started date,
+  reason text not null,
+  bankroll double precision not null check (bankroll > 0),
+  venue text not null,
+  alert_utc timestamptz not null,
+  bets integer not null check (bets >= 0),
+  created_at timestamptz not null default now()
+);
+
+comment on table public.real_days is
+  'Each alerted day''s mode, mirrored from R2 (real/live/alerts/), a day with no bets too.';
+
+alter table public.real_days enable row level security;
+revoke all on table public.real_days from anon, authenticated, service_role;
+grant select, insert on table public.real_days to service_role;
+grant select on table public.real_days to authenticated;
+create policy real_days_owner_reads on public.real_days
   for select to authenticated using (public.is_dashboard_owner());

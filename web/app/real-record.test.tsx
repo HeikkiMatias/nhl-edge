@@ -116,3 +116,52 @@ test("after the start: the start date and the latest real day's mode", async () 
   expect(screen.getByText("2026-11-16")).toBeTruthy();
   expect(screen.getByText(/On 2026-11-24, real bets are paused/)).toBeTruthy();
 });
+
+test("a bet a correction found not placed shows its cancelled settlement", async () => {
+  const entry = {
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    outcome: "placed",
+    matched_price: 2.2,
+    stake: 1.5,
+    bet_id: "P1",
+    placed_utc: "2026-11-17T18:00:00Z",
+    reason: null,
+    entered_utc: "2026-11-17T18:01:00Z",
+    late: false,
+  };
+  const correction = {
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    n: 0,
+    changes: { outcome: "not placed", reason: "not matched" },
+    reason: "statement",
+    corrected_utc: "2026-11-23T10:00:00Z",
+  };
+  const cancelled = {
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    revision: 1,
+    mode: "practice",
+    side: "home",
+    matched_price: 2.2,
+    stake: 1.5,
+    status: "cancelled",
+    won: null,
+    profit: 0,
+    result_utc: "2026-11-18T10:00:00Z",
+    bankroll_after: 100,
+  };
+  const { supabase } = stubbed(
+    {
+      real_alerts: [ALERT],
+      real_entries: [entry],
+      real_corrections: [correction],
+      real_settlements: [cancelled],
+    },
+    new Set(["anon"]),
+  );
+  render(<RealRecord client={supabase} bets={[BET]} report={null} />);
+  expect(await screen.findByText("Cancelled by a correction")).toBeTruthy();
+  expect(screen.getByText(/Not placed: not matched/)).toBeTruthy();
+});

@@ -1628,6 +1628,8 @@ def test_targets_must_be_a_slate_of_the_seasons_rated(tmp_path: Any) -> None:
         (["real", "alert"], "a real run reads and writes R2"),
         (["real", "alert", "--r2", "--date", "2026-10-15"], "only a dry run takes a date"),
         (["real", "correct", "--date", "2026-10-15", "--game-id", "1", "--note", "n"], "--r2"),
+        (["real", "sync", "--supabase"], "pass --r2 too"),
+        (["real", "settle", "--supabase"], "pass --r2 too"),
     ],
 )
 def test_real_commands_refuse_bad_options_before_any_call(args: list[str], message: str) -> None:
