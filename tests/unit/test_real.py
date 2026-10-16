@@ -57,8 +57,17 @@ def test_the_bankroll_is_the_owners_veto_never_a_pass() -> None:
     assert vetoed["verdict"] == "the rule holds, but the owner's veto applies"
     assert not rule(paper_bankroll=100.01)["veto"]["applies"]
     both = rule(paper_bankroll=98.0, venue=None)["verdict"]
-    assert both == "fails: (d); the owner's veto applies too"
+    assert both == "fails: (d); the owner's veto applies"
     assert "b" not in rule()["conditions"]
+
+
+def test_the_drawdown_review_blocks_a_start_beside_the_rule() -> None:
+    # Like the veto, a point estimate: it blocks, never fails a condition (Codex on #273).
+    reviewed = rule(drawdown_triggered=True)
+    assert reviewed["failing"] == [] and reviewed["drawdown_review"]["applies"]
+    assert reviewed["verdict"] == "the rule holds, but the drawdown review is open"
+    both = rule(drawdown_triggered=True, paper_bankroll=90.0)["verdict"]
+    assert both == "the rule holds, but the owner's veto applies and the drawdown review is open"
 
 
 def test_each_condition_at_its_boundary() -> None:
@@ -76,7 +85,6 @@ def test_each_condition_at_its_boundary() -> None:
     assert rule(unfinished=None)["failing"] == ["c"]
     assert rule(unfinished=[date(2026, 11, 3)])["failing"] == ["c"]
     assert rule(undecided=[date(2026, 11, 4)])["failing"] == ["c"]
-    assert rule(drawdown_triggered=True)["failing"] == ["c"]
     late = {date(2026, 11, 5): "day skipped: the decision came after the window"}
     explained = rule(skipped=late)
     assert explained["failing"] == []
@@ -95,6 +103,11 @@ def test_only_a_weekly_report_decides_and_only_in_november() -> None:
     assert not rule(as_of=tuesday)["weekly"]
     assert rule(as_of=tuesday)["verdict"] == (
         "decided at the weekly report, the next on 2026-11-23"
+    )
+    # A Monday report before Sunday's results are public decides nothing either (Codex on #273).
+    early_monday = rule(complete=False)
+    assert early_monday["verdict"] == (
+        "decided at the weekly report, once the previous day's results are public"
     )
     after = rule(as_of=real.END + timedelta(days=1))["verdict"]
     assert after == "the window has closed: a start needs a new decision by the owner"
@@ -118,7 +131,8 @@ def test_the_weekly_clv_stop_applies_the_starts_safeguards() -> None:
     assert real.clv_stop(value(bound_high=-0.001), monday)["stop"]
     assert not real.clv_stop(value(high=0.0), monday)["stop"]
     assert real.clv_stop(value(share=0.8), monday)["pause"]
-    # Between weekly reports nothing is decided.
+    # Between weekly reports nothing is decided, nor before the previous day's results are public.
+    assert real.clv_stop(value(high=-0.001), monday, complete=False)["stop"] is None
     tuesday = monday + timedelta(days=1)
     assert real.clv_stop(value(high=-0.001), tuesday) == {
         "measured": True,

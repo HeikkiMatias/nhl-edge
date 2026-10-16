@@ -328,10 +328,28 @@ def test_the_real_stakes_section_states_adr_0039s_start_rule(
     assert v1_only["real_stakes"]["veto"]["paper_bankroll"] == pytest.approx(
         100 + season.settlements.height
     )
-    # An earlier policy's report has no real stakes section.
+    # An earlier policy's report has no real stakes section, and its banner points to none.
     v1 = season.report(as_of=monday, ledger=older, policy=POLICY_V1, unfinished_bundles=[])
     assert v1["real_stakes"] is None
     assert "## Real stakes" not in lr.markdown(v1)
+    assert "ADR 0039" not in lr.markdown(v1)
+    # Only results public by the report's clock count, and a Monday report before Sunday's are
+    # public decides nothing (Codex on #273).
+    early = datetime(2026, 11, 16, 9, tzinfo=UTC)
+    before = season.report(as_of=monday, now=early, unfinished_bundles=[])["real_stakes"]
+    public = season.settlements.filter(pl.col("result_utc") <= early).height
+    assert public < season.settlements.height
+    assert before["veto"]["paper_bankroll"] == pytest.approx(100 + public)
+    assert before["verdict"] == (
+        "decided at the weekly report, once the previous day's results are public"
+    )
+    # A 20% fall of the paper bankroll opens the drawdown review, which blocks a start.
+    season.settlements = season.settlements.with_columns(profit=pl.lit(-1.0))
+    fallen = season.report(as_of=monday, unfinished_bundles=[])["real_stakes"]
+    assert fallen["drawdown_review"]["applies"] and fallen["failing"] == []
+    assert fallen["verdict"] == (
+        "the rule holds, but the owner's veto applies and the drawdown review is open"
+    )
 
 
 def test_too_few_weeks_give_counts_and_no_estimate() -> None:
