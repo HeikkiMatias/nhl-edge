@@ -182,7 +182,7 @@ Every deliverable merged under its own task issue:
   - The calls and polls were all saved in the run bundle, and all of them were taken before the decision snapshot.
   - `nhl live replay --r2` reproduced the ledger, every column.
   - The paper bankroll stood at 104.49 units at that decision.
-  - v2 reaches 4 weeks of games on 2026-11-02, when its first CLV interval appears.
+  - **The first CLV interval:** it needs v2's eligible bets with a closing proxy to span 4 Monday-to-Sunday weeks. The 4th such week starts on 2026-11-02, so the earliest weekly report with an interval is 2026-11-09's, and later if a week has no qualifying bet. Until then a counts-only figure is expected, not a failure (Codex on #274).
 - **The first weekly report** (`reports/live/report-2026-10-14.md`, #235): no operational problem.
   - Both ANA–CGY games had u's rookie share beyond 3 training standard deviations. That is ANA's young lineup, with no data gap (#236).
   - Availability doubt passed 3 standard deviations once (MIN at FLA on 2026-10-10).
