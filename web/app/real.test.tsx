@@ -100,10 +100,10 @@ test("a time at or after the start is refused before anything is sent", async ()
   render(<RealBets client={supabase} />);
   fireEvent.change(await screen.findByLabelText("Price"), { target: { value: "2.10" } });
   fireEvent.change(screen.getByLabelText("Bet id"), { target: { value: "P1" } });
-  const placed = screen.getByLabelText("Placed at (your time)") as HTMLInputElement;
+  const placed = screen.getByLabelText("Placed at (your time; empty for now)");
   const start = new Date(ALERT.start_utc);
   const local = new Date(start.getTime() - start.getTimezoneOffset() * 60_000);
-  fireEvent.change(placed, { target: { value: local.toISOString().slice(0, 16) } });
+  fireEvent.change(placed, { target: { value: local.toISOString().slice(0, 19) } });
   fireEvent.click(screen.getByText("Record placed bet"));
   expect((await screen.findByRole("alert")).textContent).toMatch(/at or after the game's start/);
   await waitFor(() => expect(requests.some((r) => r.method === "POST")).toBe(false));
@@ -113,4 +113,25 @@ test("before the migration the section says it isn't set up", async () => {
   const { supabase } = stubbed({}, new Set(["anon"]));
   render(<RealBets client={supabase} />);
   expect(await screen.findByText(/Not set up yet/)).toBeTruthy();
+});
+
+test("an empty placed time is the clock when the entry is sent, to the second", async () => {
+  // The form mounts at 18:05:00 and the bet is recorded at 18:20:07 (Codex on #277).
+  const { supabase, requests } = board();
+  render(<RealBets client={supabase} />);
+  fireEvent.change(await screen.findByLabelText("Price"), { target: { value: "2.10" } });
+  fireEvent.change(screen.getByLabelText("Bet id"), { target: { value: " P1 " } });
+  vi.setSystemTime(new Date("2026-11-17T18:20:07Z"));
+  fireEvent.click(screen.getByText("Record placed bet"));
+  await waitFor(() => expect(requests.some((r) => r.method === "POST")).toBe(true));
+  const insert = requests.find((r) => r.method === "POST");
+  expect(JSON.parse(insert?.body ?? "{}")).toEqual({
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    outcome: "placed",
+    matched_price: 2.1,
+    stake: 0.9,
+    bet_id: "P1",
+    placed_utc: "2026-11-17T18:20:07.000Z",
+  });
 });

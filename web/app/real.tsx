@@ -21,12 +21,6 @@ import { Explain } from "./sections";
 const euros = (x: number) => `${x.toFixed(2)} €`;
 const team = (a: RealAlert) => (a.side === "home" ? a.home : a.away);
 
-/** A datetime-local input's value for an instant, in the browser's own time zone. */
-function localValue(at: Date): string {
-  const shifted = new Date(at.getTime() - at.getTimezoneOffset() * 60_000);
-  return shifted.toISOString().slice(0, 16);
-}
-
 /** The latest alerted day's real bets (#268): each one's minimum price and stake at the price
  * offered, and the form that records what the owner did. */
 export function RealBets({ client }: { client: SupabaseClient }) {
@@ -144,15 +138,18 @@ function EntryForm({
   const [stake, setStake] = useState("");
   const [stakeEdited, setStakeEdited] = useState(false);
   const [betId, setBetId] = useState("");
-  const [placedAt, setPlacedAt] = useState(() => localValue(new Date()));
+  // Empty means "now", read when the entry is sent: a default fixed when the form mounted would
+  // record the page's load time for a bet placed later (Codex on #277).
+  const [placedAt, setPlacedAt] = useState("");
   const [reason, setReason] = useState<Reason>(REASONS[0]);
   const [errors, setErrors] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
   const offered = Number(price);
   const allowed = price && offered > 1 ? stakeAt(alert.stakes, offered) : null;
-  const bet = { price: offered, stake: Number(stake), betId, placedAt: new Date(placedAt) };
-  const { warnings } = checkPlaced(alert, bet, new Date());
+  const placed = () => (placedAt ? new Date(placedAt) : new Date());
+  const bet = () => ({ price: offered, stake: Number(stake), betId, placedAt: placed() });
+  const { warnings } = checkPlaced(alert, bet(), new Date());
 
   function onPrice(value: string) {
     setPrice(value);
@@ -165,11 +162,12 @@ function EntryForm({
 
   async function place(event: FormEvent) {
     event.preventDefault();
-    const checked = checkPlaced(alert, bet, new Date());
+    const sent = bet();
+    const checked = checkPlaced(alert, sent, new Date());
     setErrors(checked.errors);
     if (checked.errors.length) return;
     setBusy(true);
-    const refused = await recordPlaced(client, alert, bet);
+    const refused = await recordPlaced(client, alert, sent);
     setBusy(false);
     if (refused) setErrors([refused]);
     else onRecorded();
@@ -219,10 +217,10 @@ function EntryForm({
           <input required value={betId} onChange={(e) => setBetId(e.target.value)} />
         </label>
         <label>
-          Placed at (your time)
+          Placed at (your time; empty for now)
           <input
             type="datetime-local"
-            required
+            step="1"
             value={placedAt}
             onChange={(e) => setPlacedAt(e.target.value)}
           />

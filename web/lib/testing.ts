@@ -8,7 +8,7 @@ export const SUPABASE_URL = "https://abcdefghijklmnop.supabase.co";
 let clients = 0;
 
 export type Answer = { status?: number; body: unknown };
-export type Sent = { method: string; url: URL; token: string | null };
+export type Sent = { method: string; url: URL; token: string | null; body: string | null };
 /** A stored live_reports row, as the tests give them. */
 export type StoredReport = {
   as_of: string;
@@ -42,7 +42,8 @@ export function stubbed(
     const url = new URL(input instanceof Request ? input.url : String(input));
     const method = init?.method ?? (input instanceof Request ? input.method : "GET");
     const bearer = new Headers(init?.headers).get("authorization");
-    const sent = { method, url, token: bearer?.replace(/^Bearer /, "") ?? null };
+    const body = typeof init?.body === "string" ? init.body : null;
+    const sent = { method, url, token: bearer?.replace(/^Bearer /, "") ?? null, body };
     requests.push(sent);
     const reply = answer?.(sent) ?? postgrest(tables, owners, sent);
     return new Response(JSON.stringify(reply.body), {
