@@ -135,3 +135,25 @@ test("an empty placed time is the clock when the entry is sent, to the second", 
     placed_utc: "2026-11-17T18:20:07.000Z",
   });
 });
+
+test("a bet whose game has started is offered no more, but a bet placed before can be recorded", async () => {
+  // The page was opened at 18:05; at 00:00:30 UTC the game is 30 seconds old (Codex on #277).
+  const { supabase, requests } = board();
+  render(<RealBets client={supabase} />);
+  expect(await screen.findByText(/Stake 1.50 € at 2.15 or more/)).toBeTruthy();
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+  vi.setSystemTime(new Date("2026-11-18T00:00:30Z"));
+  cleanup();
+  render(<RealBets client={supabase} />);
+  expect(await screen.findByText("The game has started: don't place this bet now.")).toBeTruthy();
+  expect(screen.queryByText(/Stake 1.50 € at 2.15 or more/)).toBeNull();
+  // Placed at 23:50, before the start, and recorded now: sent, and marked late by the database.
+  fireEvent.change(screen.getByLabelText("Price"), { target: { value: "2.10" } });
+  fireEvent.change(screen.getByLabelText("Bet id"), { target: { value: "P1" } });
+  const placed = screen.getByLabelText("Placed at (your time; empty for now)");
+  const at = new Date("2026-11-17T23:50:00Z");
+  const local = new Date(at.getTime() - at.getTimezoneOffset() * 60_000);
+  fireEvent.change(placed, { target: { value: local.toISOString().slice(0, 19) } });
+  fireEvent.click(screen.getByText("Record placed bet"));
+  await waitFor(() => expect(requests.some((r) => r.method === "POST")).toBe(true));
+});

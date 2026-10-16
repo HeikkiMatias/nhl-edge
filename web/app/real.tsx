@@ -33,6 +33,13 @@ export function RealBets({ client }: { client: SupabaseClient }) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+  // The clock the bets are shown against, read again every 30 seconds: a page left open past a
+  // game's start stops offering its bet (Codex on #277).
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
   if (error) return <p className="notice">Could not read the real bets: {error}</p>;
   if (!state) return <p className="muted">Loading…</p>;
@@ -58,6 +65,7 @@ export function RealBets({ client }: { client: SupabaseClient }) {
           alert={alert}
           entry={state.entries[alert.game_id]}
           onRecorded={refresh}
+          now={now}
         />
       ))}
       <Explain terms={["realStakes", "practice", "minPrice", "realStake", "realRecord"]} />
@@ -85,11 +93,13 @@ function RealBet({
   alert,
   entry,
   onRecorded,
+  now,
 }: {
   client: SupabaseClient;
   alert: RealAlert;
   entry: RealEntry | undefined;
   onRecorded: () => void;
+  now: number;
 }) {
   const title = `${alert.away} at ${alert.home}, starts ${helsinkiTime(alert.start_utc, alert.game_date)} · bet ${team(alert)}`;
   if (alert.status !== "alerted") {
@@ -100,6 +110,28 @@ function RealBet({
       </div>
     );
   }
+  if (entry) {
+    return (
+      <div className="real-bet">
+        <h3>{title}</h3>
+        <Recorded entry={entry} />
+      </div>
+    );
+  }
+  // Once the game has started the bet is no longer offered; a bet placed before the start can
+  // still be recorded, marked late.
+  if (now >= new Date(alert.start_utc).getTime()) {
+    return (
+      <div className="real-bet">
+        <h3>{title}</h3>
+        <p className="warning">The game has started: don&apos;t place this bet now.</p>
+        <details>
+          <summary>Placed it before the start? Record it here (marked late)</summary>
+          <EntryForm client={client} alert={alert} onRecorded={onRecorded} />
+        </details>
+      </div>
+    );
+  }
   return (
     <div className="real-bet">
       <h3>{title}</h3>
@@ -107,7 +139,7 @@ function RealBet({
         Minimum price <strong>{alert.min_price}</strong>. Stake {euros(alert.max_stake)} at{" "}
         {alert.paper_price} or more.
       </p>
-      {entry ? <Recorded entry={entry} /> : <EntryForm client={client} alert={alert} onRecorded={onRecorded} />}
+      <EntryForm client={client} alert={alert} onRecorded={onRecorded} />
     </div>
   );
 }
