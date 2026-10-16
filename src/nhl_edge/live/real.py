@@ -5,7 +5,9 @@ Real stakes start on the first decision day from START to END on which the start
 the latest weekly report, Monday's (WEEKLY); if it hasn't held by END, a start needs a new
 decision by the owner. Only a weekly report decides, and only once the previous day's results
 are public, on evidence public at its clock: the nightly ones show the figures and point to the
-next weekly report (Codex on #273). The rule, fixed before the evidence:
+next weekly report (Codex on #273). The deciding run is the scheduled weekly live report,
+Mondays at 10:20 UTC, after Sunday's results are public at 10:00 UTC; the 09:00 UTC nightly
+defers to it (docs/handover.md, the weekly live report). The rule, fixed before the evidence:
 - **(a) CLV,** under ADR 0032's safeguards: v2's CLV per bet over at least 4 weeks has its
   interval's upper bound above 0, the coverage floor holds, and the pessimistic bound (each
   eligible bet without a proxy counted at the 10th percentile of the observed CLV) has its upper
