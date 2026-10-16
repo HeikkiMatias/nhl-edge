@@ -13,7 +13,7 @@
   - fair move +2.83% [+2.04%, +3.62%] per bet;
   - CLV −1.23% [−2.01%, −0.46%] per bet.
 - **Gate 3 is not met** (ADR 0031).
-- **Live:** 24 paper bets so far, with counts only until 4 weeks of a policy's games. v2 reaches 4 weeks of games on 2026-11-02, when its first CLV interval appears.
+- **Live:** 24 paper bets so far, with counts only until 4 weeks of a policy's games. v2's CLV interval needs its eligible bets with a proxy to span 4 Monday-to-Sunday weeks. The 4th starts on 2026-11-02, so the first interval can appear at the weekly report of 2026-11-09 at the earliest.
 
 **Profit over a few weeks is mostly luck:**
 - At odds near 2.0, one bet's return has a standard deviation of about one stake. Over the 100 to 120 bets expected by mid-November, a policy that truly loses 2% per bet still ends up in profit about 4 times in 10.

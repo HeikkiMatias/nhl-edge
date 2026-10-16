@@ -1,18 +1,24 @@
-# Handover, 2026-10-14
+# Handover, 2026-10-16
 
-This file says where the build stands after the cloud sessions of 2026-09-29 to 10-14, and how a fresh session picks it up. CLAUDE.md holds the rules; this file holds the state. Update it, or delete it, when it goes stale.
+This file says where the build stands after the cloud sessions of 2026-09-29 to 10-16, and how a fresh session picks it up. CLAUDE.md holds the rules; this file holds the state. Update it, or delete it, when it goes stale.
 
 ## Start here (a fresh session)
 
-1. **Read** CLAUDE.md, this file and `docs/model-card.md`.
-2. **Take over the scheduled check-ins.** They are Routines bound to the session that created them, so they keep firing into the old session, not a new one. List them (`list_triggers`), create each again bound to the new session with the same time and prompt, then delete the old one. A check-in whose time has passed in the old session needs doing by hand: check its result first. On 2026-10-14 they were:
-   - 2026-10-15, after the 12:45 ET decision: v2's first decision checked, and v1's final report;
-   - Mondays 10:20 UTC: the weekly live report;
-   - 2026-10-22 10:30 UTC: #30, then gate 1;
-   - 2026-11-05 10:40 UTC: #121 step 3, which also revisits #120's early-exit gap.
+1. **Read** CLAUDE.md, this file and `docs/model-card.md`. For the newest work, also read ADR 0038 (challengers) and ADR 0039 (real money).
+2. **Take over the scheduled tasks.** They are Routines bound to the session that created them, so they keep firing into the old session, not a new one. List them (`list_triggers`), create each again bound to the new session with the same time and prompt, then delete the old one. A task whose time has passed in the old session needs doing by hand: check its result first. On 2026-10-16 they were:
+   - **2026-10-17 10:45 UTC:** check `market_only`'s first challenger output (#255). After the 10-17 nightly, R2 should hold `challengers/live/market_only/1/2026-10-16.parquet`. Its `p_home` should equal that day's ledger `p_blend_market`, game by game, and `nhl live challengers --check --r2` should reproduce it.
+   - **Mondays 10:20 UTC:** the weekly live report. It is also the run that decides ADR 0039's real-money start rule and weekly CLV stop (step 3 of its prompt).
+   - **2026-10-22 10:30 UTC:** #30, then gate 1.
+   - **2026-11-05 10:40 UTC:** #121 step 3, which also revisits #120's early-exit gap.
 3. **Finish any waiting item whose date has come** (the next section). The SessionStart hook lists the open issues of the earliest milestone, P2 (#11, #30, #79). They wait on the calendar, not on work, so don't start them early.
-4. **Otherwise phase 5 (#14) runs itself.** Everything in its plan (`docs/plans/phase-5.md`) is built. What's left is to watch the live test, finish the dated items and fix what the weekly reports turn up. See "Phase 5: where it stands" below.
-   - Gate 3 is not met (ADR 0031): on history, the blend adds no information beyond the recalibrated market. As the owner decided, phase 5 paper-trades the frozen policy anyway, and live 2026-27 is the remaining test.
+4. **Then the [priority] work for real money (#271):**
+   - #268, the real ledger and alerts, once the owner has answered its two questions (below);
+   - #266, the venue, which waits on the owner's steps;
+   - #269 and #270 after them.
+
+   ADR 0039's earliest start is 2026-11-16. See "Phase 6" below.
+5. **Otherwise phase 5 (#14) runs itself.** Everything in its plan (`docs/plans/phase-5.md`) is built. What's left is to watch the live test, finish the dated items and fix what the weekly reports turn up.
+   - Gate 3 is not met (ADR 0031): on history, the blend adds no information beyond the recalibrated market. As the owner decided, the frozen policy is traded on paper anyway, and live 2026-27 is the remaining test.
    - Gate 1 (#79) is still open. It is a checkpoint, not a stop (ADR 0002).
    - **The clock runs:** policy v2 was frozen on 2026-10-14 and counts from 2026-10-15. v1's bets of 2026-10-08 to 10-14 stay on record under v1 and are reported apart. Every game without a logged pre-game prediction is a paper bet the live test can't use.
    - **Never change a frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and its CLV count restarts.
@@ -21,9 +27,9 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 
 | Item | Ready when | Then |
 | --- | --- | --- |
-| The v2 freeze, #240 (closes #222) | Done 2026-10-14 | v1's last decision was published at 16:49 UTC, under `policy-20261005-8ec5cf3`: 2 games, no bet. #240 merged after it, so 2026-10-15 is v2's first day. |
-| v2's first decision | 2026-10-15, after the 12:45 ET (16:45 UTC) decision is published | In the midday run's Predict step, check three things. The day's starters are logged with their source. The ledger rows carry `policy-20261014-e15db87`. A confirmed starter's goalie doubt is 0. `nhl live replay --r2` reproduces the ledger from the run bundle, whose `goalie_starters`, `pregame_goalies` and `dailyfaceoff_goalies` files hold the calls and the polls the decision read. Then comment on #222 and close #225. |
-| v1's final report | After the 2026-10-15 nightly (09:00 UTC) settles 2026-10-14's bets | Run `uv run nhl live report --r2 --policy policy-20261005-8ec5cf3`. It writes `reports/live/report-<date>-policy-20261005-8ec5cf3.md` and `.json`. Commit them on a branch, then PR and merge. `--supabase` refuses an earlier policy, so the dashboard keeps the current one. |
+| `market_only`'s first challenger output (#255) | After the **2026-10-17** nightly (09:00 UTC) | As the 10:45 UTC task says. If it's missing or differs, read the nightly's "Challengers" step log first. |
+| The owner's answers for #268 | Asked 2026-10-16 | Two questions, both the owner's to answer. **The alert:** how the day's real bets reach the owner after the 12:45 ET decision: a push notification, an email or a dashboard panel. **Recording:** how the owner enters a placed bet's matched price, stake and bet id: a dashboard form, or another way. Then plan and build #268. |
+| The owner's venue steps (#266) | When the owner has time; a venue must be ready before the start | The owner's three steps, in the issue's comment: **(1)** start a Pinnacle sign-up and check that Finland is in its country list; **(2)** read its terms for API betting; **(3)** send the drafted email to `api@pinnacle.com`. If Pinnacle declines, Matchbook is next, then Betfair. Manual placement from alerts (#268) works at any venue meanwhile. When a venue is ready, set `live/real.VENUE` in a PR. |
 | The weekly live report | Mondays 10:20 UTC | As the Routine's prompt says: v2's report, reviewed and committed. It gives counts only, no estimate, until a policy has 4 weeks of games (#235). It is the run that decides ADR 0039's start rule and weekly CLV stop: it runs after Sunday's results are public at 10:00 UTC, while the 09:00 UTC nightly defers to it (#267). From 2026-11-16 it states the verdict, and the owner is told it. |
 | #30, post-game corrections | Two weeks of rechecked 2026-27 games: about **2026-10-22**. The nightly runs `nhl recheck --recent 3 --r2`. | Run `nhl audit report` after bringing the lake up to R2, and review its corrections section on #30. If corrections change more than scorer credit on more than a few games a season, reopen ADR 0004 with the owner. Then close #30. **Limit:** the NHL served no shift chart a week later for games 2026020006 to 2026020052 (#237). The report lists them as charts not rechecked, never as shifts removed, and compares their play-by-play and boxscore only. If the NHL serves them again after they leave the nightly window, `nhl recheck --recent 30 --r2` fetches them once. |
 | #79, gate 1 (draft PR #93, branch `phase-2/gate-1`) | #30 is reviewed. | **ADR and checks:** write ADR 0014 with the owner, from the outline in the comment on #79. If #30's corrections change any table its report compares, rerun `/leakage-check` and `/run-backtest`. B2 or B3 reads every one of those tables through its features: `shots`, `shifts`, `actual_lineups`, `shift_coverage`, `strength_time`, `penalties` and `faceoffs`. Penalties feed B3's expected power plays, and faceoffs its stints' zone starts. **Merging:** first merge main into the branch, taking main's `docs/handover.md` and model card over the branch's versions. **Docs:** then write the model card's gate 1 entry on top of main's version. Mark #93 ready (Codex reviews it then), triage and merge. Then close #11, phase 2's summary issue. |
@@ -171,7 +177,12 @@ Every deliverable merged under its own task issue:
   - `audit/goalies.py`: the decision measure.
 
 **The live record so far:**
-- **v1:** 21 bets on 2026-10-08 to 10-13. Its last decision, on 2026-10-14, gave no bet on 2 games. The paper bankroll stood at 103.77 units at the 2026-10-13 decision.
+- **v1** (`policy-20261005-8ec5cf3`): 52 games and 21 bets on 2026-10-08 to 10-14. Its final report is `reports/live/report-2026-10-15-policy-20261005-8ec5cf3.md` (#262): counts only (2 weeks), every eligible bet with a closing proxy, and no operational problem.
+- **v2** (`policy-20261014-e15db87`): first day 2026-10-15, 11 games and 3 bets.
+  - The calls and polls were all saved in the run bundle, and all of them were taken before the decision snapshot.
+  - `nhl live replay --r2` reproduced the ledger, every column.
+  - The paper bankroll stood at 104.49 units at that decision.
+  - **The first CLV interval:** it needs v2's eligible bets with a closing proxy to span 4 Monday-to-Sunday weeks. The 4th such week starts on 2026-11-02, so the earliest weekly report with an interval is 2026-11-09's, and later if a week has no qualifying bet. Until then a counts-only figure is expected, not a failure (Codex on #274).
 - **The first weekly report** (`reports/live/report-2026-10-14.md`, #235): no operational problem.
   - Both ANA–CGY games had u's rookie share beyond 3 training standard deviations. That is ANA's young lineup, with no data gap (#236).
   - Availability doubt passed 3 standard deviations once (MIN at FLA on 2026-10-10).
@@ -179,21 +190,68 @@ Every deliverable merged under its own task issue:
 
 **What's left in phase 5:**
 - #169, task 9: a second copy of `raw/` outside R2. The owner chose, on 2026-10-09, to keep it on their own computer, set up later. The steps are on the issue (`nhl lake restore-raw` with a read-only R2 token).
-- #247: a small dashboard axis bug. (#244, each bet's policy and v2's marker on the bankroll chart, is done: #246.)
+- #264: since the v2 freeze, `nhl live replay` of any v1 day differs from its ledger in `policy_version` alone, because the replay stamps the current constant. The fix needs one question settled first (the issue has it). Challengers count only v2 days, so nothing breaks until the next policy freeze.
+- #253, selected-bet calibration, and #254, the proxy's lead and its cost: two diagnostics from the review agenda.
 - #173, after #30; #121 step 3, on 2026-11-05; #67, around 2027-04-17.
 
-## Phase 6: the review agenda (#250)
+## Phase 6: the review agenda (#250) and real money (#271)
 
-An external review on 2026-10-15 gave the agenda in #250. Its P5 diagnostics are in the weekly live report, with no verdict:
-- **Entry to close** (#251): whether the market moved toward each model's disagreement.
-- **Shadows** (#252): market-only selection, and best-price execution.
-- **Still open:** #253, selected-bet calibration, and #254, the proxy's lead and its cost.
+**The review agenda.** An external review on 2026-10-15 gave the agenda in #250. Two of its diagnostics are now in the weekly live report, with no verdict:
+- **Entry to close** (#251, `live/movement.py`): whether Pinnacle's price moved toward each model's disagreement by the close. First reading: 42 games, a mean move of 1.0 point, and a correlation of 0.05. It gives counts only until 4 weeks.
+- **Shadows** (#252, `live/shadow.py`):
+  - **Market-only selection:** the frozen rules on the market-only control made 0 bets.
+  - **Best-price execution:** a better fresh bookmaker price existed for 7 of v1's 17 bets with a close, adding +0.56 points of CLV. Counting the exchanges (before commission), 16 of 17 had a better price, adding +1.8 points.
 
 **Challengers (#255, ADR 0038).** New models are judged only on decision days after their registration, never on history again.
-- **Where:** each is an entry in `live/challengers.py`, scored nightly by `nhl live challengers --r2` from the day's run bundle, and reported in the live report's Challengers section.
-- **The rules (ADR 0038):** its ADR is fixed before its first scored game; nothing is backfilled; every registered challenger is reported; and one enters a policy only through a new policy version and the owner.
-- **Registered:** `market_only`, from 2026-10-15, a check of the mechanism; its output equals the ledger's `p_blend_market`.
-- **Next:** #256 to #260, each with its own ADR registering it.
+- **Where:**
+  - each challenger is an entry in `live/challengers.py`;
+  - `nhl live challengers --r2` scores it nightly, after the bundle check, from the day's run bundle;
+  - each output is written once to `challengers/live/<name>/<version>/<date>.parquet`, and the lake's `challenger_predictions` is rebuilt from them;
+  - the live report's Challengers section reports them.
+- **The rules (ADR 0038):**
+  - its ADR is fixed before its first scored game, and nothing is backfilled;
+  - a day without its output withholds the challenger's figures;
+  - every registered challenger is reported;
+  - a challenger enters a policy only through a new policy version and the owner.
+- **The lake, point in time:** a challenger may read only the tables in `challengers.READERS`, each through a reviewed reader:
+  - `games`, through `results_known_at`;
+  - `schedule`, through `schedule_known_at`;
+  - `odds_snapshots`, without its after-the-fact columns.
+
+  Any other table needs its reader and a leakage test first.
+- **Registered:** `market_only`, from 2026-10-15, as a check of the mechanism. On R2's 2026-10-15 bundle its 11 games equalled the ledger's `p_blend_market`, and `--check` reproduced them.
+- **Next:** #256 to #260, each registered by its own ADR. Their evidence starts the day after registration, so the earlier they're registered, the more games they get.
+
+**Real money (ADR 0039, the owner, 2026-10-15 and 10-16).** Real stakes start from mid to late November 2026, beside the paper ledger, which continues. The tracking issue is #271.
+- **The start rule** (`live/real.py`; the report's "Real stakes (ADR 0039)" section, #267):
+  - **(a) CLV:** v2's CLV per bet interval has its upper bound above 0, the 90% coverage floor holds, and the pessimistic bound's upper bound is above 0 too;
+  - **(c) operations:** every run bundle is complete, and no day had games but no decision;
+  - **(d) the venue:** `real.VENUE` is set.
+- **Two signals block a start beside the rule:**
+  - **the owner's veto:** the paper bankroll at or below 100;
+  - **the drawdown review:** a 20% fall from a peak.
+
+  Each is a point estimate, so it never passes the rule on its own (hard rule 7). Codex's P0 on #272 asking to drop the veto is won't-fix, by the owner's decision of 2026-10-16.
+- **When it decides:** only the Monday weekly report decides, the scheduled task at 10:20 UTC, after Sunday's results are public at 10:00. It reads only evidence public at its clock. The 09:00 UTC nightly defers to it. The window is 2026-11-16 to 11-30; after that, a start needs a new decision by the owner.
+- **The stakes:**
+  - the real bankroll is 100 €;
+  - each stake is the frozen staking rule recomputed at the executable price, never above the paper fraction: at most 1.5% of the real bankroll, so 1.50 € at the start;
+  - a stake below the venue's minimum is skipped, not rounded up.
+- **The stops:**
+  - the real bankroll falls 20%: checked before every day's bets, from the real ledger (#268);
+  - v2's CLV interval or its pessimistic bound falls entirely below 0: at a weekly report;
+  - the coverage floor fails: a pause until it holds again.
+- **The venue (#266):**
+  - **Veikkaus forbids programmatic fixed-odds betting** ("Kiinteäkertoimisen vedonlyönnin ohjelmallinen pelaaminen on kielletty"), so it is manual only, and unofficial API wrappers are never used.
+  - **Pinnacle is the best fit:** its Bets API is open by application only, since 2025-07-23, and it supports pregame handicapping projects. The policy already decides at its price.
+  - **Matchbook's API** officially supports trading bots, after an inquiry form.
+  - **Betfair's availability** in Finland is unclear.
+  - **Finland's licensed market** opens on 2027-07-01 (reported).
+- **The build:**
+  - #267 is done (#273);
+  - #268: the real ledger, alerts, manual recording and settlement;
+  - #269: API placement, once access is granted;
+  - #270: the dashboard's real record.
 
 ## The owner's standing decisions
 
@@ -228,9 +286,11 @@ An external review on 2026-10-15 gave the agenda in #250. Its P5 diagnostics are
 - **The dashboard shows results during the season (ADR 0034).** If the results start pulling toward a policy change, hiding them again is the remedy, never changing the policy.
 - **Real money from mid to late November 2026 (ADR 0039, the owner, 2026-10-15).**
   - **The real bankroll:** 100 €. It bets the frozen policy's paper bets, staked by the frozen rule at the executable price and never above the paper fraction: at most 1.5% of the bankroll, 1.50 € at the start. The paper ledger continues beside it.
-  - **The start:** the first decision day from 2026-11-16 to 2026-11-30 on which the start rule held at the latest weekly report. The rule: v2's CLV interval, its coverage floor and its pessimistic bound all hold (upper bounds above 0), the paper bankroll is above 100 (the owner's veto, never a pass on its own), the operations are clean, and the venue is ready (#266). Not held by November's end: no start without a new decision by the owner.
-  - **The stops:** the real bankroll falls 20%, checked before every day's bets; or v2's CLV interval falls entirely below 0, at a weekly report.
+  - **The start:** the first decision day from 2026-11-16 to 2026-11-30 on which the start rule held at the latest weekly report, Monday's at 10:20 UTC. The rule is three conditions: v2's CLV interval, its coverage floor and its pessimistic bound all hold (upper bounds above 0); the operations are clean; and the venue is ready (#266). Beside them, the owner's veto (the paper bankroll at or below 100) and the drawdown review each block a start, and never pass one. If the rule hasn't held by November's end, a start needs a new decision by the owner.
+  - **The stops:** the real bankroll falls 20%, checked before every day's bets. Or, at a weekly report, v2's CLV interval or its pessimistic bound falls entirely below 0; a failed coverage floor pauses real bets.
   - **Placement:** manual from alerts until an API venue is confirmed.
+- **Challengers (ADR 0038, the owner's approval of #255's plan, 2026-10-15):** pre-registered, judged on future decision days only, every one reported, and never a change to the frozen policy.
+- **The venue (2026-10-15):** any major sportsbook or exchange open to Finland that allows API betting may be used, under its own terms. Veikkaus itself matters little to the owner.
 - **The repository is public** since 2026-10-09, so Actions minutes are free (#213 has the history).
 - **Dependabot's four patch bumps of 2026-10-05** (#174 to #177) were closed at the owner's request. None was a security fix.
 
@@ -286,11 +346,12 @@ An external review on 2026-10-15 gave the agenda in #250. Its P5 diagnostics are
     - A 401 is a bad or expired token (it expires around 2027-09). A 403 or 404 means the token lacks Actions read and write.
     - `npx wrangler@4 secret put GITHUB_TOKEN` stores a new token.
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
-- **Open, waiting:** #30, #79 and #11 (P2); #225 until v2's first decision is checked.
-- **Open, for the owner:** #169, the raw backup on the owner's own computer (P5).
-- **Open, next:** #247, a small dashboard axis bug.
+- **Open, waiting:** #30, #79 and #11 (P2). Draft PR #93 holds gate 1.
+- **Open, for the owner:** #169, the raw backup on the owner's own computer (P5); #266's venue steps; #268's two questions.
+- **Open, [priority]:** #271, the real-money tracking issue; #266, the venue; #268, the real ledger.
+- **Open, next:** #269 and #270 (real money); #264 (replay of v1 days); #253 and #254 (diagnostics); #256 to #260 (challengers, each with its own ADR).
 - **Parked for the next model version:** #125 and #134 (P6, label `next-model-version`).
-- **Open, later:** phase 5's #14, #67 (in April 2027), #121 (step 3 on 2026-11-05) and #173 (after #30); #15 and #186 (P6).
+- **Open, later:** phase 5's #14, #67 (in April 2027), #121 (step 3 on 2026-11-05) and #173 (after #30); #15, #186 and #250 (P6).
 
 ## Keep an eye on
 
@@ -322,6 +383,18 @@ An external review on 2026-10-15 gave the agenda in #250. Its P5 diagnostics are
 - **The GitHub API from a cloud session:** GraphQL is unavailable and the search endpoints return 403. Use repo-scoped REST endpoints through `gh api`, and the GitHub MCP tools for review threads (replying and resolving).
 - **Waiting on Codex and CI:** never sleep in the foreground. Run a background poll that checks Codex's three answers on the PR, and the check runs on the head commit. The time it checks from must be earlier than the PR's creation.
 - **Types:** `uv run pyright` covers the tests too, and is clean since #242. CI checks only `src`.
+- **The PR script's closing-keyword check:** the scratchpad's `mkpr` scripts refuse any line after the first with a closing word within 3 characters of `#n`. Even "move to the close (#251)" trips it, so word such lines differently.
+- **Anything that feeds a real-money decision must be point in time at its own clock,** never only at the game's:
+  - settlements count only once `result_utc <= now`;
+  - expected decision days come from the games, not from the ledgers that exist;
+  - a bundle counts only up to the report's date.
+
+  Codex holds such code to hard rule 1 and to hard rule 7 (no pass on a point estimate). Expect P0s there.
+- **Lake tables aren't all point in time by `observed_utc`:**
+  - `schedule` holds only games that went on to be played;
+  - `odds_snapshots` carries `is_closing_proxy`, `game_id` and `game_type`, all set afterwards.
+
+  Read them through `schedule_known_at` and a column drop, as `challengers.READERS` does.
 - **Reference upkeep in 2026-27:** at a coaching change, end the old stint in `coaches.csv` and add the new one. Add a new venue name to `venues.csv`, and the building to `arenas.csv` if it is new (docs/data-sources.md). `nhl audit reference` flags both.
 - **#67 (P5):** `EXPECTED_GAMES` has no 2026-27 entry. Add it only once the regular season ends, around 2027-04-17: every live feature build's input check compares each season up to its own with its count, so a mid-season entry would refuse them all. The July 2027 player-seasons refresh needs it.
 
