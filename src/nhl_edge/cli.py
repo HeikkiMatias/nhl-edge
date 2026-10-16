@@ -4355,7 +4355,7 @@ def real_alert(
             return
         failed = _real_copies(lake, rl.stored_rows(stored), game_date, supabase)
         if resend:
-            telegram.send(stored["message"])
+            telegram.send(rl.resend_message(stored, datetime.now(UTC), optional("DASHBOARD_URL")))
             typer.echo(f"{game_date}: the stored message was sent again")
         else:
             typer.echo(f"{game_date} is already alerted: its copies were written again")
@@ -4419,9 +4419,12 @@ def real_alert(
     record = rl.bets(rl.alerts(store), rl.entries(store), rl.corrections(store))
     url = optional("DASHBOARD_URL")
     reports_ = rl.weekly_reports()
+    stopped = rl.stopped_days(store)
     # Built at the clock after the reads, and built again while a game starts before the write.
     alert = rl.publishable(
-        lambda at: rl.prepare(game_date, ledger, reports_, record, games, at, code_version, url),
+        lambda at: rl.prepare(
+            game_date, ledger, reports_, record, games, at, code_version, url, stopped
+        ),
         clock,
     )
     if alert.today.name == rl.CLOSED and rl.closed_already(store):

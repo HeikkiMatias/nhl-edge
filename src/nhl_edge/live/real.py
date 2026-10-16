@@ -58,6 +58,9 @@ PRACTICE_VENUE = Venue("practice", 0.0, 0.01)
 VENUES: dict[str, Venue] = {}
 # The venue real bets are placed at, once ready (#266). None until then.
 VENUE: str | None = None
+# A stop holds until the owner restarts real bets, by setting this to the first day they may
+# resume in a commit (ADR 0039): stops recorded before it no longer hold (#268).
+RESTARTED_ON: date | None = None
 
 
 def venue() -> Venue:

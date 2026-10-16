@@ -386,7 +386,7 @@ ADR 0039 bets the frozen policy's paper bets with real money, beside the paper l
   - **practice** before the start, labelled "PRACTICE, don't bet";
   - **real** from the first weekly report (`reports/live/report-<date>.json`, the frozen policy's, a Monday) dated 2026-11-16 to 11-30 whose start rule holds (#267);
   - **paused** while the latest weekly report's coverage floor fails;
-  - **stopped** once a weekly report's CLV stop says so, or the real bankroll is at or below 80 €. Restarting needs the owner.
+  - **stopped** once a weekly report's CLV stop says so, or the real bankroll is at or below 80 €. A stop holds whatever the bankroll does after it, until the owner restarts real bets by setting `real.RESTARTED_ON` in a commit.
   - **closed:** without a start by 11-30, one message says a start needs the owner's decision, and the alerts end.
 - **The stake and the minimum price.**
   - **The minimum price** is the lowest price, to the cent, at which p·o − 1 clears the bet's hurdle (hard rule 4).
@@ -394,7 +394,7 @@ ADR 0039 bets the frozen policy's paper bets with real money, beside the paper l
   - **The stake table** gives the stake at each price from the minimum to the paper price; above it the stake stays flat. The message shows up to four of its steps; the dashboard's form looks a price up in the stored table.
   - **The bankroll** is 100 € plus the profit of the mode's placed bets whose results were public before the decision. Practice bets never count in the real one.
 - **The records.** R2 is the record, and every object is written once with `IfNoneMatch="*"`. The lake's tables are rebuilt from them.
-  - `real/live/alerts/<date>.json`: the day's mode, bankroll, venue, message and rows (lake `real_alerts`), written before the message is sent. A second run is refused; `--resend` sends the stored message again.
+  - `real/live/alerts/<date>.json`: the day's mode, bankroll, venue, message and rows (lake `real_alerts`), written once, with the clock checked again just before, so a game under way is never alerted. The message is sent right after it. A second run writes the day's lake and dashboard copies again from it and sends nothing; `--resend` also sends the message, with any game started since marked no bet.
   - `real/live/entries/<date>/<game_id>.json`: each entry from the dashboard's form, copied once (`nhl real sync`). An entry already there with other bytes is refused.
   - `real/live/corrections/<date>/<game_id>-<n>.json`: `nhl real correct --r2`, at the weekly check against the venue's statement (`nhl real statement --r2`). An entry is never edited, and a correction that would leave the record invalid is refused.
   - Lake `real_bets`: every alert row placed, not placed (with the owner's reason, or none recorded), or skipped, with the corrections applied, the stake the table allowed at the matched price, and whether the bet was within the rule.

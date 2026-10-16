@@ -105,9 +105,15 @@ def _as_of(report: Mapping[str, Any]) -> date:
     return date.fromisoformat(report["as_of"])
 
 
-def mode(reports: Sequence[Mapping[str, Any]], day: date, real_bankroll: float) -> Mode:
-    """The day's mode from the weekly reports dated on or before it and the real bankroll at its
-    decision."""
+def mode(
+    reports: Sequence[Mapping[str, Any]],
+    day: date,
+    real_bankroll: float,
+    stopped: Sequence[date] = (),
+) -> Mode:
+    """The day's mode from the weekly reports dated on or before it, the real bankroll at its
+    decision, and the earlier days alerted as stopped: a stop holds until the owner restarts
+    (real.RESTARTED_ON), whatever the bankroll does after it (Codex on #276)."""
     seen = [report for report in reports if _as_of(report) <= day]
     start = next(
         (
@@ -127,6 +133,13 @@ def mode(reports: Sequence[Mapping[str, Any]], day: date, real_bankroll: float) 
             )
         return Mode(PRACTICE)
     since = [report for report in seen if _as_of(report) >= start]
+    held = [
+        each
+        for each in stopped
+        if start <= each < day and (real.RESTARTED_ON is None or each >= real.RESTARTED_ON)
+    ]
+    if held:
+        return Mode(STOPPED, start, f"real bets were stopped on {min(held):%d %b}")
     for report in since:
         if report["real_stakes"]["clv_stop"].get("stop"):
             return Mode(
@@ -387,12 +400,14 @@ def prepare(
     now: datetime,
     code_version: str,
     url: str | None = None,
+    stopped: Sequence[date] = (),
 ) -> Alert:
     """The day's alert from its written paper ledger, the committed weekly reports, the real
-    record so far (bets) and the games' results, at the clock now."""
+    record so far (bets), the games' results and the earlier days alerted as stopped, at the
+    clock now."""
     decision = ledger["prediction_utc"][0]
     real_bankroll = bankroll(bets, games, decision, REAL)
-    today = mode(reports, day, real_bankroll)
+    today = mode(reports, day, real_bankroll, stopped)
     if today.name in (PRACTICE, CLOSED):
         venue, staked = real.PRACTICE_VENUE, bankroll(bets, games, decision, PRACTICE)
     else:
@@ -492,6 +507,33 @@ def write_alert(store: lb.Store, alert: Alert) -> str:
         raise ValueError(f"{alert.day} is already alerted ({key}); --resend sends it again")
     store.put(key, json.dumps(alert.record(), sort_keys=True).encode())
     return key
+
+
+def stopped_days(store: lb.Store) -> list[date]:
+    """The days alerted as stopped, from their records."""
+    days = []
+    for key in store.keys(f"{PREFIX}/alerts"):
+        if json.loads(store.get(key))["mode"] == STOPPED:
+            days.append(date.fromisoformat(Path(key).stem))
+    return sorted(days)
+
+
+def resend_message(record: Mapping[str, Any], now: datetime, url: str | None) -> str:
+    """A stored alert's message to send again at now: as stored while none of its alerted games
+    has started, and otherwise written again from its rows with those games as no bet, so a game
+    under way is never sent as a bet (Codex on #276). The record itself stays as written."""
+    rows = stored_rows(record)
+    started = (pl.col("status") == ALERTED) & (pl.col("start_utc") <= now)
+    if rows.filter(started).is_empty():
+        return record["message"]
+    rows = rows.with_columns(
+        status=pl.when(started).then(pl.lit(SKIP_STARTED)).otherwise(pl.col("status"))
+    )
+    started_on = date.fromisoformat(record["started"]) if record.get("started") else None
+    today = Mode(record["mode"], started_on, record.get("reason", ""))
+    day = date.fromisoformat(record["game_date"])
+    text = message(day, today, rows, record["bankroll"], url)
+    return f"{text}\n(Sent again at {now.astimezone(HELSINKI):%H:%M}.)"
 
 
 def closed_already(store: lb.Store) -> bool:
@@ -811,8 +853,9 @@ def statement(record: pl.DataFrame, settled: pl.DataFrame, of: str) -> list[str]
         .last()
     )
     placed = record.filter(pl.col("mode") == of, pl.col("outcome") == PLACED)
+    # The alert's own status travels with the bet, so the settlement's is named apart.
     joined = placed.join(
-        latest.select("game_date", "game_id", "status", "profit", "bankroll_after"),
+        latest.select("game_date", "game_id", "profit", "bankroll_after", settlement="status"),
         on=["game_date", "game_id"],
         how="left",
     ).sort("game_date", "game_id")
@@ -820,8 +863,9 @@ def statement(record: pl.DataFrame, settled: pl.DataFrame, of: str) -> list[str]
         team = row["home"] if row["side"] == "home" else row["away"]
         result = (
             "awaiting the result"
-            if row["status"] is None
-            else f"{row['status']}, {row['profit']:+.2f} €, bankroll {row['bankroll_after']:.2f} €"
+            if row["settlement"] is None
+            else f"{row['settlement']}, {row['profit']:+.2f} €, bankroll "
+            f"{row['bankroll_after']:.2f} €"
         )
         flags = "" if row["within_rule"] else " (outside the rule)"
         flags += " (recorded late)" if row["late"] else ""

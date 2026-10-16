@@ -395,3 +395,40 @@ def test_a_correction_never_places_a_bet_before_its_alert() -> None:
     assert rl.corrections(bucket) == []
     with pytest.raises(ValueError, match="outside its alert"):
         rl.bets(rl.alerts(bucket), [rf.entry(FIRST, placed=rf.ALERT - timedelta(seconds=1))])
+
+
+def test_a_resent_alert_never_offers_a_game_that_has_started() -> None:
+    # The first send failed; resent after FIRST's start, its game is no bet (Codex on #276).
+    record = rl.alerted(rf.alerted_store(), pf.DAY)
+    assert record is not None
+    assert rl.resend_message(record, rf.later(1), None) == record["message"]
+    text = rl.resend_message(record, pf.START + timedelta(minutes=5), None)
+    assert "PIT at WSH, starts Thu 02:30: no bet (the game started before the alert)" in text
+    assert "EDM at ANA, starts Thu 05:00 · bet ANA" in text
+    assert text.endswith("(Sent again at 02:35.)")
+
+
+def test_a_stop_holds_until_the_owner_restarts(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Once a day was alerted as stopped, a later result or correction lifting the bankroll above
+    # 80 € doesn't restart real bets (Codex on #276); only the owner's restart does.
+    holds = [rf.report(date(2026, 11, 16), "holds", stop=False, pause=False)]
+    day = date(2026, 11, 20)
+    stopped = rl.mode(holds, day, 100.0, [date(2026, 11, 18)])
+    assert (stopped.name, stopped.reason) == (rl.STOPPED, "real bets were stopped on 18 Nov")
+    # A stop recorded before the start (impossible as alerts go) or on the day itself is not one.
+    assert rl.mode(holds, day, 100.0, [date(2026, 11, 10), day]).name == rl.REAL
+    monkeypatch.setattr(real, "RESTARTED_ON", date(2026, 11, 19))
+    assert rl.mode(holds, day, 100.0, [date(2026, 11, 18)]).name == rl.REAL
+
+
+def test_the_statement_reads_each_bets_settlement_or_awaits_it() -> None:
+    bucket = rf.alerted_store()
+    rl.store_entries(bucket, [rf.entry(FIRST, stake=1.5), rf.entry(THIRD, price=2.5, stake=1.0)])
+    record = rl.bets(rl.alerts(bucket), rl.entries(bucket))
+    # Only FIRST's game is final.
+    games = rf.games({FIRST: (3, 2)})
+    settled = rl.settle(record, games, rl.settlements(bucket), rf.later(20), rf.CODE)
+    lines = rl.statement(record, settled, rl.PRACTICE)
+    assert "settled, +1.65 €, bankroll 101.65 €" in lines[0]
+    assert lines[1].endswith(": awaiting the result")
+    assert lines[-1] == "practice bankroll from the settlements: 101.65 €"
