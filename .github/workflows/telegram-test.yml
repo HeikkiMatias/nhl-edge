@@ -1,0 +1,52 @@
+name: Telegram test
+
+# A manual check that the bot's secrets reach the owner (#268). The logs are public, so it
+# prints no token, chat id or message text, only whether each step worked.
+on:
+  workflow_dispatch:
+  push:
+    branches: [phase-6/telegram-test]
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send a test message
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TOKEN" ]; then
+            echo "::error::TELEGRAM_BOT_TOKEN is not set as a repository secret."
+            exit 1
+          fi
+          api="https://api.telegram.org/bot$TOKEN"
+          if [ "$(curl -sS "$api/getMe" | jq -r '.ok')" != "true" ]; then
+            echo "::error::Telegram refused the token (getMe). Check TELEGRAM_BOT_TOKEN."
+            exit 1
+          fi
+          if [ -z "$CHAT_ID" ]; then
+            # Without a stored chat id, the bot sends the id to the private chat that last wrote to it.
+            CHAT_ID=$(curl -sS "$api/getUpdates" \
+              | jq -r '[.result[] | (.message // .my_chat_member // empty) | .chat | select(.type == "private") | .id] | last // empty')
+            if [ -z "$CHAT_ID" ]; then
+              echo "::error::The token works, but TELEGRAM_CHAT_ID is not set and the bot has no recent message. Send the bot any message, then run this again."
+              exit 1
+            fi
+            echo "::add-mask::$CHAT_ID"
+            text="nhl-edge: the bot works. Store this number as the repository secret TELEGRAM_CHAT_ID: $CHAT_ID"
+            note="The token works. TELEGRAM_CHAT_ID is not set, so the bot sent its value to the private chat that last wrote to it."
+          else
+            text="nhl-edge: a test message. The daily real-bets alert will arrive here after the 12:45 ET decision."
+            note="The token works, and the test message went to TELEGRAM_CHAT_ID."
+          fi
+          if [ "$(curl -sS -X POST "$api/sendMessage" --data-urlencode "chat_id=$CHAT_ID" --data-urlencode "text=$text" | jq -r '.ok')" != "true" ]; then
+            echo "::error::The token works, but Telegram refused the message (sendMessage). Check TELEGRAM_CHAT_ID, and that you have messaged the bot."
+            exit 1
+          fi
+          echo "::notice::$note"
