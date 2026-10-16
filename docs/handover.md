@@ -12,9 +12,9 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
    - **2026-11-05 10:40 UTC:** #121 step 3, which also revisits #120's early-exit gap.
 3. **Finish any waiting item whose date has come** (the next section). The SessionStart hook lists the open issues of the earliest milestone, P2 (#11, #30, #79). They wait on the calendar, not on work, so don't start them early.
 4. **Then the [priority] work for real money (#271):**
-   - #268, the real ledger and alerts: its pipeline is merged; its dashboard form is next (below);
+   - #268 is done; #270, the dashboard's real record, is in review (below);
    - #266, the venue, which waits on the owner's steps;
-   - #269 and #270 after them.
+   - #269 once the venue grants API access.
 
    ADR 0039's earliest start is 2026-11-16. See "Phase 6" below.
 5. **Otherwise phase 5 (#14) runs itself.** Everything in its plan (`docs/plans/phase-5.md`) is built. What's left is to watch the live test, finish the dated items and fix what the weekly reports turn up.
@@ -28,7 +28,8 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 | Item | Ready when | Then |
 | --- | --- | --- |
 | `market_only`'s first challenger output (#255) | After the **2026-10-17** nightly (09:00 UTC) | As the 10:45 UTC task says. If it's missing or differs, read the nightly's "Challengers" step log first. |
-| #268, the real ledger and alerts | The plan was approved on 2026-10-16 (#268's comment): a Telegram alert, a dashboard form, daily practice alerts until the start, late entries accepted and marked. The bot's secrets are stored and tested. | **PR 1, the pipeline:** `nhl real alert`, `sync`, `settle`, `statement` and `correct`, the migration and the workflow steps (docs/data-sources.md, "Real stakes"). Practice alerts arrive from the first decision day after its merge. **The owner, after it:** apply `supabase/migrations/20261016120000_real_bets.sql`, then set the repository variables `SUPABASE_REAL=true` and `DASHBOARD_URL` (`web/README.md`). **PR 2, next:** the dashboard's form, which closes #268. Both before 2026-11-16. |
+| #268, the real ledger and alerts | Done (#276, #277): the alert, the record, settlement and the dashboard's form. The owner's setup is done and checked on 2026-10-16: the migration applied, `SUPABASE_REAL=true`, and `DASHBOARD_URL` opens the dashboard's sign-in. | Practice alerts arrive daily at about 19:50 Helsinki time from 2026-10-16. `telegram-test.yml`'s setup check (branch `phase-6/telegram-test`) reports the link, the migration and `SUPABASE_REAL` to the owner's Telegram. |
+| #270, the dashboard's real record | In review | After its merge the owner applies `supabase/migrations/20261016150000_real_settlements.sql`; until then the record shows its twins without the bankroll. |
 | The owner's venue steps (#266) | When the owner has time; a venue must be ready before the start | The owner's three steps, in the issue's comment: **(1)** start a Pinnacle sign-up and check that Finland is in its country list; **(2)** read its terms for API betting; **(3)** send the drafted email to `api@pinnacle.com`. If Pinnacle declines, Matchbook is next, then Betfair. Manual placement from alerts (#268) works at any venue meanwhile. When a venue is ready, set `live/real.VENUE` in a PR. |
 | The weekly live report | Mondays 10:20 UTC | As the Routine's prompt says: v2's report, reviewed and committed. It gives counts only, no estimate, until a policy has 4 weeks of games (#235). It is the run that decides ADR 0039's start rule and weekly CLV stop: it runs after Sunday's results are public at 10:00 UTC, while the 09:00 UTC nightly defers to it (#267). From 2026-11-16 it states the verdict, and the owner is told it. |
 | #30, post-game corrections | Two weeks of rechecked 2026-27 games: about **2026-10-22**. The nightly runs `nhl recheck --recent 3 --r2`. | Run `nhl audit report` after bringing the lake up to R2, and review its corrections section on #30. If corrections change more than scorer credit on more than a few games a season, reopen ADR 0004 with the owner. Then close #30. **Limit:** the NHL served no shift chart a week later for games 2026020006 to 2026020052 (#237). The report lists them as charts not rechecked, never as shifts removed, and compares their play-by-play and boxscore only. If the NHL serves them again after they leave the nightly window, `nhl recheck --recent 30 --r2` fetches them once. |
@@ -249,9 +250,9 @@ Every deliverable merged under its own task issue:
   - **Finland's licensed market** opens on 2027-07-01 (reported).
 - **The build:**
   - #267 is done (#273);
-  - #268: the real ledger, the Telegram alert, the dashboard's form and settlement (the pipeline in its first PR, the form in its second);
+  - #268 is done (#276, #277): the real ledger, the Telegram alert, the dashboard's form and settlement;
   - #269: API placement, once access is granted;
-  - #270: the dashboard's real record.
+  - #270: the dashboard's real record, in review.
 
 ## The owner's standing decisions
 
@@ -348,9 +349,9 @@ Every deliverable merged under its own task issue:
     - `npx wrangler@4 secret put GITHUB_TOKEN` stores a new token.
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
 - **Open, waiting:** #30, #79 and #11 (P2). Draft PR #93 holds gate 1.
-- **Open, for the owner:** #169, the raw backup on the owner's own computer (P5); #266's venue steps, with the venue's minimum stake and stake increment; #268's migration and the variables `SUPABASE_REAL` and `DASHBOARD_URL`.
-- **Open, [priority]:** #271, the real-money tracking issue; #266, the venue; #268, the real ledger.
-- **Open, next:** #269 and #270 (real money); #264 (replay of v1 days); #253 and #254 (diagnostics); #256 to #260 (challengers, each with its own ADR).
+- **Open, for the owner:** #169, the raw backup on the owner's own computer (P5); #266's venue steps, with the venue's minimum stake and stake increment; #270's migration once it merges.
+- **Open, [priority]:** #271, the real-money tracking issue; #266, the venue.
+- **Open, next:** #269 (real money, after the venue) and #270 (in review); #264 (replay of v1 days); #253 and #254 (diagnostics); #256 to #260 (challengers, each with its own ADR).
 - **Parked for the next model version:** #125 and #134 (P6, label `next-model-version`).
 - **Open, later:** phase 5's #14, #67 (in April 2027), #121 (step 3 on 2026-11-05) and #173 (after #30); #15, #186 and #250 (P6).
 

@@ -4512,6 +4512,14 @@ def real_settle(
         bool,
         typer.Option("--r2", help="The real record in R2; the games pulled from it first."),
     ] = False,
+    supabase: Annotated[
+        bool,
+        typer.Option(
+            "--supabase",
+            help="Copy every settlement revision to the dashboard's real_settlements, each once "
+            "(needs the real settlements migration).",
+        ),
+    ] = False,
 ) -> None:
     """Append a settlement for each placed bet whose game is final and result public (#268, ADR
     0039): the result on the full game, OT and shootout included, and the profit at the matched
@@ -4538,6 +4546,24 @@ def real_settle(
     every = rl.settlements(store)
     lake.replace("real_settlements", every)
     typer.echo(f"real_settlements: {new.height} appended, {every.height} in all")
+    if supabase:
+        from nhl_edge.lake.supabase import Supabase, SupabaseError
+
+        # Every revision, each inserted once: a rerun sends nothing twice, the first backfills.
+        try:
+            sent = Supabase.from_env().insert_new_records(
+                "real_settlements", rl.supabase_settlements(every), rl.SETTLEMENT_KEY
+            )
+        except SupabaseError as exc:
+            # R2 stays the record; before its migration is applied, the dashboard waits for it.
+            if "PGRST205" not in str(exc):
+                raise
+            typer.echo(
+                "the dashboard's real_settlements isn't set up yet: apply "
+                "supabase/migrations/20261016150000_real_settlements.sql"
+            )
+            return
+        typer.echo(f"{sent} settlement revisions sent to the dashboard (new ones inserted)")
     for (mode,), rows in every.sort("settled_utc", "revision").group_by(
         "mode", maintain_order=True
     ):

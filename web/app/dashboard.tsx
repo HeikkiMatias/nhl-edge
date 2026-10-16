@@ -9,6 +9,7 @@ import { supabase } from "@/lib/supabase";
 
 import { LiveScores } from "./live";
 import { RealBets } from "./real";
+import { RealRecord } from "./real-record";
 import { ClvHistory, Glossary, Headline, Ledger, Report, Results, Slate } from "./sections";
 
 /** The page: the sign-in form, or the board for a signed-in user, read through the client made
@@ -178,6 +179,9 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
       {/* First, where the day's Telegram alert links to (#268). */}
       <h2>Real bets</h2>
       <RealBets client={client} />
+
+      <h2>Real record</h2>
+      <RealRecord client={client} bets={data.bets} report={data.report} />
 
       <h2>Paper trading</h2>
       <p className="notice">

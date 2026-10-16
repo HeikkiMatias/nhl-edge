@@ -350,3 +350,9 @@ details.explain dd {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+
+/* The real record (#270). */
+.start-rule ul {
+  margin: 4px 0 12px;
+  padding-left: 20px;
+}

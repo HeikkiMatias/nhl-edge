@@ -432,3 +432,25 @@ def test_the_statement_reads_each_bets_settlement_or_awaits_it() -> None:
     assert "settled, +1.65 €, bankroll 101.65 €" in lines[0]
     assert lines[1].endswith(": awaiting the result")
     assert lines[-1] == "practice bankroll from the settlements: 101.65 €"
+
+
+def test_the_settlements_sent_are_the_real_settlements_migrations_columns() -> None:
+    import re
+    from pathlib import Path
+
+    migration = Path("supabase/migrations/20261016150000_real_settlements.sql").read_text()
+    body = re.search(r"create table public\.real_settlements \((.*?)\n\);", migration, re.S)
+    assert body is not None
+    types = "bigint|integer|smallint|text|date|timestamptz|numeric|boolean|double precision"
+    column = re.compile(rf"^  ([a-z_0-9]+) (?:{types})\b")
+    found = {m.group(1) for line in body.group(1).splitlines() if (m := column.match(line))}
+    bucket = rf.alerted_store()
+    rl.store_entries(bucket, [rf.entry(FIRST, stake=1.5)])
+    record = rl.bets(rl.alerts(bucket), rl.entries(bucket))
+    settled = rl.settle(record, rf.games(), rl.settlements(bucket), rf.later(20), rf.CODE)
+    sent = rl.supabase_settlements(settled)
+    assert set(sent[0]) == found - {"created_at"}
+    assert sent[0]["result_utc"] == "2026-10-08T06:00:00+00:00"
+    assert re.search(r"primary key \((.*?)\)", body.group(1)).group(1).split(", ") == list(  # type: ignore[union-attr]
+        rl.SETTLEMENT_KEY
+    )

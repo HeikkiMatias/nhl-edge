@@ -583,6 +583,15 @@ def supabase_alerts(rows: pl.DataFrame) -> list[dict[str, Any]]:
     return out
 
 
+# The settlement's columns the dashboard's real_settlements holds (#270): all of them.
+SETTLEMENT_KEY = ("game_date", "game_id", "revision")
+
+
+def supabase_settlements(settled: pl.DataFrame) -> list[dict[str, Any]]:
+    """The settlement revisions as the dashboard's real_settlements holds them."""
+    return jsonable(settled.select(list(dtypes(RealSettlements))))
+
+
 def store_entries(store: lb.Store, entries: Sequence[Mapping[str, Any]]) -> int:
     """Copy the dashboard's entries to R2, each once: one already there with the same bytes
     counts as copied, with other bytes it is refused (an entry is never edited). Returns how many

@@ -44,7 +44,7 @@ type Page<T> = PromiseLike<{ data: T[] | null; error: unknown }>;
 
 /** Every row of an ordered query, read PAGE rows at a time until a page comes back empty, so a
  * project whose max rows is below PAGE still gives them all. */
-async function every<T>(page: (from: number, to: number) => Page<T>): Promise<T[]> {
+export async function every<T>(page: (from: number, to: number) => Page<T>): Promise<T[]> {
   const rows: T[] = [];
   for (;;) {
     const { data, error } = await page(rows.length, rows.length + PAGE - 1);

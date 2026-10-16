@@ -5,7 +5,8 @@
 // from the alert's own table, so the dashboard holds no copy of the staking rule.
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import type { RealAlert, RealEntry } from "./types.ts";
+import { every } from "./load.ts";
+import type { RealAlert, RealEntry, RealSettlement } from "./types.ts";
 
 export const ALERT_COLUMNS =
   "game_date, game_id, start_utc, home, away, mode, venue, status, side, paper_price, " +
@@ -127,4 +128,67 @@ export async function recordNotPlaced(
 function refusal(error: { code?: string; message: string }): string {
   if (error.code === "23505") return "This bet is already recorded: an entry is never changed.";
   return error.message;
+}
+
+export const SETTLEMENT_COLUMNS =
+  "game_date, game_id, revision, mode, side, matched_price, stake, status, won, profit, " +
+  "result_utc, bankroll_after";
+
+/** The whole real record (#270): every alert, entry and settlement revision, or not ready before
+ * the real bets migration. settlements is null before the real settlements migration. */
+export type RealRecordState =
+  | { ready: false }
+  | {
+      ready: true;
+      alerts: RealAlert[];
+      entries: RealEntry[];
+      settlements: RealSettlement[] | null;
+    };
+
+/** Every row of the three real tables, a page at a time, under row-level security. */
+export async function loadRecord(client: SupabaseClient): Promise<RealRecordState> {
+  let alerts: RealAlert[];
+  let entries: RealEntry[];
+  try {
+    [alerts, entries] = await Promise.all([
+      every((from, to) =>
+        client
+          .from("real_alerts")
+          .select(ALERT_COLUMNS)
+          .order("game_date", { ascending: false })
+          .order("game_id")
+          .range(from, to)
+          .overrideTypes<RealAlert[], { merge: false }>(),
+      ),
+      every((from, to) =>
+        client
+          .from("real_entries")
+          .select(ENTRY_COLUMNS)
+          .order("game_date", { ascending: false })
+          .order("game_id")
+          .range(from, to)
+          .overrideTypes<RealEntry[], { merge: false }>(),
+      ),
+    ]);
+  } catch (error) {
+    if (NOT_SET_UP.has((error as { code?: string }).code ?? "")) return { ready: false };
+    throw error;
+  }
+  let settlements: RealSettlement[] | null;
+  try {
+    settlements = await every((from, to) =>
+      client
+        .from("real_settlements")
+        .select(SETTLEMENT_COLUMNS)
+        .order("game_date")
+        .order("game_id")
+        .order("revision")
+        .range(from, to)
+        .overrideTypes<RealSettlement[], { merge: false }>(),
+    );
+  } catch (error) {
+    if (!NOT_SET_UP.has((error as { code?: string }).code ?? "")) throw error;
+    settlements = null;
+  }
+  return { ready: true, alerts, entries, settlements };
 }
