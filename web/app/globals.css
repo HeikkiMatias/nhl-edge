@@ -104,6 +104,75 @@ button.link {
   padding: 0;
 }
 
+/* Real bets (#268): one block per alerted bet, its form and what the database said. */
+.real-bet {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 12px 8px;
+  margin: 12px 0;
+}
+
+.real-bet h3 {
+  font-size: 1rem;
+  margin: 8px 0 4px;
+}
+
+.real-bet form {
+  margin: 8px 0;
+  align-items: flex-end;
+}
+
+.real-bet label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+  color: var(--muted);
+  gap: 2px;
+}
+
+.real-bet input {
+  width: 9rem;
+}
+
+.real-bet input[type="datetime-local"] {
+  width: 13rem;
+}
+
+select {
+  font: inherit;
+  padding: 6px 10px;
+}
+
+button.secondary {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.notice.real {
+  border-left-color: var(--accent);
+}
+
+.recorded {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.warning {
+  color: var(--warn);
+  margin: 4px 0;
+}
+
+.error {
+  color: var(--critical, #d03b3b);
+  margin: 4px 0;
+}
+
 /* Charts (#210): one series in the series blue on the page's white, hairline grid and axes,
    checked with the dataviz validator. Text wears text colours, never the series colour. */
 :root {

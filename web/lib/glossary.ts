@@ -208,6 +208,41 @@ export const GLOSSARY = {
       "about 60% should be won. The band is how far off it may be before the 2.5% hurdle " +
       "stops covering the error.",
   },
+  realStakes: {
+    term: "Real bets",
+    meaning:
+      "From mid to late November 2026 at the earliest, the paper bets are also placed with real " +
+      "money, from a real bankroll of 100 €, by hand at the venue. They start only if a weekly " +
+      "report finds the start rule holds (ADR 0039), and the paper ledger goes on beside them.",
+  },
+  practice: {
+    term: "Practice",
+    meaning:
+      "Until real bets start, the daily alert is a practice one: the same message and form, " +
+      "with nothing at stake. A practice entry never counts in the real bankroll.",
+  },
+  minPrice: {
+    term: "Minimum price",
+    meaning:
+      "The lowest price at which the bet is still worth placing: its expected return clears the " +
+      "same hurdle the paper bet had to clear. Below it, don't bet.",
+  },
+  realStake: {
+    term: "Stake at a price",
+    meaning:
+      "The stake in euros for the price you're offered: the same rule as the paper bet's, " +
+      "recomputed at that price and never more than the paper bet's share of the bankroll. A " +
+      "lower price stakes less. Between two listed prices, use the lower one's stake.",
+  },
+  realRecord: {
+    term: "Recording a bet",
+    meaning:
+      "Each alerted bet gets one entry: placed, with the matched price, the stake, the venue's " +
+      "bet id and when you placed it, or not placed, with the reason. An entry is never " +
+      "changed; a mistake is corrected at the weekly check against the venue's statement. A bet " +
+      "recorded after its game started is accepted and marked late, if it was placed before " +
+      "the start.",
+  },
 } satisfies Record<string, Term>;
 
 export type TermKey = keyof typeof GLOSSARY;

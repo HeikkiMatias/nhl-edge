@@ -2,6 +2,11 @@
 
 The paper-trading dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.js app that runs in the browser and reads Supabase. It shows:
 
+- **Real bets** (#268, ADR 0039), first, where the day's Telegram alert links to:
+  - the latest alerted day's bets, practice ones until real stakes start, each with its minimum price and its stake at the price you type, looked up in the alert's own stake table;
+  - a form per bet: placed, with the matched price, the stake, the venue's bet id and when you placed it; or not placed, with the reason;
+  - what the database said: a second entry for a bet, or a placed time at or after the start, before the alert or in the future, is refused; a bet outside the rule (a price under the minimum, a stake above the allowed one) is recorded and flagged. An entry is never changed: a mistake is corrected at the weekly check against the venue's statement (`nhl real correct`).
+
 - **Four headline tiles:** CLV per bet, which is the measure, then the paper bankroll with the stakes in play, the record (won–lost) and the drawdown from the peak.
 - **Results and the bankroll** (ADR 0034):
   - a note that over this few bets results are mostly luck;
@@ -33,7 +38,8 @@ The paper-trading dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.j
 - **The browser holds only the public anon key.** The service role key stays in the GitHub workflows' secrets.
   - The app's one server route, `app/api/scores`, relays the NHL's public scoreboard. It holds no secret and reads no Supabase data.
   - It serves only dates within two days of today, and Vercel's CDN caches its answers for 20 seconds.
-- **Row-level security decides what a signed-in user can read.** Only the users in `public.dashboard_owners` can read `predictions`, `paper_bets` and `live_reports`, and, from `games`, the scores of the bets' games. Anon reads nothing.
+- **Row-level security decides what a signed-in user can read.** Only the users in `public.dashboard_owners` can read `predictions`, `paper_bets`, `live_reports`, `real_alerts` and `real_entries`, and, from `games`, the scores of the bets' games. Anon reads nothing.
+- **The one write is the real bets form** (#268): an owner may insert into `real_entries`, only its entry's own columns. The database sets the entry's time, lateness and author, refuses a second entry and a placed time outside the bet's alert and start, and grants no update or delete (`supabase/migrations/20261016120000_real_bets.sql`).
 - **Sign-in is by password, or by email link,** and only for users who already exist: sign-ups are off, and the link never creates a user (`shouldCreateUser: false`). Any other signed-in account is told it is not an owner, and is shown its user id.
 - **A link that comes back signed out says why,** in Supabase's words from the client's initialization: an expired or used-up link (as when a mail scanner opened it first), or a code it couldn't exchange, as in a browser other than the one that asked for it. A sign-in clears the message.
 - The page asks search engines not to index it.
