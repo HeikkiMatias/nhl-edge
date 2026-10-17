@@ -15,6 +15,7 @@ The fixed list of sources and endpoints. Work from this file instead of guessing
 | NHLe research ([Bacon](https://towardsdatascience.com/nhl-equivalency-and-prospect-projection-models-building-the-nhl-equivalency-model-part-2-6f275a45e22/), [HockeyStats](https://hockeystats.com/methodology/nhle)) | Published league translation factors and method | Free articles | Starting coefficients for offensive priors only, refit later on your own data |
 | [Daily Faceoff](https://www.dailyfaceoff.com/starting-goalies) | Projected lines, power play units, starting goalie status with report time and source | Web pages only; robots.txt allows them and disallows `/api/`; no terms of use found (2026-09-29) | Starting goalies logged at every goalie poll (#48), compared with the NHL's in the audit; other pages manual reference only |
 | [RotoWire](https://www.rotowire.com/hockey/starting-goalies.php) | Projected lines and starting goalies | Terms forbid scraping and any automated access without written consent | Manual reference only; never automated |
+| [Kalshi](https://docs.kalshi.com/api-reference/market/get-market-orderbook) order book | The resting Yes and No bids of an NHL moneyline market: price levels with their contracts, live only | Public API, no key; token-bucket rate limits, exponential backoff on 429. The [Developer Agreement](https://kalshi-public-docs.s3.amazonaws.com/Kalshi-Developer-Agreement.pdf) allows it only for a member's own trading, kept private (3.1) | The owner's own resting orders (#281): only the alerted bets' markets, kept in the lake and R2 only, never a model input and never published (#282) |
 | Static files you create | Arena coordinates and time zones, team abbreviation history, coach tenures | One-off CSVs in the repo | Travel, rest and coach-change features |
 
 ## Endpoints
@@ -52,6 +53,9 @@ SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
 
 Telegram Bot API (api.telegram.org), outbound only: the owner's real-bets alert (#268)
   POST /bot{token}/sendMessage            # chat_id, text; never logged
+
+Kalshi (api.elections.kalshi.com/trade-api/v2), public, no key: the alerted bets' markets only (#282)
+  GET /markets/{ticker}/orderbook         # ticker KXNHLGAME-{YY}{MON}{DD}{AWAY}{HOME}-{TEAM}
 ```
 
 ## Access rules
@@ -73,7 +77,7 @@ Telegram Bot API (api.telegram.org), outbound only: the owner's real-bets alert 
 
 GitHub Actions runs every job, but GitHub's own `schedule` started this repo's runs 3 to 6 hours late in September 2026, while a `workflow_dispatch` starts within seconds (#50). So the Cloudflare Worker in `infra/timer` fires every five minutes and dispatches the workflows due at that minute (`infra/timer/src/schedule.js`):
 
-- `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input. After the midday snapshot, its Predict step runs `nhl predict --r2`, below, and then `nhl real alert --r2` sends the owner the day's real bets (#268, "Real stakes" below).
+- `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input. After the midday snapshot, its Predict step runs `nhl predict --r2`, below, and then `nhl real alert --r2` sends the owner the day's real bets (#268, "Real stakes" below). Every slot ends with `nhl kalshi books --mirror-raw`, which logs Kalshi's order book of the alerted bets' markets until each game's start (#282, "Kalshi order book" below).
 - `pregame-goalies.yml` at :50 of every hour from 12:50 to 02:50 UTC.
 - `ingest-nightly.yml` at 09:00 UTC. After the ingest, it runs `nhl recheck --recent 3 --r2` (#30, below), the odds and goalie replays, and `nhl live features` for today's slate (#162, below).
 
@@ -406,6 +410,31 @@ ADR 0039 bets the frozen policy's paper bets with real money, beside the paper l
   - **Who:** the owners in `dashboard_owners` read both and insert entries; the service role inserts alerts and reads entries; anon nothing.
   - **When:** the alert copies the day's rows after its R2 write, and copies new entries first, so the bankroll counts them; the nightly copies them again before settling.
 - **`telegram-test.yml`** sends one test message from the Actions tab, after the bot's secrets change.
+
+## Kalshi order book (#282)
+
+`nhl kalshi books` logs Kalshi's order book for both teams' markets of each game in the day's real bets alert, so #281's gate can measure the queue ahead of a resting bid at the moment the order would be placed. Kalshi shows its book only live, so a queue that wasn't logged then can't be recovered. The code is `ingest/kalshi.py`.
+
+- **What it gives:** each market's resting bids, Yes and No, as price levels in dollars with the contracts at each. A Yes bid at p is a No ask at 1 − p, so the best Yes bid is the last Yes level and the best Yes ask is 1 less the last No level. The response carries no time, so `observed_utc` is the fetch time.
+- **Endpoint:** `GET https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}/orderbook` ([docs](https://docs.kalshi.com/api-reference/market/get-market-orderbook)). It answers `{"orderbook_fp": {"yes_dollars": [[price, contracts], ...], "no_dollars": [...]}}`, both as strings, each list ascending by price. Either list may be empty, null or missing.
+- **Tickers:** one market per team and game, `KXNHLGAME-{YY}{MON}{DD}{AWAY}{HOME}-{TEAM}` on the game's US Eastern date, such as `KXNHLGAME-26OCT17NJWSH-WSH`. Kalshi's team codes are the NHL triCodes except NJ, TB, SJ and LA for NJD, TBL, SJS and LAK (`KALSHI_CODES` in `lake/schemas.py`, checked on 65 games). A 404 is stored raw and counted as not found, never retried and never guessed further.
+- **Access:** public and unauthenticated, so no key is stored. Only the API is called, never Kalshi's website.
+- **Limits:** Kalshi meters requests in token buckets per tier ([Rate Limits and Tiers](https://docs.kalshi.com/getting_started/rate_limits)). A 429 comes without `Retry-After`, and the docs ask for exponential backoff. The poll waits at least 0.25 seconds between requests. It retries a 429, a 5xx or a dropped connection after 1, 2, 4 and 8 seconds, at most 5 tries, then counts the market as failed and fails the step after the others.
+- **Terms (the owner's decision, 2026-10-17):**
+  - Kalshi's [Developer Agreement](https://kalshi-public-docs.s3.amazonaws.com/Kalshi-Developer-Agreement.pdf) (v1.1) limits API use to facilitating a member's own trading. Its data may be stored only for that purpose and never shared with third parties without Kalshi's written authorization (3.1).
+  - It bars benchmarking and competitive use (3.5), and asks for retries with bounded exponential backoff (4.3).
+  - Kalshi's [Data Terms of Use](https://kalshi-public-docs.s3.amazonaws.com/kalshi-data-terms-of-service.pdf) bar scraping its website and using website data for machine learning.
+- **So, since the owner is a Kalshi member and the repository is public:**
+  - **What is fetched:** only both teams' markets of each game with an alerted bet (practice or real), never every game. A skipped bet's game is not fetched, and no game is asked for at or after its start: the clock is checked again just before each request.
+  - **Where it is kept:** only in the local lake and raw store, and in the private R2 bucket.
+  - **What never happens:** nothing from Kalshi enters the repository, its issues, reports or docs. The test fixture is synthetic, hand-made in the documented shape with made-up numbers. The workflow step prints counts of requests only, never a market, price or size, since run logs are public.
+- **When:** the step "Kalshi books (#282)" in `odds-snapshots.yml`, after "Real bets alert", at every slot whatever the steps before did. At midday it runs right after the alert. At the pre-game slots it covers the same day's bets until each game's start. Without the day's alert, as at the morning slot, nothing is fetched. The alert is read from R2 (`real/live/alerts/<date>.json`).
+- **Raw:** each response untouched as `kalshi/orderbook/<ET game date>/<fetch stamp>_<ticker>`, mirrored to R2's `raw/kalshi/`. The sidecar holds the URL, status, fetch time, slot, and the market's ticker, game and team. A dispatched run's slot is the latest one started by its clock.
+- **Table:** `kalshi_books`, one row per fetch, market, side and price level, partitioned by season and game date, with one pandera schema (`KalshiBooks`), validated on every write.
+  - After its requests, `nhl kalshi books` restores the day's responses from R2 and rebuilds the day's partition from them, so every slot's books stay in it.
+  - `nhl kalshi replay [--recent N] [--r2]` rebuilds the table from the stored responses only, never calling Kalshi. Its counts come from Kalshi's data, so it is run by hand, never in a workflow.
+  - `books_before(books, at)` gives what an order placed at `at` could have seen: the rows observed strictly before it (hard rule 1).
+- **Role:** the owner's own resting orders only (#281). It is never a model input, and no feature or model code reads it (`tests/leakage/test_kalshi_books.py` checks). Before #281 sets a Kalshi price beside a model's probability, it checks that the market settles on the full game, OT and shootout included (hard rule 2).
 
 ## Odds snapshots
 

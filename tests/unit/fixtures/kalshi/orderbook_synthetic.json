@@ -1,0 +1,7 @@
+{
+  "_comment": "SYNTHETIC: hand-made in the documented shape of Kalshi's GET /markets/{ticker}/orderbook, with made-up numbers. It is not a Kalshi response: the public repository holds none (Kalshi Developer Agreement 3.1, #282).",
+  "orderbook_fp": {
+    "yes_dollars": [["0.0100", "500.00"], ["0.3500", "42.50"], ["0.4400", "120.00"]],
+    "no_dollars": [["0.0300", "250.00"], ["0.5000", "7.25"], ["0.5400", "60.00"]]
+  }
+}

@@ -33,6 +33,7 @@ COMMANDS = [
     "audit",
     "live",
     "real",
+    "kalshi",
     "status",
     "toi-reports",
     "player-seasons",
@@ -1689,3 +1690,141 @@ def test_a_rerun_of_an_alerted_day_writes_its_copies_again(
     assert lake.copies == [("real_alerts", 3, [pf.DAY])] and sent == []
     result = runner.invoke(app, ["real", "alert", "--r2", "--resend"])
     assert result.exit_code == 0 and sent == [alert.message]
+
+
+def test_kalshi_books_skips_a_cron_line_that_is_not_an_odds_slot() -> None:
+    # 03:00 UTC is never a slot, so no alert is read and nothing is fetched.
+    result = runner.invoke(app, ["kalshi", "books", "--mirror-raw", "--cron", "0 3 * * *"])
+    assert result.exit_code == 0, result.output
+    assert "is not an odds slot at this time of year, skipped" in result.output
+
+
+def _kalshi_day(monkeypatch: pytest.MonkeyPatch, tmp_path: Any, handler: Any, alert: bool) -> None:
+    """A machine in tmp_path whose clock reads the synthetic alert's time, with a fake Kalshi,
+    and with the day's alert in its local real record when alert is set."""
+    from pathlib import Path
+
+    import kalshi_fixtures as kf
+    import predict_fixtures as pf
+    import real_fixtures as rf
+
+    from nhl_edge.ingest import kalshi, nhl_api
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import real_ledger as rl
+
+    for name in R2_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    monkeypatch.chdir(tmp_path)
+    clock = kf.Clock(rf.ALERT)
+    monkeypatch.setattr(nhl_api, "utc_now", clock.now)
+    monkeypatch.setattr(kalshi, "Kalshi", lambda store: kf.make(store, handler, clock))
+    if alert:
+        empty = rl.bets(rf.alert_rows().clear(), [])
+        day = rl.prepare(pf.DAY, rf.ledger(), [], empty, rf.games(), rf.ALERT, rf.CODE)
+        rl.write_alert(lb.LocalStore(Path("data/live/real")), day)
+
+
+def test_kalshi_books_fetches_nothing_without_the_days_alert(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    import kalshi_fixtures as kf
+
+    _kalshi_day(monkeypatch, tmp_path, kf.fail, alert=False)
+    result = runner.invoke(app, ["kalshi", "books"])
+    assert result.exit_code == 0, result.output
+    assert "2026-10-07 has no real bets alert, nothing fetched" in result.output
+
+
+def test_kalshi_books_stores_the_alerted_markets_and_builds_the_days_table(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    import kalshi_fixtures as kf
+    import predict_fixtures as pf
+
+    from nhl_edge.ingest import kalshi
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+
+    paths, handler = kf.serve()
+    _kalshi_day(monkeypatch, tmp_path, handler, alert=True)
+    result = runner.invoke(app, ["kalshi", "books"])
+    assert result.exit_code == 0, result.output
+    assert len(paths) == 6
+    assert "6 markets of 3 games, 6 books stored" in result.output
+    assert "kalshi_books 2026-10-07: rebuilt from 6 stored responses" in result.output
+    # Run logs are public: no market or figure from Kalshi is printed.
+    assert "KXNHL" not in result.output and "0.44" not in result.output
+    table = Lake().read("kalshi_books")
+    assert table.height == 36 and set(table["game_date"]) == {pf.DAY}
+    assert kalshi.stored_books(RawStore(), [pf.DAY])[1].responses == 6
+
+    # nhl kalshi replay rebuilds the same rows from the raw copies alone.
+    Lake().replace_dates("kalshi_books", table.clear(), [pf.DAY])
+    assert Lake().read("kalshi_books").is_empty()
+    replayed = runner.invoke(app, ["kalshi", "replay"])
+    assert replayed.exit_code == 0, replayed.output
+    assert (
+        "kalshi replay 2026-10-07..2026-10-07: 6 responses, 36 rows; 0 not found, 0 empty books"
+    ) in plain(replayed.output)
+    assert Lake().read("kalshi_books").equals(table)
+
+
+def test_kalshi_books_fails_the_step_when_a_market_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429)
+
+    _kalshi_day(monkeypatch, tmp_path, handler, alert=True)
+    result = runner.invoke(app, ["kalshi", "books", "--date", "2026-10-07"])
+    assert result.exit_code == 1
+    assert "0 books stored; 0 not found, 6 failed" in result.output
+
+
+def test_kalshi_books_on_a_fresh_runner_keeps_every_slots_books(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # Each slot runs on a new machine: the alert is read from R2, and the day's earlier responses
+    # are restored from R2 before its partition is rebuilt, so a later slot drops none.
+    from datetime import timedelta
+
+    import kalshi_fixtures as kf
+    import predict_fixtures as pf
+    import real_fixtures as rf
+    from fakes import ConditionalBucket
+
+    from nhl_edge.ingest import kalshi, nhl_api
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import real_ledger as rl
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = ConditionalBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    empty = rl.bets(rf.alert_rows().clear(), [])
+    alert = rl.prepare(pf.DAY, rf.ledger(), [], empty, rf.games(), rf.ALERT, rf.CODE)
+    rl.write_alert(lb.R2Store(bucket, "test"), alert)
+    paths, handler = kf.serve()
+    clock = kf.Clock(rf.ALERT)
+    monkeypatch.setattr(nhl_api, "utc_now", clock.now)
+    monkeypatch.setattr(kalshi, "Kalshi", lambda store: kf.make(store, handler, clock))
+    result = None
+    # Midday, right after the alert, then 6 hours later, before the 23:30 starts.
+    for machine, later in (("midday", timedelta(0)), ("pre7", timedelta(hours=6))):
+        clock.advance(later)
+        (tmp_path / machine).mkdir()
+        monkeypatch.chdir(tmp_path / machine)
+        result = runner.invoke(app, ["kalshi", "books", "--mirror-raw"])
+        assert result.exit_code == 0, result.output
+    assert result is not None and len(paths) == 12
+    assert "kalshi_books 2026-10-07: rebuilt from 12 stored responses" in result.output
+    assert Lake().read("kalshi_books").height == 72
+    day = "season=20262027/game_date=2026-10-07/part-0.parquet"
+    assert f"lake/kalshi_books/{day}" in bucket.objects
+    stored = [key for key in bucket.objects if key.startswith("raw/kalshi/orderbook/2026-10-07/")]
+    assert sum(key.endswith(".json.gz") for key in stored) == 12
