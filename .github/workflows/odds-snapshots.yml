@@ -135,3 +135,23 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
           if [ "$SUPABASE_REAL" = "true" ]; then sb=(--supabase); else sb=(); fi
           uv run nhl real alert --r2 "${sb[@]}" "${pick[@]}"
+      - name: Kalshi books (#282)
+        # Kalshi's public order book of both teams' markets of each game in the day's real bets
+        # alert, stored raw in R2 and rebuilt into the lake's kalshi_books, for the owner's own
+        # resting orders (#281). It runs at every slot, whatever the steps before did: at midday
+        # right after the alert, and at the pre-game slots for the same day's bets until each
+        # game's start; without the day's alert (the morning slot) it fetches nothing. Kalshi's
+        # Developer Agreement limits its API to a member's own trading (3.1), so only the
+        # alerted bets' markets are fetched, the data stays in R2, and the step prints counts
+        # only, since run logs are public. The odds cron lines of the other half of the DST year
+        # skip.
+        if: always()
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
+          uv run nhl kalshi books --mirror-raw "${pick[@]}"

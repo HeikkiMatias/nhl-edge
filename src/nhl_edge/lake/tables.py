@@ -25,6 +25,7 @@ from nhl_edge.lake.r2 import ObjectStore, R2Config, list_etags, list_keys
 from nhl_edge.lake.schemas import (
     DAILYFACEOFF_GOALIES_KEY,
     DAILYFACEOFF_LINES_KEY,
+    KALSHI_BOOKS_KEY,
     ODDS_KEY,
     PLAYER_LEAGUE_SEASONS_KEY,
     PREGAME_GOALIES_KEY,
@@ -41,6 +42,7 @@ from nhl_edge.lake.schemas import (
     GoalieEffects,
     GoalieStarts,
     GoalMultipliers,
+    KalshiBooks,
     LakeOddsSnapshots,
     LineupReplacements,
     Lineups,
@@ -141,6 +143,9 @@ TABLES: dict[str, Table] = {
     "real_alerts": Table(RealAlerts, ("game_date", "game_id"), BY_DATE),
     "real_bets": Table(RealBets, ("game_date", "game_id"), BY_DATE),
     "real_settlements": Table(RealSettlements, ("game_date", "game_id", "revision"), BY_DATE),
+    # Kalshi's order book of the alerted bets' markets, for the owner's own resting orders
+    # (#282, #281): private, replayed from raw/kalshi/ only, never a model input.
+    "kalshi_books": Table(KalshiBooks, KALSHI_BOOKS_KEY, BY_DATE),
 }
 # Partition columns replace_dates can replace a date at a time.
 DATE_PARTITIONS = ("game_date", "snapshot_date")

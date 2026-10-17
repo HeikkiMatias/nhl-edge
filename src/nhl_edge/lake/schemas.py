@@ -2401,6 +2401,58 @@ class DailyFaceoffLines(pa.DataFrameModel):
         )
 
 
+KALSHI_SIDES = ("yes", "no")
+KALSHI_BOOKS_KEY = ("observed_utc", "ticker", "side", "price")
+# Kalshi's NHL moneyline markets, one per team and game: KXNHLGAME-26OCT17NJWSH-WSH is WSH's
+# market of NJ at WSH on 2026-10-17 (US Eastern), away team first.
+KALSHI_TICKER = r"^KXNHLGAME-\d{2}[A-Z]{3}\d{2}[A-Z]{4,6}-[A-Z]{2,3}$"
+# Kalshi's team codes are the NHL triCodes but for these four (checked on 65 games, #282).
+KALSHI_CODES = {"NJD": "NJ", "TBL": "TB", "SJS": "SJ", "LAK": "LA"}
+
+
+class KalshiBooks(pa.DataFrameModel):
+    """One price level of Kalshi's order book for one team's market of a game with an alerted
+    real bet (#282), fetched for the owner's own resting orders (#281): side "yes" lists the bids
+    for the team to win, side "no" the bids against it, each with its price in dollars (0 to 1)
+    and the contracts resting there.
+
+    observed_utc is the fetch time: the book carries no time of its own, and it shows only live,
+    so it can't be fetched afterwards. Only markets of the day's alerted bets are fetched, never a
+    game at or after its start. Private under Kalshi's Developer Agreement (3.1): kept in the
+    local lake and R2 only, for the owner's own trading, never published and never a model input.
+    """
+
+    observed_utc: UtcDatetime
+    season: pl.Int32
+    game_date: pl.Date
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    ticker: pl.String = pa.Field(str_matches=KALSHI_TICKER)
+    side: pl.String = pa.Field(isin=KALSHI_SIDES)
+    price: pl.Float64 = pa.Field(gt=0, lt=1)
+    quantity: pl.Float64 = pa.Field(gt=0)
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(KALSHI_BOOKS_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def observed_before_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("observed_utc") < pl.col("start_utc"))
+
+    @pa.dataframe_check
+    def ticker_names_the_game_date_and_team(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        day = pl.col("game_date").dt.strftime("%y%b%d").str.to_uppercase()
+        team = pl.col("team").replace(KALSHI_CODES)
+        return data.lazyframe.select(
+            pl.col("ticker").str.starts_with(pl.lit("KXNHLGAME-") + day)
+            & (pl.col("ticker").str.split("-").list.last() == team)
+        )
+
+
 # Reference files (src/nhl_edge/reference/): hand-compiled CSVs, not lake tables. They cover the
 # lake's seasons, 2010-11 on.
 ARENA_ID = r"^[a-z0-9_]+$"

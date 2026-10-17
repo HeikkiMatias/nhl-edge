@@ -43,6 +43,12 @@ real_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(real_app, name="real")
+kalshi_app = typer.Typer(
+    help="Kalshi's order book of the alerted real bets' markets, kept privately for the owner's "
+    "own orders (#282).",
+    no_args_is_help=True,
+)
+app.add_typer(kalshi_app, name="kalshi")
 
 DEFAULT_BACKTEST_SEASONS = ",".join(str(season) for season in DEVELOPMENT_SEASONS)
 DEFAULT_BACKTEST_OUT = Path("reports/backtest")
@@ -4117,6 +4123,7 @@ def _status_against_r2(local: "list[TableState]") -> None:
         "dailyfaceoff_lines": "nhl goalies replay --r2",
         "sbr_odds": "nhl odds sbr --replay --r2",
         "player_league_seasons": "nhl player-seasons --r2",
+        "kalshi_books": "nhl kalshi replay --r2",
     }
     # Tables fitted from the others, rebuilt by their own command in this order (#110).
     FITTED = {
@@ -4248,14 +4255,14 @@ def _status_against_r2(local: "list[TableState]") -> None:
 DEFAULT_REAL_LOCAL = Path("data/live/real")
 
 
-def _real_record(r2: bool) -> "tuple[Lake, Any]":
-    """The lake and the real record's store: R2 with --r2, else a local copy."""
+def _real_record(r2: bool, flag: str = "--r2") -> "tuple[Lake, Any]":
+    """The lake and the real record's store: R2 with --r2 (or flag), else a local copy."""
     from nhl_edge.lake.tables import Lake
     from nhl_edge.live import bundle as lb
     from nhl_edge.settings import load_env
 
     load_env()
-    lake = Lake.from_env(mirror=r2)
+    lake = Lake.from_env(mirror=r2, flag=flag)
     if r2:
         assert lake.objects is not None and lake.bucket is not None
         return lake, lb.R2Store(lake.objects, lake.bucket)
@@ -4671,3 +4678,117 @@ def real_correct(
         typer.echo(f"not written: {exc}", err=True)
         raise typer.Exit(code=1) from None
     typer.echo(f"written to {key}")
+
+
+@kalshi_app.command("books")
+def kalshi_books(
+    cron: Annotated[
+        str | None,
+        typer.Option(
+            help="Cron line that fired the run; nothing is fetched when it is not an odds slot."
+        ),
+    ] = None,
+    day: Annotated[
+        datetime | None,
+        typer.Option(
+            "--date", formats=["%Y-%m-%d"], help="The alert's game date (ET), by default today's."
+        ),
+    ] = None,
+    mirror_raw: Annotated[
+        bool,
+        typer.Option(
+            help="Read the day's alert from R2, and mirror the raw responses and the table there "
+            "(needs the R2_* variables)."
+        ),
+    ] = False,
+) -> None:
+    """Store Kalshi's order book of both teams' markets of each game with an alerted real bet
+    (#282), for the owner's own resting orders (#281), then rebuild the day's kalshi_books from the
+    stored responses. Nothing is fetched without the day's alert (nhl real alert), and never a game
+    at or after its start. Only counts are printed: Kalshi's data stays private (its Developer
+    Agreement, 3.1), and run logs are public."""
+    from nhl_edge.ingest import kalshi
+    from nhl_edge.ingest.nhl_api import utc_now
+    from nhl_edge.ingest.odds import ET, resolve_slot
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.live import real_ledger as rl
+
+    now = utc_now()
+    if cron is not None:
+        chosen = resolve_slot("free-tier", cron, now.date())
+        if chosen is None:
+            typer.echo(
+                f"kalshi books: cron {cron!r} is not an odds slot at this time of year, skipped"
+            )
+            return
+        slot = chosen.name
+    else:
+        slot = kalshi.slot_of(now)
+    game_date = day.date() if day is not None else now.astimezone(ET).date()
+    lake, record = _real_record(mirror_raw, flag="--mirror-raw")
+    alert = rl.alerted(record, game_date)
+    if alert is None:
+        typer.echo(f"kalshi books: {game_date} has no real bets alert, nothing fetched")
+        return
+    store = RawStore.from_env(mirror=mirror_raw)
+    report = kalshi.run_books(
+        kalshi=kalshi.Kalshi(store), alerts=rl.stored_rows(alert), slot=slot, echo=typer.echo
+    )
+    if report.stored or report.not_found:
+        if mirror_raw:
+            # The day's earlier slots' responses, so the rebuilt partition keeps all of them.
+            store.restore_from_r2(f"{kalshi.PREFIX}/{game_date.isoformat()}/")
+        replayed = kalshi.replay_books(store, lake, [game_date])
+        typer.echo(f"kalshi_books {game_date}: rebuilt from {replayed.responses} stored responses")
+    if report.failed:
+        raise typer.Exit(code=1)
+
+
+@kalshi_app.command("replay")
+def kalshi_replay(
+    recent: Annotated[
+        int | None,
+        typer.Option(min=1, help="Game dates (US Eastern) of the last N days, today included."),
+    ] = None,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2", help="Restore the raw order books from R2 first, and mirror the table."
+        ),
+    ] = False,
+) -> None:
+    """Rebuild the lake's kalshi_books from the stored order books only, never calling Kalshi
+    (#282). Without --recent, every stored date is replayed. Its counts come from Kalshi's data,
+    so it is for the owner's own terminal: no workflow runs it."""
+    from datetime import timedelta
+
+    from nhl_edge.ingest import kalshi
+    from nhl_edge.ingest.nhl_api import utc_now
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    dates = None
+    if recent is not None:
+        today = utc_now().astimezone(ET).date()
+        dates = [today - timedelta(days=i) for i in range(recent - 1, -1, -1)]
+    load_env()
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    if r2:
+        prefixes = (
+            [f"{kalshi.PREFIX}/"]
+            if dates is None
+            else [f"{kalshi.PREFIX}/{day.isoformat()}/" for day in dates]
+        )
+        restored = sum(store.restore_from_r2(prefix).copied for prefix in prefixes)
+        typer.echo(f"restored {restored} raw responses from R2")
+    lake = Lake.from_env(mirror=r2)
+    report = kalshi.replay_books(store, lake, dates)
+    window = f"{report.dates[0]}..{report.dates[-1]}" if report.dates else "no stored books"
+    typer.echo(
+        f"kalshi replay {window}: {report.responses} responses, {report.rows} rows; "
+        f"{report.not_found} not found, {report.empty} empty books, {report.after_start} "
+        f"fetched after the start, {len(report.unparsed)} unparsed, "
+        f"{len(report.incomplete)} incomplete"
+    )
