@@ -112,6 +112,13 @@ def test_a_response_without_an_order_book_is_refused() -> None:
         levels(json.dumps({"code": "not_found"}).encode())
 
 
+@pytest.mark.parametrize("book", [[], "levels", 5])
+def test_an_order_book_that_is_no_object_is_refused(book: object) -> None:
+    # A changed response shape counts the market as failed, never stopping the poll (Codex on #283).
+    with pytest.raises(KalshiError, match="no object"):
+        levels(json.dumps({"orderbook_fp": book}).encode())
+
+
 def test_a_book_fetched_at_or_after_the_start_gives_no_rows() -> None:
     assert parse_orderbook(kf.BOOK, kf.MARKET, kf.START, "k").is_empty()
     assert parse_orderbook(kf.BOOK, kf.MARKET, kf.START + timedelta(seconds=1), "k").is_empty()
@@ -291,6 +298,14 @@ def test_a_404_is_stored_as_not_found_and_never_retried(tmp_path: Path) -> None:
     assert store.meta(fetched.raw_key)["status"] == 404
 
 
+@pytest.mark.parametrize("status", [500, 507, 529, 599])
+def test_every_server_error_is_retried(tmp_path: Path, status: int) -> None:
+    # Any 5xx, not a listed few (Codex on #283).
+    requests, handler = kf.sequence(httpx.Response(status), httpx.Response(200, content=kf.BOOK))
+    assert kf.make(RawStore(tmp_path), handler).orderbook(kf.MARKET, None).status == 200
+    assert len(requests) == 2
+
+
 def test_another_status_fails_at_once_and_stores_nothing(tmp_path: Path) -> None:
     requests, handler = kf.sequence(httpx.Response(403))
     with pytest.raises(KalshiError, match="status 403"):
@@ -354,6 +369,24 @@ def test_a_failed_market_does_not_stop_the_others(tmp_path: Path) -> None:
     )
     assert (report.stored, report.failed) == (5, 1) and len(calls) == 10
     assert any(line.startswith("::warning::") and "status 500" in line for line in lines)
+
+
+def test_a_book_of_another_shape_fails_its_market_only(tmp_path: Path) -> None:
+    # An orderbook_fp that is no object counts as one failed market (Codex on #283).
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "-PIT/" in request.url.path:
+            return httpx.Response(200, json={"orderbook_fp": []})
+        return httpx.Response(200, content=kf.BOOK)
+
+    lines: list[str] = []
+    report = run_books(
+        kalshi=kf.make(RawStore(tmp_path), handler),
+        alerts=rf.alert_rows(),
+        slot=None,
+        echo=lines.append,
+    )
+    assert (report.stored, report.failed) == (5, 1)
+    assert "::warning::kalshi books: a stored response is no order book" in lines
 
 
 def test_without_an_alerted_game_to_come_nothing_is_fetched(tmp_path: Path) -> None:

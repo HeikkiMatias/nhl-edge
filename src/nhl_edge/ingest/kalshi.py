@@ -59,7 +59,7 @@ TRIES = 5
 # The waits between the tries: exponential and bounded (the agreement's 4.3).
 BACKOFF_S = tuple(2.0**i for i in range(TRIES - 1))
 MAX_WAIT_S = 30.0
-RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+TOO_MANY = 429
 OK, NOT_FOUND = 200, 404
 TIMEOUT_S = 10.0
 # Each side's bids, by the key Kalshi lists them under.
@@ -199,7 +199,7 @@ class Kalshi:
             else:
                 if response.status_code in (OK, NOT_FOUND):
                     return self._store(market, response, attempt, slot)
-                if response.status_code not in RETRY_STATUS:
+                if not retryable(response.status_code):
                     raise KalshiError(f"status {response.status_code}")
                 error = f"status {response.status_code}"
                 retry_after = retry_after_s(response.headers.get("Retry-After"), self.now())
@@ -230,6 +230,11 @@ class Kalshi:
         return Fetched(market, response.status_code, response.content, raw_key, fetched_utc)
 
 
+def retryable(status: int) -> bool:
+    """Whether a status is worth another try: a 429, or any server error (5xx)."""
+    return status == TOO_MANY or 500 <= status <= 599
+
+
 def market_of(meta: Mapping[str, Any]) -> Market:
     """The market a stored response was fetched for, from its sidecar."""
     return Market(
@@ -244,12 +249,14 @@ def market_of(meta: Mapping[str, Any]) -> Market:
 
 def levels(body: bytes) -> dict[str, list[tuple[float, float]]]:
     """Each side's bids in an order book response, as (price in dollars, contracts) in the order
-    listed. A side whose list is empty, null or missing has none; a response without orderbook_fp
-    is no order book."""
+    listed. A side whose list is empty, null or missing has none; a response without orderbook_fp,
+    or whose orderbook_fp is neither null nor an object, is no order book."""
     data = json.loads(body)
     if not isinstance(data, dict) or "orderbook_fp" not in data:
         raise KalshiError("no orderbook_fp in the response")
-    book = data["orderbook_fp"] or {}
+    book = {} if data["orderbook_fp"] is None else data["orderbook_fp"]
+    if not isinstance(book, dict):
+        raise KalshiError("orderbook_fp is no object")
     return {
         side: [(float(price), float(count)) for price, count in book.get(key) or []]
         for side, key in SIDES.items()
