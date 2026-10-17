@@ -35,6 +35,7 @@ from typing import Any, Protocol
 import polars as pl
 
 from nhl_edge.backtest import e3
+from nhl_edge.betting import selection
 from nhl_edge.game import b2, b3, uncertainty
 from nhl_edge.game.b2 import B2Model
 from nhl_edge.game.b3 import B3Model
@@ -521,11 +522,16 @@ def models(bundle: Bundle) -> lp.Models | None:
 def replay(bundle: Bundle, live: blend_fit.LiveFit) -> pl.DataFrame:
     """The day's ledger made again from the bundle alone and the live fit: its models, then the
     decision on the saved quotes, slate and bankroll, at the saved decision and publication
-    times."""
+    times, stamped with the policy the day was decided under (#264). Today's selection, guard and
+    staking decide it, so a day of a policy that doesn't share them is refused
+    (selection.REPLAYABLE)."""
     manifest = bundle.manifest
     if live.version != manifest["blend_version"]:
         decided = manifest["blend_version"]
         raise ValueError(f"the bundle was decided with {decided}, not {live.version}")
+    policy = manifest["policy_version"]
+    if policy not in selection.REPLAYABLE:
+        raise ValueError(f"the bundle was decided under {policy}, which this code doesn't replay")
     fitted = models(bundle)
     day = lp.Day(
         day=date.fromisoformat(manifest["day"]),
@@ -536,6 +542,7 @@ def replay(bundle: Bundle, live: blend_fit.LiveFit) -> pl.DataFrame:
         live=live,
         bankroll=manifest["bankroll"],
         versions={
+            "policy_version": policy,
             "blend_version": manifest["blend_version"],
             "feature_build": manifest["feature_build"],
             "code_version": manifest["code_version"],

@@ -11,6 +11,7 @@ import polars as pl
 import predict_fixtures as pf
 import pytest
 
+from nhl_edge.betting.selection import POLICY_VERSION
 from nhl_edge.lake.schemas import ChallengerPredictions
 from nhl_edge.live import blend_fit
 from nhl_edge.live import bundle as lb
@@ -39,6 +40,7 @@ def identity(inputs: lp.Day) -> dict[str, Any]:
         "published_utc": published.isoformat(),
         "input_cutoff": lp.input_cutoff(inputs.quotes, inputs.decision_utc).isoformat(),
         "bankroll": inputs.bankroll,
+        "policy_version": POLICY_VERSION,
         "blend_version": inputs.live.version,
         "feature_build": inputs.versions["feature_build"],
         "code_version": inputs.versions["code_version"],
