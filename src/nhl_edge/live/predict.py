@@ -450,11 +450,11 @@ def _bets(predicted: pl.DataFrame, inputs: Day, matched: pl.DataFrame) -> pl.Dat
 
 
 def stamp(ledger: pl.DataFrame, inputs: Day) -> pl.DataFrame:
-    """The ledger with the policy, artifact and build versions every row carries."""
-    return ledger.with_columns(
-        policy_version=pl.lit(POLICY_VERSION),
-        **{name: pl.lit(value) for name, value in inputs.versions.items()},
-    )
+    """The ledger with the policy, artifact and build versions every row carries. The policy is
+    today's unless inputs.versions names the one the day was decided under, as a replay of an
+    earlier policy's day does (#264)."""
+    versions = {"policy_version": POLICY_VERSION, **inputs.versions}
+    return ledger.with_columns(**{name: pl.lit(value) for name, value in versions.items()})
 
 
 class Republish(ValueError):

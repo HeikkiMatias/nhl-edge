@@ -15,6 +15,7 @@ from b2_fixtures import feature_tables
 from b3_fixtures import league
 
 from nhl_edge.backtest.walk_forward import fold_start
+from nhl_edge.betting.selection import POLICY_V1, POLICY_VERSION
 from nhl_edge.game import uncertainty
 from nhl_edge.ingest.odds import ODDS_FRAME_SCHEMA
 from nhl_edge.lake.schemas import PlayerLeagueSeasons, Slate, dtypes
@@ -105,6 +106,7 @@ def day_identity(inputs: lp.Day) -> dict[str, Any]:
         "published_utc": published.isoformat(),
         "input_cutoff": lp.input_cutoff(inputs.quotes, inputs.decision_utc).isoformat(),
         "bankroll": inputs.bankroll,
+        "policy_version": inputs.versions.get("policy_version", POLICY_VERSION),
         "blend_version": inputs.live.version,
         "feature_build": inputs.versions["feature_build"],
         "code_version": inputs.versions["code_version"],
@@ -145,6 +147,27 @@ def test_the_replay_decides_the_day_again_from_the_bundle(
     other = replace(inputs.live, version="blend-live-20261007-other")
     with pytest.raises(ValueError, match="decided with"):
         lb.replay(lb.read(store, day), other)
+
+
+def test_an_earlier_policys_day_replays_under_its_own_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A v1 day, decided and stamped under v1, replays every column, its policy_version included
+    # (#264); a day of a policy whose selection this code doesn't replay is refused.
+    v1 = pf.day(published_utc=pf.DECISION + timedelta(minutes=4))
+    v1 = replace(v1, versions={**v1.versions, "policy_version": POLICY_V1})
+    ledger = lp.ledger(lp.decide(v1), v1)
+    assert set(ledger["policy_version"]) == {POLICY_V1}
+    store = lb.LocalStore(tmp_path / "v1")
+    rows = lb.inputs(v1.slate, RECORD, v1.quotes, None)
+    lb.write_once(store, pf.DAY, rows, {}, day_identity(v1), {})
+    monkeypatch.setattr(lb, "models", lambda _: v1.fitted)
+    assert lb.differences(lb.replay(lb.read(store, pf.DAY), v1.live), ledger) == []
+    other = lb.LocalStore(tmp_path / "other")
+    identity = day_identity(v1) | {"policy_version": "policy-20270101-0000000"}
+    lb.write_once(other, pf.DAY, rows, {}, identity, {})
+    with pytest.raises(ValueError, match="doesn't replay"):
+        lb.replay(lb.read(other, pf.DAY), v1.live)
 
 
 def test_a_bundle_is_written_once_and_read_only_whole(tmp_path: Path) -> None:

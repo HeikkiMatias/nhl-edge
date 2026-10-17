@@ -29,6 +29,9 @@ POLICY_V1 = "policy-20261005-8ec5cf3"
 # after FROZEN_ON; any change is a new version, judged only on games after its own freeze date.
 POLICY_VERSION = "policy-20261014-e15db87"
 FROZEN_ON = date(2026, 10, 14)
+# The policies whose decided days today's selection, guard and staking replay (#264): v1 and v2
+# share all three. A policy that changes any of them joins only with code that replays its days.
+REPLAYABLE = (POLICY_V1, POLICY_VERSION)
 # Live bets use the blend fitted on SBR's close (E1), applied to Pinnacle's 12:45 ET price
 # (ADR 0030).
 LIVE_BLEND_EXPERIMENT = "E1"

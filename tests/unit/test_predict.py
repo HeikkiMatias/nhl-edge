@@ -24,6 +24,9 @@ def test_every_slate_game_gets_one_row_with_its_prediction() -> None:
     assert set(rows["prediction_utc"]) == {pf.DECISION}
     assert set(rows["decision_snapshot_utc"]) == {pf.MIDDAY}
     assert set(rows["policy_version"]) == {POLICY_VERSION}
+    # A day decided under another policy carries its own (#264).
+    other = decided(versions={**pf.day().versions, "policy_version": "policy-x"})
+    assert set(other["policy_version"]) == {"policy-x"}
     first = rows.row(0, named=True)
     # B0 is Pinnacle's midday price de-vigged, and the blend reads it with B3 and u.
     assert first["p_b0"] == pytest.approx(fair_probabilities([2.10, 1.80])[0])

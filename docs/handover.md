@@ -192,7 +192,7 @@ Every deliverable merged under its own task issue:
 
 **What's left in phase 5:**
 - #169, task 9: a second copy of `raw/` outside R2. The owner chose, on 2026-10-09, to keep it on their own computer, set up later. The steps are on the issue (`nhl lake restore-raw` with a read-only R2 token).
-- #264: since the v2 freeze, `nhl live replay` of any v1 day differs from its ledger in `policy_version` alone, because the replay stamps the current constant. The fix needs one question settled first (the issue has it). Challengers count only v2 days, so nothing breaks until the next policy freeze.
+- #264 (fixed): a replay stamps the policy its day's manifest names, so v1 days replay every column again. Today's selection, guard and staking decide every replay, which v1 and v2 share. A replay of any policy outside `selection.REPLAYABLE` is refused, so a freeze that changes them must add code that replays its days.
 - #253, selected-bet calibration, and #254, the proxy's lead and its cost: two diagnostics from the review agenda.
 - #173, after #30; #121 step 3, on 2026-11-05; #67, around 2027-04-17.
 
@@ -352,7 +352,7 @@ Every deliverable merged under its own task issue:
 - **Open, waiting:** #30, #79 and #11 (P2). Draft PR #93 holds gate 1.
 - **Open, for the owner:** #169, the raw backup on the owner's own computer (P5); #266's venue steps, with the venue's minimum stake and stake increment; #270's migration, `20261016150000_real_record.sql`.
 - **Open, [priority]:** #271, the real-money tracking issue; #266, the venue.
-- **Open, next:** #269 (real money, after the venue); #264 (replay of v1 days); #253 and #254 (diagnostics); #256 to #260 (challengers, each with its own ADR).
+- **Open, next:** #269 (real money, after the venue); #253 and #254 (diagnostics); #256 to #260 (challengers, each with its own ADR).
 - **Parked for the next model version:** #125 and #134 (P6, label `next-model-version`).
 - **Open, later:** phase 5's #14, #67 (in April 2027), #121 (step 3 on 2026-11-05) and #173 (after #30); #15, #186 and #250 (P6).
 
