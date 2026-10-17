@@ -27,11 +27,13 @@ POLICY_V1 = "policy-20261005-8ec5cf3"
 # Policy v2's freeze (#222, ADR 0037): v1 with each slate team's starter at the decision, from the
 # NHL's flag and Daily Faceoff's statuses, as on main at e15db87. Live games count from the day
 # after FROZEN_ON; any change is a new version, judged only on games after its own freeze date.
-POLICY_VERSION = "policy-20261014-e15db87"
+POLICY_V2 = "policy-20261014-e15db87"
+POLICY_VERSION = POLICY_V2
 FROZEN_ON = date(2026, 10, 14)
 # The policies whose decided days today's selection, guard and staking replay (#264): v1 and v2
-# share all three. A policy that changes any of them joins only with code that replays its days.
-REPLAYABLE = (POLICY_V1, POLICY_VERSION)
+# share all three. Each is named, never the current alias, so a freeze changes the list only on
+# purpose; a policy that changes any of the three joins only with code that replays its days.
+REPLAYABLE = (POLICY_V1, POLICY_V2)
 # Live bets use the blend fitted on SBR's close (E1), applied to Pinnacle's 12:45 ET price
 # (ADR 0030).
 LIVE_BLEND_EXPERIMENT = "E1"

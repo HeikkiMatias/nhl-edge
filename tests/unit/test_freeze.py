@@ -15,6 +15,9 @@ def test_the_frozen_policy_keeps_its_numbers() -> None:
     assert selection.POLICY_VERSION == "policy-20261014-e15db87"
     assert date(2026, 10, 14) == selection.FROZEN_ON
     assert selection.POLICY_V1 == "policy-20261005-8ec5cf3"
+    assert selection.POLICY_V2 == "policy-20261014-e15db87"
+    # The days today's selection, guard and staking replay, by name (#264, Codex on #284).
+    assert selection.REPLAYABLE == ("policy-20261005-8ec5cf3", "policy-20261014-e15db87")
     assert (
         Policy(
             min_ev=0.025, ev_per_sd=0.01, kelly=0.25, max_bet=0.015, max_day=0.05, bankroll=100.0
