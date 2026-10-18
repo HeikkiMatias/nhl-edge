@@ -4958,8 +4958,8 @@ def real_reconcile_kalshi(
     """Check the real record against Kalshi's own settlements (#287), nightly after nhl real
     settle: each live order with fills of the last 30 days, its result, the contracts held and
     the payout. A difference, or a settlement missing on either side two days after the game was
-    played (the lake's final games), goes to the owner's Telegram; the log prints counts only. Without the live key there is
-    nothing to check."""
+    played (the lake's final games), goes to the owner's Telegram; the log prints counts only.
+    Without the live key there is nothing to check."""
     from datetime import UTC
 
     from nhl_edge.ingest.odds import ET
