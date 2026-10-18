@@ -28,6 +28,8 @@ It covers the frozen policy's regular-season paper decisions (ADR 0032):
 - **Entry to close (#251),** a diagnostic with no verdict: over every predicted game with a close,
   whether Pinnacle's fair price moved toward each model's disagreement with it at the decision
   (live/movement.py).
+- **The closing proxy's lead (#254),** a diagnostic with no verdict: the fair move to the proxy
+  and the bets' CLV by how long before the start the proxy was taken.
 - **Shadow evaluations (#252),** paper only and with no verdict: the frozen rules on the
   market-only control, and the policy's own bets at the best fresh price of the other books
   (live/shadow.py).
@@ -46,6 +48,7 @@ import json
 import math
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, time, timedelta
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +91,9 @@ DRAWDOWN = 0.20
 # How long a challenger's day without its output is pending, from the day's UTC midnight: the
 # nightly scores it the night after its decision (live/challengers.py).
 PENDING_FOR = timedelta(days=2)
+# The closing proxy's lead bands' edges, in minutes (#254): up to 30, 30 to 60, and over 60. The
+# pre-game slots take a proxy 15 to 75 minutes before its game (market/closing.py).
+LEAD_EDGES = (30, 60)
 # u's distance from its training mean, in its training standard deviations, that the report
 # counts: under a normal spread about 4.6% and 0.3% of games lie beyond them.
 U_LIMITS = (2.0, 3.0)
@@ -524,6 +530,54 @@ def entry_to_close(moves: pl.DataFrame) -> dict[str, Any]:
     }
 
 
+def _by_lead(frame: pl.DataFrame, value: str) -> dict[str, Any]:
+    """value over the frame's rows with a lead (lead_min), by LEAD_EDGES' bands, and its slope on
+    the lead in hours."""
+    known = frame.filter(pl.col("lead_min").is_not_null(), pl.col(value).is_not_null())
+    known = known.with_columns(lead_h=pl.col("lead_min") / 60)
+    edges = [None, *LEAD_EDGES, None]
+    bands = []
+    for lower, upper in pairwise(edges):
+        inside = known
+        if lower is not None:
+            inside = inside.filter(pl.col("lead_min") > lower)
+        if upper is not None:
+            inside = inside.filter(pl.col("lead_min") <= upper)
+        name = (
+            f"up to {upper} min"
+            if lower is None
+            else f"over {lower} min"
+            if upper is None
+            else f"{lower} to {upper} min"
+        )
+        bands.append({"band": name, "estimate": estimate(inside, value)})
+    fitted = enough(known) and known["lead_h"].n_unique() > 1
+    return {
+        "bands": bands,
+        "slope_per_hour": slope(known, "lead_h", value).to_dict() | counts(known)
+        if fitted
+        else counts(known),
+    }
+
+
+def proxy_lead(moves: pl.DataFrame, bets: pl.DataFrame) -> dict[str, Any]:
+    """#254's diagnostic, with no verdict: whether the closing proxy's lead before the start
+    changes what it measures. Over movement.table's games with a valid close, the size of
+    Pinnacle's fair move from the decision to the proxy, in points, by lead band and its slope on
+    the lead; over the bets with a valid proxy, CLV the same way. Late goalie news and late money
+    arrive after an early proxy, so if either changes with the lead, the proxy is biased for some
+    start times."""
+    valid = moves.filter(pl.col("move").is_not_null()).with_columns(
+        points=(pl.col("p_close") - pl.col("p_decision")).abs() * 100
+    )
+    valued = bets.filter(
+        pl.col("settled") == ls.SETTLED, pl.col("close_status") == closing.PROXY
+    ).with_columns(
+        lead_min=(pl.col("start_utc") - pl.col("close_snapshot_utc")).dt.total_seconds() / 60
+    )
+    return {"move_points": _by_lead(valid, "points"), "clv": _by_lead(valued, "clv")}
+
+
 def shadows(started: pl.DataFrame, moves: pl.DataFrame, odds: pl.DataFrame) -> dict[str, Any]:
     """#252's paper shadows over the started predicted games (live/shadow.py), with no verdict:
     the market-only control's bets against the policy's own, and the policy's bets at the best
@@ -789,6 +843,7 @@ def report(
         },
         "market_timing": market_timing(scored, history),
         "entry_to_close": entry_to_close(moves),
+        "proxy_lead": proxy_lead(moves, bets),
         "shadows": shadows(started, moves, odds),
         "real_stakes": real_stakes(
             bets,
@@ -1074,6 +1129,28 @@ def markdown(result: dict[str, Any]) -> str:
         "",
         "The slope is in log-odds on both sides: 0 when the disagreement says nothing about the "
         "move, 1 when the market moves all the way to the model by the close.",
+    ]
+    lead = result["proxy_lead"]
+    lines += [
+        "",
+        "## The closing proxy's lead (#254)",
+        "",
+        "A diagnostic with no verdict. The closing proxy is the last fresh Pinnacle quote at most "
+        "90 minutes before the start, so the pre-game slots take it 15 to 75 minutes before its "
+        "game, and late news can arrive after it. If what it measures changes with its lead, the "
+        "proxy is biased for some start times.",
+        "",
+        "| Proxy's lead | Fair move from the decision to the proxy, points | CLV per bet |",
+        "| --- | --- | --- |",
+    ]
+    lines += [
+        f"| {move['band']} | {_cell(move['estimate'])} | {_cell(clv['estimate'], 4)} |"
+        for move, clv in zip(lead["move_points"]["bands"], lead["clv"]["bands"], strict=True)
+    ]
+    lines += [
+        "",
+        f"- Slope on the lead, per hour: the move {_cell(lead['move_points']['slope_per_hour'])}, "
+        f"CLV {_cell(lead['clv']['slope_per_hour'], 4)}.",
     ]
     market = result["shadows"]["market_only"]
     best = result["shadows"]["best_price"]
