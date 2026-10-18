@@ -64,6 +64,9 @@ TRADE = "trade"
 OK, CREATED, NOT_FOUND, CONFLICT = 200, 201, 404, 409
 PAGE = 100
 MAX_PAGES = 50
+# How long a read waits for a write to show (read_order): at most 5 reads, a second apart.
+READ_TRIES = 5
+READ_WAIT_S = 1.0
 CENT = Decimal("0.01")
 # The finest price and count an order takes: $0.0001 and 0.01 contracts (Fixed-Point
 # Representation); a market's own grid can be coarser (its price_ranges).
@@ -359,6 +362,32 @@ class KalshiTrade:
         """One order: its status, fill count, fill costs and fees (GET /portfolio/orders/{id})."""
         return self._json("order", "GET", f"/portfolio/orders/{order_id}")["order"]
 
+    def read_order(
+        self,
+        order_id: str,
+        until: Callable[[Mapping[str, Any]], bool],
+        tries: int = READ_TRIES,
+        wait_s: float = READ_WAIT_S,
+    ) -> dict[str, Any] | None:
+        """An order read until it shows a state, at most tries reads wait_s apart: Kalshi's reads
+        lag its writes a little (Get User Data Timestamp), so a new order can be missing (404) or
+        a cancel not shown yet. Returns the first read in that state, else the last read, or None
+        when the order never appeared."""
+        last: dict[str, Any] | None = None
+        for attempt in range(tries):
+            if attempt:
+                self.sleep(wait_s)
+            response = self._request(
+                "order", "GET", f"/portfolio/orders/{order_id}", passed=(NOT_FOUND,)
+            )
+            if response.status_code == NOT_FOUND:
+                continue
+            found: dict[str, Any] = response.json()["order"]
+            if until(found):
+                return found
+            last = found
+        return last
+
     def orders(self, ticker: str) -> list[dict[str, Any]]:
         """The account's orders on a market, resting, cancelled or executed."""
         return self._pages("orders", "/portfolio/orders", "orders", {"ticker": ticker})
@@ -412,7 +441,10 @@ class CheckReport:
 
     @property
     def passed(self) -> bool:
-        return self.balance_read and self.placed and self.resting and self.cancelled
+        """Every step held, and nothing filled: a fill, even a part of one, fails the check
+        (Codex on #288)."""
+        steps = self.balance_read and self.placed and self.resting and self.cancelled
+        return steps and self.filled == 0
 
 
 def _decimal(value: Any) -> Decimal:
@@ -429,8 +461,9 @@ def check_market(listed: Sequence[Mapping[str, Any]]) -> str | None:
 
 def check(trade: KalshiTrade, echo: Callable[[str], None]) -> CheckReport:
     """Prove a key and the order path: read the balance, place a post-only bid of 1.50 contracts at
-    1¢ on an open NHL market, read it back, cancel it and read it again. Echoes the steps only,
-    never a price, a market, an id or the balance."""
+    1¢ on an open NHL market, read it back until it rests, cancel it and read it again until the
+    cancel shows. Each read waits a little for the write to show (Codex on #288). Echoes the steps
+    only, never a price, a market, an id or the balance."""
     report = CheckReport()
     trade.balance()
     report.balance_read = True
@@ -452,16 +485,16 @@ def check(trade: KalshiTrade, echo: Callable[[str], None]) -> CheckReport:
     report.placed = True
     echo(f"kalshi check {trade.env}: a bid of 1.50 contracts at 1¢ was placed")
     try:
-        before = trade.order(placed.order_id)
-        report.resting = before.get("status") == "resting"
+        before = trade.read_order(placed.order_id, lambda o: o.get("status") == "resting")
+        report.resting = before is not None and before.get("status") == "resting"
         echo(
             f"kalshi check {trade.env}: read back, {'resting' if report.resting else 'not resting'}"
         )
     finally:
         trade.cancel(placed.order_id, ticker)
-    after = trade.order(placed.order_id)
-    report.cancelled = after.get("status") == "canceled"
-    report.filled = _decimal(after.get("fill_count_fp"))
+    after = trade.read_order(placed.order_id, lambda o: o.get("status") == "canceled")
+    report.cancelled = after is not None and after.get("status") == "canceled"
+    report.filled = _decimal(after.get("fill_count_fp")) if after is not None else Decimal(0)
     echo(
         f"kalshi check {trade.env}: {'cancelled' if report.cancelled else 'not cancelled'}, "
         f"{report.filled:.2f} contracts filled"

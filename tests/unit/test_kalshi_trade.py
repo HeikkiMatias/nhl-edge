@@ -72,6 +72,12 @@ class Exchange:
         self.fail: list[int] = []
         # the next create reaches the exchange but answers this status
         self.lost_create: int | None = None
+        # reads of an order that answer 404, or show it still resting after its cancel, as
+        # Kalshi's reads lag its writes
+        self.unseen = 0
+        self.stale = 0
+        # contracts a seller fills before the cancel lands
+        self.filled_before_cancel = "0.00"
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -97,11 +103,16 @@ class Exchange:
             if order is None or order["status"] != "resting":
                 return httpx.Response(404, json={"code": "not_found"})
             order["status"] = "canceled"
+            order["fill_count_fp"] = self.filled_before_cancel
             return httpx.Response(200, json={"order_id": order["order_id"], "reduced_by": "1.00"})
         if path.startswith("/portfolio/orders/"):
             order = self.orders.get(path.rsplit("/", 1)[1])
-            if order is None:
+            if order is None or self.unseen:
+                self.unseen = max(0, self.unseen - 1)
                 return httpx.Response(404, json={"code": "not_found"})
+            if order["status"] == "canceled" and self.stale:
+                self.stale -= 1
+                return httpx.Response(200, json={"order": order | {"status": "resting"}})
             return httpx.Response(200, json={"order": order})
         if path == "/portfolio/orders":
             listed = [o for o in self.orders.values() if o["ticker"] == params["ticker"]]
@@ -444,6 +455,35 @@ def test_the_check_places_a_post_only_cent_bid_where_it_cannot_fill_and_cancels_
         assert secret not in printed
 
 
+def test_the_check_waits_a_little_for_its_writes_to_show(tmp_path: Path) -> None:
+    exchange = Exchange()
+    exchange.unseen = 2  # the new order is missing from the first two reads
+    exchange.stale = 1  # and the first read after the cancel still shows it resting
+    client, waits = trade(tmp_path, exchange)
+    report = check(client, lambda _: None)
+    assert report.passed
+    assert waits == [kt.READ_WAIT_S] * 3
+
+
+def test_an_order_that_never_shows_fails_the_check_and_is_still_cancelled(tmp_path: Path) -> None:
+    exchange = Exchange()
+    exchange.unseen = kt.READ_TRIES
+    client, _ = trade(tmp_path, exchange)
+    report = check(client, lambda _: None)
+    assert not report.resting and not report.passed
+    assert exchange.orders["order-1"]["status"] == "canceled"
+
+
+def test_a_partial_fill_fails_the_check(tmp_path: Path) -> None:
+    exchange = Exchange()
+    exchange.filled_before_cancel = "0.50"
+    client, _ = trade(tmp_path, exchange)
+    lines: list[str] = []
+    report = check(client, lines.append)
+    assert report.cancelled and report.filled == Decimal("0.50") and not report.passed
+    assert "0.50 contracts filled" in lines[-1]
+
+
 def test_the_check_needs_a_market_whose_ask_is_far_above_a_cent() -> None:
     assert (
         check_market([{"ticker": TICKER, "yes_ask_dollars": "0.0900"}, {"ticker": OTHER}]) is None
@@ -463,16 +503,16 @@ def test_the_check_without_a_market_places_nothing(tmp_path: Path) -> None:
 def test_the_check_cancels_even_when_reading_the_order_back_fails(tmp_path: Path) -> None:
     exchange = Exchange()
     client, _ = trade(tmp_path, exchange)
-    real_order: Callable[[str], dict[str, Any]] = client.order
+    real_read: Callable[..., dict[str, Any] | None] = client.read_order
     calls = {"n": 0}
 
-    def failing(order_id: str) -> dict[str, Any]:
+    def failing(order_id: str, until: Any) -> dict[str, Any] | None:
         calls["n"] += 1
         if calls["n"] == 1:
             raise KalshiTradeError("order: status 500")
-        return real_order(order_id)
+        return real_read(order_id, until)
 
-    client.order = failing  # type: ignore[method-assign]
+    client.read_order = failing  # type: ignore[method-assign]
     with pytest.raises(KalshiTradeError):
         check(client, lambda _: None)
     assert exchange.orders["order-1"]["status"] == "canceled"
