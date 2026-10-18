@@ -434,7 +434,7 @@ def test_the_check_places_a_post_only_cent_bid_where_it_cannot_fill_and_cancels_
     assert (body["ticker"], body["price"], body["count"], body["post_only"]) == (
         TICKER,
         "0.0100",
-        "1.00",
+        "1.50",
         True,
     )
     assert body["expiration_time"] == int((NOW + kt.CHECK_LIFE).timestamp())

@@ -393,11 +393,11 @@ class KalshiTrade:
         )
 
 
-# The check (nhl kalshi check): a post-only bid of 1 contract at 1¢, placed only on a market whose
-# Yes ask is at least CHECK_FLOOR, so it can't fill, expiring by itself after CHECK_LIFE should
-# the cancel fail.
+# The check (nhl kalshi check): a post-only bid of 1.50 contracts at 1¢, a fractional count as real
+# orders have (#281), placed only on a market whose Yes ask is at least CHECK_FLOOR, so it can't
+# fill, expiring by itself after CHECK_LIFE should the cancel fail.
 CHECK_PRICE = Decimal("0.01")
-CHECK_COUNT = Decimal("1")
+CHECK_COUNT = Decimal("1.50")
 CHECK_FLOOR = Decimal("0.10")
 CHECK_LIFE = timedelta(minutes=2)
 
@@ -428,9 +428,9 @@ def check_market(listed: Sequence[Mapping[str, Any]]) -> str | None:
 
 
 def check(trade: KalshiTrade, echo: Callable[[str], None]) -> CheckReport:
-    """Prove a key and the order path: read the balance, place a post-only 1-contract bid at 1¢ on
-    an open NHL market, read it back, cancel it and read it again. Echoes the steps only, never a
-    price, a market, an id or the balance."""
+    """Prove a key and the order path: read the balance, place a post-only bid of 1.50 contracts at
+    1¢ on an open NHL market, read it back, cancel it and read it again. Echoes the steps only,
+    never a price, a market, an id or the balance."""
     report = CheckReport()
     trade.balance()
     report.balance_read = True
@@ -450,7 +450,7 @@ def check(trade: KalshiTrade, echo: Callable[[str], None]) -> CheckReport:
     )
     placed = trade.create_order(order)
     report.placed = True
-    echo(f"kalshi check {trade.env}: a 1-contract bid at 1¢ was placed")
+    echo(f"kalshi check {trade.env}: a bid of 1.50 contracts at 1¢ was placed")
     try:
         before = trade.order(placed.order_id)
         report.resting = before.get("status") == "resting"

@@ -1,9 +1,9 @@
 name: kalshi-check
 # Proves a Kalshi API key and the order path (#286), dispatched by the owner once the key's secrets
-# are added: it reads the balance, places a post-only bid of 1 contract at 1¢ on an open NHL market
-# whose Yes ask is at least 10¢, so it can't fill, reads it back and cancels it. The order expires
-# by itself after 2 minutes should the cancel fail. The log shows the steps only, since run logs
-# are public; the responses are stored raw in R2. Only the chosen environment's key is passed.
+# are added: it reads the balance, places a post-only bid of 1.50 contracts at 1¢ on an open NHL
+# market whose Yes ask is at least 10¢, so it can't fill, reads it back and cancels it. The order
+# expires by itself after 2 minutes should the cancel fail. The log shows the steps only, since run
+# logs are public; the responses are stored raw in R2. Only the chosen environment's key is passed.
 on:
   workflow_dispatch:
     inputs:

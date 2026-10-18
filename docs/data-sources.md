@@ -470,7 +470,7 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
 - **Logs:** run logs are public. A run prints its steps and counts only, never a market, price, size, order id or the balance, and an error names only its call and status.
 - **`nhl kalshi check --env demo|live [--mirror-raw]`:** proves a key and the order path.
   - It reads the balance.
-  - It places a post-only bid of 1 contract at 1¢ on the open NHL market with the highest Yes ask, at least 10¢, so the bid can't fill.
+  - It places a post-only bid of 1.50 contracts at 1¢ on the open NHL market with the highest Yes ask, at least 10¢, so the bid can't fill. The count is fractional, as real orders are (#281), so the check also proves the market takes one.
   - It reads the order back, cancels it and reads it again.
   - The order also expires by itself after 2 minutes, should the cancel fail.
   - It passes when the balance was read, the order rested and the cancel held.

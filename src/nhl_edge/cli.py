@@ -4805,7 +4805,7 @@ def kalshi_check(
     ] = False,
 ) -> None:
     """Prove a Kalshi API key and the order path (#286): read the balance, place a post-only bid
-    of 1 contract at 1¢ on an open NHL market whose Yes ask is at least 10¢, so it can't fill,
+    of 1.50 contracts at 1¢ on an open NHL market whose Yes ask is at least 10¢, so it can't fill,
     read it back, cancel it and read it again. The order expires by itself after 2 minutes should
     the cancel fail. Only the steps are printed: the responses are stored raw, since run logs are
     public."""
