@@ -19,6 +19,7 @@ from kalshi_exchange import Exchange, trade
 from typer.testing import CliRunner
 
 from nhl_edge.cli import app
+from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.schemas import RealOrders
 from nhl_edge.live import bundle as lb
 from nhl_edge.live import kalshi_trade as kt
@@ -544,6 +545,14 @@ def commands(
     monkeypatch.setattr(cli, "_real_record", lambda r2: (lake, record))
     monkeypatch.setattr(telegram, "send", lambda text: sent.append(text))
     monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    # No R2 here, as on CI: the trade's raw responses go to a local store.
+    for name in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        RawStore,
+        "from_env",
+        classmethod(lambda cls, *args, **kwargs: RawStore(tmp_path / "cli-raw")),
+    )
     monkeypatch.setattr(
         kt.KalshiTrade,
         "from_env",
@@ -652,13 +661,40 @@ def test_nhl_real_place_without_the_schedule_places_nothing(
 ) -> None:
     from nhl_edge import cli
 
-    _, exchange, _, _ = commands(tmp_path, monkeypatch, "live", real_rows())
+    _, exchange, sent, _ = commands(tmp_path, monkeypatch, "live", real_rows())
     monkeypatch.setattr(cli, "_listed_starts", lambda days, mirror: None)
     result = runner.invoke(app, ["real", "place", "--r2"])
     assert result.exit_code == 0, result.output
     assert "3 planned, 0 placed" in result.output
     assert "3 the game's start couldn't be checked" in result.output
     assert not exchange.orders
+    # The alert said the bets go automatically, so the owner hears that none went.
+    assert len(sent) == 1 and "Not placed: 3 the game's start couldn't be checked" in sent[0]
+
+
+def test_the_schedule_is_read_from_the_day_before_each_game_date(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A game moved earlier, into the day before its date, is still listed (Codex on #289).
+    from datetime import date
+
+    from nhl_edge import cli
+    from nhl_edge.ingest.nhl_api import NhlApi, ScheduledGame
+
+    asked: list[date] = []
+    moved = ScheduledGame(2026020053, 2, pf.START - timedelta(days=1), "WSH", "PIT")
+
+    def schedule(api: Any, day: date) -> list[ScheduledGame]:
+        asked.append(day)
+        return [moved]
+
+    monkeypatch.setattr(NhlApi, "schedule", schedule)
+    monkeypatch.setattr(
+        RawStore, "from_env", classmethod(lambda cls, *args, **kwargs: RawStore(tmp_path))
+    )
+    starts = cli._listed_starts({pf.DAY}, False)
+    assert asked == [pf.DAY - timedelta(days=1)]
+    assert starts == {2026020053: pf.START - timedelta(days=1)}
 
 
 def test_an_order_already_final_is_never_sent_again(tmp_path: Path) -> None:
@@ -751,6 +787,75 @@ def test_an_order_lost_on_its_way_is_found_before_it_would_be_called_not_sent(
     assert report.adopted == 1
     wsh = next(e for e in rl.entries(record) if e["game_id"] == 2026020053)
     assert wsh["outcome"] == rl.PLACED and wsh["bet_id"] == "order-1"
+
+
+def test_an_order_lost_on_its_way_is_tracked_and_told_while_it_rests(tmp_path: Path) -> None:
+    # Its create reached Kalshi but no answer came back: the next pre-game run finds it, so it
+    # is tracked and its message goes before its deadline (Codex on #289).
+    record, _, client, clock, _ = placed(tmp_path)
+    record.objects.objects.pop(pm.order_key("live", pf.DAY, 2026020053, "placed"))
+    clock.at = PLACED_AT + timedelta(minutes=10)
+    report = pm.reconcile(record, client, clock, STARTS)
+    assert report.adopted == 1 and report.resting == 3 and report.finalized == 0
+    told = pm.unnotified(record, pm.LIVE, "placed")
+    assert 2026020053 in {r["game_id"] for r in told}
+    assert pm.table(record).filter(pl.col("game_id") == 2026020053)["status"].item() == "placed"
+
+
+def test_a_failed_look_for_an_unrecorded_order_waits_without_stopping_the_others(
+    tmp_path: Path,
+) -> None:
+    # WSH was never sent (its market was closed); looking for it fails before its deadline.
+    record, exchange, clock = store(), Exchange(), Clock()
+    exchange.status[WSH] = "closed"
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
+    clock.at = PLACED_AT + timedelta(minutes=10)
+    exchange.fail = [400]
+    report = pm.reconcile(record, client, clock, STARTS)
+    assert report.waiting == 1 and report.resting == 2
+    # Once a cancel needs it, the failure stops the run, so nothing is left unlooked for.
+    exchange.fail = [400]
+    with pytest.raises(kt.KalshiTradeError):
+        pm.reconcile(record, client, clock, STARTS, cancel=True)
+
+
+def test_an_order_adopted_while_its_run_records_it_counts_as_placed(tmp_path: Path) -> None:
+    # A reconcile running meanwhile records the order first: the placing run moves on.
+    record, exchange, clock = store(), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    planned = pm.plans(real_rows(), pm.LIVE)[:1]
+    create = client.create_order
+
+    def create_then_adopt(request: Any) -> Any:
+        sent = create(request)
+        pm.reconcile(record, client, clock, STARTS)
+        return sent
+
+    client.create_order = create_then_adopt  # type: ignore[method-assign]
+    report = pm.place(record, client, planned, clock, rf.CODE, STARTS)
+    assert report.placed == 1 and report.failed == 0
+    stored = json.loads(record.get(pm.order_key("live", pf.DAY, 2026020053, "placed")))
+    assert stored["order_id"] == "order-1" and stored["adopted"] is True
+
+
+def test_a_skip_a_later_run_overcame_isnt_the_sent_orders_reason(tmp_path: Path) -> None:
+    record, exchange, clock = store(), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    planned = pm.plans(real_rows(), pm.LIVE)
+    first = pm.place(record, client, planned, clock, rf.CODE, {})
+    assert first.skipped == {"the game's start couldn't be checked": 3}
+    assert pm.place(record, client, planned, clock, rf.CODE, STARTS).placed == 3
+    orders = pm.table(record)
+    assert orders["status"].to_list() == ["placed"] * 3
+    assert orders["reason"].to_list() == [None] * 3
+
+
+def test_the_owner_hears_of_a_day_whose_orders_all_stayed_unsent() -> None:
+    text = pm.placed_message(pf.DAY, pm.LIVE, [], {"the balance doesn't cover the orders": 2}, 1)
+    assert text is not None and text.startswith("NHL Edge · Kalshi real orders · Wed 7 Oct")
+    assert "Not placed: 2 the balance doesn't cover the orders" in text
+    assert "Failed to send: 1" in text
 
 
 def test_a_market_that_cant_be_read_skips_only_its_own_order(tmp_path: Path) -> None:

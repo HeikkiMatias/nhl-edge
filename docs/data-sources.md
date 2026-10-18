@@ -487,15 +487,15 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - **`demo`:** every alerted bet, practice or real, goes to Kalshi's demo exchange at the demo rules (`real.DEMO_EXCHANGE`), recorded under `real/demo/`, never in the practice or real record.
   - **`live`:** the real days' alerted bets go to the live exchange, from their alert rows' orders. These exist only once the venue is Kalshi's (`real.VENUE`).
 - **`nhl real place --r2 [--cron]`:** at the midday slot, right after `nhl real alert`. Each planned order is written once to R2 (`real/<live|demo>/orders/<date>/<game_id>.json`), then checked:
-  - the game's start, as the NHL's schedule lists it now (`/v1/schedule/{date}`, fetched fresh and stored raw), is still the alert's. Without the schedule, no order goes;
+  - the game's start, as the NHL's schedule lists it now (`/v1/schedule/{date}` for the week from the day before, so a game moved into that day is listed too; fetched fresh and stored raw), is still the alert's. Without the schedule, no order goes;
   - its expiry is at least a minute away;
   - its most cost is within 1.5% of the bankroll, and the day's orders, earlier runs' included, within 5%;
   - the balance covers the orders;
   - the market is active.
 
-  Then it is sent. Kalshi's order id is written after (`...-placed.json`), or the reason it wasn't sent (`...-skipped.json`). A rerun sends nothing for an order already placed. The client order id is the same on every run, so Kalshi refuses a second order (409).
+  Then it is sent. Kalshi's order id is written after (`...-placed.json`), or the reason it wasn't sent (`...-skipped.json`; the orders table shows it only for an order never sent). A rerun sends nothing for an order already placed. The client order id is the same on every run, so Kalshi refuses a second order (409). The owner's Telegram gets the orders placed, and the counts of those not placed or failed, even on a day when none went.
   - **Failures:** a market that can't be read skips only its own order. A create that fails after its tries fails the run after the others.
-  - **Lost answers:** an order Kalshi holds though no run recorded it, as when a create's answer was lost, is found by its client order id. The tracking looks for it before it would call the order not sent, and before every cancel (`...-placed.json` with `adopted`).
+  - **Lost answers:** an order Kalshi holds though no run recorded it, as when a create's answer was lost, is found by its client order id. Every tracking run looks for each order with no Kalshi id, so it is tracked and told while it rests, and before a cancel or calling it not sent (`...-placed.json` with `adopted`). A placing run that finds its order already recorded this way moves on.
   - **The day cap** counts every order a run has sent that day, final or not.
 - **The order:** a limit buy of Yes at the alert's limit, `good_till_canceled` with `expiration_time` 5 minutes before the start, and `cancel_order_on_pause`. It fills at once from asks at or below the limit, and the rest rests until it expires.
 - **`nhl real orders --r2 [--cancel]`:** at every odds slot and in the nightly job, for each environment whose key is set.

@@ -4705,7 +4705,12 @@ def _send_quietly(text: str | None) -> bool:
 
 def _listed_starts(days: Any, mirror: bool) -> "dict[int, datetime] | None":
     """Each game's start as the NHL's schedule lists it now, for the given game dates (ET), or
-    None when the schedule couldn't be read. The responses are stored raw, as every fetch is."""
+    None when the schedule couldn't be read. Each date's read is the week from the day before
+    it, so a game moved earlier, into that day, is listed too (Codex on #289); one moved later
+    than that week keeps its order's own expiry, which is earlier still. The responses are
+    stored raw, as every fetch is."""
+    from datetime import timedelta
+
     import httpx
 
     from nhl_edge.ingest.nhl_api import NhlApi, NhlApiError
@@ -4714,7 +4719,7 @@ def _listed_starts(days: Any, mirror: bool) -> "dict[int, datetime] | None":
     api = NhlApi(RawStore.from_env(mirror=mirror, flag="--r2"))
     starts: dict[int, datetime] = {}
     try:
-        for day in sorted(set(days)):
+        for day in sorted({day - timedelta(days=1) for day in days}):
             starts |= {game.game_id: game.start_utc for game in api.schedule(day)}
     except (NhlApiError, httpx.HTTPError, OSError) as exc:
         typer.echo(f"::warning::the NHL schedule couldn't be read ({type(exc).__name__})")
@@ -4827,7 +4832,8 @@ def real_place(
         raise typer.Exit(code=1) from None
     typer.echo(report.line(setting))
     told = placement.unnotified(store, setting, "placed")
-    if _send_quietly(placement.placed_message(game_date, setting, told, report.skipped)):
+    text = placement.placed_message(game_date, setting, told, report.skipped, report.failed)
+    if _send_quietly(text):
         raise typer.Exit(code=1)
     placement.mark_notified(store, setting, told, "placed", datetime.now(UTC))
     if report.failed:

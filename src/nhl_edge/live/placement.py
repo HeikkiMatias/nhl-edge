@@ -43,6 +43,7 @@ the real record follows (real/live/entries/), as the dashboard's form would writ
 Telegram gets the details.
 """
 
+import contextlib
 import json
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -314,16 +315,18 @@ def place(
             # id (adopt) before it would call it not sent. The run fails, after the others.
             report.failed += 1
             continue
-        _put(
-            store,
-            order_key(plan.env, plan.game_date, plan.game_id, "placed"),
-            {
-                "order_id": placed.order_id,
-                "client_order_id": placed.client_order_id,
-                "existed": placed.existed,
-                "placed_utc": now().isoformat(),
-            },
-        )
+        # A reconcile running meanwhile may have found it on Kalshi and recorded it first (adopt).
+        with contextlib.suppress(lb.Conflict):
+            _put(
+                store,
+                order_key(plan.env, plan.game_date, plan.game_id, "placed"),
+                {
+                    "order_id": placed.order_id,
+                    "client_order_id": placed.client_order_id,
+                    "existed": placed.existed,
+                    "placed_utc": now().isoformat(),
+                },
+            )
         report.placed += 1
         report.existed += placed.existed
         report.placed_plans.append(plan)
@@ -531,10 +534,18 @@ def reconcile(
         begins = min([start, *seen])
         deadline = min(expires, begins - (start - expires))
         placed = record.get("placed")
-        if placed is None and (cancel or now() >= deadline):
-            # Before the kill switch's cancel, or calling it not sent: an order whose create
-            # reached Kalshi though its run never recorded it is found by its client order id.
-            placed = adopt(store, trade, order, game_date, game_id, now)
+        if placed is None:
+            # An order whose create reached Kalshi though its run never recorded it is found by
+            # its client order id, at every run, so it is tracked and told while it rests, and
+            # before a cancel or calling it not sent (Codex on #289). Before those, a failed read
+            # waits for the next run rather than stop this one's other orders.
+            try:
+                placed = adopt(store, trade, order, game_date, game_id, now)
+            except KalshiTradeError:
+                if cancel or now() >= deadline:
+                    raise
+                report.waiting += 1
+                continue
             if placed is not None:
                 record = record | {"placed": placed}
                 report.adopted += 1
@@ -619,7 +630,8 @@ def table(store: lb.Store) -> pl.DataFrame:
                     "expires_utc": _instant(order["expires_utc"]),
                     "written_utc": _instant(order["written_utc"]),
                     "status": status,
-                    "reason": skipped["reason"] if skipped else None,
+                    # A skip a later run overcame says nothing of a sent order (Codex on #289).
+                    "reason": skipped["reason"] if skipped and placed is None else None,
                     "order_id": placed["order_id"] if placed else None,
                     "placed_utc": _instant(placed["placed_utc"]) if placed else None,
                     "filled": float(final["contracts"]) if final and "contracts" in final else None,
@@ -679,10 +691,13 @@ def placed_message(
     env: str,
     placed: Sequence[Mapping[str, Any]],
     skipped: Mapping[str, int] | None = None,
+    failed: int = 0,
 ) -> str | None:
-    """The owner's message of orders placed and not told yet (unnotified "placed"), or None
-    without any. An order of another day than the run's says its date."""
-    if not placed:
+    """The owner's message of orders placed and not told yet (unnotified "placed"), and of the
+    run's orders not placed and failed, or None without any. The alert said the bets go
+    automatically, so a day whose orders all stay unsent says so too (Codex on #289). An order
+    of another day than the run's says its date."""
+    if not placed and not skipped and not failed:
         return None
     lines = [f"NHL Edge · Kalshi {_header(env)} · {day:%a} {day.day} {day:%b}"]
     for record in placed:
@@ -696,6 +711,8 @@ def placed_message(
         )
     if skipped:
         lines.append("Not placed: " + ", ".join(f"{n} {why}" for why, n in skipped.items()))
+    if failed:
+        lines.append(f"Failed to send: {failed} (the next run looks for them on Kalshi)")
     return "\n".join(lines)
 
 
