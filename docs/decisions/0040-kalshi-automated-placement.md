@@ -24,9 +24,9 @@
 2. **Fill now:** a limit order at the ask, cancelled if not filled at once. It never rests, so it misses fills a resting order would get.
 3. **A limit buy at the limit price L, resting until shortly before the start (the owner's choice):**
    - it fills at once from any ask at or below L, and what is left rests;
-   - #281's private measurement on 2026-11-09 shows whether the resting part's fills are worth it. It can amend only the execution: where the order rests, or fill-now. That would be a new ADR, with the real record split at its date. Never p, the hurdle, the selection, the staking or the limit's formula, which the live games must not tune.
+   - #281's private measurement on 2026-11-09 shows whether the resting part's fills are worth it. It can amend only the execution, and only by the rule below: resting or fill-now. That would be a new ADR, with the real record split at its date. Never p, the hurdle, the selection, the staking or the limit's formula, which the live games must not tune.
    - **The rule, fixed now:** the CLV per filled resting bid against Pinnacle's de-vigged closing proxy, with its interval from the weekly block bootstrap (hard rule 7).
-     - **The evidence:** on 11-09, #281's private measurement of resting bids on the order books #282 logs; from the start, at each weekly report, the real orders' resting fills, those after the order was placed.
+     - **The evidence:** on 11-09, #281's private measurement on the order books #282 logs. There, a bid resting at L counts as filled, with the maker fee, at the first snapshot logged after the decision whose best Yes ask is at or below L. From the start, at each weekly report, the real orders' resting fills, the maker fills (`is_taker` false).
      - **The decision:** if the interval's upper bound is below 0, the resting part goes and orders become immediate-or-cancel at L. Otherwise the order stays as it is.
      - **The floor:** fewer than 4 weeks of resting fills decide nothing.
 4. **Post-only at the bid:** the maker fee only, but no fill while the price doesn't come down, and the most adverse selection.
@@ -39,6 +39,7 @@
    - **Never after the start:** an order is never sent within a minute of its expiry.
    - **A moved game (the leakage audit):** an order goes only while the game's start, as the NHL's schedule lists it then, is still the alert's.
      - Each later run reads the schedule again. A game moved earlier moves the order's deadline with it, and the order is cancelled once that deadline has passed.
+     - The earliest start any run has seen holds, written once with the order, so one unread schedule loses no move. A run without the schedule writes no final record and no entry.
      - Without the schedule, no order goes.
    - **A fill at or after the start**, the earlier of the alert's and the schedule's, which the expiry rules out, is kept apart, flagged, and never the bet's (hard rule 2).
 2. **The limit L (hard rule 4):**

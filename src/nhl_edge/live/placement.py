@@ -27,12 +27,13 @@ Each planned order is written to the record (orders/<date>/<game_id>.json) befor
 skipped one's reason after its check (...-skipped.json), and Kalshi's order id once it is sent
 (...-placed.json). A rerun sends nothing for an order already placed.
 
-**Its deadline** is its expiry, or earlier if the schedule moves its game earlier: each run
-(reconcile) cancels a resting order whose deadline has passed. Once it has, the order is read with
-its fills and written once (...-final.json). The bet is its fills before the start, the earlier of
-the alert's and the schedule's; a fill at or after it, which the expiry rules out, is kept apart,
-flagged, and never the bet's (hard rule 2). On the live exchange, the bet's entry in the real
-record follows (real/live/entries/), as the dashboard's form would write it:
+**Its deadline** is its expiry, or earlier if the schedule moves its game earlier; the earliest
+start any run has seen holds (...-moved-<start>.json), so one unread schedule loses no move. Each
+run (reconcile) cancels a resting order whose deadline has passed. Once it has, and in a run that
+read the schedule, the order is read with its fills and written once (...-final.json). The bet is
+its fills before the start, the earliest seen; a fill at or after it, which the expiry rules out,
+is kept apart, flagged, and never the bet's (hard rule 2). On the live exchange, the bet's entry in
+the real record follows (real/live/entries/), as the dashboard's form would write it:
 - placed, at the matched price contracts / cost, fees included, with the stake cost / rate in
   euros, Kalshi's order id and the first fill's time;
 - not placed, not matched, when nothing filled before the start;
@@ -251,7 +252,10 @@ def place(
         key = order_key(plan.env, plan.game_date, plan.game_id)
         if not _held(store, key):
             _put(store, key, plan.record(now(), code_version))
-        if _held(store, order_key(plan.env, plan.game_date, plan.game_id, "placed")):
+        if _held(store, order_key(plan.env, plan.game_date, plan.game_id, "final")):
+            # Its deadline has passed once, with nothing sent: a later run never revives it.
+            skip(plan, "the order is already final")
+        elif _held(store, order_key(plan.env, plan.game_date, plan.game_id, "placed")):
             report.already += 1
             sent.append(plan)
         elif plan.game_id not in starts:
@@ -477,6 +481,9 @@ def reconcile(
         placed = record.get("placed")
         if placed is None:
             if now() < deadline:
+                continue
+            if starts is None:
+                report.waiting += 1
                 continue
             final: dict[str, Any] = {
                 "status": "not sent",

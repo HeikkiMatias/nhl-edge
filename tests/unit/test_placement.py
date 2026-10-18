@@ -636,3 +636,30 @@ def test_nhl_real_place_without_the_schedule_places_nothing(
     assert "3 planned, 0 placed" in result.output
     assert "3 the game's start couldn't be checked" in result.output
     assert not exchange.orders
+
+
+def test_an_order_already_final_is_never_sent_again(tmp_path: Path) -> None:
+    # The game moved earlier, the order's deadline passed with nothing sent, then the game moved
+    # back: a later run sends nothing for it.
+    record, exchange, clock = store(), Exchange(), Clock()
+    exchange.status[WSH] = "closed"
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    planned = pm.plans(real_rows(), pm.LIVE)
+    pm.place(record, client, planned, clock, rf.CODE, STARTS)
+    clock.at = pf.START + timedelta(hours=4)
+    pm.reconcile(record, client, clock, STARTS)
+    exchange.status.pop(WSH)
+    clock.at = PLACED_AT + timedelta(minutes=5)
+    report = pm.place(record, client, planned, clock, rf.CODE, STARTS)
+    assert report.skipped == {"the order is already final": 3}
+    assert WSH not in {o["ticker"] for o in exchange.orders.values()}
+
+
+def test_an_unsent_order_waits_for_the_schedule_too(tmp_path: Path) -> None:
+    record, exchange, clock = store(), Exchange(), Clock()
+    exchange.status[WSH] = "closed"
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
+    clock.at = pf.START + timedelta(hours=4)
+    unread = pm.reconcile(record, client, clock, None)
+    assert unread.finalized == 0 and unread.waiting == 3 and not rl.entries(record)

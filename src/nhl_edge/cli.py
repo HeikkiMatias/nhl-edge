@@ -4861,7 +4861,7 @@ def real_orders(
         except MissingSettingError:
             typer.echo(f"kalshi orders {env}: no key set, skipped")
     # Each pending order's game start now, so an order resting into a game moved earlier is
-    # cancelled; without the schedule, the alerts' starts stand.
+    # cancelled. Without the schedule, the earliest start already seen holds, and nothing is final.
     days = {day for env in trades for day in placement.pending_dates(store, env)}
     starts = _listed_starts(days, r2) if days else {}
     failed = False
