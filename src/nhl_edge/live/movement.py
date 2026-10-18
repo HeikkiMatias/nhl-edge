@@ -73,7 +73,6 @@ def table(rows: pl.DataFrame, closes: pl.DataFrame) -> pl.DataFrame:
         "decision_snapshot_utc",
         "close_status",
         "close_snapshot_utc",
-        lead_min=(pl.col("start_utc") - pl.col("close_snapshot_utc")).dt.total_seconds() / 60,
         p_decision="p_decision",
         p_close="p_close",
         move=_logit(pl.col("p_close")) - _logit(pl.col("p_decision")),

@@ -10,6 +10,7 @@ import pytest
 
 from nhl_edge.live import movement
 from nhl_edge.live import predict as lp
+from nhl_edge.live import report as lr
 from nhl_edge.live import settle as ls
 from nhl_edge.market import closing
 from nhl_edge.market.devig import fair_probabilities
@@ -61,7 +62,9 @@ def test_each_game_moves_from_its_decision_pair_to_its_close() -> None:
     assert wsh["move"] == pytest.approx(logit(fair(2.0, 1.9)) - logit(fair(2.10, 1.80)))
     assert wsh["d_B3"] == pytest.approx(logit(p_b3) - logit(p_b0))
     assert wsh["d_BLEND"] == pytest.approx(logit(p_blend) - logit(p_b0))
-    assert wsh["lead_min"] == pytest.approx(44.5)
+    # The proxy's lead, against the start the proxy was chosen by (Codex on #285).
+    leads = lr.proxy_leads(decided, odds(), NOW)
+    assert leads.filter(pl.col("game_id") == WSH)["lead_min"].item() == pytest.approx(44.5)
     assert rows[WPG]["move"] == pytest.approx(logit(fair(1.8, 2.1)) - logit(fair(1.90, 2.00)))
     # ANA has no Pinnacle quote before its start: no close, with its reason kept.
     assert rows[ANA]["move"] is None and rows[ANA]["close_status"] != closing.PROXY
