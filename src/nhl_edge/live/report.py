@@ -560,21 +560,37 @@ def _by_lead(frame: pl.DataFrame, value: str) -> dict[str, Any]:
     }
 
 
-def proxy_lead(moves: pl.DataFrame, bets: pl.DataFrame) -> dict[str, Any]:
+def proxy_leads(started: pl.DataFrame, odds: pl.DataFrame, now: datetime) -> pl.DataFrame:
+    """Each started game's closing proxy's lead before the start, in minutes (game_date, game_id,
+    lead_min): against the start the proxy was chosen by, the commence time of the game's latest
+    odds snapshot (market/closing.py), not the ledger's, since the Odds API moves a start by
+    minutes (Codex on #285)."""
+    lead = closing.pinnacle_closes(odds, now).select(
+        "event_id", lead_min=pl.col("lead").dt.total_seconds() / 60
+    )
+    return (
+        started.select("game_date", "game_id", "event_id")
+        .join(lead, on="event_id")
+        .select("game_date", "game_id", "lead_min")
+    )
+
+
+def proxy_lead(moves: pl.DataFrame, bets: pl.DataFrame, leads: pl.DataFrame) -> dict[str, Any]:
     """#254's diagnostic, with no verdict: whether the closing proxy's lead before the start
     changes what it measures. Over movement.table's games with a valid close, the size of
     Pinnacle's fair move from the decision to the proxy, in points, by lead band and its slope on
-    the lead; over the bets with a valid proxy, CLV the same way. Late goalie news and late money
-    arrive after an early proxy, so if either changes with the lead, the proxy is biased for some
-    start times."""
-    valid = moves.filter(pl.col("move").is_not_null()).with_columns(
-        points=(pl.col("p_close") - pl.col("p_decision")).abs() * 100
+    the lead; over the bets with a valid proxy, CLV the same way. Each lead is the proxy's own,
+    from leads (proxy_leads). Late goalie news and late money arrive after an early proxy, so if
+    either changes with the lead, the proxy is biased for some start times."""
+    keys = ["game_date", "game_id"]
+    valid = (
+        moves.filter(pl.col("move").is_not_null())
+        .with_columns(points=(pl.col("p_close") - pl.col("p_decision")).abs() * 100)
+        .join(leads, on=keys, how="left")
     )
     valued = bets.filter(
         pl.col("settled") == ls.SETTLED, pl.col("close_status") == closing.PROXY
-    ).with_columns(
-        lead_min=(pl.col("start_utc") - pl.col("close_snapshot_utc")).dt.total_seconds() / 60
-    )
+    ).join(leads, on=keys, how="left")
     return {"move_points": _by_lead(valid, "points"), "clv": _by_lead(valued, "clv")}
 
 
@@ -843,7 +859,7 @@ def report(
         },
         "market_timing": market_timing(scored, history),
         "entry_to_close": entry_to_close(moves),
-        "proxy_lead": proxy_lead(moves, bets),
+        "proxy_lead": proxy_lead(moves, bets, proxy_leads(started, odds, now)),
         "shadows": shadows(started, moves, odds),
         "real_stakes": real_stakes(
             bets,

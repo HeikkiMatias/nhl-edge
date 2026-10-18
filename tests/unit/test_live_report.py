@@ -941,9 +941,9 @@ def test_the_report_shows_entry_to_close_and_why_games_have_no_close() -> None:
 
 
 def leads(n_weeks: int, per_hour: float, per_week: int = 30, seed: int = 7) -> pl.DataFrame:
-    """movement.table's rows for a synthetic season (#254): each game's proxy taken 10 to 80
-    minutes before its start, and a fair move to it of 1 point plus per_hour points per hour of
-    lead, plus noise."""
+    """movement.table's rows for a synthetic season (#254), each with its proxy's lead
+    (lead_min, as proxy_leads gives it): taken 10 to 80 minutes before the start, with a fair move
+    to it of 1 point plus per_hour points per hour of lead, plus noise."""
     rng = np.random.default_rng(seed)
     n = n_weeks * per_week
     lead = rng.uniform(10, 80, n)
@@ -952,6 +952,7 @@ def leads(n_weeks: int, per_hour: float, per_week: int = 30, seed: int = 7) -> p
         {
             "season": [20262027] * n,
             "game_date": [FIRST + timedelta(days=7 * (i // per_week) + i % 7) for i in range(n)],
+            "game_id": list(range(n)),
             "lead_min": lead,
             "p_decision": [0.5] * n,
             "p_close": 0.5 + points / 100,
@@ -963,21 +964,24 @@ def leads(n_weeks: int, per_hour: float, per_week: int = 30, seed: int = 7) -> p
 def lead_bets(frame: pl.DataFrame, clv_per_hour: float) -> pl.DataFrame:
     """The same games as settled bets with a proxy, their CLV falling clv_per_hour an hour of
     lead."""
-    start = datetime(2026, 10, 12, 23, tzinfo=UTC)
     return frame.select(
         "season",
         "game_date",
+        "game_id",
         settled=pl.lit(ls.SETTLED),
         close_status=pl.lit(closing.PROXY),
-        start_utc=pl.lit(start),
-        close_snapshot_utc=pl.lit(start) - pl.duration(seconds=pl.col("lead_min") * 60),
         clv=0.01 - clv_per_hour * pl.col("lead_min") / 60,
     )
 
 
+def by_lead(games: pl.DataFrame, clv_per_hour: float) -> dict[str, Any]:
+    lead = games.select("game_date", "game_id", "lead_min")
+    return lr.proxy_lead(games.drop("lead_min"), lead_bets(games, clv_per_hour), lead)
+
+
 def test_a_move_or_clv_that_changes_with_the_proxys_lead_shows_as_its_slope() -> None:
     games = leads(n_weeks=6, per_hour=0.5)
-    result = lr.proxy_lead(games, lead_bets(games, clv_per_hour=0.02))
+    result = by_lead(games, clv_per_hour=0.02)
     moved = result["move_points"]
     assert moved["slope_per_hour"]["low"] < 0.5 < moved["slope_per_hour"]["high"]
     bands = {b["band"]: b["estimate"] for b in moved["bands"]}
@@ -987,24 +991,66 @@ def test_a_move_or_clv_that_changes_with_the_proxys_lead_shows_as_its_slope() ->
     clv = result["clv"]["slope_per_hour"]
     assert clv["low"] < -0.02 < clv["high"]
     # A proxy whose lead changes nothing: the slope's interval holds 0.
-    flat = leads(n_weeks=6, per_hour=0.0)
-    still = lr.proxy_lead(flat, lead_bets(flat, 0.0))["move_points"]["slope_per_hour"]
+    still = by_lead(leads(n_weeks=6, per_hour=0.0), 0.0)["move_points"]["slope_per_hour"]
     assert still["low"] < 0 < still["high"]
 
 
 def test_the_proxys_lead_gives_counts_only_under_four_weeks() -> None:
-    games = leads(n_weeks=3, per_hour=0.5)
-    result = lr.proxy_lead(games, lead_bets(games, 0.02))
+    result = by_lead(leads(n_weeks=3, per_hour=0.5), 0.02)
     assert result["move_points"]["slope_per_hour"] == {"games": 90, "weeks": 3}
     assert all("mean" not in b["estimate"] for b in result["clv"]["bands"])
 
 
+def test_the_proxys_lead_is_against_the_start_it_was_chosen_by() -> None:
+    # The Odds API moved the start: the ledger's says 20 minutes, the proxy's own start 40
+    # (Codex on #285). The game counts in its proxy's band, 30 to 60 minutes.
+    start = datetime(2026, 10, 12, 23, tzinfo=UTC)
+    rows = pl.DataFrame(
+        {
+            "game_date": [FIRST],
+            "game_id": [1],
+            "event_id": ["e1"],
+            "start_utc": [start],
+            "decision_snapshot_utc": [start - timedelta(hours=6)],
+            "home_price": [2.0],
+            "away_price": [1.9],
+        }
+    )
+    proxy = start + timedelta(minutes=20) - timedelta(minutes=40)
+    # The day's decision snapshot (12:50 ET), which a close has to follow, then the proxy.
+    decision = datetime(2026, 10, 12, 16, 50, tzinfo=UTC)
+    quotes = pl.DataFrame(
+        [
+            {
+                "snapshot_utc": snapshot,
+                "last_update_utc": snapshot,
+                "event_id": "e1",
+                "commence_time_utc": start + timedelta(minutes=20),
+                "home": "BOS",
+                "away": "TOR",
+                "book": closing.BOOK,
+                "market": "h2h",
+                "side": side,
+                "line": None,
+                "price_decimal": price,
+                "is_closing_proxy": False,
+                "slot": "pre7",
+                "raw_key": "k",
+                "game_id": 1,
+            }
+            for snapshot in (decision, proxy)
+            for side, price in (("home", 2.0), ("away", 1.9))
+        ]
+    )
+    lead = lr.proxy_leads(rows, quotes, start + timedelta(hours=2))
+    assert lead["lead_min"].to_list() == [40.0]
+
+
 def test_the_report_shows_the_proxys_lead() -> None:
-    # Without odds no game has a close, so no band has a move yet; the settled bets have a proxy,
-    # but two weeks are too few for an estimate.
+    # Without odds no game has a proxy whose lead is known, so no band has a game or bet yet.
     result = Season(n_weeks=2).report()
     assert result["proxy_lead"]["move_points"]["slope_per_hour"] == {"games": 0, "weeks": 0}
-    assert result["proxy_lead"]["clv"]["slope_per_hour"]["weeks"] == 2
+    assert result["proxy_lead"]["clv"]["slope_per_hour"] == {"games": 0, "weeks": 0}
     text = lr.markdown(result)
     assert "## The closing proxy's lead (#254)" in text
     assert "| up to 30 min | 0 games, 0 weeks: too few |" in text
