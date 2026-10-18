@@ -188,10 +188,28 @@ export type RealAlert = {
   bankroll: number;
   stakes: { price: number; stake: number }[];
   alert_utc: string;
+  /** On an exchange venue, the bet's buy order (ADR 0040, #287); absent before the Kalshi
+   * migration, null on any other venue. */
+  exchange?: RealOrder | null;
 };
 
-/** What the owner did with an alerted bet, from the form (public.real_entries). late is whether
- * it was recorded at or after the game's start; the database sets it and the entry time. */
+/** An alerted bet's buy order on Kalshi, placed automatically (ADR 0040): at most limit dollars
+ * a contract, for contracts, costing at most max_cost_usd with the fee (stake euros at
+ * usd_per_eur), resting until expires_utc, 5 minutes before the start. */
+export type RealOrder = {
+  env: "live" | "demo";
+  limit: string;
+  contracts: string;
+  max_cost_usd: string;
+  stake: number;
+  effective: number;
+  usd_per_eur: number;
+  expires_utc: string;
+};
+
+/** What the owner did with an alerted bet, from the form (public.real_entries), or an automatic
+ * Kalshi bet's entry from its fills (source "kalshi", #287). late is whether it was recorded at or
+ * after the game's start; the database sets it and the entry time for the form's. */
 export type RealEntry = {
   game_date: string;
   game_id: number;
@@ -203,6 +221,8 @@ export type RealEntry = {
   reason: string | null;
   entered_utc: string;
   late: boolean;
+  /** Absent before the Kalshi migration, when every entry is the form's. */
+  source?: "form" | "kalshi";
 };
 
 /** A settlement revision of a placed real or practice bet (public.real_settlements, #270): on the

@@ -14,7 +14,7 @@ import {
   recordPlaced,
   stakeAt,
 } from "@/lib/real";
-import type { RealAlert, RealEntry } from "@/lib/types";
+import type { RealAlert, RealEntry, RealOrder } from "@/lib/types";
 
 import { Explain } from "./sections";
 
@@ -66,9 +66,15 @@ export function RealBets({
     return <p className="muted">No alert yet: the first comes after a 12:45 ET decision.</p>;
   }
   const mode = state.alerts[0].mode;
+  const automatic = state.alerts.some((a) => a.exchange);
   return (
     <>
-      <Mode mode={mode} day={state.day} bankroll={state.alerts[0].bankroll} />
+      <Mode
+        mode={mode}
+        day={state.day}
+        bankroll={state.alerts[0].bankroll}
+        automatic={automatic}
+      />
       {state.alerts.map((alert) => (
         <RealBet
           key={alert.game_id}
@@ -84,10 +90,22 @@ export function RealBets({
   );
 }
 
-function Mode({ mode, day, bankroll }: { mode: RealAlert["mode"]; day: string; bankroll: number }) {
+function Mode({
+  mode,
+  day,
+  bankroll,
+  automatic,
+}: {
+  mode: RealAlert["mode"];
+  day: string;
+  bankroll: number;
+  automatic: boolean;
+}) {
   const label = {
     practice: "Practice: nothing here is a real bet. Try the form if you like; practice entries never count in the real bankroll.",
-    real: "Real bets: place them at the venue, then record each one here.",
+    real: automatic
+      ? "Real bets: placed automatically on Kalshi, each one recorded here from its fills."
+      : "Real bets: place them at the venue, then record each one here.",
     paused: "Real bets are paused: a weekly report found too few closing prices. Nothing to place.",
     stopped: "Real bets are stopped. Restarting needs your decision; the paper ledger goes on.",
     closed: "Real bets didn't start by the end of November: a start needs your decision.",
@@ -129,6 +147,15 @@ function RealBet({
       </div>
     );
   }
+  // An automatic Kalshi bet (ADR 0040): its order, never the form; its entry comes from its fills.
+  if (alert.exchange) {
+    return (
+      <div className="real-bet">
+        <h3>{title}</h3>
+        <Order alert={alert} order={alert.exchange} now={now} />
+      </div>
+    );
+  }
   // Once the game has started the bet is no longer offered; a bet placed before the start can
   // still be recorded, marked late.
   if (now >= new Date(alert.start_utc).getTime()) {
@@ -155,15 +182,40 @@ function RealBet({
   );
 }
 
+function Order({ alert, order, now }: { alert: RealAlert; order: RealOrder; now: number }) {
+  const cents = Math.round(Number(order.limit) * 100);
+  const what =
+    `Kalshi: buy Yes ${team(alert)} at most ${cents}¢, ${order.contracts} contracts, at most ` +
+    `$${Number(order.max_cost_usd).toFixed(2)} (${euros(order.stake)})`;
+  if (now < new Date(order.expires_utc).getTime()) {
+    return (
+      <p>
+        Placed automatically. {what}, resting until {helsinkiTime(order.expires_utc)}. Nothing to
+        enter: its fills are recorded once it expires.
+      </p>
+    );
+  }
+  return (
+    <p className="muted">
+      {what}. The order has expired: its fills are recorded at the next run.
+    </p>
+  );
+}
+
 function Recorded({ entry }: { entry: RealEntry }) {
   const late = entry.late ? " Recorded after the start (late)." : "";
+  const how = entry.source === "kalshi" ? " automatically, from Kalshi's fills" : "";
   if (entry.outcome === "not placed") {
-    return <p className="recorded">Recorded: not placed ({entry.reason}).{late}</p>;
+    return (
+      <p className="recorded">
+        Recorded{how}: not placed ({entry.reason}).{late}
+      </p>
+    );
   }
   return (
     <p className="recorded">
-      Recorded: placed at {entry.matched_price}, {euros(entry.stake ?? 0)}, bet id {entry.bet_id},{" "}
-      {entry.placed_utc ? helsinkiTime(entry.placed_utc) : ""}.{late}
+      Recorded{how}: placed at {entry.matched_price}, {euros(entry.stake ?? 0)}, bet id{" "}
+      {entry.bet_id}, {entry.placed_utc ? helsinkiTime(entry.placed_utc) : ""}.{late}
     </p>
   );
 }

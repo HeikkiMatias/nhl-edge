@@ -11,6 +11,7 @@ import real_fixtures as rf
 from fakes import ConditionalBucket
 
 from nhl_edge.live import bundle as lb
+from nhl_edge.live import real
 from nhl_edge.live import real_ledger as rl
 
 FIRST = next(iter(pf.GAMES))
@@ -53,3 +54,19 @@ def test_settlement_counts_only_results_public_by_its_clock() -> None:
 
 def _store() -> lb.R2Store:
     return lb.R2Store(ConditionalBucket(), "bucket")
+
+
+def test_a_late_kalshi_game_enters_the_bankroll_only_once_its_result_is_public() -> None:
+    # On an exchange venue a game played days late settles on its result (ADR 0040, #287), so
+    # its bet counts once that result is public, not before; one played over two weeks late is
+    # held for Kalshi's own resolution and never counts here.
+    kalshi = real.Venue("kalshi", 0.0, 0.01, real.Exchange("live", 1.16))
+    rows = rf.alert_rows(rl.Mode(rl.REAL, rf.ALERT.date()), venue=kalshi)
+    record = rl.bets(rows, [rf.entry(FIRST, stake=1.5)])
+    for late, counts in ((timedelta(days=3), True), (timedelta(days=15), False)):
+        played = pf.GAMES[FIRST][2] + late
+        public = played + timedelta(hours=6)
+        games = rf.games(observed=public, played={FIRST: played})
+        assert rl.bankroll(record, games, public, rl.REAL) == 100.0
+        after = rl.bankroll(record, games, public + timedelta(seconds=1), rl.REAL)
+        assert (after > 100.0) is counts

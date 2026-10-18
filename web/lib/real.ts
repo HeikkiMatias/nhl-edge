@@ -22,6 +22,11 @@ export const ENTRY_COLUMNS =
 /** Why an alerted bet wasn't placed, as the migration allows them. */
 export const REASONS = ["the price fell under the minimum", "not matched", "missed it"] as const;
 export type Reason = (typeof REASONS)[number];
+// The Kalshi migration's columns (supabase/migrations/20261018180000_kalshi_orders.sql, #287):
+// read once it is applied, and left out before, when Postgres answers "undefined column".
+const KALSHI_ALERT = ", exchange";
+const KALSHI_ENTRY = ", source";
+const UNDEFINED_COLUMN = "42703";
 // A day has at most 16 games, so the latest 40 alert rows hold the latest day's.
 const LATEST = 40;
 // PostgREST's "no such table" and Postgres's "undefined table" or "permission denied": the real
@@ -35,14 +40,17 @@ export type RealState =
 /** The latest alerted day's rows and the owner's entries for them, read under row-level
  * security; not ready before the migration is applied. Throws Supabase's other errors. */
 export async function loadReal(client: SupabaseClient): Promise<RealState> {
-  const alerts = await client
-    .from("real_alerts")
-    .select(ALERT_COLUMNS)
-    .order("game_date", { ascending: false })
-    .order("start_utc")
-    .order("game_id")
-    .limit(LATEST)
-    .overrideTypes<RealAlert[], { merge: false }>();
+  const latest = (columns: string) =>
+    client
+      .from("real_alerts")
+      .select(columns)
+      .order("game_date", { ascending: false })
+      .order("start_utc")
+      .order("game_id")
+      .limit(LATEST)
+      .overrideTypes<RealAlert[], { merge: false }>();
+  let alerts = await latest(ALERT_COLUMNS + KALSHI_ALERT);
+  if (alerts.error?.code === UNDEFINED_COLUMN) alerts = await latest(ALERT_COLUMNS);
   if (alerts.error) {
     if (NOT_SET_UP.has(alerts.error.code)) return { ready: false };
     throw alerts.error;
@@ -50,11 +58,14 @@ export async function loadReal(client: SupabaseClient): Promise<RealState> {
   const rows = alerts.data ?? [];
   const day = rows[0]?.game_date ?? null;
   if (day === null) return { ready: true, day, alerts: [], entries: {} };
-  const entries = await client
-    .from("real_entries")
-    .select(ENTRY_COLUMNS)
-    .eq("game_date", day)
-    .overrideTypes<RealEntry[], { merge: false }>();
+  const ofDay = (columns: string) =>
+    client
+      .from("real_entries")
+      .select(columns)
+      .eq("game_date", day)
+      .overrideTypes<RealEntry[], { merge: false }>();
+  let entries = await ofDay(ENTRY_COLUMNS + KALSHI_ENTRY);
+  if (entries.error?.code === UNDEFINED_COLUMN) entries = await ofDay(ENTRY_COLUMNS);
   if (entries.error) throw entries.error;
   return {
     ready: true,

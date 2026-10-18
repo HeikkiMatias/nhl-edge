@@ -78,9 +78,11 @@ jobs:
         # games' among them, have their fills recorded and, on the live exchange, the bet's entry
         # written (ADR 0040, #281; counts only in the log, the fills to the owner's Telegram).
         # Then the owner's entries from the dashboard copied once each to R2, the record (once the
-        # real bets migration is applied and SUPABASE_REAL is true), then a settlement appended for
-        # each placed bet whose game is final, on the full game, and copied to the dashboard's real
-        # record (#270; needs the real settlements migration).
+        # real bets migration is applied and SUPABASE_REAL is true), with the automatic Kalshi
+        # bets' entries sent to the dashboard (#287; needs the Kalshi migration), then a
+        # settlement appended for each placed bet whose game is final, on the full game, and
+        # copied to the dashboard's real record (#270; needs the real settlements migration). A
+        # postponed Kalshi game settles on its result within two weeks, and is held after.
         if: always()
         env:
           SUPABASE_REAL: ${{ vars.SUPABASE_REAL }}
@@ -93,11 +95,14 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ "$SUPABASE_REAL" = "true" ]; then sb=(--supabase); else sb=(); fi
-          # A failed orders run fails the step after sync and settle, which don't need it.
+          # A failed orders run fails the step after sync and settle, which don't need it. Then
+          # the record is checked against Kalshi's own settlements (#287; the differences go to
+          # the owner's Telegram, the log has counts only).
           status=0
           uv run nhl real orders --r2 || status=1
           uv run nhl real sync --r2 "${sb[@]}"
           uv run nhl real settle --r2 "${sb[@]}"
+          uv run nhl real reconcile-kalshi --r2 || status=1
           exit $status
       - name: Pre-game goalies into the lake
         # Pre-game goalie polls, NHL and Daily Faceoff (#42, #48), rebuilt from the raw copies:

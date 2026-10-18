@@ -58,6 +58,8 @@ class Exchange:
         self.requests: list[httpx.Request] = []
         self.orders: dict[str, dict[str, Any]] = {}
         self.fills: dict[str, list[dict[str, Any]]] = {}
+        # Kalshi's settlements by ticker
+        self.settled: dict[str, list[dict[str, Any]]] = {}
         self.markets = [
             {"ticker": TICKER, "yes_ask_dollars": "0.6100"},
             {"ticker": OTHER, "yes_ask_dollars": "0.4100"},
@@ -127,6 +129,9 @@ class Exchange:
         if path == "/portfolio/fills":
             listed = self.fills.get(params["order_id"], [])
             return httpx.Response(200, json={"fills": listed, "cursor": ""})
+        if path == "/portfolio/settlements":
+            listed = self.settled.get(params["ticker"], [])
+            return httpx.Response(200, json={"settlements": listed, "cursor": ""})
         return httpx.Response(404, json={"code": "no_route"})
 
     def _create(self, body: dict[str, Any]) -> httpx.Response:
