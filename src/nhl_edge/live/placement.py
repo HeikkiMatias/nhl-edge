@@ -51,6 +51,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import polars as pl
 
@@ -745,6 +746,7 @@ def fills_message(env: str, finals: Sequence[Mapping[str, Any]]) -> str | None:
 
 
 # The automatic bets on the dashboard and against Kalshi's own record (#287).
+ET = ZoneInfo("America/New_York")  # the NHL's game dates
 KALSHI_SOURCE = "kalshi"
 # Days after its game that a settlement missing on either side counts as a difference: the record
 # settles once the result is public, the morning after (ADR 0003), and Kalshi soon after the game.
@@ -779,17 +781,24 @@ class SettlementCheck:
 
 
 def check_settlements(
-    store: lb.Store, trade: KalshiTrade, settled: pl.DataFrame, today: date
+    store: lb.Store,
+    trade: KalshiTrade,
+    settled: pl.DataFrame,
+    today: date,
+    games: pl.DataFrame,
 ) -> SettlementCheck:
     """Each live order with fills of the last CHECK_DAYS, against Kalshi's own settlement of its
     market (#287). Both settle on the full game (hard rule 2), so a difference goes to the owner:
     Kalshi resolving it at a fair price (scalar), another result, other contracts held than the
-    order filled, or another payout; and either side missing SETTLE_DAYS after the game. The
-    record's latest revision of each bet is the one compared."""
+    order filled, or another payout; and either side missing SETTLE_DAYS after the game was
+    played. games is the lake's final games, each at the start it was played: a postponed game
+    counts from that start, and one neither side has settled waits while it isn't final (Codex
+    on #291). The record's latest revision of each bet is the one compared."""
     latest = {
         (row["game_date"], row["game_id"]): row
         for row in settled.sort("revision").iter_rows(named=True)
     }
+    played = dict(zip(games["game_id"].to_list(), games["start_utc"].to_list(), strict=True))
     report = SettlementCheck()
     for (day, game_id), record in sorted(stored_orders(store, LIVE).items()):
         final, order = record.get("final"), record.get("order")
@@ -805,7 +814,13 @@ def check_settlements(
         theirs = next((s for s in listed if s.get("ticker") == order["ticker"]), None)
         name = f"{day} {order['team']}"
         if ours is None or theirs is None:
-            if (today - game_date).days >= SETTLE_DAYS:
+            start = played.get(game_id)
+            if start is None and theirs is None:
+                report.waiting += 1  # not played yet, as a postponed game
+                continue
+            # Kalshi resolving a game the lake has no final for counts from its listed date.
+            since = start.astimezone(ET).date() if start is not None else game_date
+            if (today - since).days >= SETTLE_DAYS:
                 side = "Kalshi" if theirs is None else "the record"
                 report.differences.append(f"{name}: not settled by {side} yet")
             else:

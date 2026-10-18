@@ -150,7 +150,9 @@ def kalshi_settled(result: str, count: str = "1.00", revenue: int = 100) -> list
 def test_the_check_agrees_when_kalshi_paid_what_the_record_settled(tmp_path: Path) -> None:
     record, exchange, client, _ = finished(tmp_path)
     exchange.settled[WSH] = kalshi_settled("yes")
-    report = pm.check_settlements(record, client, rl.settlements(record), date(2026, 10, 9))
+    report = pm.check_settlements(
+        record, client, rl.settlements(record), date(2026, 10, 9), rf.games()
+    )
     assert (report.checked, report.agreed, report.differences) == (1, 1, [])
     assert pm.check_message(report) is None
 
@@ -169,7 +171,9 @@ def test_the_check_reports_each_difference(
 ) -> None:
     record, exchange, client, _ = finished(tmp_path)
     exchange.settled[WSH] = theirs
-    report = pm.check_settlements(record, client, rl.settlements(record), date(2026, 10, 9))
+    report = pm.check_settlements(
+        record, client, rl.settlements(record), date(2026, 10, 9), rf.games()
+    )
     assert report.agreed == 0 and len(report.differences) == 1
     assert report.differences[0].startswith("2026-10-07 WSH: ") and found in report.differences[0]
     message = pm.check_message(report)
@@ -178,20 +182,57 @@ def test_the_check_reports_each_difference(
 
 def test_a_settlement_missing_waits_two_days_then_is_a_difference(tmp_path: Path) -> None:
     record, _, client, _ = finished(tmp_path)
-    soon = pm.check_settlements(record, client, rl.settlements(record), date(2026, 10, 8))
+    soon = pm.check_settlements(
+        record, client, rl.settlements(record), date(2026, 10, 8), rf.games()
+    )
     assert soon.waiting == 1 and not soon.differences
-    late = pm.check_settlements(record, client, rl.settlements(record), date(2026, 10, 9))
+    late = pm.check_settlements(
+        record, client, rl.settlements(record), date(2026, 10, 9), rf.games()
+    )
     assert late.differences == ["2026-10-07 WSH: not settled by Kalshi yet"]
+
+
+def test_a_postponed_game_waits_from_the_day_it_is_played(tmp_path: Path) -> None:
+    # WSH's game moved three days (Codex on #291): unplayed, neither side has settled it and it
+    # waits however late the check; once played, the two days count from then.
+    record, _, client, _ = finished(tmp_path)
+    unsettled = rl.settlements(lb.R2Store(ConditionalBucket(), "bucket"))
+    unplayed = rf.games().filter(pl.col("game_id") != FIRST)
+    check = pm.check_settlements(record, client, unsettled, date(2026, 10, 9), unplayed)
+    assert check.waiting == 1 and not check.differences
+    final = rf.games(played={FIRST: pf.GAMES[FIRST][2] + timedelta(days=3)})
+    soon = pm.check_settlements(record, client, unsettled, date(2026, 10, 11), final)
+    assert soon.waiting == 1 and not soon.differences
+    late = pm.check_settlements(record, client, unsettled, date(2026, 10, 12), final)
+    assert late.differences == ["2026-10-07 WSH: not settled by Kalshi yet"]
+
+
+def test_kalshi_resolving_a_game_the_lake_has_no_final_for_is_a_difference(tmp_path: Path) -> None:
+    # A game cancelled, or one the lake missed: Kalshi resolved it and the record can't, so it
+    # counts from the game's listed date.
+    record, exchange, client, _ = finished(tmp_path)
+    exchange.settled[WSH] = kalshi_settled("scalar", revenue=37)
+    unsettled = rl.settlements(lb.R2Store(ConditionalBucket(), "bucket"))
+    unplayed = rf.games().filter(pl.col("game_id") != FIRST)
+    soon = pm.check_settlements(record, client, unsettled, date(2026, 10, 8), unplayed)
+    assert soon.waiting == 1 and not soon.differences
+    late = pm.check_settlements(record, client, unsettled, date(2026, 10, 9), unplayed)
+    assert late.differences == ["2026-10-07 WSH: not settled by the record yet"]
 
 
 def test_orders_without_fills_or_long_past_are_not_checked(tmp_path: Path) -> None:
     record, _, client, _ = finished(tmp_path, fill=None)
     assert (
-        pm.check_settlements(record, client, rl.settlements(record), date(2026, 10, 9)).checked == 0
+        pm.check_settlements(
+            record, client, rl.settlements(record), date(2026, 10, 9), rf.games()
+        ).checked
+        == 0
     )
     record, _, client, _ = finished(tmp_path / "old")
     old = date(2026, 10, 7) + timedelta(days=pm.CHECK_DAYS + 1)
-    assert pm.check_settlements(record, client, rl.settlements(record), old).checked == 0
+    assert (
+        pm.check_settlements(record, client, rl.settlements(record), old, rf.games()).checked == 0
+    )
 
 
 runner = CliRunner()
@@ -238,7 +279,20 @@ def test_nhl_real_reconcile_kalshi_sends_the_differences_and_logs_counts(
     exchange.settled[WSH] = kalshi_settled("no", revenue=0)
     sent: list[str] = []
     local_raw(tmp_path, monkeypatch)
-    monkeypatch.setattr(cli, "_real_record", lambda r2: (None, record))
+
+    class Lake:
+        def __init__(self) -> None:
+            self.pulled: list[str] = []
+
+        def pull(self, table: str, seasons: Any = None) -> int:
+            self.pulled.append(table)
+            return 0
+
+        def read(self, table: str, seasons: Any = None) -> pl.DataFrame:
+            return rf.games()
+
+    lake = Lake()
+    monkeypatch.setattr(cli, "_real_record", lambda r2: (lake, record))
     monkeypatch.setattr(kt.KalshiTrade, "from_env", classmethod(lambda cls, env, raw: client))
     monkeypatch.setattr(telegram, "send", lambda text: sent.append(text))
 
@@ -252,6 +306,7 @@ def test_nhl_real_reconcile_kalshi_sends_the_differences_and_logs_counts(
     assert result.exit_code == 0, result.output
     assert "kalshi settlements: 1 checked, 0 agree, 0 waiting, 1 differences" in result.output
     assert "WSH" not in result.output and len(sent) == 1 and "WSH" in sent[0]
+    assert lake.pulled == ["games"]
 
 
 # The entries' round trip through the dashboard

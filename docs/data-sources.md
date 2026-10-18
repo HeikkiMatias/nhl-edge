@@ -525,7 +525,7 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - the contracts held, against the order's fills;
   - the payout.
 
-  A difference, or a settlement missing on either side 2 days after the game, goes to the owner's Telegram, and the log has counts only. A correction (`nhl real correct`) then brings the record's result, price or stake in line with Kalshi's statement, with its reason. A game Kalshi resolved at its own price (held, or `scalar`) can't be corrected that way yet: its settlement at Kalshi's payout is #290.
+  A difference, or a settlement missing on either side 2 days after the game was played, goes to the owner's Telegram (a postponed game counts from the start it was played at, from the lake's final games, and one neither side has settled waits while it isn't final), and the log has counts only. A correction (`nhl real correct`) then brings the record's result, price or stake in line with Kalshi's statement, with its reason. A game Kalshi resolved at its own price (held, or `scalar`) can't be corrected that way yet: its settlement at Kalshi's payout is #290.
 - **Inputs:** an order is built from the day's alert only. No Kalshi price is an input: of the market's data only its status is used (`tests/leakage/test_kalshi_orders.py`, which also checks that no model package reads the real record or the orders).
 
 ## Odds snapshots

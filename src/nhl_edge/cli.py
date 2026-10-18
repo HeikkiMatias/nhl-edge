@@ -4957,8 +4957,8 @@ def real_reconcile_kalshi(
 ) -> None:
     """Check the real record against Kalshi's own settlements (#287), nightly after nhl real
     settle: each live order with fills of the last 30 days, its result, the contracts held and
-    the payout. A difference, or a settlement missing on either side two days after the game,
-    goes to the owner's Telegram; the log prints counts only. Without the live key there is
+    the payout. A difference, or a settlement missing on either side two days after the game was
+    played (the lake's final games), goes to the owner's Telegram; the log prints counts only. Without the live key there is
     nothing to check."""
     from datetime import UTC
 
@@ -4967,9 +4967,10 @@ def real_reconcile_kalshi(
     from nhl_edge.live import kalshi_trade as kt
     from nhl_edge.live import placement
     from nhl_edge.live import real_ledger as rl
+    from nhl_edge.live.blend_fit import LIVE_SEASON
     from nhl_edge.settings import MissingSettingError
 
-    _, store = _real_record(r2)
+    lake, store = _real_record(r2)
     # Outside the key's check: R2's own missing settings are an error, not a missing key.
     raw = RawStore.from_env(mirror=r2, flag="--r2")
     try:
@@ -4977,9 +4978,13 @@ def real_reconcile_kalshi(
     except MissingSettingError:
         typer.echo("kalshi settlements: no live key set, nothing to check")
         return
+    # The final games, each at the start it was played: a postponed game's wait counts from it.
+    if r2:
+        lake.pull("games", seasons=[LIVE_SEASON])
+    games = lake.read("games", seasons=[LIVE_SEASON])
     today = datetime.now(UTC).astimezone(ET).date()
     try:
-        report = placement.check_settlements(store, trade, rl.settlements(store), today)
+        report = placement.check_settlements(store, trade, rl.settlements(store), today, games)
     except kt.KalshiTradeError as exc:
         typer.echo(f"kalshi settlements: failed ({exc})", err=True)
         raise typer.Exit(code=1) from None
