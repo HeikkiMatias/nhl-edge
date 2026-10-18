@@ -25,7 +25,6 @@ from nhl_edge.live import kalshi_trade as kt
 from nhl_edge.live import placement as pm
 from nhl_edge.live import real
 from nhl_edge.live import real_ledger as rl
-from nhl_edge.live.kalshi_trade import KalshiTradeError
 
 KALSHI = real.Venue("kalshi", 0.0, 0.01, real.Exchange("live", 1.16))
 REAL_DAY = rl.Mode(rl.REAL, rf.ALERT.date())
@@ -187,8 +186,8 @@ def test_a_create_that_reached_kalshi_before_failing_is_found_on_the_rerun(tmp_p
         return httpx.Response(502, json={"error": "synthetic"})
 
     exchange._create = failing  # type: ignore[method-assign]
-    with pytest.raises(KalshiTradeError):
-        pm.place(record, client, planned, clock, rf.CODE, STARTS)
+    failed = pm.place(record, client, planned, clock, rf.CODE, STARTS)
+    assert failed.failed == 1 and failed.placed == 0
     assert len(exchange.orders) == 1 and tries["n"] == 5
     exchange._create = create  # type: ignore[method-assign]
     again = pm.place(record, client, planned, clock, rf.CODE, STARTS)
@@ -342,7 +341,7 @@ def test_a_fill_at_the_start_is_kept_apart_and_never_the_bets(tmp_path: Path) ->
     wsh = next(e for e in rl.entries(record) if e["game_id"] == 2026020053)
     assert wsh["outcome"] == rl.NOT_PLACED and wsh["reason"] == pm.NOT_MATCHED
     assert "1.00 contracts filled at or after the start, not in the record" in str(
-        pm.fills_message(pm.LIVE, report)
+        pm.fills_message(pm.LIVE, pm.unnotified(record, pm.LIVE, "final"))
     )
 
 
@@ -471,25 +470,49 @@ def test_the_orders_table_holds_every_state(tmp_path: Path) -> None:
     assert final["filled"].to_list() == [None, 1.0, 0.0]
 
 
-def test_the_messages_give_the_orders_and_the_fills(tmp_path: Path) -> None:
+def test_the_messages_give_the_orders_and_the_fills_each_once(tmp_path: Path) -> None:
     record, exchange, client, clock, report = placed(tmp_path)
-    text = pm.placed_message(pf.DAY, pm.LIVE, report)
+    told = pm.unnotified(record, pm.LIVE, "placed")
+    text = pm.placed_message(pf.DAY, pm.LIVE, told, report.skipped)
     first = pm.plans(real_rows(), pm.LIVE)[0]
     assert text is not None and text.startswith("NHL Edge · Kalshi real orders · Wed 7 Oct")
     assert f"WSH: buy Yes at most {round(first.limit * 100)}¢, {first.contracts} contracts" in text
-    assert pm.placed_message(pf.DAY, pm.LIVE, pm.PlaceReport()) is None
+    pm.mark_notified(record, pm.LIVE, told, "placed", clock())
+    assert pm.unnotified(record, pm.LIVE, "placed") == []
+    assert pm.placed_message(pf.DAY, pm.LIVE, []) is None
     exchange.fill("order-1", "1.00", "0.4700", "0.017500", PLACED_AT)
     for order_id in exchange.orders:
         exchange.expire(order_id)
     clock.at = pf.START + timedelta(hours=4)
-    fills = pm.fills_message(pm.LIVE, pm.reconcile(record, client, clock, STARTS))
+    pm.reconcile(record, client, clock, STARTS)
+    fills = pm.fills_message(pm.LIVE, pm.unnotified(record, pm.LIVE, "final"))
     assert fills is not None and "2026-10-07 WSH: 1.00 of" in fills
     assert "2026-10-07 WPG: nothing filled" in fills
 
 
+def test_a_message_telegram_refused_goes_with_the_next_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nhl_edge.live import telegram
+
+    _, exchange, sent, _ = commands(tmp_path, monkeypatch, "live", real_rows())
+
+    def refused(text: str) -> None:
+        raise telegram.TelegramError("synthetic")
+
+    monkeypatch.setattr(telegram, "send", refused)
+    assert runner.invoke(app, ["real", "place", "--r2"]).exit_code == 1
+    monkeypatch.setattr(telegram, "send", lambda text: sent.append(text))
+    result = runner.invoke(app, ["real", "place", "--r2"])
+    assert result.exit_code == 0, result.output
+    assert len(sent) == 1 and sent[0].count("buy Yes") == 3 and len(exchange.orders) == 3
+    assert runner.invoke(app, ["real", "place", "--r2"]).exit_code == 0
+    assert len(sent) == 1  # told once
+
+
 def test_a_demo_message_says_so(tmp_path: Path) -> None:
-    *_, report = placed(tmp_path, rf.alert_rows(), pm.DEMO)
-    text = pm.placed_message(pf.DAY, pm.DEMO, report)
+    record, *_ = placed(tmp_path, rf.alert_rows(), pm.DEMO)
+    text = pm.placed_message(pf.DAY, pm.DEMO, pm.unnotified(record, pm.DEMO, "placed"))
     assert text is not None and "Kalshi DEMO, mock funds" in text
 
 
@@ -651,7 +674,8 @@ def test_an_order_already_final_is_never_sent_again(tmp_path: Path) -> None:
     exchange.status.pop(WSH)
     clock.at = PLACED_AT + timedelta(minutes=5)
     report = pm.place(record, client, planned, clock, rf.CODE, STARTS)
-    assert report.skipped == {"the order is already final": 3}
+    # the two sent before count as placed; the one never sent is final and stays unsent
+    assert report.skipped == {"the order is already final": 1} and report.already == 2
     assert WSH not in {o["ticker"] for o in exchange.orders.values()}
 
 
@@ -663,3 +687,94 @@ def test_an_unsent_order_waits_for_the_schedule_too(tmp_path: Path) -> None:
     clock.at = pf.START + timedelta(hours=4)
     unread = pm.reconcile(record, client, clock, None)
     assert unread.finalized == 0 and unread.waiting == 3 and not rl.entries(record)
+
+
+# Codex on #289
+
+
+def test_an_entry_a_run_missed_after_its_final_record_is_written_by_the_next(
+    tmp_path: Path,
+) -> None:
+    record, _, client, clock = finish(tmp_path, [("1.00", "0.4700", "0.017500", PLACED_AT)])
+    entries = rl.store_entries
+    calls = {"n": 0}
+
+    def failing(store: Any, found: Any) -> int:
+        calls["n"] += 1
+        raise OSError("synthetic: the run stopped")
+
+    rl.store_entries = failing  # type: ignore[assignment]
+    try:
+        with pytest.raises(OSError):
+            pm.reconcile(record, client, clock, STARTS)
+    finally:
+        rl.store_entries = entries  # type: ignore[assignment]
+    assert record.keys(f"{rl.PREFIX}/orders") and not rl.entries(record)
+    later = pm.reconcile(record, client, clock, STARTS)
+    assert later.entries == 3
+    assert next(e for e in rl.entries(record) if e["game_id"] == 2026020053)["outcome"] == rl.PLACED
+
+
+def test_a_fill_under_half_a_cent_still_stakes_a_cent(tmp_path: Path) -> None:
+    record, _, client, clock = finish(tmp_path, [("0.01", "0.4700", "0.000100", PLACED_AT)])
+    pm.reconcile(record, client, clock, STARTS)
+    wsh = next(e for e in rl.entries(record) if e["game_id"] == 2026020053)
+    assert wsh["outcome"] == rl.PLACED and wsh["stake"] == 0.01
+    rl.bets(real_rows(), rl.entries(record))  # the record takes it
+
+
+def test_the_kill_switch_finds_an_order_its_run_never_recorded(tmp_path: Path) -> None:
+    # The odds job wrote the order and sent it, then stopped before recording Kalshi's id: the
+    # cancel finds it by its client order id, records it and cancels it.
+    record, exchange, clock = store(), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    planned = pm.plans(real_rows(), pm.LIVE)[:1]
+    pm.place(record, client, planned, clock, rf.CODE, STARTS)
+    record.objects.objects.pop(pm.order_key("live", pf.DAY, 2026020053, "placed"))
+    report = pm.reconcile(record, client, clock, STARTS, cancel=True)
+    assert report.adopted == 1 and report.cancelled == 1
+    assert exchange.orders["order-1"]["status"] == "canceled"
+    adopted = json.loads(record.get(pm.order_key("live", pf.DAY, 2026020053, "placed")))
+    assert adopted["order_id"] == "order-1" and adopted["adopted"] is True
+
+
+def test_an_order_lost_on_its_way_is_found_before_it_would_be_called_not_sent(
+    tmp_path: Path,
+) -> None:
+    record, exchange, client, clock, _ = placed(tmp_path)
+    record.objects.objects.pop(pm.order_key("live", pf.DAY, 2026020053, "placed"))
+    exchange.fill("order-1", "1.00", "0.4700", "0.017500", PLACED_AT)
+    for order_id in exchange.orders:
+        exchange.expire(order_id)
+    clock.at = pf.START + timedelta(hours=4)
+    report = pm.reconcile(record, client, clock, STARTS)
+    assert report.adopted == 1
+    wsh = next(e for e in rl.entries(record) if e["game_id"] == 2026020053)
+    assert wsh["outcome"] == rl.PLACED and wsh["bet_id"] == "order-1"
+
+
+def test_a_market_that_cant_be_read_skips_only_its_own_order(tmp_path: Path) -> None:
+    record, exchange, clock = store(), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    route = exchange.__class__.__call__
+
+    class Missing(Exchange):
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith(f"/markets/{WSH}"):
+                self.requests.append(request)
+                return httpx.Response(404, json={"code": "not_found"})
+            return route(self, request)
+
+    missing = Missing()
+    client, _ = trade(tmp_path / "missing", missing, env=pm.LIVE, now=clock)
+    report = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
+    assert report.skipped == {"the market couldn't be read": 1} and report.placed == 2
+
+
+def test_the_alert_says_when_kalshi_trading_isnt_live() -> None:
+    rows = real_rows()
+    off = rl.message(rf.ALERT.date(), REAL_DAY, rows, 100.0, None, placing=False)
+    on = rl.message(rf.ALERT.date(), REAL_DAY, rows, 100.0, None)
+    assert "KALSHI_TRADING isn't live, so no order goes to Kalshi today" in off
+    assert "The orders go to Kalshi automatically" not in off
+    assert "The orders go to Kalshi automatically" in on

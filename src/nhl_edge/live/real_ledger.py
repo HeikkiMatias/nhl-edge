@@ -331,9 +331,12 @@ def message(
     bankroll: float,
     url: str | None,
     skipped_day: str | None = None,
+    placing: bool = True,
 ) -> str:
     """The day's Telegram message, in plain words: each alerted bet's game, side, minimum price
-    and stakes, or why there is none."""
+    and stakes, or why there is none. On an exchange venue each bet's order, which goes
+    automatically unless placing is off (KALSHI_TRADING isn't live): then the message says no
+    order goes, so nothing is bet (Codex on #289)."""
     if today.name == CLOSED:
         return (
             f"NHL Edge · {_day(day)}\nReal stakes didn't start: {today.reason}. "
@@ -387,6 +390,12 @@ def message(
         ]
     if alerted.is_empty():
         lines.append(f"No {'practice' if practice else 'real'} bets today.")
+    elif automatic and not placing:
+        lines += [
+            "",
+            "KALSHI_TRADING isn't live, so no order goes to Kalshi today and nothing is bet. "
+            "There is nothing to enter.",
+        ]
     elif automatic:
         lines += [
             "",
@@ -448,10 +457,11 @@ def prepare(
     code_version: str,
     url: str | None = None,
     stopped: Sequence[date] = (),
+    placing: bool = True,
 ) -> Alert:
     """The day's alert from its written paper ledger, the committed weekly reports, the real
     record so far (bets), the games' results and the earlier days alerted as stopped, at the
-    clock now."""
+    clock now. placing is whether an exchange venue's orders go (KALSHI_TRADING is live)."""
     decision = ledger["prediction_utc"][0]
     real_bankroll = bankroll(bets, games, decision, REAL)
     today = mode(reports, day, real_bankroll, stopped)
@@ -466,7 +476,7 @@ def prepare(
         if skipped.height == ledger.height
         else None
     )
-    text = message(day, today, rows, staked, url, reason)
+    text = message(day, today, rows, staked, url, reason, placing)
     return Alert(day, today, staked, venue, rows, text, now, code_version)
 
 

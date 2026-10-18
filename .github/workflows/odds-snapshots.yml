@@ -120,6 +120,8 @@ jobs:
         # applied), the dashboard's form gets the day's bets and its new entries are copied first.
         if: always() && (github.event_name == 'schedule' || inputs.slot == 'midday')
         env:
+          # On a Kalshi day the message says whether the orders go (#281).
+          KALSHI_TRADING: ${{ vars.KALSHI_TRADING || 'off' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}

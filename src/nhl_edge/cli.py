@@ -4446,10 +4446,18 @@ def real_alert(
     url = optional("DASHBOARD_URL")
     reports_ = rl.weekly_reports()
     stopped = rl.stopped_days(store)
+    # Whether an exchange venue's orders go today, as nhl real place will read the switch: the
+    # message says so when they don't (Codex on #289).
+    from nhl_edge.live import placement
+
+    try:
+        placing = placement.switch_of(optional("KALSHI_TRADING")) == placement.LIVE
+    except ValueError:
+        placing = False
     # Built at the clock after the reads, and built again while a game starts before the write.
     alert = rl.publishable(
         lambda at: rl.prepare(
-            game_date, ledger, reports_, record, games, at, code_version, url, stopped
+            game_date, ledger, reports_, record, games, at, code_version, url, stopped, placing
         ),
         clock,
     )
@@ -4818,7 +4826,12 @@ def real_place(
         typer.echo(f"kalshi orders {setting}: failed ({exc})", err=True)
         raise typer.Exit(code=1) from None
     typer.echo(report.line(setting))
-    if _send_quietly(placement.placed_message(game_date, setting, report)):
+    told = placement.unnotified(store, setting, "placed")
+    if _send_quietly(placement.placed_message(game_date, setting, told, report.skipped)):
+        raise typer.Exit(code=1)
+    placement.mark_notified(store, setting, told, "placed", datetime.now(UTC))
+    if report.failed:
+        typer.echo(f"kalshi orders {setting}: {report.failed} orders failed", err=True)
         raise typer.Exit(code=1)
 
 
@@ -4842,6 +4855,7 @@ def real_orders(
     first, as with --cancel. The lake's real_orders is rebuilt from the record. The log prints
     counts only; the fills go to the owner's Telegram."""
     from datetime import UTC
+    from zoneinfo import ZoneInfo
 
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.live import kalshi_trade as kt
@@ -4879,7 +4893,18 @@ def real_orders(
             failed = True
             continue
         typer.echo(report.line(env))
-        failed |= _send_quietly(placement.fills_message(env, report))
+        # Orders found on Kalshi unrecorded, then the finals: each told once its message goes.
+        today = datetime.now(UTC).astimezone(ZoneInfo("America/New_York")).date()
+        adopted = placement.unnotified(store, env, "placed")
+        finals = placement.unnotified(store, env, "final")
+        for part, told, text in (
+            ("placed", adopted, placement.placed_message(today, env, adopted)),
+            ("final", finals, placement.fills_message(env, finals)),
+        ):
+            if _send_quietly(text):
+                failed = True
+            else:
+                placement.mark_notified(store, env, told, part, datetime.now(UTC))
         if report.after_start:
             typer.echo(f"::warning::kalshi orders {env}: a fill came at or after the start")
     orders = placement.table(store)

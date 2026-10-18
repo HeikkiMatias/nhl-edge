@@ -60,7 +60,7 @@ from nhl_edge.live import bundle as lb
 from nhl_edge.live import kalshi_trade as kt
 from nhl_edge.live import real
 from nhl_edge.live import real_ledger as rl
-from nhl_edge.live.kalshi_trade import KalshiTrade, OrderRequest
+from nhl_edge.live.kalshi_trade import KalshiTrade, KalshiTradeError, OrderRequest
 
 # The switch's settings: off, or the environment orders go to.
 OFF, DEMO, LIVE = "off", kt.DEMO, kt.LIVE
@@ -213,6 +213,7 @@ class PlaceReport:
     placed: int = 0
     existed: int = 0
     already: int = 0
+    failed: int = 0
     skipped: dict[str, int] = field(default_factory=dict)
     placed_plans: list[Plan] = field(default_factory=list)
 
@@ -221,9 +222,11 @@ class PlaceReport:
 
     def line(self, env: str) -> str:
         skips = "".join(f"; {n} {reason}" for reason, n in sorted(self.skipped.items()))
+        failed = f"; {self.failed} failed" if self.failed else ""
         return (
             f"kalshi orders {env}: {self.planned} planned, {self.placed} placed "
             f"({self.existed} found already on Kalshi), {self.already} placed before{skips}"
+            f"{failed}"
         )
 
 
@@ -252,12 +255,13 @@ def place(
         key = order_key(plan.env, plan.game_date, plan.game_id)
         if not _held(store, key):
             _put(store, key, plan.record(now(), code_version))
-        if _held(store, order_key(plan.env, plan.game_date, plan.game_id, "final")):
-            # Its deadline has passed once, with nothing sent: a later run never revives it.
-            skip(plan, "the order is already final")
-        elif _held(store, order_key(plan.env, plan.game_date, plan.game_id, "placed")):
+        if _held(store, order_key(plan.env, plan.game_date, plan.game_id, "placed")):
+            # Sent by an earlier run, final or not: it counts against the day cap (Codex on #289).
             report.already += 1
             sent.append(plan)
+        elif _held(store, order_key(plan.env, plan.game_date, plan.game_id, "final")):
+            # Its deadline has passed once, with nothing sent: a later run never revives it.
+            skip(plan, "the order is already final")
         elif plan.game_id not in starts:
             skip(plan, "the game's start couldn't be checked")
         elif starts[plan.game_id] != plan.start_utc:
@@ -290,7 +294,12 @@ def place(
             skip(plan, "the balance doesn't cover the orders")
         return report
     for plan in capped:
-        market = trade.market(plan.ticker)
+        # A market that can't be read is its own plan's skip, never the others' (Codex on #289).
+        try:
+            market = trade.market(plan.ticker)
+        except KalshiTradeError:
+            skip(plan, "the market couldn't be read")
+            continue
         if market.get("status") != "active":
             skip(plan, "the market isn't open")
             continue
@@ -298,7 +307,13 @@ def place(
         if now() >= plan.expires_utc - LEAD:
             skip(plan, "too close to the start")
             continue
-        placed = trade.create_order(plan.request())
+        try:
+            placed = trade.create_order(plan.request())
+        except KalshiTradeError:
+            # It may have reached Kalshi all the same: the reconcile finds it by its client order
+            # id (adopt) before it would call it not sent. The run fails, after the others.
+            report.failed += 1
+            continue
         _put(
             store,
             order_key(plan.env, plan.game_date, plan.game_id, "placed"),
@@ -408,10 +423,13 @@ def entry(record: Mapping[str, Any], now: datetime) -> dict[str, Any]:
             "reason": reason,
         }
     cost = _decimal(final["cost_usd"])
+    # A fill costing under half a cent still stakes a cent: the record needs a positive stake,
+    # and the rounding is under a cent either way (Codex on #289).
+    stake = max(round(float(cost) / order["usd_per_eur"], 2), 0.01)
     return base | {
         "outcome": rl.PLACED,
         "matched_price": round(float(contracts / cost), 3),
-        "stake": round(float(cost) / order["usd_per_eur"], 2),
+        "stake": stake,
         "bet_id": record["placed"]["order_id"],
         "placed_utc": final["first_fill_utc"],
         "reason": None,
@@ -427,6 +445,7 @@ class ReconcileReport:
     cancelled: int = 0
     entries: int = 0
     waiting: int = 0
+    adopted: int = 0
     finals: list[dict[str, Any]] = field(default_factory=list)
 
     def line(self, env: str) -> str:
@@ -434,8 +453,33 @@ class ReconcileReport:
             f"kalshi orders {env}: {self.resting} resting, {self.finalized} final "
             f"({self.filled} with fills, {self.after_start} filled at or after the start), "
             f"{self.cancelled} cancelled now, {self.entries} entries written, {self.waiting} "
-            "waiting for Kalshi's reads or the schedule"
+            f"waiting for Kalshi's reads or the schedule, {self.adopted} found on Kalshi unrecorded"
         )
+
+
+def adopt(
+    store: lb.Store,
+    trade: KalshiTrade,
+    order: Mapping[str, Any],
+    game_date: date,
+    game_id: int,
+    now: Callable[[], datetime],
+) -> dict[str, Any] | None:
+    """The placed record of an order Kalshi holds under its client order id though no run recorded
+    it, as when a create's answer was lost: written once, and returned; None when Kalshi has no
+    such order."""
+    found = trade.find_order(order["ticker"], order["client_order_id"])
+    if found is None:
+        return None
+    placed = {
+        "order_id": found["order_id"],
+        "client_order_id": order["client_order_id"],
+        "existed": True,
+        "placed_utc": now().isoformat(),
+        "adopted": True,
+    }
+    _put(store, order_key(trade.env, game_date, game_id, "placed"), placed)
+    return placed
 
 
 def reconcile(
@@ -459,7 +503,15 @@ def reconcile(
     env = trade.env
     held_entries = set(store.keys(f"{rl.PREFIX}/entries"))
     for (day, game_id), record in sorted(stored_orders(store, env).items()):
-        if "final" in record or "order" not in record:
+        if "order" not in record:
+            continue
+        if "final" in record:
+            # A run that stopped between the final record and the entry: the entry now (Codex on
+            # #289).
+            key = rl.entry_key(date.fromisoformat(day), game_id)
+            if env == LIVE and key not in held_entries:
+                rl.store_entries(store, [entry(record, now())])
+                report.entries += 1
             continue
         order = record["order"]
         start, expires = _instant(order["start_utc"]), _instant(order["expires_utc"])
@@ -479,6 +531,13 @@ def reconcile(
         begins = min([start, *seen])
         deadline = min(expires, begins - (start - expires))
         placed = record.get("placed")
+        if placed is None and (cancel or now() >= deadline):
+            # Before the kill switch's cancel, or calling it not sent: an order whose create
+            # reached Kalshi though its run never recorded it is found by its client order id.
+            placed = adopt(store, trade, order, game_date, game_id, now)
+            if placed is not None:
+                record = record | {"placed": placed}
+                report.adopted += 1
         if placed is None:
             if now() < deadline:
                 continue
@@ -582,33 +641,72 @@ def _cents(value: str) -> int:
     return round(float(value) * 100)
 
 
-def placed_message(day: date, env: str, report: PlaceReport) -> str | None:
-    """The owner's message after a run placed orders, or None when it placed none."""
-    if not report.placed_plans:
+# The owner is told of each order once it is placed and once it is final: a part's message, once
+# sent, is marked (...-notified_placed.json, ...-notified_final.json), and each run tells of the
+# unmarked ones, so a message Telegram refused goes with the next run (Codex on #289).
+NOTIFIED = "notified"
+
+
+def unnotified(store: lb.Store, env: str, part: str) -> list[dict[str, Any]]:
+    """The order records with a part, placed or final, whose message hasn't gone yet, each with
+    its game date and id."""
+    marker = f"{NOTIFIED}_{part}"
+    return [
+        record | {"day": day, "game_id": game_id}
+        for (day, game_id), record in sorted(stored_orders(store, env).items())
+        if "order" in record and part in record and marker not in record
+    ]
+
+
+def mark_notified(
+    store: lb.Store, env: str, records: Sequence[Mapping[str, Any]], part: str, now: datetime
+) -> None:
+    """Mark each record's part as told, once."""
+    for record in records:
+        key = order_key(
+            env, date.fromisoformat(record["day"]), record["game_id"], f"{NOTIFIED}_{part}"
+        )
+        if not _held(store, key):
+            _put(store, key, {"notified_utc": now.isoformat()})
+
+
+def _header(env: str) -> str:
+    return "DEMO, mock funds" if env == DEMO else "real orders"
+
+
+def placed_message(
+    day: date,
+    env: str,
+    placed: Sequence[Mapping[str, Any]],
+    skipped: Mapping[str, int] | None = None,
+) -> str | None:
+    """The owner's message of orders placed and not told yet (unnotified "placed"), or None
+    without any. An order of another day than the run's says its date."""
+    if not placed:
         return None
-    header = "DEMO, mock funds" if env == DEMO else "real orders"
-    lines = [f"NHL Edge · Kalshi {header} · {day:%a} {day.day} {day:%b}"]
-    for plan in report.placed_plans:
-        expires = plan.expires_utc.astimezone(rl.HELSINKI)
+    lines = [f"NHL Edge · Kalshi {_header(env)} · {day:%a} {day.day} {day:%b}"]
+    for record in placed:
+        order = record["order"]
+        expires = _instant(order["expires_utc"]).astimezone(rl.HELSINKI)
+        when = "" if order["game_date"] == day.isoformat() else f"{order['game_date']} "
         lines.append(
-            f"{plan.team}: buy Yes at most {_cents(f'{plan.limit}')}¢, {plan.contracts} contracts, "
-            f"at most ${plan.max_cost_usd:.2f} ({plan.stake:.2f} €), until {expires:%H:%M}"
+            f"{when}{order['team']}: buy Yes at most {_cents(order['limit'])}¢, "
+            f"{order['contracts']} contracts, at most ${_decimal(order['max_cost_usd']):.2f} "
+            f"({order['stake']:.2f} €), until {expires:%H:%M}"
         )
-    if report.skipped:
-        lines.append(
-            "Not placed: " + ", ".join(f"{n} {reason}" for reason, n in report.skipped.items())
-        )
+    if skipped:
+        lines.append("Not placed: " + ", ".join(f"{n} {why}" for why, n in skipped.items()))
     return "\n".join(lines)
 
 
-def fills_message(env: str, report: ReconcileReport) -> str | None:
-    """The owner's message after a run finalized orders, or None when it finalized none."""
-    if not report.finals:
+def fills_message(env: str, finals: Sequence[Mapping[str, Any]]) -> str | None:
+    """The owner's message of orders final and not told yet (unnotified "final"), or None
+    without any."""
+    if not finals:
         return None
-    header = "DEMO, mock funds" if env == DEMO else "real orders"
-    lines = [f"NHL Edge · Kalshi {header}: fills"]
-    for each in report.finals:
-        order, final = each["order"], each["final"]
+    lines = [f"NHL Edge · Kalshi {_header(env)}: fills"]
+    for record in finals:
+        order, final = record["order"], record["final"]
         contracts = _decimal(final.get("contracts"))
         if contracts <= 0:
             what = "nothing filled" if final["status"] != "not sent" else "no order was sent"

@@ -494,9 +494,12 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - the market is active.
 
   Then it is sent. Kalshi's order id is written after (`...-placed.json`), or the reason it wasn't sent (`...-skipped.json`). A rerun sends nothing for an order already placed. The client order id is the same on every run, so Kalshi refuses a second order (409).
+  - **Failures:** a market that can't be read skips only its own order. A create that fails after its tries fails the run after the others.
+  - **Lost answers:** an order Kalshi holds though no run recorded it, as when a create's answer was lost, is found by its client order id. The tracking looks for it before it would call the order not sent, and before every cancel (`...-placed.json` with `adopted`).
+  - **The day cap** counts every order a run has sent that day, final or not.
 - **The order:** a limit buy of Yes at the alert's limit, `good_till_canceled` with `expiration_time` 5 minutes before the start, and `cancel_order_on_pause`. It fills at once from asks at or below the limit, and the rest rests until it expires.
 - **`nhl real orders --r2 [--cancel]`:** at every odds slot and in the nightly job, for each environment whose key is set.
-  - An environment the switch doesn't name has its resting orders cancelled first, and so does every environment with `--cancel` (`kalshi-cancel.yml`, the manual kill switch).
+  - An environment the switch doesn't name has its resting orders cancelled first, and so does every environment with `--cancel` (`kalshi-cancel.yml`, the manual kill switch). The kill switch sweeps twice, 90 seconds apart, so an order an odds job sends meanwhile is caught by its client order id.
   - **The deadline:** an order's deadline is its expiry, or earlier when the schedule, read again, lists its game earlier than the alert did. Every earlier start a run sees is written once (`...-moved-<start>.json`), and the earliest holds, so one unread schedule loses no move. A run that can't read the schedule still cancels past the deadline, but writes no final record and no entry: those wait for a run that reads it.
   - **A resting order** is counted. One past a moved game's deadline is cancelled, and so is one still resting 2 minutes after its own expiry.
   - **The final record:** once an order's deadline has passed, it is read with its fills and written once (`...-final.json`). It holds the bet, which is the fills before the start (the earlier of the alert's and the schedule's), with their contracts, cost and fees in USD and the first fill's time. Fills at or after the start are kept apart with their count and cost, flagged, and never the bet's. An order whose fills don't add up yet waits for the next run.
@@ -505,10 +508,12 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
     - not placed, "not matched", when nothing filled before the start;
     - not placed, "missed it", when no order went.
 
-    A fill at or after the start also raises a warning in the log and the owner's message.
+    A fill at or after the start also raises a warning in the log and the owner's message. A fill costing under half a cent still stakes a cent. An entry a stopped run didn't write after its final record is written by the next run.
   - The lake's `real_orders` is rebuilt from the records.
 - **`nhl real place --dry-run --date <d> [--env demo|live]`:** prints a day's orders with their prices and sends nothing. It is for the owner's terminal only, never a workflow.
 - **Logs and messages:** a run prints counts only. The orders placed and the fills go to the owner's Telegram, a demo one marked "DEMO, mock funds".
+  - **Told once:** each message, once sent, is marked on its orders (`...-notified_placed.json`, `...-notified_final.json`), so a message Telegram refused goes with the next run.
+  - **The alert:** on a Kalshi day it says when `KALSHI_TRADING` isn't live, so that no order goes and nothing is bet.
 - **Inputs:** an order is built from the day's alert only. No Kalshi price is an input: of the market's data only its status is used (`tests/leakage/test_kalshi_orders.py`, which also checks that no model package reads the real record or the orders).
 
 ## Odds snapshots
