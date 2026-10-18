@@ -68,6 +68,8 @@ SWITCH = (OFF, DEMO, LIVE)
 LEAD = timedelta(minutes=1)
 # An order still resting this long after its expiry is cancelled by the reconcile itself.
 GRACE = timedelta(minutes=2)
+# The record part of an earlier start a run saw in the schedule.
+MOVED = "moved"
 PREFIXES = {LIVE: rl.PREFIX, DEMO: "real/demo"}
 NAMESPACE = uuid.UUID("5d3c1f0e-2a8b-4c6e-9f1a-7b2e4d6c8a10")
 CAP_TOLERANCE = Decimal("0.0001")
@@ -428,7 +430,7 @@ class ReconcileReport:
             f"kalshi orders {env}: {self.resting} resting, {self.finalized} final "
             f"({self.filled} with fills, {self.after_start} filled at or after the start), "
             f"{self.cancelled} cancelled now, {self.entries} entries written, {self.waiting} "
-            "waiting for Kalshi's reads"
+            "waiting for Kalshi's reads or the schedule"
         )
 
 
@@ -436,16 +438,19 @@ def reconcile(
     store: lb.Store,
     trade: KalshiTrade,
     now: Callable[[], datetime],
+    starts: Mapping[int, datetime] | None,
     cancel: bool = False,
-    starts: Mapping[int, datetime] | None = None,
 ) -> ReconcileReport:
-    """Track each order of the trade's environment that has no final record yet. Its deadline is
-    its expiry, or earlier when starts (the schedule now) lists its game earlier than the alert
-    did. A resting order is cancelled when cancel is set (the switch doesn't name its
-    environment), once a moved game's deadline has passed, or when it still rests GRACE after its
-    own expiry. Once the deadline has passed, it is read with its fills and its final record
-    written, and on the live exchange the bet's entry, from the fills before the start. An order
-    whose fills don't add up to its fill count yet waits for the next run."""
+    """Track each order of the trade's environment that has no final record yet. Its game's start
+    is the earliest of the alert's and every earlier one a run has seen in the schedule (starts,
+    read now; None when it couldn't be read), each written once (...-moved-<start>.json), so one
+    unread schedule loses no move. Its deadline is that start less the expiry's lead. A resting
+    order is cancelled when cancel is set (the switch doesn't name its environment), once a moved
+    game's deadline has passed, or when it still rests GRACE after its own expiry. Once the
+    deadline has passed, a placed order is read with its fills and its final record written, and
+    on the live exchange the bet's entry, from the fills before the start; but not in a run whose
+    schedule couldn't be read (leakage audit of #281), nor while its fills don't add up to its fill
+    count: it waits for the next run."""
     report = ReconcileReport()
     env = trade.env
     held_entries = set(store.keys(f"{rl.PREFIX}/entries"))
@@ -454,10 +459,21 @@ def reconcile(
             continue
         order = record["order"]
         start, expires = _instant(order["start_utc"]), _instant(order["expires_utc"])
-        listed = (starts or {}).get(game_id)
-        begins = min(start, listed) if listed is not None else start
-        deadline = min(expires, begins - (start - expires))
         game_date = date.fromisoformat(day)
+        seen = [
+            _instant(part["start_utc"]) for name, part in record.items() if name.startswith(MOVED)
+        ]
+        listed = (starts or {}).get(game_id)
+        if listed is not None and listed < start and listed not in seen:
+            stamp = f"{MOVED}-{listed:%Y%m%dT%H%M%SZ}"
+            _put(
+                store,
+                order_key(env, game_date, game_id, stamp),
+                {"start_utc": listed.isoformat(), "seen_utc": now().isoformat()},
+            )
+            seen.append(listed)
+        begins = min([start, *seen])
+        deadline = min(expires, begins - (start - expires))
         placed = record.get("placed")
         if placed is None:
             if now() < deadline:
@@ -483,6 +499,9 @@ def reconcile(
                     continue
             if found.get("status") == "resting" or now() < deadline:
                 report.resting += found.get("status") == "resting"
+                continue
+            if starts is None:
+                report.waiting += 1
                 continue
             fills = trade.fills(placed["order_id"])
             counted = sum((_decimal(fill.get("count_fp")) for fill in fills), Decimal(0))

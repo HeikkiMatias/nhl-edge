@@ -25,6 +25,10 @@
 3. **A limit buy at the limit price L, resting until shortly before the start (the owner's choice):**
    - it fills at once from any ask at or below L, and what is left rests;
    - #281's private measurement on 2026-11-09 shows whether the resting part's fills are worth it. It can amend only the execution: where the order rests, or fill-now. That would be a new ADR, with the real record split at its date. Never p, the hurdle, the selection, the staking or the limit's formula, which the live games must not tune.
+   - **The rule, fixed now:** the CLV per filled resting bid against Pinnacle's de-vigged closing proxy, with its interval from the weekly block bootstrap (hard rule 7).
+     - **The evidence:** on 11-09, #281's private measurement of resting bids on the order books #282 logs; from the start, at each weekly report, the real orders' resting fills, those after the order was placed.
+     - **The decision:** if the interval's upper bound is below 0, the resting part goes and orders become immediate-or-cancel at L. Otherwise the order stays as it is.
+     - **The floor:** fewer than 4 weeks of resting fills decide nothing.
 4. **Post-only at the bid:** the maker fee only, but no fill while the price doesn't come down, and the most adverse selection.
 
 ## Decision: option 3 (proposed)
@@ -66,7 +70,10 @@
    - the practice alert stays in decimal until the start;
    - the practice days' orders go to the demo exchange, recorded apart (`real/demo/`), never in the practice or real record.
    - The demo run before the start, the live key check (`nhl kalshi check --env live`) and Codex's reviews are the review item 6 asks for.
-9. **The record:** once an order's deadline has passed, its fills before the start become the bet's entry (`real/live/entries/`), with the fields the dashboard's form writes. The entry is mechanical, written by the pipeline, never by hand, so no result can shape it:
+9. **The record:** once an order's deadline has passed and a run has read the schedule, its fills before the start become the bet's entry (`real/live/entries/`), with the fields the dashboard's form writes.
+   - **Mechanical:** the pipeline writes the entry, so no result can shape it.
+   - **Corrections:** a correction (`nhl real correct`) only brings it in line with Kalshi's own statement, with its reason, as at any venue (ADR 0039). #287's nightly check compares the two.
+   - **Its fields:**
    - **placed:**
      - matched price = contracts ÷ total cost, fees included;
      - stake = total cost ÷ rate;
@@ -100,7 +107,7 @@ None, and none is possible: Kalshi's history isn't ours to use (#280, the Develo
 
 ## Revisit when
 
-- #281's private measurement (2026-11-09) suggests a different resting price, or fill-now. That would be an execution-only amendment, in a new ADR.
+- #281's private measurement (2026-11-09), under the rule in Options 3: an execution-only amendment, in a new ADR, with its own leakage audit.
 - Kalshi changes its fees, its contract or its API.
 - A fill comes at or after a start, or the nightly check finds the record and Kalshi apart.
 - A stop rule fires, or the formal review on 2027-04-12.

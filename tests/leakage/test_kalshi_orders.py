@@ -3,6 +3,7 @@ exchange: an order is built only from the day's alert, written before it is sent
 Kalshi price; it expires before its game, is never sent once that is near, and a fill at or after
 the start never becomes a bet (hard rules 1, 2 and 4)."""
 
+import ast
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -107,7 +108,7 @@ def test_an_order_never_rests_into_a_game_moved_earlier(tmp_path: Path) -> None:
     pm.place(record, client, pm.plans(rows(), pm.LIVE), clock, rf.CODE, STARTS)
     exchange.fill("order-1", "1.00", "0.4700", "0.0175", moved + timedelta(minutes=1))
     clock.at = moved + timedelta(minutes=10)
-    pm.reconcile(record, client, clock, starts=starts)
+    pm.reconcile(record, client, clock, starts)
     assert exchange.orders["order-1"]["status"] == "canceled"
     final = json.loads(record.get(pm.order_key("live", pf.DAY, 2026020053, "final")))
     assert final["after_start"] is True and final["contracts"] == "0.00"
@@ -115,20 +116,74 @@ def test_an_order_never_rests_into_a_game_moved_earlier(tmp_path: Path) -> None:
     assert wsh["outcome"] == rl.NOT_PLACED
 
 
+def test_a_move_seen_once_holds_when_the_schedule_cant_be_read_after(tmp_path: Path) -> None:
+    # The leakage audit's probe: one run sees the game moved 2 hours earlier, every later run
+    # has no schedule. The order is cancelled at the new deadline anyway, and nothing is final,
+    # so no entry, until a run reads the schedule again; the bet is then split at the new start.
+    moved = pf.START - timedelta(hours=2)
+    record, exchange, clock = lb.R2Store(ConditionalBucket(), "bucket"), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    pm.place(record, client, pm.plans(rows(), pm.LIVE), clock, rf.CODE, STARTS)
+    clock.at = moved - timedelta(minutes=30)
+    pm.reconcile(record, client, clock, STARTS | {2026020053: moved})
+    exchange.fill("order-1", "1.00", "0.4700", "0.0175", moved + timedelta(minutes=30))
+    clock.at = moved + timedelta(hours=1)
+    unread = pm.reconcile(record, client, clock, None)
+    assert exchange.orders["order-1"]["status"] == "canceled"
+    assert unread.waiting >= 1 and not rl.entries(record)
+    clock.at = pf.START + timedelta(hours=5)
+    pm.reconcile(record, client, clock, None)
+    assert 2026020053 not in {e["game_id"] for e in rl.entries(record)}
+    pm.reconcile(record, client, clock, STARTS | {2026020053: moved})
+    final = json.loads(record.get(pm.order_key("live", pf.DAY, 2026020053, "final")))
+    assert final["start_utc"] == moved.isoformat() and final["contracts"] == "0.00"
+    wsh = next(e for e in rl.entries(record) if e["game_id"] == 2026020053)
+    assert wsh["outcome"] == rl.NOT_PLACED
+
+
+# The real record and the orders are the owner's own (ADR 0039, 0040), never a model input: no
+# model package or live model module imports them or names their tables.
+MODEL_CODE = ("features", "game", "ratings", "lineup", "market", "betting", "backtest")
+LIVE_MODEL = (
+    "attribution",
+    "blend_fit",
+    "challengers",
+    "features",
+    "goalies",
+    "movement",
+    "predict",
+    "serving",
+    "shadow",
+    "slate",
+    "targets",
+)
+PRIVATE_MODULES = ("placement", "exchange", "real_ledger", "kalshi_trade", "real")
+PRIVATE_TABLES = ("real_orders", "real_bets", "real_settlements", "real_alerts", "kalshi_books")
+
+
+def imported(tree: ast.AST) -> set[str]:
+    """Every module a file imports, anywhere in it, as dotted names: nhl_edge.live.placement for
+    both import nhl_edge.live.placement and from nhl_edge.live import placement."""
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found |= {alias.name for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            found.add(node.module)
+            found |= {f"{node.module}.{alias.name}" for alias in node.names}
+    return found
+
+
 def test_no_model_code_reads_the_real_record_or_the_orders() -> None:
-    # The real record and the orders are the owner's own (ADR 0039, 0040), never a model input.
     src = Path(__file__).parents[2] / "src" / "nhl_edge"
-    names = ("real_orders", "real_bets", "real_settlements", "real_alerts", "placement", "exchange")
-    for package in ("features", "game", "ratings", "lineup", "market", "betting", "backtest"):
-        for path in (src / package).rglob("*.py"):
-            text = path.read_text()
-            imports = [line for line in text.splitlines() if line.startswith(("import", "from"))]
-            assert not any(name in text for name in names[:4]), path
-            assert not any(
-                f"live.{module}" in line or f"live import {module}" in line
-                for line in imports
-                for module in ("placement", "exchange", "real_ledger", "kalshi_trade")
-            ), path
+    paths = [path for package in MODEL_CODE for path in (src / package).rglob("*.py")]
+    paths += [src / "live" / f"{name}.py" for name in LIVE_MODEL]
+    assert all(path.exists() for path in paths)
+    forbidden = {f"nhl_edge.live.{name}" for name in PRIVATE_MODULES}
+    for path in paths:
+        text = path.read_text()
+        assert not imported(ast.parse(text)) & forbidden, path
+        assert not any(f'"{table}"' in text for table in PRIVATE_TABLES), path
 
 
 def test_a_fill_at_or_after_the_start_never_becomes_a_bet(tmp_path: Path) -> None:
@@ -139,7 +194,7 @@ def test_a_fill_at_or_after_the_start_never_becomes_a_bet(tmp_path: Path) -> Non
     for order_id in exchange.orders:
         exchange.expire(order_id)
     clock.at = pf.START + timedelta(hours=5)
-    pm.reconcile(record, client, clock)
+    pm.reconcile(record, client, clock, STARTS)
     entries = rl.entries(record)
     wsh = next(e for e in entries if e["game_id"] == 2026020053)
     assert wsh["outcome"] == rl.NOT_PLACED  # its only fill came at the start

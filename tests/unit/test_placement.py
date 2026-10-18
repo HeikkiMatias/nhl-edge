@@ -276,7 +276,7 @@ def finish(
 def test_an_order_is_tracked_while_it_rests(tmp_path: Path) -> None:
     record, _, client, clock, _ = placed(tmp_path)
     clock.at = EXPIRES - timedelta(minutes=30)
-    report = pm.reconcile(record, client, clock)
+    report = pm.reconcile(record, client, clock, STARTS)
     assert report.resting == 3 and report.finalized == 0
     assert not record.keys(f"{rl.PREFIX}/entries")
 
@@ -290,7 +290,7 @@ def test_a_filled_order_becomes_its_bets_entry(tmp_path: Path) -> None:
             ("0.50", "0.4600", "0.008700", PLACED_AT + timedelta(hours=1)),
         ],
     )
-    report = pm.reconcile(record, client, clock)
+    report = pm.reconcile(record, client, clock, STARTS)
     assert report.finalized == 3 and report.filled == 1 and report.entries == 3
     final = json.loads(record.get(pm.order_key("live", pf.DAY, 2026020053, "final")))
     assert final["contracts"] == "1.50" and final["after_start"] is False
@@ -325,7 +325,7 @@ def test_an_order_never_sent_is_missed_once_it_would_have_expired(tmp_path: Path
     clock.at = pf.START + timedelta(hours=4)
     for order_id in exchange.orders:
         exchange.expire(order_id)
-    pm.reconcile(record, client, clock)
+    pm.reconcile(record, client, clock, STARTS)
     final = json.loads(record.get(pm.order_key("live", pf.DAY, 2026020053, "final")))
     assert final["status"] == "not sent" and final["reason"] == "the market isn't open"
     wsh = next(e for e in rl.entries(record) if e["game_id"] == 2026020053)
@@ -334,7 +334,7 @@ def test_an_order_never_sent_is_missed_once_it_would_have_expired(tmp_path: Path
 
 def test_a_fill_at_the_start_is_kept_apart_and_never_the_bets(tmp_path: Path) -> None:
     record, _, client, clock = finish(tmp_path, [("1.00", "0.4700", "0.017500", pf.START)])
-    report = pm.reconcile(record, client, clock)
+    report = pm.reconcile(record, client, clock, STARTS)
     assert report.after_start == 1 and report.entries == 3
     final = json.loads(record.get(pm.order_key("live", pf.DAY, 2026020053, "final")))
     assert final["after_start"] is True and final["contracts"] == "0.00"
@@ -355,7 +355,7 @@ def test_only_the_fills_before_the_start_are_the_bet(tmp_path: Path) -> None:
             ("0.50", "0.4500", "0.008700", pf.START + timedelta(minutes=1)),
         ],
     )
-    pm.reconcile(record, client, clock)
+    pm.reconcile(record, client, clock, STARTS)
     wsh = next(e for e in rl.entries(record) if e["game_id"] == 2026020053)
     cost = Decimal("0.47") + Decimal("0.0175")
     assert wsh["outcome"] == rl.PLACED and wsh["placed_utc"] == before.isoformat()
@@ -383,10 +383,10 @@ def test_a_resting_order_of_a_game_moved_earlier_is_cancelled_at_its_new_deadlin
     moved = pf.START - timedelta(hours=2)  # 21:30 UTC, before the order's own expiry
     starts = STARTS | {2026020053: moved}
     clock.at = moved - timedelta(minutes=10)
-    assert pm.reconcile(record, client, clock, starts=starts).cancelled == 0
+    assert pm.reconcile(record, client, clock, starts).cancelled == 0
     exchange.fill("order-1", "1.00", "0.4700", "0.017500", moved - timedelta(minutes=20))
     clock.at = moved - timedelta(minutes=4)  # past the new deadline, 5 minutes before
-    report = pm.reconcile(record, client, clock, starts=starts)
+    report = pm.reconcile(record, client, clock, starts)
     assert report.cancelled == 1 and report.finalized == 1
     assert exchange.orders["order-1"]["status"] == "canceled"
     final = json.loads(record.get(pm.order_key("live", pf.DAY, 2026020053, "final")))
@@ -399,7 +399,7 @@ def test_fills_not_yet_listed_wait_for_the_next_run(tmp_path: Path) -> None:
     for order_id in exchange.orders:
         exchange.expire(order_id)
     clock.at = pf.START + timedelta(hours=4)
-    report = pm.reconcile(record, client, clock)
+    report = pm.reconcile(record, client, clock, STARTS)
     assert report.waiting == 1 and report.finalized == 2
     exchange.fills["order-1"] = [
         {
@@ -409,32 +409,32 @@ def test_fills_not_yet_listed_wait_for_the_next_run(tmp_path: Path) -> None:
             "fee_cost": "0.0175",
         }
     ]
-    later = pm.reconcile(record, client, clock)
+    later = pm.reconcile(record, client, clock, STARTS)
     assert later.finalized == 1 and later.entries == 1
 
 
 def test_a_final_record_is_written_once(tmp_path: Path) -> None:
     record, _, client, clock = finish(tmp_path)
-    assert pm.reconcile(record, client, clock).finalized == 3
-    again = pm.reconcile(record, client, clock)
+    assert pm.reconcile(record, client, clock, STARTS).finalized == 3
+    again = pm.reconcile(record, client, clock, STARTS)
     assert again.finalized == 0 and again.entries == 0
 
 
 def test_the_switch_off_cancels_resting_orders(tmp_path: Path) -> None:
     record, exchange, client, clock, _ = placed(tmp_path)
     clock.at = EXPIRES - timedelta(hours=1)
-    report = pm.reconcile(record, client, clock, cancel=True)
+    report = pm.reconcile(record, client, clock, STARTS, cancel=True)
     assert report.cancelled == 3
     assert {o["status"] for o in exchange.orders.values()} == {"canceled"}
     # each is final once its expiry has passed, unfilled
     clock.at = pf.START + timedelta(hours=4)
-    assert pm.reconcile(record, client, clock).finalized == 3
+    assert pm.reconcile(record, client, clock, STARTS).finalized == 3
 
 
 def test_an_order_still_resting_after_its_expiry_is_cancelled(tmp_path: Path) -> None:
     record, _, client, clock, _ = placed(tmp_path)
     clock.at = EXPIRES + pm.GRACE
-    report = pm.reconcile(record, client, clock)
+    report = pm.reconcile(record, client, clock, STARTS)
     # the two 23:30 games' orders; the 02:00 game's still rests before its own expiry
     assert report.cancelled == 2 and report.finalized == 2 and report.resting == 1
 
@@ -446,7 +446,7 @@ def test_demo_orders_are_kept_apart_and_never_enter_the_record(tmp_path: Path) -
     for order_id in exchange.orders:
         exchange.expire(order_id)
     clock.at = pf.START + timedelta(hours=4)
-    assert pm.reconcile(record, client, clock).entries == 0
+    assert pm.reconcile(record, client, clock, STARTS).entries == 0
     assert not record.keys(f"{rl.PREFIX}/entries")
 
 
@@ -465,7 +465,7 @@ def test_the_orders_table_holds_every_state(tmp_path: Path) -> None:
     for order_id in exchange.orders:
         exchange.expire(order_id)
     clock.at = pf.START + timedelta(hours=4)
-    pm.reconcile(record, client, clock)
+    pm.reconcile(record, client, clock, STARTS)
     final = pm.table(record)
     assert final["status"].to_list() == ["not sent", "canceled", "canceled"]
     assert final["filled"].to_list() == [None, 1.0, 0.0]
@@ -482,7 +482,7 @@ def test_the_messages_give_the_orders_and_the_fills(tmp_path: Path) -> None:
     for order_id in exchange.orders:
         exchange.expire(order_id)
     clock.at = pf.START + timedelta(hours=4)
-    fills = pm.fills_message(pm.LIVE, pm.reconcile(record, client, clock))
+    fills = pm.fills_message(pm.LIVE, pm.reconcile(record, client, clock, STARTS))
     assert fills is not None and "2026-10-07 WSH: 1.00 of" in fills
     assert "2026-10-07 WPG: nothing filled" in fills
 
