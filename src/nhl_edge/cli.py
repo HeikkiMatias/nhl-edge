@@ -44,8 +44,8 @@ real_app = typer.Typer(
 )
 app.add_typer(real_app, name="real")
 kalshi_app = typer.Typer(
-    help="Kalshi's order book of the alerted real bets' markets, kept privately for the owner's "
-    "own orders (#282).",
+    help="Kalshi for the owner's own orders: the alerted real bets' order books, kept privately "
+    "(#282), and the trading API's key check (#286).",
     no_args_is_help=True,
 )
 app.add_typer(kalshi_app, name="kalshi")
@@ -4792,3 +4792,37 @@ def kalshi_replay(
         f"fetched after the start, {len(report.unparsed)} unparsed, "
         f"{len(report.incomplete)} incomplete"
     )
+
+
+@kalshi_app.command("check")
+def kalshi_check(
+    env: Annotated[
+        str, typer.Option(help="demo (Kalshi's demo exchange, mock funds) or live.")
+    ] = "demo",
+    mirror_raw: Annotated[
+        bool,
+        typer.Option(help="Mirror the raw responses to R2 (needs the R2_* variables)."),
+    ] = False,
+) -> None:
+    """Prove a Kalshi API key and the order path (#286): read the balance, place a post-only bid
+    of 1 contract at 1¢ on an open NHL market whose Yes ask is at least 10¢, so it can't fill,
+    read it back, cancel it and read it again. The order expires by itself after 2 minutes should
+    the cancel fail. Only the steps are printed: the responses are stored raw, since run logs are
+    public."""
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.live import kalshi_trade as kt
+    from nhl_edge.settings import MissingSettingError, load_env
+
+    if env not in kt.ENVS:
+        raise typer.BadParameter(f"one of {', '.join(kt.ENVS)}", param_hint="--env")
+    load_env()
+    store = RawStore.from_env(mirror=mirror_raw)
+    try:
+        report = kt.check(kt.KalshiTrade.from_env(env, store), typer.echo)
+    except (kt.KalshiTradeError, MissingSettingError) as exc:
+        typer.echo(f"kalshi check {env}: failed ({exc})", err=True)
+        raise typer.Exit(code=1) from None
+    if not report.passed:
+        typer.echo(f"kalshi check {env}: failed", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"kalshi check {env}: passed")

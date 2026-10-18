@@ -16,6 +16,7 @@ The fixed list of sources and endpoints. Work from this file instead of guessing
 | [Daily Faceoff](https://www.dailyfaceoff.com/starting-goalies) | Projected lines, power play units, starting goalie status with report time and source | Web pages only; robots.txt allows them and disallows `/api/`; no terms of use found (2026-09-29) | Starting goalies logged at every goalie poll (#48), compared with the NHL's in the audit; other pages manual reference only |
 | [RotoWire](https://www.rotowire.com/hockey/starting-goalies.php) | Projected lines and starting goalies | Terms forbid scraping and any automated access without written consent | Manual reference only; never automated |
 | [Kalshi](https://docs.kalshi.com/api-reference/market/get-market-orderbook) order book | The resting Yes and No bids of an NHL moneyline market: price levels with their contracts, live only | Public API, no key; token-bucket rate limits, exponential backoff on 429. The [Developer Agreement](https://kalshi-public-docs.s3.amazonaws.com/Kalshi-Developer-Agreement.pdf) allows it only for a member's own trading, kept private (3.1) | The owner's own resting orders (#281): only the alerted bets' markets, kept in the lake and R2 only, never a model input and never published (#282) |
+| [Kalshi trading API](https://docs.kalshi.com/getting_started/api_keys) | The owner's own account: balance, orders, fills and settlements, on the demo exchange (mock funds) or the live one | Requests signed with the owner's API key, one per environment, held in repository secrets only; the same Developer Agreement | Placing and recording the owner's real bets (#281); for now only the key check (#286) |
 | Static files you create | Arena coordinates and time zones, team abbreviation history, coach tenures | One-off CSVs in the repo | Travel, rest and coach-change features |
 
 ## Endpoints
@@ -56,6 +57,15 @@ Telegram Bot API (api.telegram.org), outbound only: the owner's real-bets alert 
 
 Kalshi (api.elections.kalshi.com/trade-api/v2), public, no key: the alerted bets' markets only (#282)
   GET /markets/{ticker}/orderbook         # ticker KXNHLGAME-{YY}{MON}{DD}{AWAY}{HOME}-{TEAM}
+
+Kalshi trading API (external-api.kalshi.com/trade-api/v2; the demo exchange at
+external-api.demo.kalshi.co/trade-api/v2), each request signed with the owner's key (#286)
+  GET    /portfolio/balance
+  GET    /markets?series_ticker=KXNHLGAME&status=open    GET /markets/{ticker}
+  POST   /portfolio/events/orders         # a limit bid: ticker, client_order_id, count, price
+  GET    /portfolio/orders/{order_id}     GET /portfolio/orders?ticker=
+  DELETE /portfolio/events/orders/{order_id}?market_ticker=
+  GET    /portfolio/fills?order_id=       GET /portfolio/settlements?ticker=
 ```
 
 ## Access rules
@@ -435,6 +445,37 @@ ADR 0039 bets the frozen policy's paper bets with real money, beside the paper l
   - `nhl kalshi replay [--recent N] [--r2]` rebuilds the table from the stored responses only, never calling Kalshi. Its counts come from Kalshi's data, so it is run by hand, never in a workflow.
   - `books_before(books, at)` gives what an order placed at `at` could have seen: the rows observed strictly before it (hard rule 1).
 - **Role:** the owner's own resting orders only (#281). It is never a model input, and no feature or model code reads it (`tests/leakage/test_kalshi_books.py` checks). Before #281 sets a Kalshi price beside a model's probability, it checks that the market settles on the full game, OT and shootout included (hard rule 2).
+
+## Kalshi trading API (#286)
+
+The owner bets on Kalshi automatically through its trading API (the owner's decision, 2026-10-18; #281 builds the placement). `live/kalshi_trade.py` is the signed client; for now its only use is `nhl kalshi check`.
+
+- **Environments:** Kalshi's demo exchange, with mock funds, and the live one. They are separate accounts with separate keys. The demo exchange lists the same `KXNHLGAME` markets and tickers.
+- **Keys:** an API key is an Ed25519 (recommended) or RSA key pair, created under Account settings → API Keys. Kalshi keeps the public key; the private key is shown once.
+  - The key id and the private key's PEM text go into repository secrets only: `KALSHI_DEMO_KEY_ID` and `KALSHI_DEMO_PRIVATE_KEY`, or `KALSHI_KEY_ID` and `KALSHI_PRIVATE_KEY`. On a laptop they go into `.env`.
+  - A key pasted as one line, with its newlines written as `\n`, is read the same.
+  - Nothing stores, prints or commits a key.
+- **Signing** ([API Keys](https://docs.kalshi.com/getting_started/api_keys)): each request carries `KALSHI-ACCESS-KEY` (the key id), `KALSHI-ACCESS-TIMESTAMP` (milliseconds) and `KALSHI-ACCESS-SIGNATURE`. The signature is the base64 signature of timestamp + method + path, with the path from the host (`/trade-api/v2/...`) and no query.
+  - An Ed25519 key signs that text.
+  - An RSA key uses RSA-PSS over SHA-256, with MGF1 SHA-256 and a salt of the digest's length.
+- **Orders** ([Create Order (V2)](https://docs.kalshi.com/api-reference/orders/create-order-v2)): `side: bid` buys Yes at a limit `price` in dollars, for `count` contracts in steps of 0.01.
+  - `time_in_force: good_till_canceled` with an `expiration_time` (unix seconds) rests the order until then. `cancel_order_on_pause` cancels it if trading pauses, and `post_only` refuses an order that would fill at once.
+  - A repeated `client_order_id` is refused with 409. The client reads that order back instead of sending another, so a retry or a rerun never places a bet twice.
+  - Order status is `resting`, `canceled` or `executed`. The order carries its fill count, its taker and maker fill costs and its fees. Its fills carry each count, price, fee, time and `is_taker`.
+- **Fees** ([Fee Rounding](https://docs.kalshi.com/getting_started/fee_rounding)): the fee schedule's taker fee is 0.07 × C × P × (1 − P), and a maker pays a quarter of that on markets with maker fees. A direct member's balance is aligned to $0.0001, and a fee accumulator keeps an order's total close to one equivalent fill.
+- **Limits:** the Basic tier refills 200 read and 100 write tokens a second, and most calls cost 10. The client waits at least 0.25 seconds between requests. It retries a 429, a 5xx or a dropped connection after 1, 2, 4 and 8 seconds, at most 5 tries, signing each try afresh. Any other status is an error at once.
+- **Raw:** every response is stored untouched as `kalshi/trade/<env>/<UTC date>/<stamp>_<request n>_<call>_<try>`, mirrored to R2's `raw/kalshi/` with `--mirror-raw`.
+  - The sidecar holds the call, method, path, query, the body sent, the status and the try.
+  - It never holds a header, so never the key or a signature.
+- **Logs:** run logs are public. A run prints its steps and counts only, never a market, price, size, order id or the balance, and an error names only its call and status.
+- **`nhl kalshi check --env demo|live [--mirror-raw]`:** proves a key and the order path.
+  - It reads the balance.
+  - It places a post-only bid of 1 contract at 1¢ on the open NHL market with the highest Yes ask, at least 10¢, so the bid can't fill.
+  - It reads the order back, cancels it and reads it again.
+  - The order also expires by itself after 2 minutes, should the cancel fail.
+  - It passes when the balance was read, the order rested and the cancel held.
+  - The live check needs a balance of at least a few cents.
+- **When:** `kalshi-check.yml`, dispatched by the owner with `env` demo or live. It passes only the chosen environment's key.
 
 ## Odds snapshots
 
