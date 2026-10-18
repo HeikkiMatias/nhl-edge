@@ -62,8 +62,11 @@ class Exchange:
             {"ticker": TICKER, "yes_ask_dollars": "0.6100"},
             {"ticker": OTHER, "yes_ask_dollars": "0.4100"},
         ]
-        # a market's status by ticker, "active" when not set
+        # a market's status by ticker, "active" when not set, and fields every market read
+        # serves beside it, such as its prices
         self.status: dict[str, str] = {}
+        self.market_fields: dict[str, Any] = {}
+        self.markets_served: list[dict[str, Any]] = []
         self.balance_cents = 5000
         # status codes to answer before the route, one per request
         self.fail: list[int] = []
@@ -96,6 +99,8 @@ class Exchange:
         if path.startswith("/markets/"):
             ticker = path.removeprefix("/markets/")
             market = {"ticker": ticker, "status": self.status.get(ticker, "active")}
+            market |= self.market_fields
+            self.markets_served.append(market)
             return httpx.Response(200, json={"market": market})
         if path == "/portfolio/events/orders" and request.method == "POST":
             return self._create(json.loads(request.content))

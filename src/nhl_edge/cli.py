@@ -4695,6 +4695,25 @@ def _send_quietly(text: str | None) -> bool:
     return False
 
 
+def _listed_starts(days: Any, mirror: bool) -> "dict[int, datetime] | None":
+    """Each game's start as the NHL's schedule lists it now, for the given game dates (ET), or
+    None when the schedule couldn't be read. The responses are stored raw, as every fetch is."""
+    import httpx
+
+    from nhl_edge.ingest.nhl_api import NhlApi, NhlApiError
+    from nhl_edge.lake.raw import RawStore
+
+    api = NhlApi(RawStore.from_env(mirror=mirror, flag="--r2"))
+    starts: dict[int, datetime] = {}
+    try:
+        for day in sorted(set(days)):
+            starts |= {game.game_id: game.start_utc for game in api.schedule(day)}
+    except (NhlApiError, httpx.HTTPError, OSError) as exc:
+        typer.echo(f"::warning::the NHL schedule couldn't be read ({type(exc).__name__})")
+        return None
+    return starts
+
+
 @real_app.command("place")
 def real_place(
     r2: Annotated[
@@ -4787,9 +4806,14 @@ def real_place(
                 f"{plan.effective:.3f}), expires {plan.expires_utc:%H:%M} UTC"
             )
         return
+    # Each game's start now, as the schedule lists it: a game moved since the alert gets no order,
+    # and nor does any while the schedule can't be read.
+    starts = _listed_starts({plan.game_date for plan in planned}, r2) if planned else {}
     try:
         trade = kt.KalshiTrade.from_env(setting, RawStore.from_env(mirror=r2, flag="--r2"))
-        report = placement.place(store, trade, planned, lambda: datetime.now(UTC), code_version)
+        report = placement.place(
+            store, trade, planned, lambda: datetime.now(UTC), code_version, starts or {}
+        )
     except (kt.KalshiTradeError, MissingSettingError) as exc:
         typer.echo(f"kalshi orders {setting}: failed ({exc})", err=True)
         raise typer.Exit(code=1) from None
@@ -4830,16 +4854,25 @@ def real_orders(
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from None
     raw = RawStore.from_env(mirror=r2, flag="--r2")
-    failed = False
+    trades = {}
     for env in kt.ENVS:
         try:
-            trade = kt.KalshiTrade.from_env(env, raw)
+            trades[env] = kt.KalshiTrade.from_env(env, raw)
         except MissingSettingError:
             typer.echo(f"kalshi orders {env}: no key set, skipped")
-            continue
+    # Each pending order's game start now, so an order resting into a game moved earlier is
+    # cancelled; without the schedule, the alerts' starts stand.
+    days = {day for env in trades for day in placement.pending_dates(store, env)}
+    starts = _listed_starts(days, r2) if days else {}
+    failed = False
+    for env, trade in trades.items():
         try:
             report = placement.reconcile(
-                store, trade, lambda: datetime.now(UTC), cancel=cancel or env != setting
+                store,
+                trade,
+                lambda: datetime.now(UTC),
+                cancel=cancel or env != setting,
+                starts=starts,
             )
         except kt.KalshiTradeError as exc:
             typer.echo(f"kalshi orders {env}: failed ({exc})", err=True)

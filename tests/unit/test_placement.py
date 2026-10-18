@@ -32,6 +32,12 @@ REAL_DAY = rl.Mode(rl.REAL, rf.ALERT.date())
 PLACED_AT = rf.ALERT + timedelta(minutes=3)
 EXPIRES = pf.START - timedelta(minutes=5)
 WSH = "KXNHLGAME-26OCT07PITWSH-WSH"
+# Each game's start as the schedule lists it when the orders go: the alert's, and the made-up
+# games the cap tests add.
+STARTS = {game_id: game[2] for game_id, game in pf.GAMES.items()} | {
+    2026020098: pf.START,
+    2026020099: pf.START,
+}
 
 
 class Clock:
@@ -56,7 +62,7 @@ def placed(
     record, exchange, clock = store(), Exchange(), Clock()
     client, _ = trade(tmp_path, exchange, env=setting, now=clock)
     planned = pm.plans(real_rows() if rows is None else rows, setting)
-    report = pm.place(record, client, planned, clock, rf.CODE)
+    report = pm.place(record, client, planned, clock, rf.CODE, STARTS)
     return record, exchange, client, clock, report
 
 
@@ -155,13 +161,13 @@ def test_the_record_is_written_before_the_create_reaches_kalshi(tmp_path: Path) 
         return create(body)
 
     exchange._create = checked  # type: ignore[method-assign]
-    pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE)
+    pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
     assert seen == [True, True, True]
 
 
 def test_a_rerun_sends_nothing_for_an_order_already_placed(tmp_path: Path) -> None:
     record, exchange, client, clock, _ = placed(tmp_path)
-    again = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE)
+    again = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
     assert again.already == 3 and again.placed == 0
     assert len(exchange.orders) == 3
 
@@ -182,17 +188,17 @@ def test_a_create_that_reached_kalshi_before_failing_is_found_on_the_rerun(tmp_p
 
     exchange._create = failing  # type: ignore[method-assign]
     with pytest.raises(KalshiTradeError):
-        pm.place(record, client, planned, clock, rf.CODE)
+        pm.place(record, client, planned, clock, rf.CODE, STARTS)
     assert len(exchange.orders) == 1 and tries["n"] == 5
     exchange._create = create  # type: ignore[method-assign]
-    again = pm.place(record, client, planned, clock, rf.CODE)
+    again = pm.place(record, client, planned, clock, rf.CODE, STARTS)
     assert again.placed == 1 and again.existed == 1 and len(exchange.orders) == 1
 
 
 def test_an_order_too_close_to_its_expiry_is_skipped(tmp_path: Path) -> None:
     record, exchange, clock = store(), Exchange(), Clock(EXPIRES - timedelta(seconds=30))
     client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
-    report = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE)
+    report = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
     # the two games at 23:30 UTC are skipped, the one at 02:00 goes
     assert report.placed == 1 and report.skipped == {"too close to the start": 2}
     assert [o["ticker"] for o in exchange.orders.values()] == ["KXNHLGAME-26OCT07EDMANA-ANA"]
@@ -204,7 +210,7 @@ def test_a_market_that_isnt_open_is_skipped(tmp_path: Path) -> None:
     record, exchange, clock = store(), Exchange(), Clock()
     exchange.status[WSH] = "closed"
     client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
-    report = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE)
+    report = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
     assert report.placed == 2 and report.skipped == {"the market isn't open": 1}
 
 
@@ -213,7 +219,7 @@ def test_an_order_over_the_bet_cap_is_never_sent(tmp_path: Path) -> None:
     client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
     planned = pm.plans(real_rows(), pm.LIVE)
     over = dataclasses.replace(planned[0], max_cost_usd=Decimal("1.7500"))  # 1.5% is $1.74
-    report = pm.place(record, client, [over, *planned[1:]], clock, rf.CODE)
+    report = pm.place(record, client, [over, *planned[1:]], clock, rf.CODE, STARTS)
     assert report.skipped == {"over the bet cap": 1} and report.placed == 2
 
 
@@ -224,7 +230,7 @@ def test_orders_over_the_day_cap_are_never_sent(tmp_path: Path) -> None:
     # 5% of 100 € at 1.16 is $5.80; four orders of $1.70 each go over it
     big = [dataclasses.replace(p, max_cost_usd=Decimal("1.70")) for p in planned]
     extra = dataclasses.replace(big[0], game_id=2026020099, client_order_id="other")
-    report = pm.place(record, client, [*big, extra], clock, rf.CODE)
+    report = pm.place(record, client, [*big, extra], clock, rf.CODE, STARTS)
     assert report.skipped == {"over the day cap": 4} and not exchange.orders
 
 
@@ -237,7 +243,7 @@ def test_the_day_cap_counts_the_orders_an_earlier_run_placed(tmp_path: Path) -> 
         )
         for game_id, cost in ((2026020098, Decimal("1.74")), (2026020099, Decimal("1.74")))
     ]
-    report = pm.place(record, client, [*planned, *late], clock, rf.CODE)
+    report = pm.place(record, client, [*planned, *late], clock, rf.CODE, STARTS)
     # the two new ones alone, $3.48, are within $5.80; with the three placed before they aren't
     assert sum(p.max_cost_usd for p in planned) + Decimal("3.48") > Decimal("5.80")
     assert report.skipped == {"over the day cap": 2} and len(exchange.orders) == 3
@@ -247,7 +253,7 @@ def test_orders_the_balance_doesnt_cover_are_never_sent(tmp_path: Path) -> None:
     record, exchange, clock = store(), Exchange(), Clock()
     exchange.balance_cents = 100
     client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
-    report = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE)
+    report = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
     assert report.skipped == {"the balance doesn't cover the orders": 3} and not exchange.orders
 
 
@@ -315,7 +321,7 @@ def test_an_order_never_sent_is_missed_once_it_would_have_expired(tmp_path: Path
     record, exchange, clock = store(), Exchange(), Clock()
     exchange.status[WSH] = "closed"
     client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
-    pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE)
+    pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
     clock.at = pf.START + timedelta(hours=4)
     for order_id in exchange.orders:
         exchange.expire(order_id)
@@ -326,13 +332,65 @@ def test_an_order_never_sent_is_missed_once_it_would_have_expired(tmp_path: Path
     assert wsh["outcome"] == rl.NOT_PLACED and wsh["reason"] == pm.MISSED
 
 
-def test_a_fill_at_the_start_is_flagged_and_gets_no_entry(tmp_path: Path) -> None:
+def test_a_fill_at_the_start_is_kept_apart_and_never_the_bets(tmp_path: Path) -> None:
     record, _, client, clock = finish(tmp_path, [("1.00", "0.4700", "0.017500", pf.START)])
     report = pm.reconcile(record, client, clock)
-    assert report.after_start == 1 and report.entries == 2
-    assert 2026020053 not in {e["game_id"] for e in rl.entries(record)}
+    assert report.after_start == 1 and report.entries == 3
     final = json.loads(record.get(pm.order_key("live", pf.DAY, 2026020053, "final")))
-    assert final["after_start"] is True
+    assert final["after_start"] is True and final["contracts"] == "0.00"
+    assert final["after_start_contracts"] == "1.00"
+    wsh = next(e for e in rl.entries(record) if e["game_id"] == 2026020053)
+    assert wsh["outcome"] == rl.NOT_PLACED and wsh["reason"] == pm.NOT_MATCHED
+    assert "1.00 contracts filled at or after the start, not in the record" in str(
+        pm.fills_message(pm.LIVE, report)
+    )
+
+
+def test_only_the_fills_before_the_start_are_the_bet(tmp_path: Path) -> None:
+    before = pf.START - timedelta(hours=1)
+    record, _, client, clock = finish(
+        tmp_path,
+        [
+            ("1.00", "0.4700", "0.017500", before),
+            ("0.50", "0.4500", "0.008700", pf.START + timedelta(minutes=1)),
+        ],
+    )
+    pm.reconcile(record, client, clock)
+    wsh = next(e for e in rl.entries(record) if e["game_id"] == 2026020053)
+    cost = Decimal("0.47") + Decimal("0.0175")
+    assert wsh["outcome"] == rl.PLACED and wsh["placed_utc"] == before.isoformat()
+    assert wsh["matched_price"] == round(float(1 / cost), 3)
+    assert wsh["stake"] == round(float(cost) / 1.16, 2)
+
+
+def test_a_game_whose_start_moved_or_isnt_listed_gets_no_order(tmp_path: Path) -> None:
+    record, exchange, clock = store(), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    starts = STARTS | {2026020053: pf.START - timedelta(hours=1)}
+    starts.pop(2026020054)
+    report = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, starts)
+    assert report.placed == 1 and report.skipped == {
+        "the game's start moved": 1,
+        "the game's start couldn't be checked": 1,
+    }
+    assert [o["ticker"] for o in exchange.orders.values()] == ["KXNHLGAME-26OCT07EDMANA-ANA"]
+
+
+def test_a_resting_order_of_a_game_moved_earlier_is_cancelled_at_its_new_deadline(
+    tmp_path: Path,
+) -> None:
+    record, exchange, client, clock, _ = placed(tmp_path)
+    moved = pf.START - timedelta(hours=2)  # 21:30 UTC, before the order's own expiry
+    starts = STARTS | {2026020053: moved}
+    clock.at = moved - timedelta(minutes=10)
+    assert pm.reconcile(record, client, clock, starts=starts).cancelled == 0
+    exchange.fill("order-1", "1.00", "0.4700", "0.017500", moved - timedelta(minutes=20))
+    clock.at = moved - timedelta(minutes=4)  # past the new deadline, 5 minutes before
+    report = pm.reconcile(record, client, clock, starts=starts)
+    assert report.cancelled == 1 and report.finalized == 1
+    assert exchange.orders["order-1"]["status"] == "canceled"
+    final = json.loads(record.get(pm.order_key("live", pf.DAY, 2026020053, "final")))
+    assert final["start_utc"] == moved.isoformat() and final["contracts"] == "1.00"
 
 
 def test_fills_not_yet_listed_wait_for_the_next_run(tmp_path: Path) -> None:
@@ -344,7 +402,12 @@ def test_fills_not_yet_listed_wait_for_the_next_run(tmp_path: Path) -> None:
     report = pm.reconcile(record, client, clock)
     assert report.waiting == 1 and report.finalized == 2
     exchange.fills["order-1"] = [
-        {"count_fp": "1.00", "created_time": PLACED_AT.isoformat(), "fee_cost": "0.0175"}
+        {
+            "count_fp": "1.00",
+            "yes_price_dollars": "0.4700",
+            "created_time": PLACED_AT.isoformat(),
+            "fee_cost": "0.0175",
+        }
     ]
     later = pm.reconcile(record, client, clock)
     assert later.finalized == 1 and later.entries == 1
@@ -394,7 +457,7 @@ def test_the_orders_table_holds_every_state(tmp_path: Path) -> None:
     record, exchange, clock = store(), Exchange(), Clock()
     exchange.status[WSH] = "closed"
     client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
-    pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE)
+    pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
     exchange.fill("order-1", "1.00", "0.4700", "0.017500", PLACED_AT)
     built = pm.table(record)
     RealOrders.validate(built)
@@ -464,6 +527,7 @@ def commands(
         classmethod(lambda cls, env, raw: trade(tmp_path / env, exchange, env=env, now=clock)[0]),
     )
     monkeypatch.setattr("nhl_edge.backtest.reports.version", lambda name, now: rf.CODE)
+    monkeypatch.setattr(cli, "_listed_starts", lambda days, mirror: STARTS)
 
     class Day(datetime):
         @classmethod
@@ -558,3 +622,17 @@ def test_nhl_real_orders_skips_an_environment_without_its_key(
     assert result.exit_code == 0, result.output
     assert "kalshi orders demo: no key set, skipped" in result.output
     assert "kalshi orders live: no key set, skipped" in result.output
+
+
+def test_nhl_real_place_without_the_schedule_places_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nhl_edge import cli
+
+    _, exchange, _, _ = commands(tmp_path, monkeypatch, "live", real_rows())
+    monkeypatch.setattr(cli, "_listed_starts", lambda days, mirror: None)
+    result = runner.invoke(app, ["real", "place", "--r2"])
+    assert result.exit_code == 0, result.output
+    assert "3 planned, 0 placed" in result.output
+    assert "3 the game's start couldn't be checked" in result.output
+    assert not exchange.orders

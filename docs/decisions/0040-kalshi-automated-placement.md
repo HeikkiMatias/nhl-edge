@@ -24,7 +24,7 @@
 2. **Fill now:** a limit order at the ask, cancelled if not filled at once. It never rests, so it misses fills a resting order would get.
 3. **A limit buy at the limit price L, resting until shortly before the start (the owner's choice):**
    - it fills at once from any ask at or below L, and what is left rests;
-   - #281's private measurement on 2026-11-09 shows whether the resting part's fills are worth it, and can amend where it rests.
+   - #281's private measurement on 2026-11-09 shows whether the resting part's fills are worth it. It can amend only the execution: where the order rests, or fill-now. That would be a new ADR, with the real record split at its date. Never p, the hurdle, the selection, the staking or the limit's formula, which the live games must not tune.
 4. **Post-only at the bid:** the maker fee only, but no fill while the price doesn't come down, and the most adverse selection.
 
 ## Decision: option 3 (proposed)
@@ -33,11 +33,14 @@
    - **Its terms:** a limit buy of Yes on the bet's team (`side: bid`), `good_till_canceled` with `expiration_time` 5 minutes before the listed start, and `cancel_order_on_pause` set.
    - **Its expiry** keeps every fill pre-game, since the market stays open during the game.
    - **Never after the start:** an order is never sent within a minute of its expiry.
-   - **A fill at or after the start**, which the expiry rules out, gets no entry and is flagged for a correction.
+   - **A moved game (the leakage audit):** an order goes only while the game's start, as the NHL's schedule lists it then, is still the alert's.
+     - Each later run reads the schedule again. A game moved earlier moves the order's deadline with it, and the order is cancelled once that deadline has passed.
+     - Without the schedule, no order goes.
+   - **A fill at or after the start**, the earlier of the alert's and the schedule's, which the expiry rules out, is kept apart, flagged, and never the bet's (hard rule 2).
 2. **The limit L (hard rule 4):**
    - L is the highest whole cent at which the order, sized as in item 3, still clears the bet's hurdle at its effective price: p × C / cost − 1 ≥ hurdle, where cost = C × L + the taker fee rounded up to $0.0001.
    - The taker fee is the worst case, and the cost of one contract rises with its price. So every fill at or below L, maker or taker, clears the hurdle and the stake rule.
-   - L is computed from the alert's own numbers only. No Kalshi price is an input, and none is read before the order.
+   - L is computed from the alert's own numbers only. No Kalshi price is an input: before an order, placement uses only the market's status from Kalshi, and the balance as a check.
 3. **The size (amends item 4):**
    - **The stake:** the stake rule's euro stake at L's effective price, from the alert's stake table (`real_ledger.stake_tables`, unchanged), in USD at the owner's deposit rate.
    - **The contracts:** that amount divided by one contract's cost, rounded down to 0.01 contracts.
@@ -63,7 +66,7 @@
    - the practice alert stays in decimal until the start;
    - the practice days' orders go to the demo exchange, recorded apart (`real/demo/`), never in the practice or real record.
    - The demo run before the start, the live key check (`nhl kalshi check --env live`) and Codex's reviews are the review item 6 asks for.
-9. **The record:** once an order has expired, its fills become the bet's entry (`real/live/entries/`), with the fields the dashboard's form writes:
+9. **The record:** once an order's deadline has passed, its fills before the start become the bet's entry (`real/live/entries/`), with the fields the dashboard's form writes. The entry is mechanical, written by the pipeline, never by hand, so no result can shape it:
    - **placed:**
      - matched price = contracts ÷ total cost, fees included;
      - stake = total cost ÷ rate;
@@ -97,7 +100,7 @@ None, and none is possible: Kalshi's history isn't ours to use (#280, the Develo
 
 ## Revisit when
 
-- #281's private measurement (2026-11-09) suggests a different resting price, or fill-now.
+- #281's private measurement (2026-11-09) suggests a different resting price, or fill-now. That would be an execution-only amendment, in a new ADR.
 - Kalshi changes its fees, its contract or its API.
 - A fill comes at or after a start, or the nightly check finds the record and Kalshi apart.
 - A stop rule fires, or the formal review on 2027-04-12.

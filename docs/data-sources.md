@@ -487,6 +487,7 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - **`demo`:** every alerted bet, practice or real, goes to Kalshi's demo exchange at the demo rules (`real.DEMO_EXCHANGE`), recorded under `real/demo/`, never in the practice or real record.
   - **`live`:** the real days' alerted bets go to the live exchange, from their alert rows' orders. These exist only once the venue is Kalshi's (`real.VENUE`).
 - **`nhl real place --r2 [--cron]`:** at the midday slot, right after `nhl real alert`. Each planned order is written once to R2 (`real/<live|demo>/orders/<date>/<game_id>.json`), then checked:
+  - the game's start, as the NHL's schedule lists it now (`/v1/schedule/{date}`, fetched fresh and stored raw), is still the alert's. Without the schedule, no order goes;
   - its expiry is at least a minute away;
   - its most cost is within 1.5% of the bankroll, and the day's orders, earlier runs' included, within 5%;
   - the balance covers the orders;
@@ -496,18 +497,19 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
 - **The order:** a limit buy of Yes at the alert's limit, `good_till_canceled` with `expiration_time` 5 minutes before the start, and `cancel_order_on_pause`. It fills at once from asks at or below the limit, and the rest rests until it expires.
 - **`nhl real orders --r2 [--cancel]`:** at every odds slot and in the nightly job, for each environment whose key is set.
   - An environment the switch doesn't name has its resting orders cancelled first, and so does every environment with `--cancel` (`kalshi-cancel.yml`, the manual kill switch).
-  - A resting order is counted. One still resting 2 minutes after its expiry is cancelled.
-  - Once an order has expired, it is read with its fills and written once (`...-final.json`): the contracts, the cost and fees in USD, the first fill's time, and whether a fill came at or after the start. An order whose fills don't add up yet waits for the next run.
+  - **The deadline:** an order's deadline is its expiry, or earlier when the schedule, read again, lists its game earlier than the alert did. Without the schedule, the alert's start stands.
+  - **A resting order** is counted. One past a moved game's deadline is cancelled, and so is one still resting 2 minutes after its own expiry.
+  - **The final record:** once an order's deadline has passed, it is read with its fills and written once (`...-final.json`). It holds the bet, which is the fills before the start (the earlier of the alert's and the schedule's), with their contracts, cost and fees in USD and the first fill's time. Fills at or after the start are kept apart with their count and cost, flagged, and never the bet's. An order whose fills don't add up yet waits for the next run.
   - On the live exchange the bet's entry follows (`real/live/entries/`):
     - placed, at contracts ÷ cost and cost ÷ rate in euros, with Kalshi's order id and the first fill's time, and never late;
-    - not placed, "not matched", when nothing filled;
+    - not placed, "not matched", when nothing filled before the start;
     - not placed, "missed it", when no order went.
 
-    A fill at or after the start gets no entry, only a warning, and waits for `nhl real correct`.
+    A fill at or after the start also raises a warning in the log and the owner's message.
   - The lake's `real_orders` is rebuilt from the records.
 - **`nhl real place --dry-run --date <d> [--env demo|live]`:** prints a day's orders with their prices and sends nothing. It is for the owner's terminal only, never a workflow.
 - **Logs and messages:** a run prints counts only. The orders placed and the fills go to the owner's Telegram, a demo one marked "DEMO, mock funds".
-- **Inputs:** an order is built from the day's alert only. No Kalshi price is read for it: the market's status is the only thing checked (`tests/leakage/test_kalshi_orders.py`).
+- **Inputs:** an order is built from the day's alert only. No Kalshi price is an input: of the market's data only its status is used (`tests/leakage/test_kalshi_orders.py`, which also checks that no model package reads the real record or the orders).
 
 ## Odds snapshots
 

@@ -15,24 +15,27 @@ market (ingest/kalshi.ticker) with a client order id derived from its environmen
 game and policy, so a retry or a rerun is the same order, which Kalshi refuses twice (409).
 
 **Before each order** (place), all of these hold, or nothing is sent and the record says why:
+- the game's start, as the schedule lists it now, is still the alert's (leakage audit of #281: an
+  order resting into a game moved earlier would fill during it);
 - the order expires at least LEAD from now, its game's start less the exchange's expire_before;
-- the market is active;
-- its most cost is within the frozen policy's max_bet of the bankroll, and the run's orders
-  together within max_day;
-- the balance covers them.
+- its most cost is within the frozen policy's max_bet of the bankroll, and the day's orders
+  together, an earlier run's included, within max_day;
+- the balance covers them;
+- the market is active.
 
 Each planned order is written to the record (orders/<date>/<game_id>.json) before any check, a
 skipped one's reason after its check (...-skipped.json), and Kalshi's order id once it is sent
 (...-placed.json). A rerun sends nothing for an order already placed.
 
-**After its expiry** (reconcile), the order is read with its fills and written once
-(...-final.json). A fill at or after its game's start, which the expiry rules out, is flagged and
-gets no entry: it waits for a correction (nhl real correct). Otherwise, on the live exchange, the
-bet's entry in the real record follows (real/live/entries/), as the dashboard's form would write
-it:
+**Its deadline** is its expiry, or earlier if the schedule moves its game earlier: each run
+(reconcile) cancels a resting order whose deadline has passed. Once it has, the order is read with
+its fills and written once (...-final.json). The bet is its fills before the start, the earlier of
+the alert's and the schedule's; a fill at or after it, which the expiry rules out, is kept apart,
+flagged, and never the bet's (hard rule 2). On the live exchange, the bet's entry in the real
+record follows (real/live/entries/), as the dashboard's form would write it:
 - placed, at the matched price contracts / cost, fees included, with the stake cost / rate in
   euros, Kalshi's order id and the first fill's time;
-- not placed, not matched, when nothing filled;
+- not placed, not matched, when nothing filled before the start;
 - not placed, missed it, when no order went.
 
 **Logs** print counts only (run logs are public). The record holds the rest, and the owner's
@@ -227,10 +230,12 @@ def place(
     planned: Sequence[Plan],
     now: Callable[[], datetime],
     code_version: str,
+    starts: Mapping[int, datetime],
 ) -> PlaceReport:
     """Send each planned order that isn't placed yet, after the checks the module names: each is
     written to the record before it is sent and its order id after. A skipped order's reason is
-    written once too."""
+    written once too. starts is each game's start as the schedule lists it now: an order goes only
+    while its game's start is still the alert's, so it can't rest into a game moved earlier."""
     report = PlaceReport(planned=len(planned))
 
     def skip(plan: Plan, reason: str) -> None:
@@ -247,6 +252,10 @@ def place(
         if _held(store, order_key(plan.env, plan.game_date, plan.game_id, "placed")):
             report.already += 1
             sent.append(plan)
+        elif plan.game_id not in starts:
+            skip(plan, "the game's start couldn't be checked")
+        elif starts[plan.game_id] != plan.start_utc:
+            skip(plan, "the game's start moved")
         elif now() >= plan.expires_utc - LEAD:
             skip(plan, "too close to the start")
         else:
@@ -308,6 +317,17 @@ def _instant(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
 
 
+def pending_dates(store: lb.Store, env: str) -> list[date]:
+    """The game dates with an order of an environment that has no final record yet."""
+    return sorted(
+        {
+            date.fromisoformat(day)
+            for (day, _), record in stored_orders(store, env).items()
+            if "order" in record and "final" not in record
+        }
+    )
+
+
 def stored_orders(store: lb.Store, env: str) -> dict[tuple[str, int], dict[str, Any]]:
     """Every order record of an environment, keyed by (game date, game id), each with its parts:
     the order, and its placed, skipped and final records when written."""
@@ -320,26 +340,40 @@ def stored_orders(store: lb.Store, env: str) -> dict[tuple[str, int], dict[str, 
     return found
 
 
+def _totals(fills: Sequence[Mapping[str, Any]]) -> tuple[Decimal, Decimal, Decimal]:
+    """Fills' contracts, cost in USD with their fees, and fees."""
+    contracts = sum((_decimal(f.get("count_fp")) for f in fills), Decimal(0))
+    fees = sum((_decimal(f.get("fee_cost")) for f in fills), Decimal(0))
+    spent = sum(
+        (_decimal(f.get("count_fp")) * _decimal(f.get("yes_price_dollars")) for f in fills),
+        Decimal(0),
+    )
+    return contracts, spent + fees, fees
+
+
 def final_record(
     order: Mapping[str, Any], fills: Sequence[Mapping[str, Any]], start: datetime, read: datetime
 ) -> dict[str, Any]:
-    """An expired order's final state: Kalshi's order with its fills, the contracts and the total
-    cost in USD, fees included, the first fill's time, and whether a fill came at or after the
-    game's start."""
-    contracts = _decimal(order.get("fill_count_fp"))
-    fees = _decimal(order.get("taker_fees_dollars")) + _decimal(order.get("maker_fees_dollars"))
-    spent = _decimal(order.get("taker_fill_cost_dollars")) + _decimal(
-        order.get("maker_fill_cost_dollars")
-    )
-    times = sorted(_instant(fill["created_time"]) for fill in fills if fill.get("created_time"))
+    """An expired order's final state: the bet, its fills before the game's start, with their
+    contracts, cost in USD (fees included), fees and times; the fills at or after the start, which
+    the expiry rules out, apart, and never the bet's (hard rule 2); Kalshi's order and fills as
+    read. start is the earlier of the alert's start and the schedule's when it was read."""
+    before = [f for f in fills if _instant(f["created_time"]) < start]
+    after = [f for f in fills if _instant(f["created_time"]) >= start]
+    contracts, cost, fees = _totals(before)
+    late_contracts, late_cost, _ = _totals(after)
+    times = sorted(_instant(f["created_time"]) for f in before)
     return {
         "status": order.get("status"),
+        "start_utc": start.isoformat(),
         "contracts": f"{contracts:.2f}",
-        "cost_usd": f"{spent + fees:.6f}",
+        "cost_usd": f"{cost:.6f}",
         "fees_usd": f"{fees:.6f}",
         "first_fill_utc": times[0].isoformat() if times else None,
         "last_fill_utc": times[-1].isoformat() if times else None,
-        "after_start": any(time >= start for time in times),
+        "after_start": bool(after),
+        "after_start_contracts": f"{late_contracts:.2f}",
+        "after_start_cost_usd": f"{late_cost:.6f}",
         "read_utc": read.isoformat(),
         "order": dict(order),
         "fills": [dict(fill) for fill in fills],
@@ -403,11 +437,15 @@ def reconcile(
     trade: KalshiTrade,
     now: Callable[[], datetime],
     cancel: bool = False,
+    starts: Mapping[int, datetime] | None = None,
 ) -> ReconcileReport:
-    """Track each order of the trade's environment that has no final record yet: cancel it when
-    cancel is set (the switch is off) or when it still rests GRACE after its expiry; once expired,
-    read it with its fills and write its final record, and on the live exchange the bet's entry. An
-    order whose fills don't add up to its fill count yet waits for the next run."""
+    """Track each order of the trade's environment that has no final record yet. Its deadline is
+    its expiry, or earlier when starts (the schedule now) lists its game earlier than the alert
+    did. A resting order is cancelled when cancel is set (the switch doesn't name its
+    environment), once a moved game's deadline has passed, or when it still rests GRACE after its
+    own expiry. Once the deadline has passed, it is read with its fills and its final record
+    written, and on the live exchange the bet's entry, from the fills before the start. An order
+    whose fills don't add up to its fill count yet waits for the next run."""
     report = ReconcileReport()
     env = trade.env
     held_entries = set(store.keys(f"{rl.PREFIX}/entries"))
@@ -416,10 +454,13 @@ def reconcile(
             continue
         order = record["order"]
         start, expires = _instant(order["start_utc"]), _instant(order["expires_utc"])
+        listed = (starts or {}).get(game_id)
+        begins = min(start, listed) if listed is not None else start
+        deadline = min(expires, begins - (start - expires))
         game_date = date.fromisoformat(day)
         placed = record.get("placed")
         if placed is None:
-            if now() < expires:
+            if now() < deadline:
                 continue
             final: dict[str, Any] = {
                 "status": "not sent",
@@ -432,7 +473,7 @@ def reconcile(
             if found is None:
                 report.waiting += 1
                 continue
-            late = now() >= expires + GRACE
+            late = now() >= (expires + GRACE if deadline == expires else deadline)
             if found.get("status") == "resting" and (cancel or late):
                 trade.cancel(placed["order_id"], order["ticker"])
                 report.cancelled += 1
@@ -440,7 +481,7 @@ def reconcile(
                 if found is None:
                     report.waiting += 1
                     continue
-            if found.get("status") == "resting" or now() < expires:
+            if found.get("status") == "resting" or now() < deadline:
                 report.resting += found.get("status") == "resting"
                 continue
             fills = trade.fills(placed["order_id"])
@@ -448,16 +489,12 @@ def reconcile(
             if counted != _decimal(found.get("fill_count_fp")):
                 report.waiting += 1
                 continue
-            final = final_record(found, fills, start, now())
+            final = final_record(found, fills, begins, now())
             report.filled += _decimal(final["contracts"]) > 0
             report.after_start += bool(final["after_start"])
         _put(store, order_key(env, game_date, game_id, "final"), final)
         report.finalized += 1
         report.finals.append({"order": order, "placed": placed, "final": final})
-        # A fill at or after the start is no pre-game bet, and the record refuses one (hard rule
-        # 2): its entry waits for a correction (nhl real correct), the owner told.
-        if final.get("after_start"):
-            continue
         if env == LIVE and rl.entry_key(game_date, game_id) not in held_entries:
             rl.store_entries(store, [entry(record | {"final": final}, now())])
             report.entries += 1
@@ -556,6 +593,11 @@ def fills_message(env: str, report: ReconcileReport) -> str | None:
                 f"${_decimal(final['fees_usd']):.2f}: decimal {float(contracts / cost):.3f}, "
                 f"{float(cost) / order['usd_per_eur']:.2f} €"
             )
-        flag = " · FILLED AT OR AFTER THE START" if final.get("after_start") else ""
+        flag = (
+            f" · {final['after_start_contracts']} contracts filled at or after the start, not in "
+            "the record"
+            if final.get("after_start")
+            else ""
+        )
         lines.append(f"{order['game_date']} {order['team']}: {what}{flag}")
     return "\n".join(lines)
