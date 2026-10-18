@@ -87,7 +87,7 @@ external-api.demo.kalshi.co/trade-api/v2), each request signed with the owner's 
 
 GitHub Actions runs every job, but GitHub's own `schedule` started this repo's runs 3 to 6 hours late in September 2026, while a `workflow_dispatch` starts within seconds (#50). So the Cloudflare Worker in `infra/timer` fires every five minutes and dispatches the workflows due at that minute (`infra/timer/src/schedule.js`):
 
-- `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input. After the midday snapshot, its Predict step runs `nhl predict --r2`, below, and then `nhl real alert --r2` sends the owner the day's real bets (#268, "Real stakes" below). Every slot ends with `nhl kalshi books --mirror-raw`, which logs Kalshi's order book of the alerted bets' markets until each game's start (#282, "Kalshi order book" below).
+- `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input. After the midday snapshot, its Predict step runs `nhl predict --r2`, below, and then `nhl real alert --r2` sends the owner the day's real bets (#268, "Real stakes" below). At midday `nhl real place --r2` then places the alerted bets on Kalshi as `KALSHI_TRADING` says, and every slot runs `nhl real orders --r2`, which tracks them and records each one's fills once it expires (#281, "Kalshi orders" below). Every slot ends with `nhl kalshi books --mirror-raw`, which logs Kalshi's order book of the alerted bets' markets until each game's start (#282, "Kalshi order book" below).
 - `pregame-goalies.yml` at :50 of every hour from 12:50 to 02:50 UTC.
 - `ingest-nightly.yml` at 09:00 UTC. After the ingest, it runs `nhl recheck --recent 3 --r2` (#30, below), the odds and goalie replays, and `nhl live features` for today's slate (#162, below).
 
@@ -393,7 +393,7 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
 
 ## Real stakes
 
-ADR 0039 bets the frozen policy's paper bets with real money, beside the paper ledger, which goes on unchanged. Placement is by hand from a Telegram alert until an API venue is confirmed (#266). The code is `live/real.py` (the start rule, the stops and the venues) and `live/real_ledger.py` (#268).
+ADR 0039 bets the frozen policy's paper bets with real money, beside the paper ledger, which goes on unchanged. The venue is Kalshi, where the bets are placed automatically through its API (the owner's decision, 2026-10-18, ADR 0040 proposed; "Kalshi orders" below). Placement by hand from the Telegram alert stays for a venue without an API. The code is `live/real.py` (the start rule, the stops and the venues) and `live/real_ledger.py` (#268).
 
 - **The alert.** `nhl real alert --r2` runs in the midday job after the paper ledger is written, whatever Predict's outcome, and only reads it. It sends one Telegram message to the owner (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, both secrets; the token and chat id never reach a log): each paper bet's game, side, minimum price and stakes, or why there are none. A day with games but no paper ledger gets a message saying so, and fails the step.
 - **The mode,** from committed evidence only:
@@ -406,6 +406,7 @@ ADR 0039 bets the frozen policy's paper bets with real money, beside the paper l
   - **The minimum price** is the lowest price, to the cent, at which p·o − 1 clears the bet's hurdle (hard rule 4).
   - **The stake at a price** is the frozen staking rule recomputed there, with the day's other bets at their paper prices, never above the paper fraction. It is a share of the mode's bankroll at the decision, rounded down to the venue's increment, and none below its minimum stake (`real.VENUES`, set with `real.VENUE` in #266). Practice uses 0.01 € and no minimum.
   - **The stake table** gives the stake at each price from the minimum to the paper price; above it the stake stays flat. The message shows up to four of its steps; the dashboard's form looks a price up in the stored table.
+  - **On an exchange venue** (one with `real.Exchange` rules, ADR 0040) each alerted bet also gets its buy order, in the alert row's `exchange` column (`real_ledger.exchange_order`, `live/exchange.py`): the limit, the highest whole cent at which the order clears the hurdle at its effective price with the worst-case taker fee; the contracts, the stake rule's euro stake at that price in USD at the deposit rate, rounded down to 0.01; the most it costs; and its expiry, 5 minutes before the start. A stake that buys no 0.01 contracts is skipped ("the stake buys no contract"). The message then gives each order instead of the stake steps, and says there is nothing to enter.
   - **The bankroll** is 100 € plus the profit of the mode's placed bets whose results were public before the decision. Practice bets never count in the real one.
 - **The records.** R2 is the record, and every object is written once with `IfNoneMatch="*"`. The lake's tables are rebuilt from them.
   - `real/live/alerts/<date>.json`: the day's mode, bankroll, venue, message and rows (lake `real_alerts`), written once, with the clock checked again just before, so a game under way is never alerted. The message is sent right after it. A second run writes the day's lake and dashboard copies again from it and sends nothing; `--resend` also sends the message, with any game started since marked no bet.
@@ -448,7 +449,7 @@ ADR 0039 bets the frozen policy's paper bets with real money, beside the paper l
 
 ## Kalshi trading API (#286)
 
-The owner bets on Kalshi automatically through its trading API (the owner's decision, 2026-10-18; #281 builds the placement). `live/kalshi_trade.py` is the signed client; for now its only use is `nhl kalshi check`.
+The owner bets on Kalshi automatically through its trading API (the owner's decision, 2026-10-18). `live/kalshi_trade.py` is the signed client, used by `nhl kalshi check` and the orders ("Kalshi orders" below).
 
 - **Environments:** Kalshi's demo exchange, with mock funds, and the live one. They are separate accounts with separate keys. The demo exchange lists the same `KXNHLGAME` markets and tickers.
 - **Keys:** an API key is an Ed25519 (recommended) or RSA key pair, created under Account settings → API Keys. Kalshi keeps the public key; the private key is shown once.
@@ -473,9 +474,40 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - It places a post-only bid of 1.50 contracts at 1¢ on the open NHL market with the highest Yes ask, at least 10¢, so the bid can't fill. The count is fractional, as real orders are (#281), so the check also proves the market takes one.
   - It reads the order back, cancels it and reads it again.
   - The order also expires by itself after 2 minutes, should the cancel fail.
-  - It passes when the balance was read, the order rested and the cancel held.
+  - It passes when the balance was read, the order rested, the cancel held and nothing filled. Each read waits up to 5 seconds for the write to show, since Kalshi's reads lag its writes a little.
   - The live check needs a balance of at least a few cents.
 - **When:** `kalshi-check.yml`, dispatched by the owner with `env` demo or live. It passes only the chosen environment's key.
+
+## Kalshi orders (#281)
+
+`live/placement.py` places each alerted bet on Kalshi, tracks its order and writes its entry (ADR 0040, proposed).
+
+- **The switch:** the repository variable `KALSHI_TRADING`.
+  - **`off`**, or unset: nothing is placed, and every run cancels our resting orders.
+  - **`demo`:** every alerted bet, practice or real, goes to Kalshi's demo exchange at the demo rules (`real.DEMO_EXCHANGE`), recorded under `real/demo/`, never in the practice or real record.
+  - **`live`:** the real days' alerted bets go to the live exchange, from their alert rows' orders. These exist only once the venue is Kalshi's (`real.VENUE`).
+- **`nhl real place --r2 [--cron]`:** at the midday slot, right after `nhl real alert`. Each planned order is written once to R2 (`real/<live|demo>/orders/<date>/<game_id>.json`), then checked:
+  - its expiry is at least a minute away;
+  - its most cost is within 1.5% of the bankroll, and the day's orders, earlier runs' included, within 5%;
+  - the balance covers the orders;
+  - the market is active.
+
+  Then it is sent. Kalshi's order id is written after (`...-placed.json`), or the reason it wasn't sent (`...-skipped.json`). A rerun sends nothing for an order already placed. The client order id is the same on every run, so Kalshi refuses a second order (409).
+- **The order:** a limit buy of Yes at the alert's limit, `good_till_canceled` with `expiration_time` 5 minutes before the start, and `cancel_order_on_pause`. It fills at once from asks at or below the limit, and the rest rests until it expires.
+- **`nhl real orders --r2 [--cancel]`:** at every odds slot and in the nightly job, for each environment whose key is set.
+  - An environment the switch doesn't name has its resting orders cancelled first, and so does every environment with `--cancel` (`kalshi-cancel.yml`, the manual kill switch).
+  - A resting order is counted. One still resting 2 minutes after its expiry is cancelled.
+  - Once an order has expired, it is read with its fills and written once (`...-final.json`): the contracts, the cost and fees in USD, the first fill's time, and whether a fill came at or after the start. An order whose fills don't add up yet waits for the next run.
+  - On the live exchange the bet's entry follows (`real/live/entries/`):
+    - placed, at contracts ÷ cost and cost ÷ rate in euros, with Kalshi's order id and the first fill's time, and never late;
+    - not placed, "not matched", when nothing filled;
+    - not placed, "missed it", when no order went.
+
+    A fill at or after the start gets no entry, only a warning, and waits for `nhl real correct`.
+  - The lake's `real_orders` is rebuilt from the records.
+- **`nhl real place --dry-run --date <d> [--env demo|live]`:** prints a day's orders with their prices and sends nothing. It is for the owner's terminal only, never a workflow.
+- **Logs and messages:** a run prints counts only. The orders placed and the fills go to the owner's Telegram, a demo one marked "DEMO, mock funds".
+- **Inputs:** an order is built from the day's alert only. No Kalshi price is read for it: the market's status is the only thing checked (`tests/leakage/test_kalshi_orders.py`).
 
 ## Odds snapshots
 

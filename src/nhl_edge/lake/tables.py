@@ -57,6 +57,7 @@ from nhl_edge.lake.schemas import (
     RapmTerms,
     RealAlerts,
     RealBets,
+    RealOrders,
     RealSettlements,
     SbrOdds,
     Schedule,
@@ -143,6 +144,7 @@ TABLES: dict[str, Table] = {
     "real_alerts": Table(RealAlerts, ("game_date", "game_id"), BY_DATE),
     "real_bets": Table(RealBets, ("game_date", "game_id"), BY_DATE),
     "real_settlements": Table(RealSettlements, ("game_date", "game_id", "revision"), BY_DATE),
+    "real_orders": Table(RealOrders, ("env", "game_date", "game_id"), BY_DATE),
     # Kalshi's order book of the alerted bets' markets, for the owner's own resting orders
     # (#282, #281): private, replayed from raw/kalshi/ only, never a model input.
     "kalshi_books": Table(KalshiBooks, KALSHI_BOOKS_KEY, BY_DATE),

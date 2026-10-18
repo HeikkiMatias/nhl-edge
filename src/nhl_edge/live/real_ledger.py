@@ -41,7 +41,7 @@ from nhl_edge.betting import staking
 from nhl_edge.betting.selection import POLICY, POLICY_VERSION
 from nhl_edge.lake.schemas import REAL_MODES, RealAlerts, RealBets, RealSettlements, dtypes
 from nhl_edge.live import bundle as lb
-from nhl_edge.live import real
+from nhl_edge.live import exchange, real
 from nhl_edge.live.settle import POSTPONED
 
 PREFIX = "real/live"
@@ -54,6 +54,7 @@ PRACTICE, REAL, PAUSED, STOPPED, CLOSED = REAL_MODES
 ALERTED = "alerted"
 SKIP_STARTED = "skipped: the game started before the alert"
 SKIP_MINIMUM = "skipped: the stake is below the venue's minimum"
+SKIP_CONTRACTS = "skipped: the stake buys no contract"
 SKIP_MODE = {
     PAUSED: "skipped: real bets are paused",
     STOPPED: "skipped: real bets are stopped",
@@ -219,6 +220,29 @@ def stake_at(table: Sequence[Sequence[float]], price: float) -> float:
     return allowed
 
 
+def exchange_order(
+    row: Mapping[str, Any], table: Sequence[Sequence[float]], rules: real.Exchange
+) -> dict[str, Any] | None:
+    """A bet's buy order on an exchange venue (ADR 0040), as its alert row's exchange column holds
+    it: the limit in dollars, the contracts, the most it costs in USD and in euros, its effective
+    decimal price, the rate and when it expires. None when the stake buys no contract."""
+    found = exchange.order(
+        row["p_side"], row["hurdle"], lambda price: stake_at(table, price), rules
+    )
+    if found is None:
+        return None
+    return {
+        "env": rules.env,
+        "limit": f"{found.price:.2f}",
+        "contracts": f"{found.contracts:.2f}",
+        "max_cost_usd": f"{found.cost:.4f}",
+        "stake": round(found.stake, 4),
+        "effective": round(found.effective, 6),
+        "usd_per_eur": rules.usd_per_eur,
+        "expires_utc": (row["start_utc"] - rules.expire_before).isoformat(),
+    }
+
+
 def alert_rows(
     ledger: pl.DataFrame,
     today: Mode,
@@ -228,7 +252,7 @@ def alert_rows(
     code_version: str,
 ) -> pl.DataFrame:
     """One row per paper bet of the day's ledger: alerted with its minimum price and stakes, or
-    why it is skipped."""
+    why it is skipped. On an exchange venue an alerted bet also has its buy order (exchange)."""
     columns = dtypes(RealAlerts)
     bets = ledger.filter(pl.col("bet").fill_null(False)).sort("game_id")
     if bets.is_empty():
@@ -237,12 +261,15 @@ def alert_rows(
     rows = []
     for row in bets.iter_rows(named=True):
         table = tables[row["game_id"]]
+        placed = exchange_order(row, table, venue.exchange) if venue.exchange and table else None
         if today.name in SKIP_MODE:
             status = SKIP_MODE[today.name]
         elif row["start_utc"] <= now:
             status = SKIP_STARTED
         elif not table:
             status = SKIP_MINIMUM
+        elif venue.exchange is not None and placed is None:
+            status = SKIP_CONTRACTS
         else:
             status = ALERTED
         rows.append(
@@ -266,6 +293,9 @@ def alert_rows(
                 "max_stake": table[-1][1] if table else 0.0,
                 "stakes": json.dumps([list(pair) for pair in table]),
                 "code_version": code_version,
+                "exchange": json.dumps(placed, sort_keys=True)
+                if placed is not None and status == ALERTED
+                else None,
             }
         )
     return RealAlerts.validate(pl.DataFrame(rows, schema=columns))  # type: ignore[return-value]
@@ -327,12 +357,23 @@ def message(
     if skipped_day is not None:
         lines.append(f"The paper decision skipped today ({skipped_day}).")
     alerted = rows.filter(pl.col("status") == ALERTED)
+    automatic = alerted.filter(pl.col("exchange").is_not_null()).height > 0
     for row in rows.iter_rows(named=True):
         team = row["home"] if row["side"] == "home" else row["away"]
         start = row["start_utc"].astimezone(HELSINKI)
         game = f"{row['away']} at {row['home']}, starts {start:%a %H:%M}"
         if row["status"] != ALERTED:
             lines.append(f"{game}: no bet ({row['status'].removeprefix('skipped: ')})")
+            continue
+        if row["exchange"] is not None:
+            placed = json.loads(row["exchange"])
+            expires = datetime.fromisoformat(placed["expires_utc"]).astimezone(HELSINKI)
+            lines += [
+                f"{game} · bet {team}",
+                f"  Kalshi: buy Yes {team} at most {round(float(placed['limit']) * CENT)}¢, "
+                f"{placed['contracts']} contracts, at most ${float(placed['max_cost_usd']):.2f} "
+                f"({placed['stake']:.2f} €), resting until {expires:%H:%M}",
+            ]
             continue
         steps = ladder(json.loads(row["stakes"]))
         stakes = " · ".join(
@@ -346,6 +387,12 @@ def message(
         ]
     if alerted.is_empty():
         lines.append(f"No {'practice' if practice else 'real'} bets today.")
+    elif automatic:
+        lines += [
+            "",
+            "The orders go to Kalshi automatically, each expiring 5 minutes before its game. "
+            "Their fills are recorded once they expire; there is nothing to enter.",
+        ]
     else:
         lines += [
             "",

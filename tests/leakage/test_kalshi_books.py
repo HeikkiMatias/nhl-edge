@@ -86,8 +86,9 @@ def test_the_poll_never_asks_for_a_game_at_or_after_its_start(tmp_path: Path) ->
 
 def test_no_model_or_feature_code_reads_the_books() -> None:
     # Kalshi's data is for the owner's own orders only (#281): only its ingest, its table's
-    # registration and schema, the trading client for those orders (#286) and the CLI that runs
-    # them name it, and only the first three and the CLI name the books' table.
+    # registration and schema, the trading client (#286), the orders and the real record built
+    # on it (ADR 0040) and the CLI that runs them name it, and only the first three and the CLI
+    # name the books' table.
     src = Path(__file__).parents[2] / "src" / "nhl_edge"
     texts = {path.relative_to(src).as_posix(): path.read_text() for path in src.rglob("*.py")}
     naming = {path for path, text in texts.items() if "kalshi" in text.lower()}
@@ -96,7 +97,11 @@ def test_no_model_or_feature_code_reads_the_books() -> None:
         "ingest/kalshi.py",
         "lake/schemas.py",
         "lake/tables.py",
+        "live/exchange.py",
         "live/kalshi_trade.py",
+        "live/placement.py",
+        "live/real.py",
+        "live/real_ledger.py",
     }
     books = {
         path for path, text in texts.items() if "kalshi_books" in text or "KalshiBooks" in text

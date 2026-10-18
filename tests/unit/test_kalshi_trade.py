@@ -1,10 +1,10 @@
-"""Kalshi's trading API client (#286) against a fake exchange: no test calls Kalshi, and every
-response here is synthetic (the public repository holds no Kalshi data, Developer Agreement 3.1)."""
+"""Kalshi's trading API client (#286) against a fake exchange (kalshi_exchange): no test calls
+Kalshi, and every response here is synthetic (the public repository holds no Kalshi data,
+Developer Agreement 3.1)."""
 
-import base64
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -12,16 +12,15 @@ from typing import Any
 import httpx
 import pytest
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
+from kalshi_exchange import ED25519, KEY_ID, NOW, OTHER, RSA, TICKER, Exchange, pem, trade, verify
 from typer.testing import CliRunner
 
 from nhl_edge.cli import app
-from nhl_edge.lake.raw import RawStore
 from nhl_edge.live import kalshi_trade as kt
 from nhl_edge.live.kalshi_trade import (
     Credentials,
-    KalshiTrade,
     KalshiTradeError,
     OrderRequest,
     check,
@@ -29,145 +28,6 @@ from nhl_edge.live.kalshi_trade import (
     load_key,
 )
 from nhl_edge.settings import MissingSettingError
-
-NOW = datetime(2026, 10, 18, 17, 0, tzinfo=UTC)
-KEY_ID = "test-key-id-5f1c"
-TICKER = "KXNHLGAME-26OCT18CARCHI-CAR"
-OTHER = "KXNHLGAME-26OCT18CARCHI-CHI"
-ED25519 = ed25519.Ed25519PrivateKey.generate()
-RSA = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-
-def pem(key: Any) -> str:
-    return key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
-    ).decode()
-
-
-def verify(key: Any, signature: str, text: str) -> None:
-    raw = base64.b64decode(signature)
-    if isinstance(key, ed25519.Ed25519PrivateKey):
-        key.public_key().verify(raw, text.encode())
-    else:
-        key.public_key().verify(
-            raw,
-            text.encode(),
-            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
-            hashes.SHA256(),
-        )
-
-
-class Exchange:
-    """A fake of the trading API's calls used here, which checks each request's signature."""
-
-    def __init__(self, key: Any = ED25519) -> None:
-        self.key = key
-        self.requests: list[httpx.Request] = []
-        self.orders: dict[str, dict[str, Any]] = {}
-        self.markets = [
-            {"ticker": TICKER, "yes_ask_dollars": "0.6100"},
-            {"ticker": OTHER, "yes_ask_dollars": "0.4100"},
-        ]
-        # status codes to answer before the route, one per request
-        self.fail: list[int] = []
-        # the next create reaches the exchange but answers this status
-        self.lost_create: int | None = None
-        # reads of an order that answer 404, or show it still resting after its cancel, as
-        # Kalshi's reads lag its writes
-        self.unseen = 0
-        self.stale = 0
-        # contracts a seller fills before the cancel lands
-        self.filled_before_cancel = "0.00"
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        stamp = request.headers["KALSHI-ACCESS-TIMESTAMP"]
-        assert request.headers["KALSHI-ACCESS-KEY"] == KEY_ID
-        verify(
-            self.key,
-            request.headers["KALSHI-ACCESS-SIGNATURE"],
-            stamp + request.method + request.url.path,
-        )
-        if self.fail:
-            return httpx.Response(self.fail.pop(0), json={"error": "synthetic"})
-        path = request.url.path.removeprefix(kt.API_ROOT)
-        params = request.url.params
-        if path == "/portfolio/balance":
-            return httpx.Response(200, json={"balance": 5000, "portfolio_value": 0})
-        if path == "/markets":
-            return httpx.Response(200, json={"markets": self.markets, "cursor": ""})
-        if path == "/portfolio/events/orders" and request.method == "POST":
-            return self._create(json.loads(request.content))
-        if path.startswith("/portfolio/events/orders/") and request.method == "DELETE":
-            order = self.orders.get(path.rsplit("/", 1)[1])
-            if order is None or order["status"] != "resting":
-                return httpx.Response(404, json={"code": "not_found"})
-            order["status"] = "canceled"
-            order["fill_count_fp"] = self.filled_before_cancel
-            return httpx.Response(200, json={"order_id": order["order_id"], "reduced_by": "1.00"})
-        if path.startswith("/portfolio/orders/"):
-            order = self.orders.get(path.rsplit("/", 1)[1])
-            if order is None or self.unseen:
-                self.unseen = max(0, self.unseen - 1)
-                return httpx.Response(404, json={"code": "not_found"})
-            if order["status"] == "canceled" and self.stale:
-                self.stale -= 1
-                return httpx.Response(200, json={"order": order | {"status": "resting"}})
-            return httpx.Response(200, json={"order": order})
-        if path == "/portfolio/orders":
-            listed = [o for o in self.orders.values() if o["ticker"] == params["ticker"]]
-            return httpx.Response(200, json={"orders": listed, "cursor": ""})
-        if path == "/portfolio/fills":
-            return httpx.Response(200, json={"fills": [], "cursor": ""})
-        return httpx.Response(404, json={"code": "no_route"})
-
-    def _create(self, body: dict[str, Any]) -> httpx.Response:
-        if any(o["client_order_id"] == body["client_order_id"] for o in self.orders.values()):
-            return httpx.Response(409, json={"code": "order_already_exists"})
-        order_id = f"order-{len(self.orders) + 1}"
-        self.orders[order_id] = {
-            "order_id": order_id,
-            "client_order_id": body["client_order_id"],
-            "ticker": body["ticker"],
-            "status": "resting",
-            "fill_count_fp": "0.00",
-            "remaining_count_fp": body["count"],
-            "body": body,
-        }
-        if self.lost_create is not None:
-            status, self.lost_create = self.lost_create, None
-            return httpx.Response(status, json={"error": "synthetic"})
-        return httpx.Response(
-            201,
-            json={
-                "order_id": order_id,
-                "client_order_id": body["client_order_id"],
-                "fill_count": "0.00",
-                "remaining_count": body["count"],
-                "ts_ms": 0,
-            },
-        )
-
-
-def trade(
-    tmp_path: Path, exchange: Exchange, key: Any = ED25519, env: str = kt.DEMO
-) -> tuple[KalshiTrade, list[float]]:
-    waits: list[float] = []
-    client = httpx.Client(
-        base_url=kt.HOSTS[env] + kt.API_ROOT, transport=httpx.MockTransport(exchange)
-    )
-    return (
-        KalshiTrade(
-            env,
-            Credentials(KEY_ID, key),
-            RawStore(tmp_path / "raw"),
-            client,
-            now=lambda: NOW,
-            min_interval_s=0.0,
-            sleep=waits.append,
-        ),
-        waits,
-    )
 
 
 def order(**changes: Any) -> OrderRequest:
