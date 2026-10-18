@@ -78,6 +78,11 @@ PRACTICE_VENUE = Venue("practice", 0.0, 0.01)
 # Kalshi's demo exchange, mock funds, where the practice days' orders go (ADR 0040): its rate
 # is a round stand-in, since no euro is converted there.
 DEMO_EXCHANGE = Exchange("demo", usd_per_eur=1.15)
+# The venues whose contract stays open past a postponement (ADR 0040, #287): Kalshi settles a
+# game played within two weeks of its listed start on its result, and resolves a later or
+# cancelled one at its own "last fair price", so such a bet is held until that is known.
+EXCHANGE_VENUES = frozenset({"kalshi"})
+EXCHANGE_POSTPONED = timedelta(days=14)
 # Each venue's stake rules, entered with VENUE once its terms are confirmed (#266). Kalshi's
 # entry, with the owner's deposit rate: Venue("kalshi", 0.0, 0.01, Exchange("live", <rate>)).
 VENUES: dict[str, Venue] = {}

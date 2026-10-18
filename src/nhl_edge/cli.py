@@ -4269,19 +4269,29 @@ def _real_record(r2: bool, flag: str = "--r2") -> "tuple[Lake, Any]":
     return lake, lb.LocalStore(DEFAULT_REAL_LOCAL)
 
 
-def _insert_if_set_up(client: Any, table: str, rows: list[Any], key: Any) -> bool:
-    """Insert rows once into one of the real record's dashboard tables; before the real record
-    migration is applied, say so and return False, R2 staying the record."""
+# The dashboard's Kalshi columns: the alert's order and the automatic entries (#287).
+KALSHI_MIGRATION = "20261018180000_kalshi_orders.sql"
+
+
+def _insert_if_set_up(
+    client: Any,
+    table: str,
+    rows: list[Any],
+    key: Any,
+    migration: str = "20261016150000_real_record.sql",
+) -> bool:
+    """Insert rows once into one of the real record's dashboard tables; before its migration is
+    applied (the table, or a column it adds, missing), say so and return False, R2 staying the
+    record."""
     from nhl_edge.lake.supabase import SupabaseError
 
     try:
         sent = client.insert_new_records(table, rows, key)
     except SupabaseError as exc:
-        if "PGRST205" not in str(exc):
+        if "PGRST205" not in str(exc) and "PGRST204" not in str(exc):
             raise
         typer.echo(
-            f"the dashboard's {table} isn't set up yet: apply "
-            "supabase/migrations/20261016150000_real_record.sql"
+            f"the dashboard's {table} isn't set up yet: apply supabase/migrations/{migration}"
         )
         return False
     typer.echo(f"{sent} rows sent to the dashboard's {table} (new ones inserted)")
@@ -4289,13 +4299,21 @@ def _insert_if_set_up(client: Any, table: str, rows: list[Any], key: Any) -> boo
 
 
 def _new_entries(store: Any) -> int:
-    """Copy the dashboard's new entries (Supabase real_entries) to the record, each once."""
-    from nhl_edge.lake.supabase import Supabase
+    """Copy the dashboard's new entries (Supabase real_entries) to the record, each once. The
+    automatic Kalshi bets (source "kalshi", #287) are the record's own, written to R2 first, so
+    they aren't copied back; before the Kalshi migration there is no source, and all come from the
+    form."""
+    from nhl_edge.lake.supabase import Supabase, SupabaseError
     from nhl_edge.live import real_ledger as rl
 
     supabase = Supabase.from_env()
-    found = supabase.select("real_entries", ("id", *rl.ENTRY_FIELDS), "id")
-    return rl.store_entries(store, found)
+    try:
+        found = supabase.select("real_entries", ("id", *rl.ENTRY_FIELDS, "source"), "id")
+    except SupabaseError as exc:
+        if "42703" not in str(exc):
+            raise
+        found = supabase.select("real_entries", ("id", *rl.ENTRY_FIELDS), "id")
+    return rl.store_entries(store, [row for row in found if row.get("source") != "kalshi"])
 
 
 @real_app.command("alert")
@@ -4524,6 +4542,7 @@ def real_sync(
     """Copy the dashboard's new entries to the real record, each once (#268), and rebuild the
     lake's real_alerts and real_bets from it: every alerted bet placed, not placed, or skipped,
     with the corrections applied."""
+    from nhl_edge.live import placement
     from nhl_edge.live import real_ledger as rl
 
     if supabase and not r2:
@@ -4547,6 +4566,13 @@ def real_sync(
             "real_alerts", rl.supabase_alerts(alerted), ("game_date", "game_id")
         )
         typer.echo(f"{sent} alert rows sent to the dashboard (new ones inserted)")
+        # The automatic Kalshi bets' entries, written to R2 by nhl real orders (#287): the form
+        # never records them. Before the Kalshi migration they wait, R2 staying the record.
+        automatic = placement.automatic_entries(store)
+        if automatic:
+            _insert_if_set_up(
+                client, "real_entries", automatic, ("game_date", "game_id"), KALSHI_MIGRATION
+            )
         for table, rows, key in (
             ("real_days", rl.supabase_days(rl.days(store)), ("game_date",)),
             ("real_corrections", rl.supabase_corrections(corrected), rl.CORRECTION_KEY),
@@ -4633,10 +4659,15 @@ def real_statement(
     """The placed bets with their settlements and the bankroll, for the weekly check against the
     venue's statement (#268). A difference is fixed with nhl real correct."""
     from nhl_edge.live import real_ledger as rl
+    from nhl_edge.live.blend_fit import LIVE_SEASON
 
-    _, store = _real_record(r2)
+    lake, store = _real_record(r2)
+    if r2:
+        lake.pull("games", seasons=[LIVE_SEASON])
     record = rl.bets(rl.alerts(store), rl.entries(store), rl.corrections(store))
-    for line in rl.statement(record, rl.settlements(store), rl.PRACTICE if practice else rl.REAL):
+    games = lake.read("games", seasons=[LIVE_SEASON])
+    of = rl.PRACTICE if practice else rl.REAL
+    for line in rl.statement(record, rl.settlements(store), of, games):
         typer.echo(line)
 
 
@@ -4917,6 +4948,50 @@ def real_orders(
     lake.replace("real_orders", orders)
     typer.echo(f"real_orders: {orders.height} orders")
     if failed:
+        raise typer.Exit(code=1)
+
+
+@real_app.command("reconcile-kalshi")
+def real_reconcile_kalshi(
+    r2: Annotated[bool, typer.Option("--r2", help="The real record in R2.")] = False,
+) -> None:
+    """Check the real record against Kalshi's own settlements (#287), nightly after nhl real
+    settle: each live order with fills of the last 30 days, its result, the contracts held and
+    the payout. A difference, or a settlement missing on either side two days after the game was
+    played (the lake's final games), goes to the owner's Telegram; the log prints counts only.
+    Without the live key there is nothing to check."""
+    from datetime import UTC
+
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.live import kalshi_trade as kt
+    from nhl_edge.live import placement
+    from nhl_edge.live import real_ledger as rl
+    from nhl_edge.live.blend_fit import LIVE_SEASON
+    from nhl_edge.settings import MissingSettingError
+
+    lake, store = _real_record(r2)
+    # Outside the key's check: R2's own missing settings are an error, not a missing key.
+    raw = RawStore.from_env(mirror=r2, flag="--r2")
+    try:
+        trade = kt.KalshiTrade.from_env(kt.LIVE, raw)
+    except MissingSettingError:
+        typer.echo("kalshi settlements: no live key set, nothing to check")
+        return
+    # The final games, each at the start it was played: a postponed game's wait counts from it.
+    if r2:
+        lake.pull("games", seasons=[LIVE_SEASON])
+    games = lake.read("games", seasons=[LIVE_SEASON])
+    today = datetime.now(UTC).astimezone(ET).date()
+    try:
+        report = placement.check_settlements(store, trade, rl.settlements(store), today, games)
+    except kt.KalshiTradeError as exc:
+        typer.echo(f"kalshi settlements: failed ({exc})", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(report.line())
+    if report.differences:
+        typer.echo("::warning::kalshi settlements: the record and Kalshi differ")
+    if _send_quietly(placement.check_message(report)):
         raise typer.Exit(code=1)
 
 

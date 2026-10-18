@@ -611,7 +611,9 @@ def alerts(store: lb.Store) -> pl.DataFrame:
 
 
 def supabase_alerts(rows: pl.DataFrame) -> list[dict[str, Any]]:
-    """The alert rows as the dashboard's real_alerts holds them: the stakes as a list."""
+    """The alert rows as the dashboard's real_alerts holds them: the stakes as a list, and on an
+    exchange venue's day each row's order as an object (null for a skipped bet). A day without
+    one sends no exchange column, so the practice days need no migration (#287)."""
     keep = (
         "game_date",
         "game_id",
@@ -637,6 +639,9 @@ def supabase_alerts(rows: pl.DataFrame) -> list[dict[str, Any]]:
             {"price": price, "stake": stake} for price, stake in json.loads(row["stakes"])
         ]
         out.append(record)
+    if rows.filter(pl.col("exchange").is_not_null()).height:
+        for record, row in zip(out, jsonable(rows), strict=True):
+            record["exchange"] = json.loads(row["exchange"]) if row["exchange"] else None
     return out
 
 
@@ -817,13 +822,35 @@ def bets(
     return RealBets.validate(built)  # type: ignore[return-value]
 
 
+def _final(placed: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
+    played = games.select("game_id", played_utc="start_utc").join(outcomes(games), on="game_id")
+    return placed.join(played, on="game_id")
+
+
+def _moved() -> pl.Expr:
+    return (pl.col("played_utc") - pl.col("start_utc")).abs()
+
+
+def _held() -> pl.Expr:
+    exchange = pl.col("venue").is_in(list(real.EXCHANGE_VENUES))
+    return exchange & (_moved() > real.EXCHANGE_POSTPONED)
+
+
+def held(placed: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
+    """The placed bets on an exchange venue whose game is final but was played more than
+    EXCHANGE_POSTPONED from its listed start: the exchange resolves them at its own price, so
+    they wait for it (ADR 0040, #287)."""
+    return _final(placed, games).filter(_held())
+
+
 def results(placed: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
     """The placed bets whose game is final, with its result on the full game (OT and shootout
-    included), when it became public (result_utc), and the profit at the matched price and stake;
-    a game played more than POSTPONED from its listed start voids its bet."""
-    played = games.select("game_id", played_utc="start_utc").join(outcomes(games), on="game_id")
-    final = placed.join(played, on="game_id")
-    void = (pl.col("played_utc") - pl.col("start_utc")).abs() > POSTPONED
+    included), when it became public (result_utc), and the profit at the matched price and stake.
+    At a sportsbook a game played more than POSTPONED from its listed start voids its bet. On an
+    exchange venue (real.EXCHANGE_VENUES) it doesn't: a game played within EXCHANGE_POSTPONED
+    settles on its result, and a later one is held (held), never settled here (ADR 0040)."""
+    final = _final(placed, games).filter(~_held())
+    void = ~pl.col("venue").is_in(list(real.EXCHANGE_VENUES)) & (_moved() > POSTPONED)
     won = staking.won(pl.col("side"), pl.col("home_win"))
     return final.with_columns(
         status=pl.when(void).then(pl.lit(VOID)).otherwise(pl.lit(SETTLED)),
@@ -940,9 +967,15 @@ def settlements(store: lb.Store) -> pl.DataFrame:
     return RealSettlements.validate(every.sort("game_date", "game_id", "revision"))  # type: ignore[return-value]
 
 
-def statement(record: pl.DataFrame, settled: pl.DataFrame, of: str) -> list[str]:
+def statement(
+    record: pl.DataFrame,
+    settled: pl.DataFrame,
+    of: str,
+    games: pl.DataFrame | None = None,
+) -> list[str]:
     """A mode's placed bets with their settlement and the bankroll after, for the weekly check
-    against the venue's statement."""
+    against the venue's statement. With the games, a bet held for the exchange's own resolution
+    says so (ADR 0040)."""
     lines = []
     latest = (
         settled.filter(pl.col("mode") == of)
@@ -951,6 +984,11 @@ def statement(record: pl.DataFrame, settled: pl.DataFrame, of: str) -> list[str]
         .last()
     )
     placed = record.filter(pl.col("mode") == of, pl.col("outcome") == PLACED)
+    waiting = (
+        set(held(placed, games).select("game_date", "game_id").iter_rows())
+        if games is not None
+        else set()
+    )
     # The alert's own status travels with the bet, so the settlement's is named apart.
     joined = placed.join(
         latest.select("game_date", "game_id", "profit", "bankroll_after", settlement="status"),
@@ -959,12 +997,15 @@ def statement(record: pl.DataFrame, settled: pl.DataFrame, of: str) -> list[str]
     ).sort("game_date", "game_id")
     for row in joined.iter_rows(named=True):
         team = row["home"] if row["side"] == "home" else row["away"]
-        result = (
-            "awaiting the result"
-            if row["settlement"] is None
-            else f"{row['settlement']}, {row['profit']:+.2f} €, bankroll "
-            f"{row['bankroll_after']:.2f} €"
-        )
+        if row["settlement"] is not None:
+            result = (
+                f"{row['settlement']}, {row['profit']:+.2f} €, bankroll "
+                f"{row['bankroll_after']:.2f} €"
+            )
+        elif (row["game_date"], row["game_id"]) in waiting:
+            result = "awaiting Kalshi's resolution: played over two weeks from its listed start"
+        else:
+            result = "awaiting the result"
         flags = "" if row["within_rule"] else " (outside the rule)"
         flags += " (recorded late)" if row["late"] else ""
         lines.append(

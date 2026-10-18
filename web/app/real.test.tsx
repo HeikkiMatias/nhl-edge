@@ -167,3 +167,62 @@ test("a recorded entry tells the board, so the real record beside it reads it at
   fireEvent.click(screen.getAllByText("Record not placed")[0]);
   await waitFor(() => expect(told).toHaveBeenCalledTimes(1));
 });
+
+/** A real Kalshi day (ADR 0040, #287): the bet's order instead of the form. */
+const KALSHI = {
+  ...ALERT,
+  mode: "real" as const,
+  venue: "kalshi",
+  exchange: {
+    env: "live" as const,
+    limit: "0.47",
+    contracts: "2.89",
+    max_cost_usd: "1.4093",
+    stake: 1.2149,
+    effective: 2.050653,
+    usd_per_eur: 1.16,
+    expires_utc: "2026-11-17T23:55:00Z",
+  },
+};
+
+test("an automatic Kalshi bet shows its order and no form", async () => {
+  const { supabase } = stubbed({ real_alerts: [KALSHI], real_entries: [] }, new Set(["anon"]));
+  render(<RealBets client={supabase} />);
+  expect(await screen.findByText(/Real bets: placed automatically on Kalshi/)).toBeTruthy();
+  expect(
+    screen.getByText(
+      /Placed automatically\. Kalshi: buy Yes TOR at most 47¢, 2\.89 contracts, at most \$1\.41 \(1\.21 €\), resting until/,
+    ),
+  ).toBeTruthy();
+  expect(screen.queryByText("Record placed bet")).toBeNull();
+  expect(screen.queryByLabelText("Price")).toBeNull();
+});
+
+test("an expired Kalshi order waits for its fills, still without a form", async () => {
+  vi.setSystemTime(new Date("2026-11-17T23:56:00Z"));
+  const { supabase } = stubbed({ real_alerts: [KALSHI], real_entries: [] }, new Set(["anon"]));
+  render(<RealBets client={supabase} />);
+  expect(await screen.findByText(/The order has expired: its fills are recorded/)).toBeTruthy();
+  expect(screen.queryByText("Record placed bet")).toBeNull();
+});
+
+test("an automatic entry says it came from Kalshi's fills", async () => {
+  const entry = {
+    game_date: KALSHI.game_date,
+    game_id: KALSHI.game_id,
+    outcome: "placed",
+    matched_price: 2.07,
+    stake: 1.18,
+    bet_id: "order-1",
+    placed_utc: "2026-11-17T18:01:00Z",
+    reason: null,
+    entered_utc: "2026-11-18T09:00:00Z",
+    late: false,
+    source: "kalshi",
+  };
+  const { supabase } = stubbed({ real_alerts: [KALSHI], real_entries: [entry] }, new Set(["anon"]));
+  render(<RealBets client={supabase} />);
+  expect(
+    await screen.findByText(/Recorded automatically, from Kalshi's fills: placed at 2.07, 1.18 €, bet id order-1/),
+  ).toBeTruthy();
+});

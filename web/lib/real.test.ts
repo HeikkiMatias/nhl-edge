@@ -64,3 +64,31 @@ test("before the migration the section says it isn't set up", async () => {
   const { supabase } = stubbed({}, new Set(["anon"]));
   expect(await loadReal(supabase)).toEqual({ ready: false });
 });
+
+test("before the Kalshi migration the read leaves its columns out", async () => {
+  // Postgres answers "undefined column" for exchange and source until the migration is applied
+  // (#287): the read asks again without them.
+  const undefinedColumn = (sent: { url: URL; method: string }) => {
+    const columns = sent.url.searchParams.get("select") ?? "";
+    if (sent.method === "GET" && (columns.includes("exchange") || columns.includes("source"))) {
+      return { status: 400, body: { code: "42703", message: "column does not exist" } };
+    }
+    return undefined;
+  };
+  const entry = { game_date: ALERT.game_date, game_id: ALERT.game_id, outcome: "not placed" };
+  const { supabase, requests } = stubbed(
+    { real_alerts: [ALERT], real_entries: [entry] },
+    new Set(["anon"]),
+    undefinedColumn,
+  );
+  const state = await loadReal(supabase);
+  expect(state).toEqual({
+    ready: true,
+    day: "2026-11-17",
+    alerts: [ALERT],
+    entries: { [ALERT.game_id]: entry },
+  });
+  const selects = requests.map((r) => r.url.searchParams.get("select") ?? "");
+  expect(selects.filter((s) => s.includes("exchange"))).toHaveLength(1);
+  expect(selects.filter((s) => s.includes("source"))).toHaveLength(1);
+});

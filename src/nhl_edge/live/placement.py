@@ -51,6 +51,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import polars as pl
 
@@ -741,4 +742,120 @@ def fills_message(env: str, finals: Sequence[Mapping[str, Any]]) -> str | None:
             else ""
         )
         lines.append(f"{order['game_date']} {order['team']}: {what}{flag}")
+    return "\n".join(lines)
+
+
+# The automatic bets on the dashboard and against Kalshi's own record (#287).
+ET = ZoneInfo("America/New_York")  # the NHL's game dates
+KALSHI_SOURCE = "kalshi"
+# Days after its game that a settlement missing on either side counts as a difference: the record
+# settles once the result is public, the morning after (ADR 0003), and Kalshi soon after the game.
+SETTLE_DAYS = 2
+# How far back the check looks: Kalshi archives older settlements out of its live listing.
+CHECK_DAYS = 30
+
+
+def automatic_entries(store: lb.Store) -> list[dict[str, Any]]:
+    """The live orders' entries in the real record, as the dashboard's real_entries takes them
+    (#287): the form's fields, with source "kalshi" and the pipeline's own time and lateness."""
+    orders = {key for key, record in stored_orders(store, LIVE).items() if "order" in record}
+    return [
+        {name: found.get(name) for name in rl.ENTRY_FIELDS} | {"source": KALSHI_SOURCE}
+        for found in rl.entries(store)
+        if (str(found["game_date"])[:10], int(found["game_id"])) in orders
+    ]
+
+
+@dataclass
+class SettlementCheck:
+    checked: int = 0
+    agreed: int = 0
+    waiting: int = 0
+    differences: list[str] = field(default_factory=list)
+
+    def line(self) -> str:
+        return (
+            f"kalshi settlements: {self.checked} checked, {self.agreed} agree, {self.waiting} "
+            f"waiting, {len(self.differences)} differences"
+        )
+
+
+def check_settlements(
+    store: lb.Store,
+    trade: KalshiTrade,
+    settled: pl.DataFrame,
+    today: date,
+    games: pl.DataFrame,
+) -> SettlementCheck:
+    """Each live order with fills of the last CHECK_DAYS, against Kalshi's own settlement of its
+    market (#287). Both settle on the full game (hard rule 2), so a difference goes to the owner:
+    Kalshi resolving it at a fair price (scalar), another result, other contracts held than the
+    order filled, or another payout; and either side missing SETTLE_DAYS after the game was
+    played. games is the lake's final games, each at the start it was played: a postponed game
+    counts from that start, and one neither side has settled waits while it isn't final (Codex
+    on #291). The record's latest revision of each bet is the one compared."""
+    latest = {
+        (row["game_date"], row["game_id"]): row
+        for row in settled.sort("revision").iter_rows(named=True)
+    }
+    played = dict(zip(games["game_id"].to_list(), games["start_utc"].to_list(), strict=True))
+    report = SettlementCheck()
+    for (day, game_id), record in sorted(stored_orders(store, LIVE).items()):
+        final, order = record.get("final"), record.get("order")
+        game_date = date.fromisoformat(day)
+        if final is None or order is None or "order" not in final:
+            continue
+        held = _decimal(final["order"].get("fill_count_fp"))
+        if held <= 0 or (today - game_date).days > CHECK_DAYS:
+            continue
+        report.checked += 1
+        ours = latest.get((game_date, game_id))
+        listed = trade.settlements(order["ticker"])
+        theirs = next((s for s in listed if s.get("ticker") == order["ticker"]), None)
+        name = f"{day} {order['team']}"
+        if ours is None or theirs is None:
+            start = played.get(game_id)
+            if start is None and theirs is None:
+                report.waiting += 1  # not played yet, as a postponed game
+                continue
+            # Kalshi resolving a game the lake has no final for counts from its listed date.
+            since = start.astimezone(ET).date() if start is not None else game_date
+            if (today - since).days >= SETTLE_DAYS:
+                side = "Kalshi" if theirs is None else "the record"
+                report.differences.append(f"{name}: not settled by {side} yet")
+            else:
+                report.waiting += 1
+            continue
+        found = []
+        result = theirs.get("market_result")
+        if result not in ("yes", "no"):
+            found.append(f"Kalshi resolved it as {result}, {theirs.get('value')}¢ a contract")
+        elif ours["status"] != rl.SETTLED or ours["won"] != (result == "yes"):
+            found.append(
+                f"Kalshi: {'won' if result == 'yes' else 'lost'}; the record: "
+                f"{ours['status']}, won {ours['won']}"
+            )
+        count = _decimal(theirs.get("yes_count_fp"))
+        if count != held:
+            found.append(f"Kalshi held {count} contracts, the order filled {held}")
+        expected = held * 100 if result == "yes" else Decimal(0)
+        if result in ("yes", "no") and _decimal(theirs.get("revenue")) != expected:
+            found.append(f"Kalshi paid {theirs.get('revenue')}¢, {expected:.0f}¢ expected")
+        if found:
+            report.differences.append(f"{name}: " + "; ".join(found))
+        else:
+            report.agreed += 1
+    return report
+
+
+def check_message(report: SettlementCheck) -> str | None:
+    """The owner's message when the check found differences, or None."""
+    if not report.differences:
+        return None
+    lines = ["NHL Edge · Kalshi settlements: the record and Kalshi differ"]
+    lines += [f"- {difference}" for difference in report.differences]
+    lines.append(
+        "Check Kalshi's statement: the record's result, price or stake is corrected with nhl "
+        "real correct and its reason; a game Kalshi resolved at its own price waits for #290."
+    )
     return "\n".join(lines)
