@@ -1,0 +1,41 @@
+name: kalshi-cancel
+# The kill switch's manual half (ADR 0040, #281): cancels every resting Kalshi order the pipeline
+# placed, in each environment whose key is set, at once, and records the orders that have expired.
+# Set the repository variable KALSHI_TRADING to off first, so the next odds slot places nothing;
+# that slot's run would cancel them too, but this one doesn't wait for it. It has its own
+# concurrency group, so a running odds job doesn't hold it back, and it sweeps twice for an order
+# such a job sends meanwhile. The log shows counts only.
+on:
+  workflow_dispatch:
+concurrency: kalshi-cancel
+permissions:
+  contents: read
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --frozen
+      - name: Cancel
+        env:
+          KALSHI_TRADING: ${{ vars.KALSHI_TRADING || 'off' }}
+          KALSHI_DEMO_KEY_ID: ${{ secrets.KALSHI_DEMO_KEY_ID }}
+          KALSHI_DEMO_PRIVATE_KEY: ${{ secrets.KALSHI_DEMO_PRIVATE_KEY }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_PRIVATE_KEY: ${{ secrets.KALSHI_PRIVATE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        # Twice, 90 seconds apart: an odds job placing while the first pass runs has its order
+        # written to R2 before it is sent, and the second pass finds it on Kalshi by its client
+        # order id and cancels it (Codex on #289). The next odds slot cancels again while the
+        # switch is off.
+        run: |
+          uv run nhl real orders --r2 --cancel
+          sleep 90
+          uv run nhl real orders --r2 --cancel

@@ -4446,10 +4446,18 @@ def real_alert(
     url = optional("DASHBOARD_URL")
     reports_ = rl.weekly_reports()
     stopped = rl.stopped_days(store)
+    # Whether an exchange venue's orders go today, as nhl real place will read the switch: the
+    # message says so when they don't (Codex on #289).
+    from nhl_edge.live import placement
+
+    try:
+        placing = placement.switch_of(optional("KALSHI_TRADING")) == placement.LIVE
+    except ValueError:
+        placing = False
     # Built at the clock after the reads, and built again while a game starts before the write.
     alert = rl.publishable(
         lambda at: rl.prepare(
-            game_date, ledger, reports_, record, games, at, code_version, url, stopped
+            game_date, ledger, reports_, record, games, at, code_version, url, stopped, placing
         ),
         clock,
     )
@@ -4678,6 +4686,238 @@ def real_correct(
         typer.echo(f"not written: {exc}", err=True)
         raise typer.Exit(code=1) from None
     typer.echo(f"written to {key}")
+
+
+def _send_quietly(text: str | None) -> bool:
+    """Send a message to the owner if there is one; returns whether it failed. The error names no
+    token or chat (telegram.TelegramError)."""
+    from nhl_edge.live import telegram
+
+    if text is None:
+        return False
+    try:
+        telegram.send(text)
+    except telegram.TelegramError as exc:
+        typer.echo(f"the message was not sent ({exc})", err=True)
+        return True
+    return False
+
+
+def _listed_starts(days: Any, mirror: bool) -> "dict[int, datetime] | None":
+    """Each game's start as the NHL's schedule lists it now, for the given game dates (ET), or
+    None when the schedule couldn't be read. Each date's read is the week from the day before
+    it, so a game moved earlier, into that day, is listed too (Codex on #289); one moved later
+    than that week keeps its order's own expiry, which is earlier still. The responses are
+    stored raw, as every fetch is."""
+    from datetime import timedelta
+
+    import httpx
+
+    from nhl_edge.ingest.nhl_api import NhlApi, NhlApiError
+    from nhl_edge.lake.raw import RawStore
+
+    api = NhlApi(RawStore.from_env(mirror=mirror, flag="--r2"))
+    starts: dict[int, datetime] = {}
+    try:
+        for day in sorted({day - timedelta(days=1) for day in days}):
+            starts |= {game.game_id: game.start_utc for game in api.schedule(day)}
+    except (NhlApiError, httpx.HTTPError, OSError) as exc:
+        typer.echo(f"::warning::the NHL schedule couldn't be read ({type(exc).__name__})")
+        return None
+    return starts
+
+
+@real_app.command("place")
+def real_place(
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2", help="Read the day's alert from R2 and write the orders' record there."
+        ),
+    ] = False,
+    cron: Annotated[
+        str | None,
+        typer.Option(
+            help="The odds workflow's fallback cron line: place only if it is today's midday "
+            "slot, as nhl real alert does, and otherwise do nothing."
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Print the orders it would send, with their prices, and send nothing: for the "
+            "owner's terminal, never a workflow.",
+        ),
+    ] = False,
+    day: Annotated[
+        datetime | None,
+        typer.Option("--date", formats=["%Y-%m-%d"], help="A dry run's game date (ET)."),
+    ] = None,
+    env: Annotated[
+        str | None,
+        typer.Option(help="A dry run's environment, demo or live; by default the switch's."),
+    ] = None,
+) -> None:
+    """Place the day's alerted bets on Kalshi as the switch KALSHI_TRADING says (ADR 0040, #281):
+    off places nothing; demo sends every alerted bet to Kalshi's demo exchange (mock funds); live
+    sends the real days' bets to the live exchange. Each order is written to R2 before it is sent,
+    after its checks (expiry, market, caps, balance), and expires 5 minutes before its game.
+    The log prints counts only; the owner's Telegram gets the orders."""
+    from datetime import UTC
+    from zoneinfo import ZoneInfo
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.live import kalshi_trade as kt
+    from nhl_edge.live import placement
+    from nhl_edge.live import real_ledger as rl
+    from nhl_edge.settings import MissingSettingError, load_env, optional
+
+    load_env()
+    now = datetime.now(UTC)
+    if cron is not None:
+        from nhl_edge.ingest.odds import resolve_slot
+
+        today = now.astimezone(ZoneInfo("America/New_York")).date()
+        slot = resolve_slot("free-tier", cron, today)
+        if slot is None or slot.name != "midday":
+            typer.echo(f"{cron!r} is not today's midday slot: no orders")
+            return
+    try:
+        setting = placement.switch_of(optional("KALSHI_TRADING"))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    if (day is not None or env is not None) and not dry_run:
+        raise typer.BadParameter("only a dry run takes a date or an environment")
+    if dry_run:
+        setting = env or (setting if setting != placement.OFF else kt.DEMO)
+        if setting not in kt.ENVS:
+            raise typer.BadParameter(f"one of {', '.join(kt.ENVS)}", param_hint="--env")
+    elif setting == placement.OFF:
+        typer.echo("kalshi orders: KALSHI_TRADING is off, nothing placed")
+        return
+    elif not r2:
+        raise typer.BadParameter("orders are recorded in R2: pass --r2, or --dry-run")
+    game_date = day.date() if day is not None else now.astimezone(ET).date()
+    code_version = reports.version("real-place", now)
+    if not dry_run and code_version.endswith("-dirty"):
+        raise typer.BadParameter("commit first: the orders name their commit")
+    _, store = _real_record(r2)
+    stored = rl.alerted(store, game_date)
+    if stored is None:
+        typer.echo(f"kalshi orders {setting}: {game_date} has no alert, nothing placed")
+        return
+    planned = placement.plans(rl.stored_rows(stored), setting)
+    if dry_run:
+        typer.echo(f"kalshi orders {setting} {game_date}: {len(planned)} would be sent")
+        for plan in planned:
+            typer.echo(
+                f"  {plan.team} {plan.ticker}: at most {plan.limit}, {plan.contracts} contracts, "
+                f"at most ${plan.max_cost_usd:.2f} ({plan.stake:.2f} €, decimal "
+                f"{plan.effective:.3f}), expires {plan.expires_utc:%H:%M} UTC"
+            )
+        return
+    # Each game's start now, as the schedule lists it: a game moved since the alert gets no order,
+    # and nor does any while the schedule can't be read.
+    starts = _listed_starts({plan.game_date for plan in planned}, r2) if planned else {}
+    try:
+        trade = kt.KalshiTrade.from_env(setting, RawStore.from_env(mirror=r2, flag="--r2"))
+        report = placement.place(
+            store, trade, planned, lambda: datetime.now(UTC), code_version, starts or {}
+        )
+    except (kt.KalshiTradeError, MissingSettingError) as exc:
+        typer.echo(f"kalshi orders {setting}: failed ({exc})", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(report.line(setting))
+    told = placement.unnotified(store, setting, "placed")
+    text = placement.placed_message(game_date, setting, told, report.skipped, report.failed)
+    if _send_quietly(text):
+        raise typer.Exit(code=1)
+    placement.mark_notified(store, setting, told, "placed", datetime.now(UTC))
+    if report.failed:
+        typer.echo(f"kalshi orders {setting}: {report.failed} orders failed", err=True)
+        raise typer.Exit(code=1)
+
+
+@real_app.command("orders")
+def real_orders(
+    r2: Annotated[
+        bool,
+        typer.Option("--r2", help="The orders' record in R2, and the lake mirrored there."),
+    ] = False,
+    cancel: Annotated[
+        bool,
+        typer.Option(
+            "--cancel", help="Cancel every resting order first, whatever the switch says."
+        ),
+    ] = False,
+) -> None:
+    """Track the Kalshi orders (ADR 0040, #281) in each environment whose key is set: one still
+    resting is counted, and one past its expiry is read with its fills and written once, with
+    the bet's entry in the real record on the live exchange. An environment the switch
+    KALSHI_TRADING doesn't name (all of them when it is off) has its resting orders cancelled
+    first, as with --cancel. The lake's real_orders is rebuilt from the record. The log prints
+    counts only; the fills go to the owner's Telegram."""
+    from datetime import UTC
+    from zoneinfo import ZoneInfo
+
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.live import kalshi_trade as kt
+    from nhl_edge.live import placement
+    from nhl_edge.settings import MissingSettingError, optional
+
+    lake, store = _real_record(r2)
+    try:
+        setting = placement.switch_of(optional("KALSHI_TRADING"))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    raw = RawStore.from_env(mirror=r2, flag="--r2")
+    trades = {}
+    for env in kt.ENVS:
+        try:
+            trades[env] = kt.KalshiTrade.from_env(env, raw)
+        except MissingSettingError:
+            typer.echo(f"kalshi orders {env}: no key set, skipped")
+    # Each pending order's game start now, so an order resting into a game moved earlier is
+    # cancelled. Without the schedule, the earliest start already seen holds, and nothing is final.
+    days = {day for env in trades for day in placement.pending_dates(store, env)}
+    starts = _listed_starts(days, r2) if days else {}
+    failed = False
+    for env, trade in trades.items():
+        try:
+            report = placement.reconcile(
+                store,
+                trade,
+                lambda: datetime.now(UTC),
+                cancel=cancel or env != setting,
+                starts=starts,
+            )
+        except kt.KalshiTradeError as exc:
+            typer.echo(f"kalshi orders {env}: failed ({exc})", err=True)
+            failed = True
+            continue
+        typer.echo(report.line(env))
+        # Orders found on Kalshi unrecorded, then the finals: each told once its message goes.
+        today = datetime.now(UTC).astimezone(ZoneInfo("America/New_York")).date()
+        adopted = placement.unnotified(store, env, "placed")
+        finals = placement.unnotified(store, env, "final")
+        for part, told, text in (
+            ("placed", adopted, placement.placed_message(today, env, adopted)),
+            ("final", finals, placement.fills_message(env, finals)),
+        ):
+            if _send_quietly(text):
+                failed = True
+            else:
+                placement.mark_notified(store, env, told, part, datetime.now(UTC))
+        if report.after_start:
+            typer.echo(f"::warning::kalshi orders {env}: a fill came at or after the start")
+    orders = placement.table(store)
+    lake.replace("real_orders", orders)
+    typer.echo(f"real_orders: {orders.height} orders")
+    if failed:
+        raise typer.Exit(code=1)
 
 
 @kalshi_app.command("books")

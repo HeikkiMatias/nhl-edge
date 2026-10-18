@@ -43,18 +43,43 @@ PESSIMISTIC = "p10"
 
 
 @dataclass(frozen=True)
+class Exchange:
+    """An exchange's order rules (ADR 0040): its environment ("demo" or "live", live/kalshi_trade),
+    the owner's deposit rate in USD per euro, fixed for the season, the contract step, the taker
+    fee rate, the precision the fee is rounded up to (a direct member's $0.0001), and how long
+    before the listed start an order expires."""
+
+    env: str
+    usd_per_eur: float
+    step: float = 0.01
+    taker_fee: float = 0.07
+    fee_precision: float = 0.0001
+    expire_before: timedelta = timedelta(minutes=5)
+
+    def __post_init__(self) -> None:
+        if self.env not in ("demo", "live") or self.usd_per_eur <= 0:
+            raise ValueError(f"an exchange needs its environment and rate: {self}")
+
+
+@dataclass(frozen=True)
 class Venue:
     """Where real bets are placed (#266): a stake is rounded down to increment euros, and one
-    below min_stake is skipped, never rounded up (ADR 0039)."""
+    below min_stake is skipped, never rounded up (ADR 0039). An exchange venue buys contracts
+    under its exchange's rules, and its bets are placed automatically (ADR 0040)."""
 
     name: str
     min_stake: float
     increment: float
+    exchange: Exchange | None = None
 
 
 # The practice alerts before the start (#268): any stake to the cent.
 PRACTICE_VENUE = Venue("practice", 0.0, 0.01)
-# Each venue's stake rules, entered with VENUE once its terms are confirmed (#266).
+# Kalshi's demo exchange, mock funds, where the practice days' orders go (ADR 0040): its rate
+# is a round stand-in, since no euro is converted there.
+DEMO_EXCHANGE = Exchange("demo", usd_per_eur=1.15)
+# Each venue's stake rules, entered with VENUE once its terms are confirmed (#266). Kalshi's
+# entry, with the owner's deposit rate: Venue("kalshi", 0.0, 0.01, Exchange("live", <rate>)).
 VENUES: dict[str, Venue] = {}
 # The venue real bets are placed at, once ready (#266). None until then.
 VENUE: str | None = None

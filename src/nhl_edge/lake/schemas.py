@@ -690,11 +690,19 @@ class RealAlerts(pa.DataFrameModel):
     max_stake: pl.Float64 = pa.Field(ge=0)
     stakes: pl.String
     code_version: pl.String
+    # An exchange venue's buy order for an alerted bet (ADR 0040), as JSON: its environment, limit
+    # in dollars, contracts, most cost in USD and in euros, effective price, rate and expiry.
+    # Null on a sportsbook or practice venue, and for a skipped bet.
+    exchange: pl.String = pa.Field(nullable=True)
 
     class Config(pa.DataFrameModel.Config):
         strict = True
         ordered = True
         unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def an_order_only_for_an_alerted_bet(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("exchange").is_null() | (pl.col("status") == "alerted"))
 
     @pa.dataframe_check
     def alerted_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
@@ -2450,6 +2458,61 @@ class KalshiBooks(pa.DataFrameModel):
         return data.lazyframe.select(
             pl.col("ticker").str.starts_with(pl.lit("KXNHLGAME-") + day)
             & (pl.col("ticker").str.split("-").list.last() == team)
+        )
+
+
+KALSHI_ENVS = ("live", "demo")
+REAL_ORDER_STATES = ("planned", "skipped", "placed", "not sent", "canceled", "executed")
+
+
+class RealOrders(pa.DataFrameModel):
+    """One buy order of an alerted bet on Kalshi (ADR 0040, #281): in env "live" a real bet, in
+    "demo" one on Kalshi's demo exchange with mock funds, kept apart from the record. limit is its
+    highest price in dollars, contracts its size and max_cost_usd the most it costs, fee included;
+    it expires at expires_utc, before the game's start. status is planned (written, not sent),
+    skipped (with its reason), placed (sent, resting), or once expired: not sent, canceled or
+    executed, with the contracts filled, their cost and fees in USD, the first fill's time and
+    whether any fill came at or after the start. Rebuilt from R2 (real/live/orders/,
+    real/demo/orders/); private, the owner's own orders, never a model input."""
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    env: pl.String = pa.Field(isin=KALSHI_ENVS)
+    mode: pl.String = pa.Field(isin=REAL_MODES)
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    ticker: pl.String = pa.Field(str_matches=KALSHI_TICKER)
+    client_order_id: pl.String
+    limit: pl.Float64 = pa.Field(gt=0, lt=1)
+    contracts: pl.Float64 = pa.Field(gt=0)
+    max_cost_usd: pl.Float64 = pa.Field(gt=0)
+    expires_utc: UtcDatetime
+    written_utc: UtcDatetime
+    status: pl.String = pa.Field(isin=REAL_ORDER_STATES)
+    reason: pl.String = pa.Field(nullable=True)
+    order_id: pl.String = pa.Field(nullable=True)
+    placed_utc: UtcDatetime = pa.Field(nullable=True)
+    filled: pl.Float64 = pa.Field(nullable=True, ge=0)
+    cost_usd: pl.Float64 = pa.Field(nullable=True, ge=0)
+    fees_usd: pl.Float64 = pa.Field(nullable=True, ge=0)
+    first_fill_utc: UtcDatetime = pa.Field(nullable=True)
+    after_start: pl.Boolean = pa.Field(nullable=True)
+    code_version: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["env", "game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def expires_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("expires_utc") < pl.col("start_utc"))
+
+    @pa.dataframe_check
+    def placed_once_written(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("placed_utc").is_null() | (pl.col("placed_utc") >= pl.col("written_utc"))
         )
 
 
