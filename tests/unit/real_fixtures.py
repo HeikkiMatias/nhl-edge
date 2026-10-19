@@ -54,7 +54,7 @@ def games(
 
 def report(
     as_of: date,
-    verdict: str = "fails: (a)",
+    verdict: str = "does not hold: (a) not yet measured",
     stop: bool | None = None,
     pause: bool | None = None,
 ) -> dict[str, Any]:

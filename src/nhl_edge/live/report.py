@@ -1285,7 +1285,10 @@ def _real_stakes_lines(section: dict[str, Any] | None) -> list[str]:
     veto = section["veto"]
 
     def holds(condition: dict[str, Any]) -> str:
-        return "holds" if condition["holds"] else "fails"
+        # Unmeasured is not a failure (hard rule 7, Codex on #293): the condition doesn't hold yet.
+        if condition["holds"]:
+            return "holds"
+        return "does not hold yet" if not condition.get("measured", True) else "does not hold"
 
     share = a["share_with_proxy"]
     coverage = f"{share:.1%}" if share is not None else "none yet"

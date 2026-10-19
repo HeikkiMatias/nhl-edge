@@ -189,7 +189,14 @@ def start_rule(
     elif not complete:
         verdict = "decided at the weekly report, once the previous day's results are public"
     elif failing:
-        verdict = "fails: " + ", ".join(f"({name})" for name in failing)
+        # A condition without its interval yet is unmeasured, never a failure (hard rule 7, Codex
+        # on #293): the rule doesn't hold, and the verdict says why.
+        verdict = "does not hold: " + ", ".join(
+            f"({name}) not yet measured"
+            if not conditions[name].get("measured", True)
+            else f"({name})"
+            for name in failing
+        )
         verdict += "".join(f"; {text}" for text in blocks)
     elif blocks:
         verdict = "the rule holds, but " + " and ".join(blocks)

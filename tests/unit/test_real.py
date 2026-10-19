@@ -44,9 +44,19 @@ def rule(**changes: Any) -> dict[str, Any]:
 
 def test_the_rule_holds_only_when_every_condition_does() -> None:
     assert rule()["verdict"] == "holds"
-    assert rule(venue=None)["verdict"] == "fails: (d)"
+    assert rule(venue=None)["verdict"] == "does not hold: (d)"
     failing = rule(value=value(high=-0.001), venue=None)
-    assert failing["verdict"] == "fails: (a), (d)"
+    assert failing["verdict"] == "does not hold: (a), (d)"
+
+
+def test_unmeasured_clv_does_not_hold_and_is_never_called_a_failure() -> None:
+    # Without its interval (fewer than 4 weeks), (a) doesn't hold, and the verdict says it is
+    # not yet measured, never that it failed (hard rule 7, Codex on #293).
+    unmeasured = rule(value=value(high=None, bound_high=None))
+    assert not unmeasured["conditions"]["a"]["measured"]
+    assert unmeasured["verdict"] == "does not hold: (a) not yet measured"
+    both = rule(value=value(high=None, bound_high=None), venue=None)["verdict"]
+    assert both == "does not hold: (a) not yet measured, (d)"
 
 
 def test_the_bankroll_is_the_owners_veto_never_a_pass() -> None:
@@ -57,7 +67,7 @@ def test_the_bankroll_is_the_owners_veto_never_a_pass() -> None:
     assert vetoed["verdict"] == "the rule holds, but the owner's veto applies"
     assert not rule(paper_bankroll=100.01)["veto"]["applies"]
     both = rule(paper_bankroll=98.0, venue=None)["verdict"]
-    assert both == "fails: (d); the owner's veto applies"
+    assert both == "does not hold: (d); the owner's veto applies"
     assert "b" not in rule()["conditions"]
 
 
