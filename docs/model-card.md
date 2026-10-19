@@ -261,6 +261,13 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - This is one season, described after the fact, and nothing in the policy reads it. It is no evidence of where an edge lies.
 - **The guard can't act on history.** Its θ of 0.0535 is a whole-day move. It would have fired on 7 of the 465 bets between the opener and the close.
 - **Gaps above 8 points against B1:** 17 on E1 and 49 on E2, against B3's 208 in 2021-22 on E1. All were reviewed by hand, and no bug was found.
+- **Calibration on the selected bets** (#253, `reports/backtest/selected-calibration.json`, `backtest-20261019-1a2e571`). Each game is scored on its side of higher expected return at the price, on the splits fixed on #253 before the reading. Figures are against B1, negative favouring the blend.
+  - **The 465 E2 bets:** log loss −0.0133 [−0.0233, −0.0038], Brier −0.0058 [−0.0105, −0.0014]. Their calibration slope is 1.52 [1.18, 1.93], under-confident like B3 on this season, not over-confident.
+  - **The other 841 games:** +0.0008 [−0.0020, +0.0035], with a slope of 1.05 [0.81, 1.33].
+  - **Favourites and underdogs:** the gain is on the favourites (−0.0086 [−0.0141, −0.0027]) and none on the underdogs (+0.0007 [−0.0049, +0.0054]).
+  - **u:** at or above its training mean −0.0076 [−0.0135, −0.0016], below it +0.0003 [−0.0042, +0.0052].
+  - **E1, the same rule at the close:** the 538 games it would pick, −0.0038 [−0.0115, +0.0034].
+  - **Caveat:** this is one seen season, whose market was itself under-confident, so it is a diagnostic. Nothing in the policy reads it. Live, the weekly report shows the same splits (counts until 4 weeks).
 
 **Phase 4's inputs:**
 - **The uncertainty score u (ADR 0026):** history's goalie doubt comes from the goalie-start model alone, since no historical starter confirmations exist. Under v1, live u reads the same goalie-start probabilities and ignores confirmations (ADR 0030), and so does live B3. Under v2, from 2026-10-15, both read the day's confirmed and likely starters (ADR 0037).

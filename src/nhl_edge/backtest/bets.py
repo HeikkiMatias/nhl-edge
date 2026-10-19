@@ -28,18 +28,23 @@ LEDGER_FILE = "bets.csv"
 
 
 def candidates(
-    predictions: pl.DataFrame, every: pl.DataFrame, scales: Scales, sbr_odds: pl.DataFrame
+    predictions: pl.DataFrame,
+    every: pl.DataFrame,
+    scales: Scales,
+    sbr_odds: pl.DataFrame,
+    experiment: str = EXPERIMENT,
 ) -> pl.DataFrame:
-    """Each game E2's blend scored: its probability, the opener's two decimal prices, u in
-    standard deviations of its fold's training u, and the full-game result."""
+    """Each game an experiment's blend scored, E2's by default: its probability, the experiment's
+    two decimal prices (E2's opener, or E1's close for #253's diagnostic), u in standard deviations
+    of its fold's training u, and the full-game result."""
     blended = predictions.filter(
-        pl.col("experiment") == EXPERIMENT, pl.col("model") == BLEND
+        pl.col("experiment") == experiment, pl.col("model") == BLEND
     ).select(
         "season", "game_id", "game_date", "prediction_utc", "p_home", "home_win", "train_cutoff"
     )
     doubts = []
-    for season, scale in scales.get(EXPERIMENT, {}).items():
-        rows = every.filter(pl.col("experiment") == EXPERIMENT, pl.col("season") == season)
+    for season, scale in scales.get(experiment, {}).items():
+        rows = every.filter(pl.col("experiment") == experiment, pl.col("season") == season)
         doubts.append(rows.select("game_id").with_columns(scale.in_sds(rows)))
     if not doubts:
         return blended.with_columns(
@@ -47,9 +52,9 @@ def candidates(
             away_price=pl.lit(None, pl.Float64),
             u_sd=pl.lit(None, pl.Float64),
         ).clear()
-    # The price taken is the opener the blend's market input came from: the same game and the
-    # same prediction time.
-    prices = market_prices(sbr_odds, Experiment.E2).select(
+    # The price taken is the one the blend's market input came from (E2's opener): the same game
+    # and the same prediction time.
+    prices = market_prices(sbr_odds, Experiment(experiment)).select(
         "game_id", "prediction_utc", "start_utc", "home_price", "away_price"
     )
     return (

@@ -1067,3 +1067,40 @@ def test_the_report_shows_the_shadows_apart_from_its_verdicts() -> None:
     text = lr.markdown(result)
     assert "## Shadow evaluations (#252)" in text
     assert "withheld until 4 weeks of both" in text
+
+
+def test_the_selected_bets_split_gives_counts_under_four_weeks() -> None:
+    # The fixture's games without a bet have no side at the decision: they are left out (#253).
+    season = Season(n_weeks=2)
+    sided = season.ledger.with_columns(
+        p_side=pl.when(pl.col("side").is_not_null()).then(pl.col("p_blend"))
+    )
+    result = season.report(ledger=sided)
+    section = result["selected_calibration"]
+    assert section["without_a_side"] == 30 and section["games"] == 30
+    assert section["selected"]["bets"] == {"games": 30, "weeks": 2}
+    assert section["selected"]["other games"] == {"games": 0, "weeks": 0}
+    text = lr.markdown(result)
+    assert "## Calibration on the selected bets (#253)" in text
+    assert "| selected | bets | 30 over 2 weeks | too few weeks | | |" in text
+    assert "- 30 games without a side at the decision's price are left out" in text
+
+
+def test_the_selected_bets_split_scores_each_game_on_its_side_from_four_weeks() -> None:
+    season = Season(n_weeks=6)
+    every = season.ledger.with_columns(
+        side=pl.lit("home"),
+        price=pl.lit(1.9),
+        p_side=pl.col("p_blend"),
+        u_sd=pl.when(pl.col("game_id") % 3 == 0).then(-0.5).otherwise(0.5),
+    )
+    section = season.report(ledger=every)["selected_calibration"]
+    assert section["without_a_side"] == 0 and section["games"] == 180
+    bets, other = section["selected"]["bets"], section["selected"]["other games"]
+    assert bets["games"] == other["games"] == 90 and bets["weeks"] == 6
+    # p_b1 equals p_blend in the fixture, so the blend ties B1 on every game
+    assert bets["log_loss_minus_b1"]["mean"] == 0.0 and "slope" in bets
+    # home at 1.9 against away at 2.0 is the favourite in every game
+    assert section["price"]["favourites"]["games"] == 180
+    assert section["price"]["underdogs"] == {"games": 0, "weeks": 0}
+    assert section["u"]["u below its training mean"]["games"] == 60
