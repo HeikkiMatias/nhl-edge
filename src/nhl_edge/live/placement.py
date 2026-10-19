@@ -225,6 +225,19 @@ def _ceiling(share: float, rules: real.Exchange) -> Decimal:
     return Decimal(str(share * CEILING_BANKROLL * rules.usd_per_eur))
 
 
+def _sent_cost(store: lb.Store, env: str, game_date: date, rules: real.Exchange) -> Decimal:
+    """The most the orders an earlier run sent for a game date can cost: each order record with
+    its placed part, at its cost recomputed from its own contracts and limit under the code's
+    rules. Never from the day's alert rows, which R2 could rewrite after the orders went (Codex
+    on #295)."""
+    total = Decimal(0)
+    for (day, _), record in stored_orders(store, env).items():
+        order = record.get("order")
+        if day == game_date.isoformat() and order is not None and "placed" in record:
+            total += order_cost(Decimal(order["contracts"]), Decimal(order["limit"]), rules)
+    return total
+
+
 def _held(store: lb.Store, key: str) -> bool:
     return key in store.keys(key.rsplit("/", 1)[0])
 
@@ -276,15 +289,15 @@ def place(
         if not _held(store, key):
             _put(store, key, {"reason": reason, "skipped_utc": now().isoformat()})
 
-    due, sent = [], []
+    due = []
     for plan in planned:
         key = order_key(plan.env, plan.game_date, plan.game_id)
         if not _held(store, key):
             _put(store, key, plan.record(now(), code_version))
         if _held(store, order_key(plan.env, plan.game_date, plan.game_id, "placed")):
-            # Sent by an earlier run, final or not: it counts against the day cap (Codex on #289).
+            # Sent by an earlier run, final or not: it counts against the day cap (Codex on #289),
+            # from its own record below.
             report.already += 1
-            sent.append(plan)
         elif _held(store, order_key(plan.env, plan.game_date, plan.game_id, "final")):
             # Its deadline has passed once, with nothing sent: a later run never revives it.
             skip(plan, "the order is already final")
@@ -298,7 +311,8 @@ def place(
             due.append(plan)
     if not due:
         return report
-    capped, day_ceiling = [], Decimal(0)
+    capped: list[Plan] = []
+    code_rules: real.Exchange | None = None
     for plan in due:
         cap = Decimal(str(POLICY.max_bet * plan.bankroll * plan.usd_per_eur))
         # The code's own limits first (#294): a row from R2 never sizes an order by itself.
@@ -315,17 +329,17 @@ def place(
             skip(plan, "over the bet cap")
         else:
             capped.append(plan)
-            day_ceiling = _ceiling(POLICY.max_day, rules)
-    if not capped:
+            code_rules = rules
+    if not capped or code_rules is None:
         return report
     # The day's orders together, those an earlier run placed included, within the day cap and
     # within the code's own day ceiling.
     first = capped[0]
     day_cap = Decimal(str(POLICY.max_day * first.bankroll * first.usd_per_eur))
     new = sum((plan.max_cost_usd for plan in capped), Decimal(0))
-    day_total = new + sum((plan.max_cost_usd for plan in sent), Decimal(0))
+    day_total = new + _sent_cost(store, first.env, first.game_date, code_rules)
     for limit, reason in (
-        (day_ceiling, "over the code's day ceiling"),
+        (_ceiling(POLICY.max_day, code_rules), "over the code's day ceiling"),
         (day_cap, "over the day cap"),
     ):
         if day_total > limit + CAP_TOLERANCE:

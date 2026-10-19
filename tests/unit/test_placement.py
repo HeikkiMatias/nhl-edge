@@ -301,6 +301,27 @@ def test_the_days_orders_stay_within_the_codes_day_ceiling(tmp_path: Path) -> No
     assert report.skipped == {"over the code's day ceiling": 4} and not exchange.orders
 
 
+def test_the_day_ceiling_counts_earlier_orders_from_their_records_not_the_rows(
+    tmp_path: Path,
+) -> None:
+    # Three orders of about $3.40 went out; then the alert was rewritten to make them look nearly
+    # free and to add a fourth. Their records, not the rows, count (Codex on #295).
+    record, exchange, clock = store(), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    planned = pm.plans(real_rows(), pm.LIVE)
+    big = [costing(p, "3.40", bankroll=1_000_000.0) for p in planned]
+    assert pm.place(record, client, big, clock, rf.CODE, STARTS).placed == 3
+    shrunk = [dataclasses.replace(p, max_cost_usd=Decimal("0.01")) for p in big]
+    late = costing(
+        dataclasses.replace(planned[0], game_id=2026020099, client_order_id="late"),
+        "3.40",
+        bankroll=1_000_000.0,
+    )
+    # by the rows, $0.03 sent and $3.40 new; by the records, over $13 against $11.60
+    report = pm.place(record, client, [*shrunk, late], clock, rf.CODE, STARTS)
+    assert report.skipped == {"over the code's day ceiling": 1} and len(exchange.orders) == 3
+
+
 def test_a_row_that_understates_its_cost_or_changes_the_rate_is_refused(tmp_path: Path) -> None:
     record, exchange, clock = store(), Exchange(), Clock()
     client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)

@@ -21,7 +21,7 @@ The repository is public, and the owner's card pays for Cloudflare (R2) and Kals
 - **Orders are sized by the code, never by R2 alone** (`live/placement.py`, ADR 0040):
   - a live order goes only to the exchange the venue commit names, at its rate;
   - its cost is recomputed from its contracts and limit;
-  - it and the day's orders stay within 1.5% and 5% of 200 €.
+  - it and the day's orders stay within 1.5% and 5% of 200 €. Earlier orders count from their own records, never from the day's rows.
 
   So a rewritten alert in R2 can spend at most 3 € an order and 10 € a day, in USD at the deposit rate.
   An order over the ceiling is refused, not shrunk. If the real bankroll nears 200 €, `CEILING_BANKROLL` is raised in a commit.

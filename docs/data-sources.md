@@ -493,7 +493,7 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - the code's own limits (#294), whatever the alert row says:
     - the exchange is one the code names (the demo exchange, or the live venue's from the venue commit), at the row's rate;
     - the order's cost, recomputed from its contracts and limit, is no more than the row states;
-    - that cost, and the day's together, are within 1.5% and 5% of 200 € (`placement.CEILING_BANKROLL`) at the code's rate;
+    - that cost, and the day's together, are within 1.5% and 5% of 200 € (`placement.CEILING_BANKROLL`) at the code's rate. The orders an earlier run sent count from their own records, never from the day's rows, which could be rewritten after they went;
   - the balance covers the orders;
   - the market is active.
 
