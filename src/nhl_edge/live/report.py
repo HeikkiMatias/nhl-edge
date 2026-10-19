@@ -30,6 +30,10 @@ It covers the frozen policy's regular-season paper decisions (ADR 0032):
   (live/movement.py).
 - **The closing proxy's lead (#254),** a diagnostic with no verdict: the fair move to the proxy
   and the bets' CLV by how long before the start the proxy was taken.
+- **Calibration on the selected bets (#253),** a diagnostic with no verdict: the blend's
+  calibration on each game's side, and its log loss and Brier score against B1's, on the policy's
+  bets against the other games, favourites against underdogs and u's two halves
+  (backtest/selected.py).
 - **Shadow evaluations (#252),** paper only and with no verdict: the frozen rules on the
   market-only control, and the policy's own bets at the best fresh price of the other books
   (live/shadow.py).
@@ -56,6 +60,7 @@ import numpy as np
 import polars as pl
 
 from nhl_edge.backtest import b2_report
+from nhl_edge.backtest import selected as selected_bets
 from nhl_edge.backtest.e3 import stake_weighted
 from nhl_edge.backtest.market import Experiment, market_prices
 from nhl_edge.backtest.metrics import (
@@ -560,6 +565,21 @@ def _by_lead(frame: pl.DataFrame, value: str) -> dict[str, Any]:
     }
 
 
+# The ledger columns a game needs for its side (#253): without them it is left out.
+SIDE_COLUMNS = ("side", "price", "p_side", "p_b1", "home_price", "away_price")
+
+
+def selected_calibration(scored: pl.DataFrame) -> dict[str, Any]:
+    """#253's splits on the games with a result (backtest/selected.py): each game on its side at
+    the decision's price, the frozen policy's bets (the ledger's bet: picked and not guarded)
+    against the other games, the side as favourite or underdog at that price, and u below or at
+    or above its training mean. A group's figures wait for MIN_WEEKS weeks of games, its counts
+    shown until then. A diagnostic with no verdict."""
+    usable = scored.filter(*(pl.col(column).is_not_null() for column in SIDE_COLUMNS))
+    frame = selected_bets.sides(usable, "p_b1", "bet")
+    return selected_bets.splits(frame, enough) | {"without_a_side": scored.height - usable.height}
+
+
 def proxy_leads(started: pl.DataFrame, odds: pl.DataFrame, now: datetime) -> pl.DataFrame:
     """Each started game's closing proxy's lead before the start, in minutes (game_date, game_id,
     lead_min): against the start the proxy was chosen by, the commence time of the game's latest
@@ -860,6 +880,7 @@ def report(
         "market_timing": market_timing(scored, history),
         "entry_to_close": entry_to_close(moves),
         "proxy_lead": proxy_lead(moves, bets, proxy_leads(started, odds, now)),
+        "selected_calibration": selected_calibration(scored),
         "shadows": shadows(started, moves, odds),
         "real_stakes": real_stakes(
             bets,
@@ -1168,6 +1189,7 @@ def markdown(result: dict[str, Any]) -> str:
         f"- Slope on the lead, per hour: the move {_cell(lead['move_points']['slope_per_hour'])}, "
         f"CLV {_cell(lead['clv']['slope_per_hour'], 4)}.",
     ]
+    lines += _selected_lines(result["selected_calibration"])
     market = result["shadows"]["market_only"]
     best = result["shadows"]["best_price"]
     gap = market["policy_minus_market_only"]
@@ -1215,6 +1237,43 @@ def markdown(result: dict[str, Any]) -> str:
             f"- Return per bet: {_fmt(ret['return_per_bet'], 'bets')}",
         ]
     return "\n".join(lines) + "\n"
+
+
+def _selected_lines(section: dict[str, Any]) -> list[str]:
+    """#253's section: each split's two groups, with their figures once they have MIN_WEEKS
+    weeks of games, and their counts until then."""
+    lines = [
+        "",
+        "## Calibration on the selected bets (#253)",
+        "",
+        "A diagnostic with no verdict. Each game is scored on its side of higher expected return "
+        "at the decision's price. A blend calibrated over every game can still be over-confident "
+        "where it disagrees with the market enough to bet. Log loss and Brier are against B1 on "
+        "the same games (negative favours the blend); the slope is 1 when calibrated, below 1 "
+        "when over-confident.",
+        "",
+        "| Split | Group | Games | Log loss - B1 | Brier - B1 | Calibration slope |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for name, (_, yes, no) in selected_bets.SPLITS.items():
+        for group in (yes, no):
+            figure = section[name][group]
+            games = f"{figure['games']} over {figure['weeks']} weeks"
+            if "log_loss_minus_b1" not in figure:
+                lines.append(f"| {name} | {group} | {games} | too few weeks | | |")
+                continue
+            slope = _cell(figure["slope"]) if "slope" in figure else "no fit"
+            lines.append(
+                f"| {name} | {group} | {games} | {_cell(figure['log_loss_minus_b1'], 4)} | "
+                f"{_cell(figure['brier_minus_b1'], 4)} | {slope} |"
+            )
+    left = section["u"]["left_out"]
+    lines += [
+        "",
+        f"- {section['without_a_side']} games without a side at the decision's price are left "
+        f"out, and {left} more from the u split for want of u.",
+    ]
+    return lines
 
 
 def _real_stakes_lines(section: dict[str, Any] | None) -> list[str]:
