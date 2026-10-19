@@ -832,6 +832,7 @@ def backtest(
         e3,
         one_time,
         reports,
+        selected,
         sensitivity,
         subsets,
         walk_forward,
@@ -1091,6 +1092,11 @@ def backtest(
     report["bets"] = bets.report(picked, settled)
     # The market move guard (#142, ADR 0029): its frozen threshold, and how often it would fire.
     report["bets"]["guard"] = bets.guard_report(settled, sbr_odds)
+    # The blend's calibration on the selected bets, the favourites and u's halves (#253): a
+    # diagnostic on seen seasons, for E2 at the opener and E1 at the close.
+    report["selected_calibration"] = selected.history(
+        predictions, blend_input, blend_scales, sbr_odds
+    )
     # E3 on history (#143): the bets' closing line value against SBR's close, and each bet's
     # driver among the blend's parts.
     e2 = bets.EXPERIMENT
