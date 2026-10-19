@@ -490,6 +490,10 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - the game's start, as the NHL's schedule lists it now (`/v1/schedule/{date}` for the week from the day before, so a game moved into that day is listed too; fetched fresh and stored raw), is still the alert's. Without the schedule, no order goes;
   - its expiry is at least a minute away;
   - its most cost is within 1.5% of the bankroll, and the day's orders, earlier runs' included, within 5%;
+  - the code's own limits (#294), whatever the alert row says:
+    - the exchange is one the code names (the demo exchange, or the live venue's from the venue commit), at the row's rate;
+    - the order's cost, recomputed from its contracts and limit, is no more than the row states;
+    - that cost, and the day's together, are within 1.5% and 5% of 200 € (`placement.CEILING_BANKROLL`) at the code's rate;
   - the balance covers the orders;
   - the market is active.
 

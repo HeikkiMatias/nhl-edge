@@ -26,8 +26,18 @@ from nhl_edge.live import kalshi_trade as kt
 from nhl_edge.live import placement as pm
 from nhl_edge.live import real
 from nhl_edge.live import real_ledger as rl
+from nhl_edge.live.exchange import cost
 
 KALSHI = real.Venue("kalshi", 0.0, 0.01, real.Exchange("live", 1.16))
+
+
+@pytest.fixture(autouse=True)
+def kalshi_venue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The code names Kalshi's live exchange, as the venue commit will (#294)."""
+    monkeypatch.setattr(real, "VENUES", {"kalshi": KALSHI})
+    monkeypatch.setattr(real, "VENUE", "kalshi")
+
+
 REAL_DAY = rl.Mode(rl.REAL, rf.ALERT.date())
 PLACED_AT = rf.ALERT + timedelta(minutes=3)
 EXPIRES = pf.START - timedelta(minutes=5)
@@ -247,6 +257,75 @@ def test_the_day_cap_counts_the_orders_an_earlier_run_placed(tmp_path: Path) -> 
     # the two new ones alone, $3.48, are within $5.80; with the three placed before they aren't
     assert sum(p.max_cost_usd for p in planned) + Decimal("3.48") > Decimal("5.80")
     assert report.skipped == {"over the day cap": 2} and len(exchange.orders) == 3
+
+
+def tampered(plan: pm.Plan, contracts: str, **changes: Any) -> pm.Plan:
+    """A plan as a rewritten alert row in R2 could make it: contracts at its limit, at an honest
+    cost, with any other field changed."""
+    count = Decimal(contracts)
+    honest = cost(count, plan.limit, KALSHI.exchange)  # type: ignore[arg-type]
+    return dataclasses.replace(plan, contracts=count, max_cost_usd=honest, **changes)
+
+
+def test_a_row_from_r2_never_sizes_an_order_past_the_codes_ceiling(tmp_path: Path) -> None:
+    # A rewritten row claims a bankroll of a million euros: its own cap passes, the code's
+    # ceiling (1.5% of 200 € at 1.16, $3.48) doesn't (#294).
+    record, exchange, clock = store(), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    planned = pm.plans(real_rows(), pm.LIVE)
+    rich = tampered(planned[0], "10.00", bankroll=1_000_000.0)
+    assert rich.max_cost_usd > Decimal("3.48")
+    report = pm.place(record, client, [rich, *planned[1:]], clock, rf.CODE, STARTS)
+    assert report.skipped == {"over the code's bet ceiling": 1} and report.placed == 2
+
+
+def costing(plan: pm.Plan, at_most: str, **changes: Any) -> pm.Plan:
+    """The plan with the most contracts, in 0.01s, whose honest cost is at most at_most."""
+    rules, step, ceiling = KALSHI.exchange, Decimal("0.01"), Decimal(at_most)
+    count = step
+    while cost(count + step, plan.limit, rules) <= ceiling:  # type: ignore[arg-type]
+        count += step
+    return tampered(plan, str(count), **changes)
+
+
+def test_the_days_orders_stay_within_the_codes_day_ceiling(tmp_path: Path) -> None:
+    # Four orders under the bet ceiling, about $3.40 each, go over the day's $11.60 (5% of
+    # 200 € at 1.16), whatever bankroll their rows claim.
+    record, exchange, clock = store(), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    planned = pm.plans(real_rows(), pm.LIVE)
+    extra = dataclasses.replace(planned[0], game_id=2026020099, client_order_id="other")
+    rich = [costing(p, "3.40", bankroll=1_000_000.0) for p in [*planned, extra]]
+    assert all(Decimal("3.30") < p.max_cost_usd <= Decimal("3.40") for p in rich)
+    report = pm.place(record, client, rich, clock, rf.CODE, STARTS)
+    assert report.skipped == {"over the code's day ceiling": 4} and not exchange.orders
+
+
+def test_a_row_that_understates_its_cost_or_changes_the_rate_is_refused(tmp_path: Path) -> None:
+    record, exchange, clock = store(), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    planned = pm.plans(real_rows(), pm.LIVE)
+    cheap = dataclasses.replace(planned[0], contracts=Decimal("50.00"))  # its cost unchanged
+    rated = dataclasses.replace(planned[1], usd_per_eur=10.0)
+    report = pm.place(record, client, [cheap, rated, planned[2]], clock, rf.CODE, STARTS)
+    assert report.skipped == {
+        "it costs more than its row says": 1,
+        "its rate isn't the code's": 1,
+    }
+    assert report.placed == 1
+
+
+def test_no_live_order_goes_before_the_code_names_the_venue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A row in R2 with a live order is not enough: the venue commit is (#294).
+    monkeypatch.setattr(real, "VENUE", None)
+    record, exchange, clock = store(), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    report = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
+    assert report.skipped == {"the code names no exchange for its environment": 3}
+    assert not exchange.orders
+    assert pm.code_exchange(pm.DEMO) is real.DEMO_EXCHANGE
 
 
 def test_orders_the_balance_doesnt_cover_are_never_sent(tmp_path: Path) -> None:
