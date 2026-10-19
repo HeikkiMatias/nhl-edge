@@ -290,14 +290,14 @@ def test_the_real_stakes_section_states_adr_0039s_start_rule(
     veto = section["veto"]
     assert veto["paper_bankroll"] == pytest.approx(100 + season.settlements.height)
     assert not veto["applies"]
-    assert section["verdict"] == "fails: (d)"
+    assert section["verdict"] == "does not hold: (d)"
     assert section["clv_stop"] == {"measured": True, "weekly": True, "stop": False, "pause": False}
     text = lr.markdown(result)
-    assert "## Real stakes (ADR 0039)" in text and "**Start rule: fails: (d).**" in text
-    assert "- (d) Venue: not ready (#266): fails." in text
+    assert "## Real stakes (ADR 0039)" in text and "**Start rule: does not hold: (d).**" in text
+    assert "- (d) Venue: not ready (#266): does not hold." in text
     assert "so the veto is lifted" in text
     assert "Real stakes follow only ADR 0039's start rule" in text
-    # With a venue ready, the rule holds; with the bundles unchecked, (c) fails.
+    # With a venue ready, the rule holds; with the bundles unchecked, (c) does not.
     monkeypatch.setattr(real, "VENUE", "pinnacle")
     assert season.report(as_of=monday, unfinished_bundles=[])["real_stakes"]["verdict"] == ("holds")
     assert season.report(as_of=monday)["real_stakes"]["failing"] == ["c"]
