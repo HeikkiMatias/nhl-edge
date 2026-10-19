@@ -25,6 +25,15 @@ from nhl_edge.live import real_ledger as rl
 
 FIRST, SECOND, THIRD = 2026020053, 2026020054, 2026020055
 KALSHI = real.Venue("kalshi", 0.0, 0.01, real.Exchange("live", 1.16))
+
+
+@pytest.fixture(autouse=True)
+def kalshi_venue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The code names Kalshi's live exchange, as the venue commit will (#294)."""
+    monkeypatch.setattr(real, "VENUES", {"kalshi": KALSHI})
+    monkeypatch.setattr(real, "VENUE", "kalshi")
+
+
 REAL_DAY = rl.Mode(rl.REAL, rf.ALERT.date())
 STARTS = {game_id: game[2] for game_id, game in pf.GAMES.items()}
 WSH = "KXNHLGAME-26OCT07PITWSH-WSH"
