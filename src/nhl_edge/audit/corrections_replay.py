@@ -67,6 +67,8 @@ STEPS = (
 FEATURE_TABLES = ("shot_xg", "stints", *TARGET_TABLES)
 # Columns that name the build that wrote a row, not what it says.
 BUILD_COLUMNS = frozenset({"artifact_version", "xg_version"})
+# Numbers that name a player: a change counts, but has no size.
+IDENTIFIERS = frozenset({"home_goalie", "away_goalie"})
 # The same code on the same rows, up to the order of float sums.
 TOLERANCE = lb.TOLERANCE
 CHANGED = "any value"
@@ -230,14 +232,16 @@ def table_changes(base: pl.DataFrame, corrected: pl.DataFrame, table: str) -> pl
     games = "game_id" in key
 
     def counted(name: str, rows: pl.DataFrame, gap: pl.Expr | None = None) -> Change:
-        abs_gap = rows.select(gap).to_series() if gap is not None and rows.height else None
+        # A change from or to null has no size: it counts, but not in the median or the largest.
+        sizes = rows.select(gap).to_series().drop_nulls() if gap is not None else None
+        sized = sizes is not None and not sizes.is_empty()
         return (
             table,
             name,
             rows.height,
             rows["game_id"].n_unique() if games else None,
-            float(abs_gap.median()) if abs_gap is not None else None,  # type: ignore[arg-type]
-            float(abs_gap.max()) if abs_gap is not None else None,  # type: ignore[arg-type]
+            float(sizes.median()) if sized else None,  # type: ignore[arg-type, union-attr]
+            float(sizes.max()) if sized else None,  # type: ignore[arg-type, union-attr]
         )
 
     found = [
@@ -248,7 +252,7 @@ def table_changes(base: pl.DataFrame, corrected: pl.DataFrame, table: str) -> pl
     for name in fields:
         x, y = pl.col(name), pl.col(f"{name}_corrected")
         dtype = base.schema[name]
-        if dtype.is_numeric():
+        if dtype.is_numeric() and name not in IDENTIFIERS:
             gap = (y.cast(pl.Float64) - x.cast(pl.Float64)).abs()
             nan = (x.is_nan() != y.is_nan()).fill_null(False) if dtype.is_float() else pl.lit(False)
             differ = (x.is_null() != y.is_null()) | nan | (gap > TOLERANCE).fill_null(False)
@@ -387,7 +391,7 @@ def predicted(games: pl.DataFrame) -> pl.DataFrame:
 
 
 def _pp(value: float | None) -> str:
-    return "—" if value is None else f"{100 * value:.2f}"
+    return "—" if value is None else f"{100 * value:.3f}"
 
 
 def _plain(value: float | None) -> str:
@@ -463,10 +467,12 @@ def markdown(
         return int(found.sum()) if found.len() else 0
 
     for table, (rows, games) in compared.items():
+        # A table without game_id (rapm_terms, by date) counts rows only.
+        changed = "—" if games is None else f"{count(table, CHANGED, 'games'):,}"
         lines.append(
             f"| {table} | {rows:,} | {'—' if games is None else f'{games:,}'} | "
-            f"{count(table, CHANGED):,} | {count(table, CHANGED, 'games'):,} | "
-            f"{count(table, ADDED):,} | {count(table, REMOVED):,} |"
+            f"{count(table, CHANGED):,} | {changed} | {count(table, ADDED):,} | "
+            f"{count(table, REMOVED):,} |"
         )
     columns = changes.filter(~pl.col("column").is_in([CHANGED, ADDED, REMOVED]))
     if columns.height:

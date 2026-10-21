@@ -179,6 +179,7 @@ def test_table_changes_count_values_beyond_the_tolerance_and_ignore_the_build() 
             "game_id": [1, 2, 3, 4],
             "delta_s": [0.1, 0.2, 0.3, None],
             "home": ["A", "B", "C", "D"],
+            "prior_games": [1.0, 2.0, 3.0, 4.0],
             "artifact_version": ["team-strength-20261021-aaaaaaa"] * 4,
         }
     )
@@ -187,6 +188,7 @@ def test_table_changes_count_values_beyond_the_tolerance_and_ignore_the_build() 
             "game_id": [1, 2, 3, 4, 5],
             "delta_s": [0.1 + 1e-12, 0.25, 0.1, 0.4, 0.0],
             "home": ["A", "B", "C", "X", "E"],
+            "prior_games": [1.0, 2.0, 3.0, None, 5.0],
             "artifact_version": ["team-strength-20261021-bbbbbbb"] * 5,
         }
     )
@@ -204,7 +206,19 @@ def test_table_changes_count_values_beyond_the_tolerance_and_ignore_the_build() 
     assert (rows, changed_games) == (3, 3)
     assert median == pytest.approx(0.125) and largest == pytest.approx(0.2)
     assert found["home"] == (1, 1, None, None)
+    # A value that became null counts, with no size.
+    assert found["prior_games"] == (1, 1, None, None)
     assert "artifact_version" not in found
+    goalies = pl.DataFrame({"game_id": [1], "stint_id": [1], "home_goalie": [8_470_000]})
+    swapped = goalies.with_columns(home_goalie=pl.lit(8_478_000))
+    assert cr.table_changes(goalies, swapped, "stints").rows()[-1] == (
+        "stints",
+        "home_goalie",
+        1,
+        1,
+        None,
+        None,
+    )
 
 
 def saved_day(tmp_path: Path) -> lb.Bundle:
@@ -372,11 +386,12 @@ def test_the_report_counts_changed_predictions_and_bets() -> None:
         corrected_version,
         {"shots": (10, 9)},
         changes,
-        {"team_strength": (20, 20)},
+        {"team_strength": (20, 20), "rapm_terms": (5, None)},
         decisions,
     )
-    assert "| p_blend (points) | 3 | 1 | 0.00 | 1.00 | 1.00 |" in text
+    assert "| p_blend (points) | 3 | 1 | 0.000 | 1.000 | 1.000 |" in text
     assert "| team_strength | 20 | 20 | 2 | 2 | 0 | 0 |" in text
+    assert "| rapm_terms | 5 | — | 0 | — | 0 | 0 |" in text
     assert "| team_strength | delta_s | 2 | 0.01 | 0.02 |" in text
     assert "1 bets in the base and 2 in the corrected version" in text
     assert (
