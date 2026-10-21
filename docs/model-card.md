@@ -7,7 +7,7 @@ Current production model, how it scored, and its known weaknesses. It is updated
 None in production: gate 3 is not met (ADR 0031). The blend adds no information beyond the recalibrated market on history, and phase 5 paper-trades the frozen policy on live 2026-27: v1 (`policy-20261005-8ec5cf3`) from 2026-10-08 to 2026-10-14, and v2 (`policy-20261014-e15db87`, ADR 0037), which adds the day's confirmed starting goalies, from 2026-10-15. The backtest has the two market baselines, phase 2's model and phase 3's:
 - **B0** is the de-vigged SBR moneyline, with nothing fitted, under the default multiplicative method (ADR 0008).
 - **B1** is the recalibrated market, a logistic regression on B0's log-odds fitted per test season on the earlier seasons.
-- **B2** is the team and goalie model (ADR 0013). It is an L2 logistic regression on team strength, goalie effects, rest and travel and empty seats, with the season home edge as a fixed term. Each fold fits it on earlier games with their actual starters. It predicts by averaging over the goalie-start model's pairs of starters, and reads no price. Gate 1 (#79) judges it against B1.
+- **B2** is the team and goalie model (ADR 0013). It is an L2 logistic regression on team strength, goalie effects, rest and travel and empty seats, with the season home edge as a fixed term. Each fold fits it on earlier games with their actual starters. It predicts by averaging over the goalie-start model's pairs of starters, and reads no price. Gate 1 (#79, ADR 0014) found it short of B1 on its own, as expected, and kept it as the baseline.
 - **B3** is the player layer (ADR 0023). It is B2's model with one input, Δĝ, in place of team strength and goalie effects. Δĝ is the home team's expected goals less the away team's, built from:
   - the projected lineups and their minutes;
   - RAPM ratings and league rates;
@@ -153,10 +153,22 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - On E2: +0.0055 [-0.0028, +0.0154] and +0.0100 [-0.0004, +0.0201].
   - Its own log loss per season is 0.6804 and 0.6558 on E1.
 - **It is under-confident.** The calibration slope is 1.35 [1.09, 1.62] on E1, driven by 2021-22 (1.55 [1.25, 1.86]; 2018-19 1.06 [0.59, 1.59]). Its probabilities spread less than the market's (standard deviation 0.082 against 0.122 on E1), though the two agree in direction (correlation 0.78). Expected-goals team strength with an 80-game memory misses talent that shows in goals, and the goalie mixture flattens further.
-- **Gaps above 8 points against B1** (hard rule 8): 822 of 2,583 games on E1 (382 in 2018-19, 440 in 2021-22) and 775 of 2,573 on E2. They are listed in `reports/backtest/gaps.csv` without results, and counted in `summary.json`. The largest are games where team strength rates the teams even and the market does not, such as NJD against WSH in March 2019. That many cannot all get a manual review. Gate 1 (#79) decides how they are reviewed, and none led to a change of model.
+- **Gaps above 8 points against B1** (hard rule 8): 822 of 2,583 games on E1 (382 in 2018-19, 440 in 2021-22) and 775 of 2,573 on E2. They are listed in `reports/backtest/gaps.csv` without results, and counted in `summary.json`. The largest are games where team strength rates the teams even and the market does not, such as NJD against WSH in March 2019. That many cannot all get a manual review, so gate 1 screened them all and reviewed a set by hand (below). None led to a change of model.
+- **Gate 1's gap review** (`reports/backtest/gap-review.md`, #79) screened all 822 E1 gaps and all 775 E2 gaps, and reviewed 220 by hand, reading no result. It found no bug. The gaps come from:
+  - B2's timidity;
+  - public news the market prices and B2 cannot see: injuries (Hall in 2019), trades (Ottawa's 2019 deadline), COVID absences (Montreal on 2022-01-01);
+  - teams whose results ran far from their expected goals (Carolina in 2018-19);
+  - offseason changes early in a season, which an 80-game memory carries slowly.
+
+  The player layer (phase 3) and the blend (phase 4) are where these get addressed.
 - **Weights** (on standardized inputs, 2021-22 fold): ΔS 0.29, ΔG 0.06, home back-to-back -0.08, away back-to-back +0.09. Rest, travel, time zones and empty seats are all within 0.03.
 - **Lineup quality:** the goalie-start model's Brier score over the team-games of the games B2 scored is 0.415 [0.404, 0.426] on E1 and 0.415 [0.405, 0.427] on E2 (0.405 in 2018-19, 0.424 in 2021-22). 0.9% of starters were not among its candidates.
 - **Training on the starters who played** (ADR 0013): Codex read hard rule 9 as forbidding it (P0 on #90). The owner kept it, since the rule governs predictions, and no game's own lineup feeds its own prediction.
+- **Gate 1 (ADR 0014, 2026-10-21):**
+  - **Verdict:** B2 does not add information beyond the market on its own. It goes forward unchanged as the player layer's reference (hard rule 3), and its under-confidence is left to the blend.
+  - **The figures:** the frozen run `backtest-20261005-b7639f5` gives the same figures as above.
+  - **Post-game corrections (#30):** 89 games of 2026-27 were fetched again a week later. In 39 of them, more than event order changed. That is about 1% of shot rows and 1.7% of lineup rows, and no goal's scorer. Shift charts were compared in 41 games.
+  - **ADR 0004 stands:** the backtest reads corrected feeds, which favours it. How often corrections happen is now measured. What they do to predictions is not, and #173 measures it.
 
 **B3 (ADR 0023), from `backtest-20261003-b1a7b04`:**
 - **It beats B2.** B3 minus B2 is -0.0079 [-0.0130, -0.0028] on E1 and -0.0078 [-0.0130, -0.0028] on E2.

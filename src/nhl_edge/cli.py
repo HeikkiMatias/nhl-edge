@@ -1799,6 +1799,70 @@ def tune_b2(
     typer.echo(f"{path}: chose {choice.chosen.label}, which {frozen} the frozen TUNED")
 
 
+@app.command("gap-review")
+def gap_review(
+    out: Annotated[Path, typer.Option(help="Backtest report directory.")] = DEFAULT_BACKTEST_OUT,
+    experiment: Annotated[str, typer.Option(help="The experiment whose gaps to screen.")] = "E1",
+) -> None:
+    """Screen B2's gaps above 8 points from <out>/gaps.csv for gate 1's review (#79, hard rule 8):
+    write every gap game's input contributions and flags to <out>/gap-screen.csv, and the games
+    to review by hand to <out>/gap-review-set.csv (E2's to gap-screen-e2.csv and
+    gap-review-set-e2.csv). A review set already there keeps its games, and a new screen only adds
+    the flagged games and gaps above 20 points it lacks. Each experiment is refit at its own fold
+    starts and predicted at its own times, as the backtest does: E2's at the opener. Reads no
+    result."""
+    import json
+
+    import polars as pl
+
+    from nhl_edge.backtest import gap_review as review
+    from nhl_edge.backtest import walk_forward
+    from nhl_edge.backtest.market import Experiment, market_prices
+    from nhl_edge.game import b2
+    from nhl_edge.lake.tables import Lake
+
+    if experiment not in {e.value for e in Experiment}:
+        raise typer.BadParameter("E1 or E2", param_hint="--experiment")
+    path = out / "gaps.csv"
+    if not path.exists():
+        typer.echo(f"no {path}: run nhl backtest first", err=True)
+        raise typer.Exit(code=1)
+    gaps = pl.read_csv(path, try_parse_dates=True).filter(pl.col("experiment") == experiment)
+    if gaps.is_empty():
+        raise typer.BadParameter(f"no {experiment} gaps in {path}", param_hint="--experiment")
+    lake = Lake()
+    tables = b2.Tables(
+        lake.read("games"),
+        *(
+            lake.read(name)
+            for name in (
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        ),
+    )
+    gaps = gaps.with_columns(pl.col("season").cast(pl.Int32), pl.col("game_id").cast(pl.Int64))
+    # The experiment's fold starts and prediction times, as the backtest takes them.
+    seasons = sorted(int(s) for s in gaps["season"].unique().to_list())
+    sbr_odds = lake.read("sbr_odds").filter(pl.col("season").is_in(seasons))
+    folds = walk_forward.fold_starts(sbr_odds, tables.games, seasons)
+    starts = {s: folds[(experiment, s)] for s in seasons}
+    moments = market_prices(sbr_odds, Experiment(experiment)).select("game_id", "prediction_utc")
+    screened = review.screen(tables, gaps, starts, moments)
+    suffix = "" if experiment == Experiment.E1 else f"-{experiment.lower()}"
+    # A set already reviewed by hand keeps its games; a new screen only adds to it.
+    earlier = out / f"gap-review-set{suffix}.csv"
+    reviewed = pl.read_csv(earlier, columns=["game_id", "reason"]) if earlier.exists() else None
+    chosen = review.review_set(screened, reviewed)
+    rounded = pl.selectors.float()
+    screened.with_columns(rounded.round(4)).write_csv(out / f"gap-screen{suffix}.csv")
+    chosen.with_columns(rounded.round(4)).write_csv(out / f"gap-review-set{suffix}.csv")
+    typer.echo(json.dumps(review.summary(screened, chosen), indent=2))
+
+
 @app.command("goalie-start")
 def goalie_start(
     seasons: Annotated[

@@ -8,9 +8,8 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 2. **Take over the scheduled tasks.** They are Routines bound to the session that created them, so they keep firing into the old session, not a new one. List them (`list_triggers`), create each again bound to the new session with the same time and prompt, then delete the old one. A task whose time has passed in the old session needs doing by hand: check its result first. On 2026-10-16 they were:
    - **2026-10-17 10:45 UTC:** check `market_only`'s first challenger output (#255). After the 10-17 nightly, R2 should hold `challengers/live/market_only/1/2026-10-16.parquet`. Its `p_home` should equal that day's ledger `p_blend_market`, game by game, and `nhl live challengers --check --r2` should reproduce it.
    - **Mondays 10:20 UTC:** the weekly live report. It is also the run that decides ADR 0039's real-money start rule and weekly CLV stop (step 3 of its prompt).
-   - **2026-10-22 10:30 UTC:** #30, then gate 1.
    - **2026-11-05 10:40 UTC:** #121 step 3, which also revisits #120's early-exit gap.
-3. **Finish any waiting item whose date has come** (the next section). The SessionStart hook lists the open issues of the earliest milestone, P2 (#11, #30, #79). They wait on the calendar, not on work, so don't start them early.
+3. **Finish any waiting item whose date has come** (the next section). The SessionStart hook lists the open issues of the earliest milestone. Phase 2 closed with gate 1 on 2026-10-21, so that is now P5, whose items wait on the calendar, not on work: don't start them early.
 4. **Then the [priority] work for real money (#271):**
    - #268 and #270 are done: the alert, the record, the form and the dashboard's real record (below);
    - #266, the venue, which waits on the owner's steps;
@@ -19,7 +18,7 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
    ADR 0039's earliest start is 2026-11-16. See "Phase 6" below.
 5. **Otherwise phase 5 (#14) runs itself.** Everything in its plan (`docs/plans/phase-5.md`) is built. What's left is to watch the live test, finish the dated items and fix what the weekly reports turn up.
    - Gate 3 is not met (ADR 0031): on history, the blend adds no information beyond the recalibrated market. As the owner decided, the frozen policy is traded on paper anyway, and live 2026-27 is the remaining test.
-   - Gate 1 (#79) is still open. It is a checkpoint, not a stop (ADR 0002).
+   - Gate 1 is done (ADR 0014, 2026-10-21): B2 does not beat the market on its own, as expected, and stays the baseline.
    - **The clock runs:** policy v2 was frozen on 2026-10-14 and counts from 2026-10-15. v1's bets of 2026-10-08 to 10-14 stay on record under v1 and are reported apart. Every game without a logged pre-game prediction is a paper bet the live test can't use.
    - **Never change a frozen policy** to fit live results. A change is a new policy version with its own ADR and freeze date, and its CLV count restarts.
 
@@ -30,25 +29,20 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 | `market_only`'s first challenger output (#255) | After the **2026-10-17** nightly (09:00 UTC) | As the 10:45 UTC task says. If it's missing or differs, read the nightly's "Challengers" step log first. |
 | #268, the real ledger and alerts | Done (#276, #277): the alert, the record, settlement and the dashboard's form. The owner's setup is done and checked on 2026-10-16: the migration applied, `SUPABASE_REAL=true`, and `DASHBOARD_URL` opens the dashboard's sign-in. | Practice alerts arrive daily at about 19:50 Helsinki time; the first, on 2026-10-16, ran end to end (R2 record, Telegram, dashboard row). `telegram-test.yml`'s setup check (branch `phase-6/telegram-test`) reports the link, the migration and `SUPABASE_REAL` to the owner's Telegram. |
 | #270, the dashboard's real record | Done (#278) | The owner applies `supabase/migrations/20261016150000_real_record.sql`; until then the record shows its twins without the bankroll, corrections or day history, and the nightly copy skips those tables with a note. |
-| The venue: Kalshi, through its API (#266, the owner's decision of 2026-10-18) | Before the start. The law and tax checks are done; Pinnacle stays the manual option. | Built in three PRs: **#286**, the signed client and `nhl kalshi check` (merged in #288; open until the owner's demo check passes); **#281**, placement, the record and ADR 0040 (merged in #289; the ADR stays proposed until the owner accepts it); **#287**, settlement on Kalshi's rules, the nightly check against Kalshi's settlements (`nhl real reconcile-kalshi`) and the dashboard. A game Kalshi resolves at its own price (played over two weeks late, or cancelled) is held, and its settlement is #290. #287's migration, `supabase/migrations/20261018180000_kalshi_orders.sql`, is applied by the owner before the venue commit. **The owner:** create a demo account and an Ed25519 API key there and on the real account; add `KALSHI_DEMO_KEY_ID` and `KALSHI_DEMO_PRIVATE_KEY` as repository secrets, and the live `KALSHI_KEY_ID` and `KALSHI_PRIVATE_KEY` as secrets of the `kalshi-live` environment, restricted to `main` (`docs/security.md`, #294); then dispatch `kalshi-check.yml` with `demo`, and set the repository variable `KALSHI_TRADING` to `demo`. Practice orders then go to the demo exchange each midday (`nhl real place`), tracked at every slot and the nightly (`nhl real orders`); review the first days' `real/demo/orders/` records. `kalshi-cancel.yml` cancels resting orders at once. Before the first real bet: the live check, a review of the demo run, ADR 0040 accepted, the owner's deposit and its rate, and the venue commit setting `live/real.VENUE`. |
+| The venue: Kalshi, through its API (#266, the owner's decision of 2026-10-18) | Before the start. The law and tax checks are done; Pinnacle stays the manual option. | Built in three PRs: **#286**, the signed client and `nhl kalshi check` (merged in #288; the owner's demo check passed on 2026-10-21, after #300 read the pasted keys and kept an unreadable key from failing runs that don't use it); **#281**, placement, the record and ADR 0040 (merged in #289; the ADR stays proposed until the owner accepts it); **#287**, settlement on Kalshi's rules, the nightly check against Kalshi's settlements (`nhl real reconcile-kalshi`) and the dashboard. A game Kalshi resolves at its own price (played over two weeks late, or cancelled) is held, and its settlement is #290. #287's migration, `supabase/migrations/20261018180000_kalshi_orders.sql`, is applied by the owner before the venue commit. **The owner:** create a demo account and an Ed25519 API key there and on the real account; add `KALSHI_DEMO_KEY_ID` and `KALSHI_DEMO_PRIVATE_KEY` as repository secrets, and the live `KALSHI_KEY_ID` and `KALSHI_PRIVATE_KEY` as secrets of the `kalshi-live` environment, restricted to `main` (`docs/security.md`, #294); the keys are in and the demo check has passed; next the owner sets the repository variable `KALSHI_TRADING` to `demo`. Practice orders then go to the demo exchange each midday (`nhl real place`), tracked at every slot and the nightly (`nhl real orders`); review the first days' `real/demo/orders/` records. `kalshi-cancel.yml` cancels resting orders at once. Before the first real bet: the live check, a review of the demo run, ADR 0040 accepted, the owner's deposit and its rate, and the venue commit setting `live/real.VENUE`. |
 | The public repository's security (#294) | Before the first real bet | `docs/security.md`: what an outsider can't do, the code's own order limits, and the owner's settings in GitHub (the `kalshi-live` environment, protecting `main`, secret scanning, Actions), Cloudflare (R2 public access, token scopes, a billing notification) and Kalshi (two-factor sign-in, a small balance, deleting every key after a suspected leak). |
 | The weekly live report | Mondays 10:20 UTC | As the Routine's prompt says: v2's report, reviewed and committed. It gives counts only, no estimate, until a policy has 4 weeks of games (#235). It is the run that decides ADR 0039's start rule and weekly CLV stop: it runs after Sunday's results are public at 10:00 UTC, while the 09:00 UTC nightly defers to it (#267). From 2026-11-16 it states the verdict, and the owner is told it. |
-| #30, post-game corrections | Two weeks of rechecked 2026-27 games: about **2026-10-22**. The nightly runs `nhl recheck --recent 3 --r2`. | Run `nhl audit report` after bringing the lake up to R2, and review its corrections section on #30. If corrections change more than scorer credit on more than a few games a season, reopen ADR 0004 with the owner. Then close #30. **Limit:** the NHL served no shift chart a week later for games 2026020006 to 2026020052 (#237). The report lists them as charts not rechecked, never as shifts removed, and compares their play-by-play and boxscore only. If the NHL serves them again after they leave the nightly window, `nhl recheck --recent 30 --r2` fetches them once. |
-| #79, gate 1 (draft PR #93, branch `phase-2/gate-1`) | #30 is reviewed. | **ADR and checks:** write ADR 0014 with the owner, from the outline in the comment on #79. If #30's corrections change any table its report compares, rerun `/leakage-check` and `/run-backtest`. B2 or B3 reads every one of those tables through its features: `shots`, `shifts`, `actual_lineups`, `shift_coverage`, `strength_time`, `penalties` and `faceoffs`. Penalties feed B3's expected power plays, and faceoffs its stints' zone starts. **Merging:** first merge main into the branch, taking main's `docs/handover.md` and model card over the branch's versions. **Docs:** then write the model card's gate 1 entry on top of main's version. Mark #93 ready (Codex reviews it then), triage and merge. Then close #11, phase 2's summary issue. |
-| #173, whether corrections change predictions | After #30 | As the issue says: check feasibility first, and never turn "not measured" into "small". |
+| #173, whether corrections change predictions | Any time: #30 measured them (2026-10-21), and the owner kept ADR 0004 | As the issue says: check feasibility first, and never turn "not measured" into "small". |
 | #121 step 3, Daily Faceoff's injury statuses | **2026-11-05** | As the Routine's prompt says. Any use needs an ADR and a later policy version. |
 | #67, `EXPECTED_GAMES` for 2026-27 | The regular season's end, about **2027-04-17** | See "Keep an eye on". |
 | Real money (ADR 0039) | The first decision day from **2026-11-16 to 2026-11-30** on which the start rule held at the latest weekly report | Before then: the venue (#266), and the build issues ADR 0039 lists. Check the start rule at each weekly report from 2026-11-16 on. |
 | The formal review | **2027-04-12** | ADR 0032 judges v2 on its own games. v1's record is reported beside it. |
 
-### Gate 1 as it stands
+### Gate 1: done (ADR 0014, 2026-10-21)
 
-- **The evidence:** `backtest-20261001-388bb85` on 2018-19 and 2021-22.
-  - B2 minus B1 is +0.0112 [+0.0044, +0.0185] on E1 and +0.0078 [+0.0013, +0.0146] on E2.
-  - B2 is under-confident: its calibration slope is 1.35 [1.09, 1.62].
-  - The goalie-start Brier score is 0.415 [0.404, 0.426].
-- **The gap review is done** (hard rule 8; in PR #93, `reports/backtest/gap-review.md`). It found no bug.
-- **Already decided by the owner:** B2 is not recalibrated before phase 4. Its findings for phase 4 are on #13.
+- **#30's measurement:** 89 games of 2026-27 were fetched again a week later. 39 of them changed beyond event order, about 1% of shot rows, with no goal scorer changed. The owner kept ADR 0004, which now records the measurement.
+- **The verdict:** B2 minus B1 is +0.0112 [+0.0044, +0.0185] on E1 and +0.0078 [+0.0013, +0.0146] on E2 (`backtest-20261005-b7639f5`). B2 goes forward unchanged as the player layer's reference, and its under-confidence is left to the blend.
+- **The gap review:** it found no bug (`reports/backtest/gap-review.md`).
 
 ## Phase 3: done (#12)
 
@@ -195,7 +189,7 @@ Every deliverable merged under its own task issue:
 - #169, task 9: a second copy of `raw/` outside R2. The owner chose, on 2026-10-09, to keep it on their own computer, set up later. The steps are on the issue (`nhl lake restore-raw` with a read-only R2 token).
 - #264 (fixed): a replay stamps the policy its day's manifest names, so v1 days replay every column again. Today's selection, guard and staking decide every replay, which v1 and v2 share. A replay of any policy outside `selection.REPLAYABLE` is refused, so a freeze that changes them must add code that replays its days.
 - #253, selected-bet calibration: a diagnostic from the review agenda. #254, the proxy's lead, is in the weekly report (below), and its cost is counted on the issue; the owner decides once the measure has intervals.
-- #173, after #30; #121 step 3, on 2026-11-05; #67, around 2027-04-17.
+- #173, whenever there is time; #121 step 3, on 2026-11-05; #67, around 2027-04-17.
 
 ## Phase 6: the review agenda (#250) and real money (#271)
 
@@ -352,12 +346,11 @@ Every deliverable merged under its own task issue:
     - A 401 is a bad or expired token (it expires around 2027-09). A 403 or 404 means the token lacks Actions read and write.
     - `npx wrangler@4 secret put GITHUB_TOKEN` stores a new token.
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
-- **Open, waiting:** #30, #79 and #11 (P2). Draft PR #93 holds gate 1.
 - **Open, for the owner:** #169, the raw backup on the owner's own computer (P5); #266's venue steps, with the venue's minimum stake and stake increment; #270's migration, `20261016150000_real_record.sql`.
 - **Open, [priority]:** #271, the real-money tracking issue; #266, the venue.
 - **Open, next:** #269 (real money, after the venue); #253 and #254 (diagnostics); #256 to #260 (challengers, each with its own ADR).
 - **Parked for the next model version:** #125 and #134 (P6, label `next-model-version`).
-- **Open, later:** phase 5's #14, #67 (in April 2027), #121 (step 3 on 2026-11-05) and #173 (after #30); #15, #186 and #250 (P6).
+- **Open, later:** phase 5's #14, #67 (in April 2027), #121 (step 3 on 2026-11-05) and #173; #15, #186 and #250 (P6).
 
 ## Keep an eye on
 

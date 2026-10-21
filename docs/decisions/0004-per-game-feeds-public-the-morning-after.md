@@ -36,6 +36,26 @@ Assists, points, plus-minus, penalty minutes, shot totals, the goalie decision a
 
 None yet. The correction rate itself is unmeasured. #30 measures it by refetching two weeks of 2026-27 games 7 days after the nightly copy and diffing the parsed rows, before phase 2's first backtest with shots-based team strength (B2 against B1) relies on this decision.
 
+## Measured (#30, 2026-10-21)
+
+Each of the 89 games due by 2026-10-20 (2026020001 to 2026020089) was fetched again a week after its first copy. Both copies were parsed and compared row by row, in the audit report's corrections section.
+
+| What changed | Games | Rows |
+| --- | ---: | ---: |
+| Shots added or removed | 14 | 19 |
+| A shot's event type or shot type | 13 | 17 |
+| A shot's place or time | 4 | 10 |
+| A shot's previous-play fields | 15 | 26 |
+| A goal's scorer | 0 | 0 |
+| Time on ice | 13 | 59 |
+| Shifts, in 41 compared charts | 8 | 465 |
+| Event order only | 20 | 1,494 |
+
+- **Beyond order:** 39 of the 89 games changed. That is about 1% of 7,349 shot rows and 59 of 3,560 lineup rows.
+- **The charts:** 48 rechecked shift charts came back empty (#237), so shifts were compared in only 41 games.
+- **The rule below is met:** corrections changed more than scorer credit in more than a few games.
+- **The owner's decision (2026-10-21):** this ADR stands. The corrections reach many games but few rows, and are accepted as small. #173 measures their effect on inputs and predictions later. Gate 1 went ahead (ADR 0014).
+
 ## Consequences
 
 - Every row of the four tables has `observed_utc = result_public_utc(game_date)`. So does `strength_time` (#72, added later), which `tests/leakage/test_strength_time.py` checks. A game's own shots, shifts and lineup never feed a prediction for it (hard rules 1 and 9). `tests/leakage/test_shots.py`, `test_shifts.py`, `test_actual_lineups.py` and `test_shift_coverage.py` check this.
