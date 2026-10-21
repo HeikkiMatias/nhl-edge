@@ -5,8 +5,9 @@ shift chart its lookback settled on, as live does. The 2010-26 backfill read cop
 later, corrections included, so the backtest can see a corrected value that live would not have
 had yet. To measure how often that happens, each final game's three feeds are fetched again
 RECHECK_AFTER after the tables' copy and stored apart, under <kind>-recheck (NhlApi.recheck), where
-no table reads them. Both copies go through the ingest's own parsers (nhl_ingest.parse_feeds), and
-diff_game compares the parsed tables row by row.
+no table reads them. Both copies go through the ingest's own parsers (nhl_ingest.parse_feeds) in
+parse_copies, and diff_game compares the parsed tables row by row. The corrections replay
+(audit/corrections_replay.py, #173) rebuilds the season's inputs from the later copies.
 
 A rechecked shift chart without rows, when the tables' copy has shifts, is a failed fetch, not a
 copy with every shift removed (#237): the NHL answers an empty chart for games it doesn't serve
@@ -32,6 +33,7 @@ from nhl_edge.ingest.nhl_api import (
     parse_utc,
 )
 from nhl_edge.ingest.nhl_ingest import parse_feeds
+from nhl_edge.ingest.toi_reports import CachedReports
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import FEED_TABLES
 
@@ -205,15 +207,28 @@ class GameDiff:
     chart_rechecked: bool = True
 
 
+@dataclass(frozen=True)
+class Copies:
+    """One game's tables of FEED_TABLES parsed from the copies they read (first) and from its
+    recheck (later), with chart_rechecked as in GameDiff."""
+
+    first: dict[str, pl.DataFrame]
+    later: dict[str, pl.DataFrame]
+    chart_rechecked: bool = True
+
+
 def _copies(store: RawStore, kind: str, game: dict[str, Any]) -> tuple[str, str] | None:
     first = store.latest(f"{SOURCE}/{kind}/{_entity(game)}")
     later = store.latest(f"{SOURCE}/{kind}{RECHECK_SUFFIX}/{_entity(game)}")
     return None if first is None or later is None else (first, later)
 
 
-def diff_game(store: RawStore, game: dict[str, Any]) -> GameDiff | None:
-    """The game's tables from the copies they read against its recheck, or None when either copy
-    of a feed is missing."""
+def parse_copies(
+    store: RawStore, game: dict[str, Any], toi_reports: CachedReports | None = None
+) -> Copies | None:
+    """The game's tables from the copies they read and from its recheck, both through the
+    ingest's parser (toi_reports as the ingest passes it), or None when either copy of a feed is
+    missing."""
     keys = {kind: _copies(store, kind, game) for kind in FEED_KINDS}
     if any(pair is None for pair in keys.values()):
         return None
@@ -222,11 +237,20 @@ def diff_game(store: RawStore, game: dict[str, Any]) -> GameDiff | None:
     chart_rechecked = has_shifts(store.get(chart_later)) or not has_shifts(store.get(chart_first))
     if not chart_rechecked:
         pairs[CHART] = (chart_first, chart_first)
-    first = parse_feeds(game, {k: (store.get(a), a) for k, (a, _) in pairs.items()})
-    later = parse_feeds(game, {k: (store.get(b), b) for k, (_, b) in pairs.items()})
+    first = parse_feeds(game, {k: (store.get(a), a) for k, (a, _) in pairs.items()}, toi_reports)
+    later = parse_feeds(game, {k: (store.get(b), b) for k, (_, b) in pairs.items()}, toi_reports)
+    return Copies(first, later, chart_rechecked)
+
+
+def diff_game(store: RawStore, game: dict[str, Any]) -> GameDiff | None:
+    """The game's tables from the copies they read against its recheck, or None when either copy
+    of a feed is missing."""
+    copies = parse_copies(store, game)
+    if copies is None:
+        return None
     changes = pl.concat(
         [pl.DataFrame(schema=CHANGE_SCHEMA)]
-        + [compare(table, first[table], later[table]) for table in FEED_TABLES]
+        + [compare(table, copies.first[table], copies.later[table]) for table in FEED_TABLES]
     )
-    rows = {t: first[t].height for t in FEED_TABLES}
-    return GameDiff(game["game_id"], rows, changes, chart_rechecked)
+    rows = {t: copies.first[t].height for t in FEED_TABLES}
+    return GameDiff(game["game_id"], rows, changes, copies.chart_rechecked)

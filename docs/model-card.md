@@ -168,7 +168,8 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - **Verdict:** B2 does not add information beyond the market on its own. It goes forward unchanged as the player layer's reference (hard rule 3), and its under-confidence is left to the blend.
   - **The figures:** the frozen run `backtest-20261005-b7639f5` gives the same figures as above.
   - **Post-game corrections (#30):** 89 games of 2026-27 were fetched again a week later. In 39 of them, more than event order changed. That is about 1% of shot rows and 1.7% of lineup rows, and no goal's scorer. Shift charts were compared in 41 games.
-  - **ADR 0004 stands:** the backtest reads corrected feeds, which favours it. How often corrections happen is now measured. What they do to predictions is not, and #173 measures it.
+  - **ADR 0004 stands:** the backtest reads corrected feeds, which favours it.
+  - **Their effect on predictions (#173):** rebuilt with the week-later copies of 105 games, the 96 live predictions of 2026-10-08 to 10-20 move by at most 0.027 points in the blend, 0.13 in B2 and 0.06 in B3. No bet appears, disappears or changes side. That covers three weeks, too few for an interval (`reports/audit/corrections-replay-20261021-76e7bf2.md`).
 
 **B3 (ADR 0023), from `backtest-20261003-b1a7b04`:**
 - **It beats B2.** B3 minus B2 is -0.0079 [-0.0130, -0.0028] on E1 and -0.0078 [-0.0130, -0.0028] on E2.
