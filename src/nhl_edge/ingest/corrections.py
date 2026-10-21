@@ -7,6 +7,11 @@ had yet. To measure how often that happens, each final game's three feeds are fe
 RECHECK_AFTER after the tables' copy and stored apart, under <kind>-recheck (NhlApi.recheck), where
 no table reads them. Both copies go through the ingest's own parsers (nhl_ingest.parse_feeds), and
 diff_game compares the parsed tables row by row.
+
+A rechecked shift chart without rows, when the tables' copy has shifts, is a failed fetch, not a
+copy with every shift removed (#237): the NHL answers an empty chart for games it doesn't serve
+a chart for. The recheck tries it again on later runs, and the diff compares the game's other two
+feeds with the tables' chart on both sides, marking its chart as not rechecked.
 """
 
 from dataclasses import dataclass, field
@@ -23,6 +28,7 @@ from nhl_edge.ingest.nhl_api import (
     SOURCE,
     NhlApi,
     NotFoundError,
+    has_shifts,
     parse_utc,
 )
 from nhl_edge.ingest.nhl_ingest import parse_feeds
@@ -31,6 +37,7 @@ from nhl_edge.lake.tables import FEED_TABLES
 
 # A recheck counts once fetched this long after the play-by-play the tables read.
 RECHECK_AFTER = timedelta(days=7)
+CHART = "shiftcharts"
 # The rows of each per-game table, within a game.
 KEYS: dict[str, list[str]] = {
     "shots": ["event_id"],
@@ -38,6 +45,8 @@ KEYS: dict[str, list[str]] = {
     "actual_lineups": ["player_id"],
     "shift_coverage": ["game_id"],
     "strength_time": ["team", "strength", "own_net_empty", "opp_net_empty", "strength_source"],
+    "penalties": ["event_id"],
+    "faceoffs": ["event_id"],
 }
 # Columns that record which copy a row came from and when it counts as public, not what it says,
 # and the game's own keys, which both copies share.
@@ -100,6 +109,8 @@ class RecheckSummary:
     not_due: list[int] = field(default_factory=list)
     never_ingested: list[int] = field(default_factory=list)
     not_found: list[str] = field(default_factory=list)
+    # Games whose rechecked shift chart came back without rows while the tables' copy has shifts.
+    empty_charts: list[int] = field(default_factory=list)
 
 
 def recheck(
@@ -134,8 +145,9 @@ def recheck(
             continue
         summary.games += 1
         for kind in FEED_KINDS:
+            listed = kind == CHART and _first_has_shifts(api.store, game)
             try:
-                response = api.recheck(kind, game["season"], game["game_id"], after)
+                response = api.recheck(kind, game["season"], game["game_id"], after, listed=listed)
             except NotFoundError:
                 summary.not_found.append(f"{kind} {game['game_id']}")
                 continue
@@ -143,7 +155,14 @@ def recheck(
                 summary.reused += 1
             else:
                 summary.fetched += 1
+            if listed and not has_shifts(response.body):
+                summary.empty_charts.append(game["game_id"])
     return summary
+
+
+def _first_has_shifts(store: RawStore, game: dict[str, Any]) -> bool:
+    key = store.latest(f"{SOURCE}/{CHART}/{_entity(game)}")
+    return key is not None and has_shifts(store.get(key))
 
 
 def compare(table: str, first: pl.DataFrame, later: pl.DataFrame) -> pl.DataFrame:
@@ -177,11 +196,13 @@ def compare(table: str, first: pl.DataFrame, later: pl.DataFrame) -> pl.DataFram
 @dataclass(frozen=True)
 class GameDiff:
     """One game's tables parsed from both copies: rows per table in the tables' copy, and each
-    table's differences."""
+    table's differences. chart_rechecked is False when the rechecked shift chart had no rows
+    while the tables' copy has shifts: the tables' chart then stands on both sides (#237)."""
 
     game_id: int
     rows: dict[str, int]
     changes: pl.DataFrame
+    chart_rechecked: bool = True
 
 
 def _copies(store: RawStore, kind: str, game: dict[str, Any]) -> tuple[str, str] | None:
@@ -197,10 +218,15 @@ def diff_game(store: RawStore, game: dict[str, Any]) -> GameDiff | None:
     if any(pair is None for pair in keys.values()):
         return None
     pairs = {kind: pair for kind, pair in keys.items() if pair is not None}
+    chart_first, chart_later = pairs[CHART]
+    chart_rechecked = has_shifts(store.get(chart_later)) or not has_shifts(store.get(chart_first))
+    if not chart_rechecked:
+        pairs[CHART] = (chart_first, chart_first)
     first = parse_feeds(game, {k: (store.get(a), a) for k, (a, _) in pairs.items()})
     later = parse_feeds(game, {k: (store.get(b), b) for k, (_, b) in pairs.items()})
     changes = pl.concat(
         [pl.DataFrame(schema=CHANGE_SCHEMA)]
         + [compare(table, first[table], later[table]) for table in FEED_TABLES]
     )
-    return GameDiff(game["game_id"], {t: first[t].height for t in FEED_TABLES}, changes)
+    rows = {t: first[t].height for t in FEED_TABLES}
+    return GameDiff(game["game_id"], rows, changes, chart_rechecked)

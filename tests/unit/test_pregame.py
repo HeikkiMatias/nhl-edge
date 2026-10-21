@@ -141,6 +141,9 @@ def test_poll_stores_pregame_responses_apart_from_the_postgame_boxscores(tmp_pat
     messages: list[str] = []
     report = run_poll(nhl=api, now=MORNING, echo=messages.append)
     assert report.games == 5 and report.teams == 10 and report.flagged == 0
+    # Each team playing, with its game's ET date, for Daily Faceoff's team pages (#121).
+    assert len(report.playing) == 10
+    assert {day for _, day in report.playing} == report.dates
     assert paths.count("/v1/gamecenter/2026020001/boxscore") == 1
     assert paths.count("/v1/gamecenter/2026020001/landing") == 1
     assert paths.count("/v1/gamecenter/2026020001/right-rail") == 1
@@ -173,9 +176,17 @@ def test_replay_rebuilds_the_table_from_the_raw_polls(tmp_path: Path) -> None:
     store.put("nhl", f"{key}/20260929T204500Z", flagged, {"fetched_utc": near.isoformat()})
     late = START + timedelta(minutes=2)
     store.put("nhl", f"{key}/20260929T210200Z", flagged, {"fetched_utc": late.isoformat()})
+    # A live decision parses the day's polls without writing the lake (ADR 0037).
+    from nhl_edge.ingest.pregame import stored_pregame_goalies
+
+    parsed, _ = stored_pregame_goalies(store, [START.date()])
+    assert parsed.height == 4 and not (tmp_path / "lake").exists()
     lake = Lake(tmp_path / "lake")
     report = replay_pregame_goalies(store, lake)
     assert (report.responses, report.rows, report.after_start) == (3, 4, 1)
+    assert parsed.sort("observed_utc", "team").equals(
+        lake.read("pregame_goalies").sort("observed_utc", "team")
+    )
     table = lake.read("pregame_goalies")
     assert table["observed_utc"].unique().sort().to_list() == [MORNING, near]
     confirmed = table.filter(pl.col("starter_id").is_not_null())

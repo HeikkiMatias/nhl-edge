@@ -1,16 +1,31 @@
-# .github/workflows/ci.yml
 name: ci
-on: [push, pull_request]
+# Each change runs once: on its pull request, and on main after the merge. A push to a branch
+# with an open pull request no longer runs a second copy, and a newer push to the same pull
+# request cancels the older run (#213: the repository is private, so every minute is billed).
+# The dashboard has its own workflow (web.yml), and no Python test reads web/.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["web/**"]
+  pull_request:
+    paths-ignore: ["web/**"]
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+# Read-only: these run on pull requests and on main, and write nothing (#294).
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run pyright src
-      - run: uv run pytest -m "not slow" -q
+      # The leakage tests run once, as their own step.
+      - run: uv run pytest -m "not slow" -q --ignore=tests/leakage
       - run: uv run pytest tests/leakage -q
       - name: Timer Worker tests
         run: node --test

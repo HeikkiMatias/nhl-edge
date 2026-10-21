@@ -108,6 +108,9 @@ class PollReport:
     failed: list[int] = field(default_factory=list)
     # The US Eastern dates of the games in the window, for the Daily Faceoff pages (#48).
     dates: set[date] = field(default_factory=set)
+    # Each team playing in the window with its game's US Eastern date, for Daily Faceoff's
+    # line-combinations pages (#121).
+    playing: set[tuple[str, date]] = field(default_factory=set)
 
 
 def run_poll(
@@ -126,6 +129,11 @@ def run_poll(
         echo(f"goalie poll: no NHL games starting within {horizon}, nothing fetched")
         return report
     report.dates = {game.start_utc.astimezone(ET).date() for game in games}
+    report.playing = {
+        (team, game.start_utc.astimezone(ET).date())
+        for game in games
+        for team in (game.home, game.away)
+    }
     frames = []
     for game in games:
         # Each page gets its own attempt: a pre-game state missed now cannot be fetched later.
@@ -174,6 +182,18 @@ def replay_pregame_goalies(
     """Rebuild pregame_goalies for the given game dates (every stored date when None) from the raw
     pre-game boxscores. Each requested date's partition is replaced, and deleted when the date has
     no rows, so a parser fix leaves nothing stale. Never calls the NHL API."""
+    table, report = stored_pregame_goalies(store, dates)
+    requested = sorted(dates) if dates is not None else report.dates
+    lake.replace_dates(TABLE, table, requested)
+    return report
+
+
+def stored_pregame_goalies(
+    store: RawStore, dates: Collection[date] | None = None
+) -> tuple[pl.DataFrame, ReplayReport]:
+    """pregame_goalies' rows for the given game dates (every stored date when None), parsed from
+    the raw pre-game boxscores without writing the lake, as a live decision reads its day's polls
+    (ADR 0037). Never calls the NHL API."""
     report = ReplayReport()
     frames = []
     root = store.base_dir / BOXSCORE_PREFIX
@@ -198,6 +218,4 @@ def replay_pregame_goalies(
             frames.append(frame)
     table = pl.concat(frames) if frames else pl.DataFrame(schema=dtypes(PregameGoalies))
     report.rows = table.height
-    requested = sorted(dates) if dates is not None else report.dates
-    lake.replace_dates(TABLE, table, requested)
-    return report
+    return table, report

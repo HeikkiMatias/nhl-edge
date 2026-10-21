@@ -24,17 +24,41 @@ import polars as pl
 from nhl_edge.lake.r2 import ObjectStore, R2Config, list_etags, list_keys
 from nhl_edge.lake.schemas import (
     DAILYFACEOFF_GOALIES_KEY,
+    DAILYFACEOFF_LINES_KEY,
+    KALSHI_BOOKS_KEY,
     ODDS_KEY,
+    PLAYER_LEAGUE_SEASONS_KEY,
     PREGAME_GOALIES_KEY,
     SBR_KEY,
     ActualLineups,
+    ChallengerPredictions,
     DailyFaceoffGoalies,
+    DailyFaceoffLines,
+    ExpectedPowerPlays,
+    Faceoffs,
+    FeatureBuilds,
+    Finishing,
     Games,
     GoalieEffects,
     GoalieStarts,
+    GoalMultipliers,
+    KalshiBooks,
     LakeOddsSnapshots,
+    LineupReplacements,
+    Lineups,
+    PaperLedger,
+    PaperSettlements,
+    Penalties,
+    PenaltyRates,
+    PlayerLeagueSeasons,
+    PlayerRatings,
     Players,
     PregameGoalies,
+    RapmTerms,
+    RealAlerts,
+    RealBets,
+    RealOrders,
+    RealSettlements,
     SbrOdds,
     Schedule,
     ScheduleTerms,
@@ -42,6 +66,8 @@ from nhl_edge.lake.schemas import (
     Shifts,
     Shots,
     ShotXg,
+    Slate,
+    Stints,
     StrengthTime,
     TeamStrength,
     dtypes,
@@ -50,7 +76,8 @@ from nhl_edge.lake.schemas import (
 LAKE_DIR = Path("data/lake")
 R2_PREFIX = "lake"
 PART = "part-0.parquet"
-PULL_WORKERS = 16
+# A pull's download threads, each with its own connection (r2.POOL_CONNECTIONS, #207).
+PULL_WORKERS = 64
 
 
 @dataclass(frozen=True)
@@ -77,20 +104,63 @@ TABLES: dict[str, Table] = {
         ("game_id", "team", "strength", "own_net_empty", "opp_net_empty", "strength_source"),
         BY_DATE,
     ),
+    "penalties": Table(Penalties, ("game_id", "event_id"), BY_DATE),
+    "faceoffs": Table(Faceoffs, ("game_id", "event_id"), BY_DATE),
     "shot_xg": Table(ShotXg, ("game_id", "event_id"), BY_DATE),
+    "stints": Table(Stints, ("game_id", "stint_id"), BY_DATE),
     "team_strength": Table(TeamStrength, ("game_id",), BY_DATE),
     "goalie_starts": Table(GoalieStarts, ("game_id", "team", "goalie_id"), BY_DATE),
     "goalie_effects": Table(GoalieEffects, ("game_id", "team", "goalie_id"), BY_DATE),
+    "lineups": Table(Lineups, ("game_id", "team", "player_id"), BY_DATE),
+    "lineup_replacements": Table(LineupReplacements, ("game_id", "team", "role"), BY_DATE),
     "schedule_terms": Table(ScheduleTerms, ("game_id",), BY_DATE),
+    "player_ratings": Table(PlayerRatings, ("game_id", "player_id", "component"), BY_DATE),
+    "rapm_terms": Table(RapmTerms, ("game_date", "known_utc", "model", "term"), BY_DATE),
+    "penalty_rates": Table(PenaltyRates, ("game_id", "player_id", "component"), BY_DATE),
+    "expected_power_plays": Table(ExpectedPowerPlays, ("game_id", "team"), BY_DATE),
+    "finishing": Table(Finishing, ("game_id", "player_id"), BY_DATE),
+    "goal_multipliers": Table(GoalMultipliers, ("game_id", "team", "goalie_id"), BY_DATE),
     "odds_snapshots": Table(LakeOddsSnapshots, ODDS_KEY, ("snapshot_date",)),
     "sbr_odds": Table(SbrOdds, SBR_KEY, ("season",)),
     "pregame_goalies": Table(PregameGoalies, PREGAME_GOALIES_KEY, BY_DATE),
     "dailyfaceoff_goalies": Table(DailyFaceoffGoalies, DAILYFACEOFF_GOALIES_KEY, BY_DATE),
+    "dailyfaceoff_lines": Table(DailyFaceoffLines, DAILYFACEOFF_LINES_KEY, BY_DATE),
+    "player_league_seasons": Table(PlayerLeagueSeasons, PLAYER_LEAGUE_SEASONS_KEY, ("season",)),
+    # Phase 5's live path (#162): a game date's slate, and the record of its feature build.
+    "slate": Table(Slate, ("game_id",), BY_DATE),
+    "feature_builds": Table(FeatureBuilds, ("game_date", "table", "artifact_version"), BY_DATE),
+    # The paper ledger (#164): each date's decisions, as written once to R2.
+    "paper_ledger": Table(PaperLedger, ("game_date", "game_id"), BY_DATE),
+    # Its bets settled, with their CLV against Pinnacle's closing proxy (#165).
+    "paper_settlements": Table(PaperSettlements, ("game_date", "game_id"), BY_DATE),
+    # Registered challengers' probabilities, scored on each day's run bundle (#255, ADR 0038).
+    "challenger_predictions": Table(
+        ChallengerPredictions,
+        ("game_date", "game_id", "challenger", "challenger_version"),
+        BY_DATE,
+    ),
+    # Real stakes beside the paper ledger (#268, ADR 0039): each day's alert, what the owner did,
+    # and the placed bets' settlements, rebuilt from their write-once objects in R2 (real/live/).
+    "real_alerts": Table(RealAlerts, ("game_date", "game_id"), BY_DATE),
+    "real_bets": Table(RealBets, ("game_date", "game_id"), BY_DATE),
+    "real_settlements": Table(RealSettlements, ("game_date", "game_id", "revision"), BY_DATE),
+    "real_orders": Table(RealOrders, ("env", "game_date", "game_id"), BY_DATE),
+    # Kalshi's order book of the alerted bets' markets, for the owner's own resting orders
+    # (#282, #281): private, replayed from raw/kalshi/ only, never a model input.
+    "kalshi_books": Table(KalshiBooks, KALSHI_BOOKS_KEY, BY_DATE),
 }
 # Partition columns replace_dates can replace a date at a time.
 DATE_PARTITIONS = ("game_date", "snapshot_date")
 # The tables parsed from each game's play-by-play, boxscore and shift chart.
-FEED_TABLES = ("shots", "shifts", "actual_lineups", "shift_coverage", "strength_time")
+FEED_TABLES = (
+    "shots",
+    "shifts",
+    "actual_lineups",
+    "shift_coverage",
+    "strength_time",
+    "penalties",
+    "faceoffs",
+)
 
 
 def known_at(frame: pl.DataFrame, prediction_utc: datetime) -> pl.DataFrame:
@@ -165,13 +235,29 @@ class Lake:
                 self._delete(key)
         return written
 
-    def read(self, table: str) -> pl.DataFrame:
-        """The whole local table in its schema's columns, or an empty frame with them. A partition
+    def replace(self, table: str, frame: pl.DataFrame) -> list[str]:
+        """Make the frame the whole content of a table rebuilt in one go: write its partitions,
+        then delete every other file of the table, locally and in R2, so a partition the rebuild
+        no longer has leaves nothing stale. Returns the keys written."""
+        written = self.write(table, frame) if frame.height else []
+        for key in self._file_keys(table) - set(written):
+            self._delete(key)
+        return written
+
+    def read(self, table: str, seasons: Collection[int] | None = None) -> pl.DataFrame:
+        """The whole local table in its schema's columns, or an empty frame with them; with
+        seasons, only those seasons' partitions of a table partitioned by season. A partition
         written before a nullable column joined the schema reads it as null, so a table stays
         readable while a replay rewrites its older partitions (#73). A partition without a
         required column raises: replay it."""
         spec = TABLES[table]
-        paths = sorted((self.base_dir / table).rglob("*.parquet"))
+        root = self.base_dir / table
+        if seasons is None:
+            paths = sorted(root.rglob("*.parquet"))
+        elif spec.partition_by[:1] == ("season",):
+            paths = sorted(p for s in seasons for p in (root / f"season={s}").rglob("*.parquet"))
+        else:
+            raise ValueError(f"{table} is not partitioned by season")
         if not paths:
             return spec.empty()
         frame = pl.read_parquet(paths, schema=dtypes(spec.schema), missing_columns="insert")

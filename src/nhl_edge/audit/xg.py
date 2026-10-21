@@ -42,7 +42,14 @@ def scored_shots(shot_xg: pl.DataFrame, shots: pl.DataFrame) -> pl.DataFrame:
     )
     return shot_xg.join(inputs, on=list(OUTPUT_KEYS), how="inner").with_columns(
         residual=(pl.col("is_goal").cast(pl.Float64) - pl.col("xg")) * PER,
-        distance_band=pl.col("distance").cut(list(DISTANCE_BANDS), labels=list(DISTANCE_LABELS)),
+        distance_band=distance_band(pl.col("distance")),
+    )
+
+
+def distance_band(distance: pl.Expr) -> pl.Expr:
+    """The shot's distance band, right-closed as polars' former cut gave it: 10 ft is "0-10 ft"."""
+    return distance.bin_intervals(
+        list(DISTANCE_BANDS), labels=list(DISTANCE_LABELS), right_closed=True
     )
 
 

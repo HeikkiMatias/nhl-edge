@@ -30,6 +30,7 @@ def test_each_criterion_lists_its_games() -> None:
         2018020008: {"extreme_open"},
         2018020009: {"big_move"},
         2018020010: {"big_move"},
+        2022020001: {"big_move", "extreme_open"},
     }
 
 
@@ -53,12 +54,16 @@ def test_each_game_keeps_its_evidence() -> None:
     assert below["p_open"] is None and below["move"] is None
     no_close = listed.row(by_predicate=pl.col("game_id") == 2018020008, named=True)
     assert no_close["close_home"] is None and no_close["p_close"] is None
-    assert (listed["raw_key"] == "sbr/20182019/20260929T120000Z").all()
+    # Each row names its own season's page.
+    pages = listed.select(
+        pl.col("raw_key") == pl.format("sbr/{}/20260929T120000Z", pl.col("season"))
+    )
+    assert pages.to_series().all()
 
 
 def test_the_committed_list_loads_and_has_the_reviewed_games() -> None:
     listed = load_suspect_openers()
-    assert set(listed["season"]) <= set(range(20102011, 20222023, 10_001))
+    assert set(listed["season"]) <= set(range(20102011, 20232024, 10_001))
     found = flags(listed)
     assert "swapped" in found[2018020006]  # NYR -160 / NSH +140, closing +160 / -180
     assert "extreme_open" in found[2021020648]  # EDM -1010 / MIN +705, closing -105 / -105
@@ -92,5 +97,6 @@ def test_a_rebuild_refuses_a_lake_missing_a_covered_season() -> None:
     assert SUSPECT_FILE.read_bytes() == before
 
 
-def test_the_list_covers_the_phase_one_seasons() -> None:
-    assert tuple(range(20102011, 20222023, 10_001)) == SEASONS
+def test_the_list_covers_every_sbr_season() -> None:
+    # 2022-23's 342 priced games are covered since phase 4 opened them (#66).
+    assert tuple(range(20102011, 20232024, 10_001)) == SEASONS

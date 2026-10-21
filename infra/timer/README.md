@@ -10,6 +10,8 @@ Worker's cron fires every five minutes, and `src/schedule.js` decides which work
 | `pregame-goalies.yml` | :50 of every hour from 12:50 to 02:50 UTC | none |
 | `ingest-nightly.yml` | 09:00 UTC | none |
 
+`player-seasons.yml` (#117) runs once a year on GitHub's own schedule alone, since hours of delay don't matter to it.
+
 Each is dispatched on `main` through the GitHub API. A failed dispatch is retried on 429 and 5xx,
 logged, and makes the cron event show as failed in the Cloudflare dashboard. It runs on the Workers
 free plan: one cron trigger and 288 short invocations a day.

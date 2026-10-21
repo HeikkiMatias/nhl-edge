@@ -1,0 +1,88 @@
+"""Bet selection on expected return at the executable price (docs/plan.md §5, §11, hard rule 4,
+#141, ADR 0028).
+
+For each game, the expected return of each side at its own decimal price o:
+
+    EV_home = p·o_home - 1        EV_away = (1 - p)·o_away - 1
+
+where p is the blend's full-game home probability (hard rule 2). The side with the higher EV is
+picked when its EV clears the hurdle: MIN_EV, plus EV_PER_SD for each standard deviation of the
+uncertainty score u above its training mean (ADR 0026). At most one bet per game; with a margin,
+both sides can't clear it. The probability gap is never read (hard rule 4): a 52.5% blend against
+a 50% fair price at 1.90 has an EV of -0.25% and is no bet.
+"""
+
+from dataclasses import dataclass
+from datetime import date
+
+import polars as pl
+
+HOME = "home"
+AWAY = "away"
+
+# Policy v1's freeze (#144): u (ADR 0026), the blend (ADR 0027), this policy (ADR 0028) and the
+# guard (ADR 0029) as on main at 8ec5cf3, with the live inputs of ADR 0030. Its decisions of
+# 2026-10-08 to 2026-10-14 stay on record under it.
+POLICY_V1 = "policy-20261005-8ec5cf3"
+# Policy v2's freeze (#222, ADR 0037): v1 with each slate team's starter at the decision, from the
+# NHL's flag and Daily Faceoff's statuses, as on main at e15db87. Live games count from the day
+# after FROZEN_ON; any change is a new version, judged only on games after its own freeze date.
+POLICY_V2 = "policy-20261014-e15db87"
+POLICY_VERSION = POLICY_V2
+FROZEN_ON = date(2026, 10, 14)
+# The policies whose decided days today's selection, guard and staking replay (#264): v1 and v2
+# share all three. Each is named, never the current alias, so a freeze changes the list only on
+# purpose; a policy that changes any of the three joins only with code that replays its days.
+REPLAYABLE = (POLICY_V1, POLICY_V2)
+# Live bets use the blend fitted on SBR's close (E1), applied to Pinnacle's 12:45 ET price
+# (ADR 0030).
+LIVE_BLEND_EXPERIMENT = "E1"
+# The policy the live artifacts were fitted under: v2 reuses v1's live blend and its attribution
+# levels unchanged, since v2's B3 on history is v1's (ADR 0037).
+FIT_POLICY = POLICY_V1
+# Policy v2's L (ADR 0037): the chance a Daily Faceoff "Likely" goalie starts. Its 45 calls at
+# the decisions of 2026-09-29 to 2026-10-13 all named the starter (#238); the owner chose the
+# rule of succession, (45 + 1) / (45 + 2), on 2026-10-14, so a Likely keeps a little doubt.
+LIKELY_STARTS: float | None = 46 / 47
+
+
+@dataclass(frozen=True)
+class Policy:
+    """The selection and staking policy (ADR 0028), frozen before live games."""
+
+    # The lowest expected return a bet needs at the executable price.
+    min_ev: float = 0.025
+    # The hurdle rises this much per standard deviation of u above its training mean.
+    ev_per_sd: float = 0.01
+    # The share of the Kelly stake bet.
+    kelly: float = 0.25
+    # A bet's cap, and a day's, as shares of the bankroll at the start of the day.
+    max_bet: float = 0.015
+    max_day: float = 0.05
+    # Each season's paper bankroll, in units.
+    bankroll: float = 100.0
+
+
+POLICY = Policy()
+
+
+def doubt(u_sd: pl.Expr) -> pl.Expr:
+    """u's standard deviations above its training mean, or 0 at or below it."""
+    return pl.when(u_sd > 0).then(u_sd).otherwise(0.0)
+
+
+def select(games: pl.DataFrame, policy: Policy = POLICY) -> pl.DataFrame:
+    """Each game (game_id, p_home, home_price, away_price, u_sd and any other columns) with the
+    side of higher expected return (side), its price, probability and EV, the game's hurdle, and
+    whether it is bet (picked)."""
+    p = pl.col("p_home")
+    ev_home = p * pl.col("home_price") - 1
+    ev_away = (1 - p) * pl.col("away_price") - 1
+    home_better = ev_home >= ev_away
+    return games.with_columns(
+        side=pl.when(home_better).then(pl.lit(HOME)).otherwise(pl.lit(AWAY)),
+        price=pl.when(home_better).then(pl.col("home_price")).otherwise(pl.col("away_price")),
+        p_side=pl.when(home_better).then(p).otherwise(1 - p),
+        ev=pl.when(home_better).then(ev_home).otherwise(ev_away),
+        hurdle=policy.min_ev + policy.ev_per_sd * doubt(pl.col("u_sd")),
+    ).with_columns(picked=pl.col("ev") >= pl.col("hurdle"))

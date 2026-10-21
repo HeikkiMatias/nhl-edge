@@ -1,0 +1,495 @@
+"""Hard rule 8's screen of B3's gaps (#107, gate 2): the games where B3's probability differs from
+B1's by more than 8 points, screened for bug signatures before a manual review. It never reads a
+game's result: only B3's inputs and fit, the projection, and, to check the projection against
+what happened, the game's own boxscore (who dressed and who started), which no model reads.
+
+For each gap game, as B3 saw it at the backtest's prediction time (the start for E1):
+- B3's log-odds in parts: β0, the home term h_s, Δĝ's term at the goalie mixture's expected Δĝ
+  and each schedule input's term, beside the market's log-odds; the input with the largest term
+  is the gap's driver;
+- each team's expected goals at 5v5, on the power play and shorthanded, and its multiplier κ·φ;
+- flags, each a bug signature:
+  - no_candidates: a team without candidate skaters, which plays replacements only;
+  - average_goalie: a team without candidate goalies, counted as average;
+  - out_of_range: an input (Δĝ of any goalie pair, or a schedule input) outside the range of the
+    fold's training games;
+  - jump: a team's own 5v5 strength (its on-ice offense plus defense, in goals a game) moved by
+    more than JUMP since its previous game of the season;
+  - projection_miss: MISSED or more of a team's dressed skaters were not projected to play;
+  - starter_surprise: a starter whose start probability was under UNSURE, or not a candidate.
+
+The manual review covers every flagged game, every gap above LARGE, and a seeded sample of SAMPLE
+more, stratified by season (#107).
+
+For the blend's gaps, the screen also recomputes each gap's blend probability from its fold's
+recorded fit (blend_check, #156): BLEND's weights and u's scale from the run's summary.json,
+applied to the market's de-vigged probability at the prediction time, the gap's B3 (which the
+refit checks) and u from its parts at the same time. A stale or wrong p_blend is refused even
+when its gap is consistent with it.
+"""
+
+from collections.abc import Mapping
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import polars as pl
+
+from nhl_edge.backtest.subsets import IN_LINEUP
+from nhl_edge.features import team_strength as ts
+from nhl_edge.game import b2, b3, uncertainty
+from nhl_edge.lineup.goalie_start import team_goalie_games
+from nhl_edge.market import blend
+
+UTC = pl.Datetime("us", "UTC")
+# The gaps files round each probability and gap to 4 decimals.
+ROUNDING = 2e-4
+# How far a recomputed blend probability may differ from the gaps file's, which rounds p_blend and
+# p_b3 to 4 decimals: as far as B3's refit may (screen).
+BLEND_TOLERANCE = 1e-3
+JUMP = 0.08
+MISSED = 4
+UNSURE = 0.1
+LARGE = 0.20
+SAMPLE = 40
+SEED = 20261003
+FLAGS = (
+    "no_candidates",
+    "average_goalie",
+    "out_of_range",
+    "jump",
+    "projection_miss",
+    "starter_surprise",
+)
+TERMS = tuple(f"term_{name}" for name in b3.INPUTS)
+
+
+def _logit(p: pl.Expr) -> pl.Expr:
+    return (p / (1 - p)).log()
+
+
+def explained(model: b3.B3Model, usable: pl.DataFrame, pairs: pl.DataFrame) -> pl.DataFrame:
+    """Per game of usable, the goalie mixture's expected Δĝ with its range over the pairs, and
+    B3's log-odds terms there: β0 (intercept), h_s (offset) and each input's weight times its
+    standardized value (term_<input>)."""
+    expected = pairs.group_by("game_id").agg(
+        delta_g_hat=(pl.col("delta_g_hat") * pl.col("weight")).sum() / pl.col("weight").sum(),
+        delta_low=pl.col("delta_g_hat").min(),
+        delta_high=pl.col("delta_g_hat").max(),
+    )
+    others = [name for name in b3.INPUTS if name != "delta_g_hat"]
+    frame = usable.select("game_id", "offset", *others).join(expected, on="game_id")
+    return frame.select(
+        "game_id",
+        "delta_g_hat",
+        "delta_low",
+        "delta_high",
+        *others,
+        intercept=pl.lit(model.intercept),
+        offset="offset",
+        **{
+            f"term_{name}": (pl.col(name) - mean) / scale * weight
+            for name, mean, scale, weight in zip(
+                b3.INPUTS, model.means, model.scales, model.weights, strict=True
+            )
+        },
+    )
+
+
+def team_flags(tables: b3.Tables, games: pl.Series, goalies: pl.DataFrame) -> pl.DataFrame:
+    """Per team-game of games: its expected goals in parts and multiplier, how far its own
+    strength moved since its previous game (jump), and its lineup flags. goalies are the
+    candidate goalies B3 read for each game (game_id, team, goalie_id, p_start), those known
+    before its prediction. Reads the game's own boxscore only for who dressed and who
+    started."""
+    wanted = pl.col("game_id").is_in(games.implode())
+    lines = ts.team_lines()
+    base, _ = b3.multipliers(tables)
+    goals = (
+        b3.team_goals(tables)
+        .join(base.select("game_id", "team", "base"), on=["game_id", "team"])
+        .join(tables.games.select("game_id", "start_utc"), on="game_id")
+        .with_columns(goals=pl.col("raw") * pl.col("base"), line=pl.col("team").replace(lines))
+        .sort("line", "start_utc", "game_id")
+        # The team's own strength, so a change of opponent is no jump; within the season, so the
+        # summer's roster changes are none either.
+        .with_columns(
+            jump=(pl.col("strength_5v5") - pl.col("strength_5v5").shift(1))
+            .abs()
+            .over("line", "season")
+        )
+        .filter(wanted)
+        .select("game_id", "team", "xg_5v5", "xg_pp", "xg_sh", "base", "goals", "jump")
+    )
+    projected = tables.lineups.filter(
+        wanted, pl.col("role").is_in(["F", "D"]), pl.col("p_available") >= IN_LINEUP
+    ).select("game_id", "team", "player_id")
+    dressed = tables.actual_lineups.filter(wanted, pl.col("role").is_in(["F", "D"]))
+    missed = (
+        dressed.join(projected, on=["game_id", "team", "player_id"], how="anti")
+        .group_by("game_id", "team")
+        .agg(missed=pl.len())
+    )
+    candidates = (
+        tables.lineups.filter(wanted, pl.col("role").is_in(["F", "D"]))
+        .select("game_id", "team")
+        .unique()
+        .with_columns(has_candidates=pl.lit(True))
+    )
+    candidate_goalies = (
+        goalies.filter(wanted)
+        .select("game_id", "team")
+        .unique()
+        .with_columns(has_goalies=pl.lit(True))
+    )
+    starters = (
+        team_goalie_games(tables.actual_lineups.filter(wanted))
+        .select("game_id", "team", goalie_id="starter")
+        .join(
+            goalies.select("game_id", "team", "goalie_id", "p_start"),
+            on=["game_id", "team", "goalie_id"],
+            how="left",
+        )
+        .select("game_id", "team", starter_p=pl.col("p_start").fill_null(0.0))
+    )
+    keys = ["game_id", "team"]
+    return (
+        goals.join(missed, on=keys, how="left")
+        .join(candidates, on=keys, how="left")
+        .join(candidate_goalies, on=keys, how="left")
+        .join(starters, on=keys, how="left")
+        .with_columns(
+            pl.col("missed").fill_null(0),
+            no_candidates=pl.col("has_candidates").is_null(),
+            average_goalie=pl.col("has_goalies").is_null(),
+            jump_flag=pl.col("jump").fill_null(0.0) > JUMP,
+            projection_miss=pl.col("missed").fill_null(0) >= MISSED,
+            starter_surprise=pl.col("starter_p") < UNSURE,
+        )
+        .drop("has_candidates", "has_goalies")
+    )
+
+
+def screen(tables: b3.Tables, gaps: pl.DataFrame, starts: Mapping[int, datetime]) -> pl.DataFrame:
+    """Every gap game of gaps (one experiment's gaps_b3.csv rows: season, game_id, game_date,
+    home, away, p_b3, p_b1, gap, and optionally prediction_utc) with B3's terms, both teams' parts
+    and the flags, B3 refit for each season as the backtest's fold starting at starts[season] and
+    predicting at each game's prediction_utc, or its start without one. Raises if the refit leaves
+    out a gap game or its probability differs from p_b3: the screen would then not explain the
+    backtest's gaps. A blend gaps file's p_blend is kept, and every row's gap must be its model's
+    probability (p_blend, or p_b3 without one) less p_b1."""
+    # The gaps file's own columns only: nothing else it might carry reaches the report.
+    gapped = "p_blend" if "p_blend" in gaps.columns else "p_b3"
+    off = gaps.filter((pl.col(gapped) - pl.col("p_b1") - pl.col("gap")).abs() > ROUNDING)
+    if off.height:
+        raise ValueError(
+            f"{off.height} gaps are not {gapped} - p_b1, e.g. game {off['game_id'][0]}: "
+            "rerun nhl backtest"
+        )
+    at = (
+        pl.col("prediction_utc").cast(UTC)
+        if "prediction_utc" in gaps.columns
+        else pl.lit(None, UTC).alias("prediction_utc")
+    )
+    gaps = (
+        gaps.select(
+            "season",
+            "game_id",
+            "game_date",
+            at,
+            "home",
+            "away",
+            *(["p_blend"] if gapped == "p_blend" else []),
+            "p_b3",
+            "p_b1",
+            "gap",
+        )
+        .join(tables.games.select("game_id", "start_utc"), on="game_id", how="left")
+        .with_columns(prediction_utc=pl.coalesce("prediction_utc", "start_utc"))
+        .drop("start_utc")
+    )
+    frames = []
+    for season, start in sorted(starts.items()):
+        season_gaps = gaps.filter(pl.col("season") == season)
+        if season_gaps.is_empty():
+            continue
+        moments = season_gaps.select("game_id", "prediction_utc")
+        predicted, model = b3.predictions(tables, moments, season, start)
+        through = b3.through(tables, season)
+        inputs = b3.game_inputs(through)
+        train = b3.training_games(through, inputs, season, start, "observed_utc")
+        pool = through.goalie_starts.select(
+            "game_id", "team", "goalie_id", "p_start", "observed_utc"
+        )
+        usable, ready = b2.known_before(
+            inputs.filter(pl.col("season") == season), pool, moments, "observed_utc"
+        )
+        _, gammas = b3.multipliers(through)
+        terms = explained(model, usable, b3.scenarios(usable, ready, gammas))
+        # The fold's training range of each input.
+        outside = pl.lit(False)
+        for name in b3.INPUTS:
+            low, high = train[name].min(), train[name].max()
+            if name == "delta_g_hat":
+                outside |= (pl.col("delta_low") < low) | (pl.col("delta_high") > high)
+            else:
+                outside |= (pl.col(name) < low) | (pl.col(name) > high)
+        frame = (
+            season_gaps.join(predicted.select("game_id", "p_home"), on="game_id")
+            .join(terms, on="game_id")
+            .with_columns(out_of_range=outside)
+        )
+        unexplained = season_gaps.join(frame.select("game_id"), on="game_id", how="anti")
+        if unexplained.height:
+            examples = ", ".join(str(g) for g in unexplained["game_id"].sort().head(3))
+            raise ValueError(
+                f"B3 refit for {season} does not predict {unexplained.height} gap games, e.g. "
+                f"{examples}: rerun nhl backtest"
+            )
+        drift = frame.select((pl.col("p_home") - pl.col("p_b3")).abs().max()).item()
+        if drift is None or drift > 1e-3:
+            raise ValueError(
+                f"B3 refit for {season} differs from the gaps file by {drift}: rerun nhl backtest"
+            )
+        teams = team_flags(through, frame["game_id"], ready)
+        for side in ("home", "away"):
+            renamed = teams.rename({c: f"{side}_{c}" for c in teams.columns if c != "game_id"})
+            frame = frame.join(
+                renamed, left_on=["game_id", side], right_on=["game_id", f"{side}_team"]
+            )
+        frames.append(frame)
+    if not frames:
+        return pl.DataFrame()
+    screened = pl.concat(frames, how="diagonal_relaxed")
+    flags = {
+        flag: pl.col(f"home_{column}") | pl.col(f"away_{column}")
+        for flag, column in (
+            ("no_candidates", "no_candidates"),
+            ("average_goalie", "average_goalie"),
+            ("jump", "jump_flag"),
+            ("projection_miss", "projection_miss"),
+            ("starter_surprise", "starter_surprise"),
+        )
+    }
+    others = pl.concat_list([pl.col(t).abs() for t in TERMS])
+    return (
+        screened.with_columns(**flags)
+        .with_columns(
+            flagged=pl.any_horizontal(*FLAGS),
+            logit_b3=_logit(pl.col("p_b3")),
+            logit_b1=_logit(pl.col("p_b1")),
+            driver=pl.lit(list(b3.INPUTS)).list.get(others.list.arg_max()),
+            timid=(pl.col("p_b3") - 0.5).abs() < (pl.col("p_b1") - 0.5).abs(),
+            other_favourite=(pl.col("p_b3") - 0.5) * (pl.col("p_b1") - 0.5) < 0,
+        )
+        .sort("season", "game_date", "game_id")
+    )
+
+
+def review_set(screened: pl.DataFrame) -> pl.DataFrame:
+    """screened with review: "flagged" for a flagged game, "large" for a gap above LARGE, and
+    "sample" for a seeded sample of SAMPLE of the rest, split evenly over the seasons."""
+    marked = screened.with_columns(
+        review=pl.when(pl.col("flagged"))
+        .then(pl.lit("flagged"))
+        .when(pl.col("gap").abs() > LARGE)
+        .then(pl.lit("large"))
+        .otherwise(pl.lit(""))
+    )
+    rng = np.random.default_rng(SEED)
+    seasons = sorted(marked["season"].unique().to_list())
+    sampled: list[int] = []
+    for season in seasons:
+        rest = marked.filter(pl.col("season") == season, pl.col("review") == "")["game_id"]
+        take = min(SAMPLE // len(seasons), rest.len())
+        sampled += [int(g) for g in rng.choice(rest.sort().to_numpy(), size=take, replace=False)]
+    return marked.with_columns(
+        review=pl.when(pl.col("game_id").is_in(sampled))
+        .then(pl.lit("sample"))
+        .otherwise(pl.col("review"))
+    )
+
+
+def summary(marked: pl.DataFrame) -> dict[str, Any]:
+    """Counts behind the review: per flag, per review group, and the gaps' shape."""
+    return {
+        "games": marked.height,
+        "flags": {flag: int(marked[flag].sum()) for flag in FLAGS},
+        "flagged": int(marked["flagged"].sum()),
+        "review": dict(
+            marked.filter(pl.col("review") != "").group_by("review").len().sort("review").rows()
+        ),
+        "timid": float(marked["timid"].mean()),  # type: ignore[arg-type]
+        "other_favourite": float(marked["other_favourite"].mean()),  # type: ignore[arg-type]
+        "drivers": dict(marked.group_by("driver").len().sort("len", descending=True).rows()),
+    }
+
+
+def every_gap(screened: pl.DataFrame) -> pl.DataFrame:
+    """screened with every game marked for review ("all"): the blend's gaps are few enough to
+    review each (#144)."""
+    return screened.with_columns(review=pl.lit("all"))
+
+
+def blend_gaps(rows: pl.DataFrame) -> pl.DataFrame:
+    """The blend's gaps (gaps_blend.csv: experiment, season, game_id, game_date, prediction_utc,
+    home, away, p_blend, p_b1, p_b3, gap), one row per experiment and game: a game that is a gap
+    on both E1 and E2 is screened at each experiment's own prediction time. Refuses a file
+    without the backtest's own B3 and prediction time, which the screen checks its refit
+    against."""
+    missing = {"prediction_utc", "p_b3"} - set(rows.columns)
+    if missing:
+        raise ValueError(f"the gaps file lacks {sorted(missing)}: rerun nhl backtest")
+    return rows.unique(["experiment", "game_id"], keep="first").sort(
+        "season", "game_date", "game_id", "experiment"
+    )
+
+
+def markdown(marked: pl.DataFrame, source: str, version: str, model: str = "B3") -> str:
+    """The screen's report: what was screened, the flag counts, and one row per game to review,
+    with a blank column for the reviewer's note. For the blend's gaps (model "blend"), Gap is
+    the blend's gap against B1, and B3 and its terms are B3's own at the backtest's prediction
+    time."""
+    facts = summary(marked)
+    lines = [
+        f"# {model} gap screen ({version})",
+        "",
+        f"Hard rule 8's screen (#107) of {facts['games']:,} gaps above 8 points against B1 in "
+        f"`{source}`. B3 is refit as in the backtest's folds, at each gap's prediction time. No "
+        "result was read.",
+        "",
+        "## Shape of the gaps",
+        "",
+        f"- B3 is closer to 50% than the market in {facts['timid']:.0%} of them, and picks the "
+        f"other favourite in {facts['other_favourite']:.0%}.",
+        "- The input with the largest term in B3's log-odds: "
+        + ", ".join(f"{name} {count}" for name, count in facts["drivers"].items())
+        + ".",
+        "",
+        "## Flags",
+        "",
+        "| Flag | Games |",
+        "| --- | --- |",
+        *(f"| {flag} | {count} |" for flag, count in facts["flags"].items()),
+        f"| any | {facts['flagged']} |",
+        "",
+        "## Games to review",
+        "",
+        "Every flagged game, every gap above "
+        f"{LARGE:.0%}, and a seeded sample (seed {SEED}) of {SAMPLE} more, split by season. "
+        "Each team's goals are its expected goals times κ·φ; missed counts its dressed skaters "
+        "that were not projected; starter is the starter's start probability.",
+        "",
+        "| Review | Game | Date | Home | Away | B3 | B1 | Gap | Δĝ | Driver | Home goals | "
+        "Away goals | Missed | Starter | Flags | Note |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
+        "--- | --- |",
+    ]
+    order = {"flagged": 0, "large": 1, "sample": 2, "all": 3}
+    shown = (
+        marked.filter(pl.col("review") != "")
+        .with_columns(order=pl.col("review").replace_strict(order, return_dtype=pl.Int8))
+        .sort("order", "season", "game_date", "game_id", *(["experiment"] * (model == "blend")))
+    )
+    for row in shown.iter_rows(named=True):
+        flags = ", ".join(flag for flag in FLAGS if row[flag])
+        # A blend game can be a gap on both experiments, each screened at its own time.
+        game = f"{row['game_id']} ({row['experiment']})" if model == "blend" else row["game_id"]
+        lines.append(
+            f"| {row['review']} | {game} | {row['game_date']} | {row['home']} | "
+            f"{row['away']} | {row['p_b3']:.3f} | {row['p_b1']:.3f} | {row['gap']:+.3f} | "
+            f"{row['delta_g_hat']:+.3f} | {row['driver']} | {row['home_goals']:.2f} | "
+            f"{row['away_goals']:.2f} | {row['home_missed']}/{row['away_missed']} | "
+            f"{row['home_starter_p']:.2f}/{row['away_starter_p']:.2f} | {flags} | |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def run_summary(gaps: Path) -> Path:
+    """The backtest report a gaps file came with: summary.json beside it for a development run,
+    or <run version>.json beside the run's own directory for a market-validation run, which
+    writes its gaps under <out>/<run version>/ (#156)."""
+    for candidate in (
+        gaps.parent / "summary.json",
+        gaps.parent.parent / f"{gaps.parent.name}.json",
+    ):
+        if candidate.exists():
+            return candidate
+    raise ValueError(
+        f"no backtest report beside {gaps} (summary.json, or {gaps.parent.name}.json above it): "
+        "the blend's fits are needed to check its gaps"
+    )
+
+
+def fold_blends(
+    summary: Mapping[str, Any], name: str = "BLEND"
+) -> dict[tuple[str, int], tuple[blend.Blend, uncertainty.Scale]]:
+    """Each experiment's and season's fit of the blend name, and u's scale, from a backtest's
+    summary.json (experiments/<experiment>/models/<name>/fits/<season>)."""
+    fits = {}
+    for experiment, entry in summary["experiments"].items():
+        model = entry.get("models", {}).get(name)
+        if model is None:
+            continue
+        for season, fit in model["fits"].items():
+            kind = blend.Kind(fit["kind"])
+            cutoff = datetime.fromisoformat(fit["train_cutoff"])
+            scale = fit["u_scale"]
+            fits[(experiment, int(season))] = (
+                blend.Blend(
+                    kind=kind,
+                    weights=tuple(fit["weights"][t] for t in blend.TERMS[kind]),
+                    standard_errors=tuple(fit["standard_errors"][t] for t in blend.TERMS[kind]),
+                    games=fit["games"],
+                    train_cutoff=cutoff,
+                ),
+                uncertainty.Scale(
+                    means=tuple(scale["means"][p] for p in uncertainty.PARTS),
+                    sds=tuple(scale["sds"][p] for p in uncertainty.PARTS),
+                    games=fit["games"],
+                    train_cutoff=cutoff,
+                    u_sd=scale["u_sd"],
+                ),
+            )
+    return fits
+
+
+def blend_check(
+    gaps: pl.DataFrame,
+    p_mkt: pl.DataFrame,
+    u_parts: pl.DataFrame,
+    fits: Mapping[tuple[str, int], tuple[blend.Blend, uncertainty.Scale]],
+) -> None:
+    """Raise unless each blend gap's p_blend (gaps: experiment, season, game_id, p_blend, p_b3)
+    follows from its fold's fit within BLEND_TOLERANCE: the blend applied to the market's
+    de-vigged home probability at the gap's prediction time (p_mkt: experiment, game_id, p_mkt),
+    the gap's B3 and u from its parts at that time (u_parts: experiment, game_id and
+    uncertainty.PARTS) on the fold's scale. Prices and inputs only, never a result (#156)."""
+    keys = ["experiment", "game_id"]
+    rows = gaps.select("experiment", "season", "game_id", "p_blend", "p_b3")
+    known = rows.join(p_mkt.select(*keys, "p_mkt"), on=keys).join(
+        u_parts.select(*keys, *uncertainty.PARTS), on=keys
+    )
+    if known.height < rows.height:
+        missing = rows.join(known.select(keys), on=keys, how="anti")
+        raise ValueError(
+            f"{missing.height} blend gaps have no market price or u to recompute them from, e.g. "
+            f"game {missing['game_id'][0]}: rerun nhl backtest"
+        )
+    for (experiment, season), group in known.group_by("experiment", "season"):
+        fit = fits.get((str(experiment), int(season)))  # type: ignore[arg-type]
+        if fit is None:
+            raise ValueError(f"no {experiment} blend fit of {season} in the run's summary.json")
+        fitted, scale = fit
+        recomputed = fitted.predict(
+            group["p_mkt"].to_numpy(), group["p_b3"].to_numpy(), scale.score(group).to_numpy()
+        )
+        drift = np.abs(recomputed - group["p_blend"].to_numpy())
+        if drift.max() > BLEND_TOLERANCE:
+            worst = int(drift.argmax())
+            raise ValueError(
+                f"{int((drift > BLEND_TOLERANCE).sum())} {experiment} blend gaps of {season} "
+                f"don't follow from the fold's fit, e.g. game {group['game_id'][worst]} by "
+                f"{drift[worst]:.4f}: rerun nhl backtest"
+            )

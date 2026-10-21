@@ -1,6 +1,7 @@
 import csv
 import json
 import math
+import re
 import subprocess
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -9,6 +10,7 @@ import market_history
 import polars as pl
 import pytest
 from b2_fixtures import feature_tables
+from b3_fixtures import player_tables
 from test_sbr import NEW, NEW_SCHEDULE, results_empty
 from typer.testing import CliRunner
 
@@ -16,7 +18,7 @@ from nhl_edge.backtest import reports
 from nhl_edge.backtest.metrics import bootstrap, log_loss
 from nhl_edge.backtest.walk_forward import Coverage, b0, outcomes, run
 from nhl_edge.cli import app
-from nhl_edge.game import b2
+from nhl_edge.game import b2, b3
 from nhl_edge.ingest.games import EXPECTED_GAMES
 from nhl_edge.ingest.sbr import match_season, parse_season
 from nhl_edge.lake.schemas import Games, SbrOdds, dtypes
@@ -310,10 +312,116 @@ runner = CliRunner()
 
 def test_backtest_refuses_held_out_seasons(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    for season in ("20222023", "20252026", "20262027"):
+    for season in ("20222023", "20232024", "20242025", "20252026", "20262027"):
         result = runner.invoke(app, ["backtest", "--seasons", season])
         assert result.exit_code == 2, result.output
         assert "held out" in result.output
+    # The hockey-only mode opens the hockey validation seasons at gate 2, and only those.
+    for season in ("20222023", "20252026", "20262027"):
+        result = runner.invoke(app, ["backtest", "--seasons", season, "--hockey-only"])
+        assert result.exit_code == 2, result.output
+        assert "held out" in result.output
+    for season in ("20232024", "20242025"):
+        result = runner.invoke(app, ["backtest", "--seasons", season, "--hockey-only"])
+        assert "held out" not in result.output
+        assert "run the feature commands" in result.output  # past the gate, at the input check
+
+
+def test_the_one_time_test_runs_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from fakes import ConditionalBucket
+
+    from nhl_edge.backtest import one_time
+
+    monkeypatch.chdir(tmp_path)
+    bucket = ConditionalBucket()
+    monkeypatch.setattr(
+        one_time,
+        "places",
+        lambda lake_dir, report_dirs: one_time.Places(lake_dir, report_dirs, bucket, "b"),
+    )
+    once = ["backtest", "--seasons", "20252026", "--hockey-only", "--one-time-test"]
+    refused = {
+        "needs --hockey-only": ["backtest", "--seasons", "20252026", "--one-time-test"],
+        "scores [20252026] alone": [
+            "backtest",
+            "--seasons",
+            "20232024,20252026",
+            "--hockey-only",
+            "--one-time-test",
+        ],
+    }
+
+    def plain(output: str) -> str:
+        """The output without colour codes or the error box's borders and line breaks: CI's
+        terminal colours each part of an option name."""
+        return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", output).replace("│", " ").split())
+
+    for message, args in refused.items():
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2 and message in plain(result.output), result.output
+    # Not yet run: past the gate, to the empty lake's input check, which stops it before the
+    # claim.
+    first = plain(runner.invoke(app, once).output)
+    assert "held out" not in first and "already ran" not in first
+    assert "run the feature commands" in first and not bucket.objects
+    # Claimed on another machine: refused here, whatever the report directory.
+    bucket.put_object(Bucket="b", Key=one_time.R2_KEY, Body=b"backtest-hockey-abc then\n")
+    again = runner.invoke(app, [*once, "--out", "elsewhere"])
+    flat = plain(again.output)
+    assert again.exit_code == 2 and "already ran" in flat and "backtest-hockey-abc" in flat
+
+
+def test_the_market_validation_run_runs_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fakes import ConditionalBucket
+
+    from nhl_edge.backtest import one_time, reports
+
+    monkeypatch.chdir(tmp_path)
+    bucket = ConditionalBucket()
+    monkeypatch.setattr(
+        one_time,
+        "places",
+        lambda lake_dir, report_dirs, test: one_time.Places(
+            lake_dir, report_dirs, bucket, "b", test
+        ),
+    )
+    once = ["backtest", "--seasons", "20222023", "--market-validation"]
+
+    def plain(output: str) -> str:
+        return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", output).replace("│", " ").split())
+
+    refused = {
+        "prices the season": [*once, "--hockey-only"],
+        "scores [20222023] alone": [
+            "backtest",
+            "--seasons",
+            "20212022,20222023",
+            "--market-validation",
+        ],
+    }
+    for message, args in refused.items():
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2 and message in plain(result.output), result.output
+    # Uncommitted code can't spend the one run: it couldn't be reproduced from its commit.
+    version = reports.version
+    monkeypatch.setattr(reports, "version", lambda component, now: f"{component}-x-abc-dirty")
+    dirty = runner.invoke(app, once)
+    assert dirty.exit_code == 2 and "commit first" in plain(dirty.output), dirty.output
+    monkeypatch.setattr(reports, "version", version)
+    # Not yet run: past the gate, to the empty lake's price check, which stops it before the
+    # claim.
+    first = plain(runner.invoke(app, once).output)
+    assert "held out" not in first and "already ran" not in first
+    assert "run nhl odds sbr" in first and not bucket.objects
+    # Claimed on another machine: refused here, whatever the report directory.
+    bucket.put_object(
+        Bucket="b", Key=one_time.MARKET_VALIDATION.r2_key, Body=b"market-validation-abc then\n"
+    )
+    again = runner.invoke(app, [*once, "--out", "elsewhere"])
+    flat = plain(again.output)
+    assert again.exit_code == 2 and "already ran" in flat and "market-validation-abc" in flat
 
 
 def test_backtest_refuses_the_first_sbr_season(
@@ -357,10 +465,26 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         Lake,
         "read",
-        lambda self, name: (
+        lambda self, name, seasons=None: (
             getattr(tables, name)
             if name in b2.TABLES or name == "actual_lineups"
-            else stored(self, name)
+            else stored(self, name, seasons)
+        ),
+    )
+    # B3 needs the player layer's tables (ADR 0023).
+    no_players = runner.invoke(app, ["backtest", "--seasons", "20212022"])
+    assert no_players.exit_code == 1
+    assert "games without lineups" in no_players.output
+    players = player_tables(lake.read("games"), tables)
+    monkeypatch.setattr(
+        Lake,
+        "read",
+        lambda self, name, seasons=None: (
+            getattr(tables, name)
+            if name in b2.TABLES or name == "actual_lineups"
+            else getattr(players, name)
+            if name in b3.TABLES or name == "lineup_replacements"
+            else stored(self, name, seasons)
         ),
     )
     result = runner.invoke(app, ["backtest", "--seasons", "20212022", "--out", "out"])
@@ -382,6 +506,34 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert "gaps_over_8_points" in summary["experiments"]["E1"]["models"]["B2"]
     assert (tmp_path / "out" / "gaps.csv").exists()
     assert "goalie_starts" in summary["experiments"]["E2"]["models"]["B2"]["lineup_quality"]
+    # B3 beside B2, on the same games and training games, with its own gaps file.
+    assert "E1 B3 none: log loss" in result.output
+    assert e2["b3_scored"] == e2["scored"] and e2["b3_trained_on"] == e2["b2_trained_on"]
+    b3_model = summary["experiments"]["E2"]["models"]["B3"]
+    assert set(b3_model) >= {"paired_against_B2", "gate_2_subsets", "lineup_quality"}
+    assert (tmp_path / "out" / "gaps_b3.csv").exists()
+    # The hockey-only mode scores B2 and B3 on every game at the as-of time.
+    hockey = runner.invoke(
+        app, ["backtest", "--seasons", "20212022", "--hockey-only", "--out", "hockey"]
+    )
+    assert hockey.exit_code == 0, hockey.output
+    (written_path,) = (tmp_path / "hockey").glob("hockey-*.json")
+    written = json.loads(written_path.read_text())
+    stem = written["version"].replace("backtest-hockey", "hockey")
+    assert re.fullmatch(rf"{re.escape(stem)}-\d{{6}}\.json", written_path.name)
+    assert set(written["models"]) == {"B2", "B3"}
+    assert written["coverage"]["20212022"]["b3_scored"] == 4
+    assert (
+        set(written["models"]["B2"]["fits"]) == set(written["models"]["B3"]["fits"]) == {"20212022"}
+    )
+    # Every hockey-only run is logged, one row per model.
+    with (tmp_path / "hockey" / "runs.csv").open(newline="") as handle:
+        logged = list(csv.DictReader(handle))
+    assert [(r["experiment"], r["model"], r["games"]) for r in logged] == [
+        ("hockey", "B2", "4"),
+        ("hockey", "B3", "4"),
+    ]
+    assert all(r["version"] == written["version"] and r["train_cutoff"] for r in logged)
 
 
 def test_a_market_below_100_percent_is_counted_and_left_out() -> None:

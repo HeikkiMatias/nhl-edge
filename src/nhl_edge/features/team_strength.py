@@ -237,13 +237,15 @@ def league_states(history: pl.DataFrame, targets: pl.DataFrame) -> pl.DataFrame:
     return pl.concat(out)
 
 
-def strength(
+def side_rates(
     games: pl.DataFrame,
     history: pl.DataFrame,
     settings: Settings,
     lines: Mapping[str, str] | None = None,
 ) -> pl.DataFrame:
-    """ΔS and its parts for every game in games, from the team-games in history (team_games)."""
+    """Every game in games with its as-of time and each side's rates, shrunk toward the league:
+    xG per minute (<sum>_per_min) and minutes per game (<minutes>_per_game), the away side's
+    with the suffix _away, and the league's 5v5 minutes per game."""
     targets = games.select(
         "game_id",
         "season",
@@ -284,7 +286,17 @@ def strength(
     )
     home = rated.filter(pl.col("side") == "home").drop("side")
     away = rated.filter(pl.col("side") == "away").drop("side", "league_5v5_per_game")
-    both = targets.join(home, on="game_id").join(away, on="game_id", suffix="_away")
+    return targets.join(home, on="game_id").join(away, on="game_id", suffix="_away")
+
+
+def strength(
+    games: pl.DataFrame,
+    history: pl.DataFrame,
+    settings: Settings,
+    lines: Mapping[str, str] | None = None,
+) -> pl.DataFrame:
+    """ΔS and its parts for every game in games, from the team-games in history (team_games)."""
+    both = side_rates(games, history, settings, lines)
 
     def expected(attack: str, defend: str) -> tuple[pl.Expr, pl.Expr]:
         a = "" if attack == "home" else "_away"
@@ -327,6 +339,29 @@ def strength(
         away_history=pl.col("history_games_away"),
         as_of_utc="as_of_utc",
     ).sort("game_id")
+
+
+def power_play_minutes(
+    games: pl.DataFrame,
+    history: pl.DataFrame,
+    settings: Settings,
+    lines: Mapping[str, str] | None = None,
+) -> pl.DataFrame:
+    """B2's expected power-play minutes per team and game in games, as ΔS's power play counts
+    them: the average of the team's power-play minutes per game and the opponent's penalty-kill
+    minutes per game, each shrunk toward the league. The reference for #104 (ADR 0021)."""
+    both = side_rates(games, history, settings, lines)
+    sides = (("home", "", "_away"), ("away", "_away", ""))
+    return pl.concat(
+        [
+            both.select(
+                "game_id",
+                team=pl.col(side),
+                pp_minutes=(pl.col(f"min_pp_per_game{a}") + pl.col(f"min_pk_per_game{d}")) / 2,
+            )
+            for side, a, d in sides
+        ]
+    ).sort("game_id", "team")
 
 
 # The tuning grid and the order that breaks ties toward the steadier setting (ADR 0011).

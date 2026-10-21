@@ -1,0 +1,358 @@
+:root {
+  --text: #1c1f23;
+  --muted: #5f6b76;
+  --line: #d9dee3;
+  --panel: #f6f8fa;
+  --accent: #0b5cad;
+  --warn: #8a5a00;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 24px 16px 48px;
+  font:
+    15px/1.5 system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  color: var(--text);
+  background: #fff;
+}
+
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 0 0 4px;
+}
+
+h2 {
+  font-size: 1.15rem;
+  margin: 32px 0 8px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.notice {
+  background: var(--panel);
+  border-left: 4px solid var(--warn);
+  padding: 8px 12px;
+  margin: 12px 0;
+}
+
+.scroll {
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+th {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+td.number,
+th.number {
+  text-align: right;
+}
+
+form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+
+input,
+button {
+  font: inherit;
+  padding: 6px 10px;
+}
+
+button {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button.link {
+  background: none;
+  color: var(--accent);
+  padding: 0;
+}
+
+/* Real bets (#268): one block per alerted bet, its form and what the database said. */
+.real-bet {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 12px 8px;
+  margin: 12px 0;
+}
+
+.real-bet h3 {
+  font-size: 1rem;
+  margin: 8px 0 4px;
+}
+
+.real-bet form {
+  margin: 8px 0;
+  align-items: flex-end;
+}
+
+.real-bet label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+  color: var(--muted);
+  gap: 2px;
+}
+
+.real-bet input {
+  width: 9rem;
+}
+
+.real-bet input[type="datetime-local"] {
+  width: 13rem;
+}
+
+select {
+  font: inherit;
+  padding: 6px 10px;
+}
+
+button.secondary {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.notice.real {
+  border-left-color: var(--accent);
+}
+
+.recorded {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.warning {
+  color: var(--warn);
+  margin: 4px 0;
+}
+
+.error {
+  color: var(--critical, #d03b3b);
+  margin: 4px 0;
+}
+
+/* Charts (#210): one series in the series blue on the page's white, hairline grid and axes,
+   checked with the dataviz validator. Text wears text colours, never the series colour. */
+:root {
+  --series: #2a78d6;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --good: #0ca30c;
+  --critical: #d03b3b;
+}
+
+.chart {
+  position: relative;
+  margin: 8px 0 4px;
+}
+
+.chart svg {
+  display: block;
+  overflow: visible;
+  touch-action: pan-y;
+}
+
+.chart svg:focus-visible,
+.chart .hit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.chart .grid {
+  stroke: var(--grid);
+  stroke-width: 1;
+}
+
+.chart .axis {
+  stroke: var(--axis);
+  stroke-width: 1;
+}
+
+.chart .tick {
+  fill: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart .line {
+  fill: none;
+  stroke: var(--series);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chart .band {
+  fill: var(--series);
+  opacity: 0.1;
+}
+
+.chart .reference {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+.chart .marker {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.chart .crosshair {
+  stroke: var(--axis);
+  stroke-width: 1;
+}
+
+.chart .dot {
+  fill: var(--series);
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+.chart .column {
+  fill: var(--series);
+}
+
+.chart .lifted {
+  opacity: 0.75;
+}
+
+.chart .hit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.chart-tip {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 10px));
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  padding: 4px 8px;
+  font-size: 13px;
+  white-space: nowrap;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-tip span {
+  color: var(--muted);
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.tile {
+  background: var(--panel);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.tile .label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.tile .value {
+  font-size: 1.4rem;
+  font-weight: 600;
+}
+
+.tile .sub {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.won::before {
+  content: "✓ ";
+  color: var(--good);
+  font-weight: 700;
+}
+
+.lost::before {
+  content: "✗ ";
+  color: var(--critical);
+  font-weight: 700;
+}
+
+details.explain {
+  margin: 8px 0 16px;
+}
+
+details.explain summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+details.explain dt {
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+details.explain dd {
+  margin: 2px 0 0;
+  color: var(--text);
+}
+
+/* Live scores (#211): the paper bet's team in the score. */
+.bet-side {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* The real record (#270). */
+.start-rule ul {
+  margin: 4px 0 12px;
+  padding-left: 20px;
+}

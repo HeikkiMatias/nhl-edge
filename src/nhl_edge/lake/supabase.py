@@ -3,7 +3,8 @@
 Only what the dashboard and bet ledger need lives in Supabase; history lives in the lake.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from datetime import date, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -48,15 +49,67 @@ class Supabase:
         the number of rows sent."""
         return self._post(table, frame, key, "merge-duplicates", "upsert into")
 
+    def update(self, table: str, match: Mapping[str, Any], values: Mapping[str, Any]) -> None:
+        """Set values on the rows whose columns equal match (PATCH with eq filters): for the
+        columns a table lets the service role update, such as a bet's settlement."""
+        params = {column: f"eq.{json_value(value)}" for column, value in match.items()}
+        self._request(
+            f"update {table}",
+            "PATCH",
+            table,
+            params=params,
+            headers={"Prefer": "return=minimal"},
+            json={column: json_value(value) for column, value in values.items()},
+        )
+
     def ping(self, table: str, column: str) -> None:
         """One tiny read. The nightly job calls it every day, so the free project never sits
         idle long enough to pause, even in the off-season."""
         self._request(f"read from {table}", "GET", table, params={"select": column, "limit": "1"})
 
+    def upsert_records(
+        self, table: str, records: Sequence[Mapping[str, Any]], key: Sequence[str]
+    ) -> int:
+        """upsert for rows already JSON-ready, such as one holding a whole document (jsonb)."""
+        return self._send(table, list(records), key, "merge-duplicates", "upsert into")
+
+    def insert_new_records(
+        self, table: str, records: Sequence[Mapping[str, Any]], key: Sequence[str]
+    ) -> int:
+        """insert_new for rows already JSON-ready, such as one holding a list (jsonb)."""
+        return self._send(table, list(records), key, "ignore-duplicates", "insert into")
+
+    def select(
+        self, table: str, columns: Sequence[str], order: str, page: int = 1000
+    ) -> list[dict[str, Any]]:
+        """Every row of the table's columns, ordered by order, a page at a time."""
+        rows: list[dict[str, Any]] = []
+        while True:
+            params = {
+                "select": ",".join(columns),
+                "order": order,
+                "limit": str(page),
+                "offset": str(len(rows)),
+            }
+            response = self._request(f"read from {table}", "GET", table, params=params)
+            batch = response.json()
+            rows += batch
+            if len(batch) < page:
+                return rows
+
     def _post(
         self, table: str, frame: pl.DataFrame, key: Sequence[str], resolution: str, action: str
     ) -> int:
-        rows = json_rows(frame)
+        return self._send(table, json_rows(frame), key, resolution, action)
+
+    def _send(
+        self,
+        table: str,
+        rows: list[Any],
+        key: Sequence[str],
+        resolution: str,
+        action: str,
+    ) -> int:
         for start in range(0, len(rows), BATCH_SIZE):
             self._request(
                 f"{action} {table}",
@@ -68,13 +121,14 @@ class Supabase:
             )
         return len(rows)
 
-    def _request(self, what: str, method: str, table: str, **kwargs: Any) -> None:
+    def _request(self, what: str, method: str, table: str, **kwargs: Any) -> httpx.Response:
         try:
             response = self.client.request(method, f"{self.url}/rest/v1/{table}", **kwargs)
         except httpx.HTTPError as exc:
             raise SupabaseError(f"{what} failed: {type(exc).__name__}") from None
         if response.status_code not in (200, 201, 204):
             raise SupabaseError(f"{what} returned {response.status_code}: {response.text[:300]}")
+        return response
 
 
 def json_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
@@ -83,3 +137,12 @@ def json_rows(frame: pl.DataFrame) -> list[dict[str, Any]]:
         pl.col(pl.Datetime).dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
         pl.col(pl.Date).dt.strftime("%Y-%m-%d"),
     ).to_dicts()
+
+
+def json_value(value: Any) -> Any:
+    """One value as json_rows writes it: a timestamp as an ISO UTC string, a date as YYYY-MM-DD."""
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if isinstance(value, date):
+        return value.isoformat()
+    return value

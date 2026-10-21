@@ -1,0 +1,506 @@
+{
+ "id": 2012020671,
+ "season": 20122013,
+ "gameType": 2,
+ "limitedScoring": false,
+ "gameDate": "2013-04-21",
+ "venue": {
+  "default": "Madison Square Garden"
+ },
+ "venueLocation": {
+  "default": "New York"
+ },
+ "startTimeUTC": "2013-04-21T19:00:00Z",
+ "easternUTCOffset": "-04:00",
+ "venueUTCOffset": "-04:00",
+ "gameState": "OFF",
+ "gameScheduleState": "OK",
+ "periodDescriptor": {
+  "number": 3,
+  "periodType": "REG",
+  "maxRegulationPeriods": 3
+ },
+ "awayTeam": {
+  "id": 1,
+  "commonName": {
+   "default": "Devils"
+  },
+  "abbrev": "NJD",
+  "score": 1,
+  "sog": 27,
+  "logo": "https://assets.nhle.com/logos/nhl/svg/NJD_light.svg",
+  "darkLogo": "https://assets.nhle.com/logos/nhl/svg/NJD_dark.svg",
+  "placeName": {
+   "default": "New Jersey"
+  },
+  "placeNameWithPreposition": {
+   "default": "New Jersey",
+   "fr": "du New Jersey"
+  }
+ },
+ "homeTeam": {
+  "id": 3,
+  "commonName": {
+   "default": "Rangers"
+  },
+  "abbrev": "NYR",
+  "score": 4,
+  "sog": 22,
+  "logo": "https://assets.nhle.com/logos/nhl/svg/NYR_light.svg",
+  "darkLogo": "https://assets.nhle.com/logos/nhl/svg/NYR_dark.svg",
+  "placeName": {
+   "default": "New York"
+  },
+  "placeNameWithPreposition": {
+   "default": "New York",
+   "fr": "de New York"
+  }
+ },
+ "shootoutInUse": true,
+ "otInUse": true,
+ "clock": {
+  "timeRemaining": "00:00",
+  "secondsRemaining": 0,
+  "running": false,
+  "inIntermission": false
+ },
+ "displayPeriod": 1,
+ "maxPeriods": 5,
+ "gameOutcome": {
+  "lastPeriodType": "REG"
+ },
+ "regPeriods": 3,
+ "plays": [
+  {
+   "eventId": 52,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "00:00",
+   "timeRemaining": "20:00",
+   "situationCode": "1551",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 6,
+   "details": {
+    "eventOwnerTeamId": 1,
+    "losingPlayerId": 8474613,
+    "winningPlayerId": 8471233,
+    "xCoord": 0,
+    "yCoord": 0,
+    "zoneCode": "N"
+   }
+  },
+  {
+   "eventId": 55,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "00:34",
+   "timeRemaining": "19:26",
+   "situationCode": "1551",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 11,
+   "details": {
+    "eventOwnerTeamId": 3,
+    "losingPlayerId": 8474681,
+    "winningPlayerId": 8473544,
+    "xCoord": 0,
+    "yCoord": 0,
+    "zoneCode": "N"
+   }
+  },
+  {
+   "eventId": 58,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "01:14",
+   "timeRemaining": "18:46",
+   "situationCode": "1551",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 18,
+   "details": {
+    "eventOwnerTeamId": 3,
+    "losingPlayerId": 8474681,
+    "winningPlayerId": 8467389,
+    "xCoord": -68,
+    "yCoord": 21,
+    "zoneCode": "O"
+   }
+  },
+  {
+   "eventId": 60,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "02:01",
+   "timeRemaining": "17:59",
+   "situationCode": "1551",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 25,
+   "details": {
+    "eventOwnerTeamId": 1,
+    "losingPlayerId": 8474613,
+    "winningPlayerId": 8474641,
+    "xCoord": 69,
+    "yCoord": 22,
+    "zoneCode": "O"
+   }
+  },
+  {
+   "eventId": 17,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "03:44",
+   "timeRemaining": "16:16",
+   "situationCode": "1551",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 39,
+   "details": {
+    "xCoord": -3,
+    "yCoord": 39,
+    "zoneCode": "N",
+    "typeCode": "MIN",
+    "descKey": "roughing",
+    "duration": 2,
+    "committedByPlayerId": 8473932,
+    "drawnByPlayerId": 8473646,
+    "eventOwnerTeamId": 3
+   }
+  },
+  {
+   "eventId": 19,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "03:44",
+   "timeRemaining": "16:16",
+   "situationCode": "1551",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 40,
+   "details": {
+    "xCoord": -2,
+    "yCoord": 39,
+    "zoneCode": "N",
+    "typeCode": "MIN",
+    "descKey": "roughing",
+    "duration": 2,
+    "committedByPlayerId": 8473646,
+    "drawnByPlayerId": 8473932,
+    "servedByPlayerId": 8474681,
+    "eventOwnerTeamId": 1
+   }
+  },
+  {
+   "eventId": 15,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "03:44",
+   "timeRemaining": "16:16",
+   "situationCode": "1551",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 41,
+   "details": {
+    "xCoord": -1,
+    "yCoord": 39,
+    "zoneCode": "N",
+    "typeCode": "MIN",
+    "descKey": "roughing",
+    "duration": 2,
+    "committedByPlayerId": 8473646,
+    "drawnByPlayerId": 8473932,
+    "eventOwnerTeamId": 1
+   }
+  },
+  {
+   "eventId": 71,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "07:05",
+   "timeRemaining": "12:55",
+   "situationCode": "1551",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 82,
+   "details": {
+    "eventOwnerTeamId": 3,
+    "losingPlayerId": 8471233,
+    "winningPlayerId": 8467389,
+    "xCoord": 69,
+    "yCoord": -22,
+    "zoneCode": "D"
+   }
+  },
+  {
+   "eventId": 32,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "07:36",
+   "timeRemaining": "12:24",
+   "situationCode": "1551",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 86,
+   "details": {
+    "xCoord": -80,
+    "yCoord": -3,
+    "zoneCode": "O",
+    "typeCode": "MIN",
+    "descKey": "roughing",
+    "duration": 2,
+    "committedByPlayerId": 8474176,
+    "drawnByPlayerId": 8470920,
+    "eventOwnerTeamId": 3
+   }
+  },
+  {
+   "eventId": 37,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "08:54",
+   "timeRemaining": "11:06",
+   "situationCode": "1541",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 102,
+   "details": {
+    "xCoord": 96,
+    "yCoord": -6,
+    "zoneCode": "O",
+    "typeCode": "MIN",
+    "descKey": "holding-the-stick",
+    "duration": 2,
+    "committedByPlayerId": 8471851,
+    "drawnByPlayerId": 8471958,
+    "eventOwnerTeamId": 1
+   }
+  },
+  {
+   "eventId": 46,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "13:05",
+   "timeRemaining": "06:55",
+   "situationCode": "1551",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 147,
+   "details": {
+    "xCoord": 92,
+    "yCoord": 8,
+    "zoneCode": "O",
+    "typeCode": "MIN",
+    "descKey": "tripping",
+    "duration": 2,
+    "committedByPlayerId": 8473646,
+    "drawnByPlayerId": 8471958,
+    "eventOwnerTeamId": 1
+   }
+  },
+  {
+   "eventId": 87,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "13:05",
+   "timeRemaining": "06:55",
+   "situationCode": "1451",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 154,
+   "details": {
+    "eventOwnerTeamId": 1,
+    "losingPlayerId": 8474613,
+    "winningPlayerId": 8471233,
+    "xCoord": -69,
+    "yCoord": 21,
+    "zoneCode": "D"
+   }
+  },
+  {
+   "eventId": 201,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "14:42",
+   "timeRemaining": "05:18",
+   "situationCode": "1460",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 164,
+   "details": {
+    "xCoord": -61,
+    "yCoord": 8,
+    "zoneCode": "D",
+    "typeCode": "BEN",
+    "descKey": "abuse-of-officials",
+    "duration": 2,
+    "servedByPlayerId": 8471851,
+    "eventOwnerTeamId": 1
+   }
+  },
+  {
+   "eventId": 424,
+   "periodDescriptor": {
+    "number": 3,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "02:53",
+   "timeRemaining": "17:07",
+   "situationCode": "0651",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 471,
+   "details": {
+    "xCoord": -69,
+    "yCoord": -9,
+    "zoneCode": "O",
+    "typeCode": "MIN",
+    "descKey": "tripping",
+    "duration": 2,
+    "committedByPlayerId": 8471339,
+    "drawnByPlayerId": 8466182,
+    "eventOwnerTeamId": 3
+   }
+  },
+  {
+   "eventId": 426,
+   "periodDescriptor": {
+    "number": 3,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "03:42",
+   "timeRemaining": "16:18",
+   "situationCode": "1541",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 479,
+   "details": {
+    "xCoord": -15,
+    "yCoord": 40,
+    "zoneCode": "N",
+    "typeCode": "MIN",
+    "descKey": "unsportsmanlike-conduct",
+    "duration": 2,
+    "committedByPlayerId": 8460542,
+    "drawnByPlayerId": 8474176,
+    "eventOwnerTeamId": 1
+   }
+  },
+  {
+   "eventId": 658,
+   "periodDescriptor": {
+    "number": 3,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "15:20",
+   "timeRemaining": "04:40",
+   "situationCode": "0651",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 627,
+   "details": {
+    "xCoord": -26,
+    "yCoord": 22,
+    "zoneCode": "D",
+    "typeCode": "MIN",
+    "descKey": "hooking",
+    "duration": 2,
+    "committedByPlayerId": 8469454,
+    "drawnByPlayerId": 8474176,
+    "eventOwnerTeamId": 1
+   }
+  },
+  {
+   "eventId": 666,
+   "periodDescriptor": {
+    "number": 3,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "19:43",
+   "timeRemaining": "00:17",
+   "situationCode": "1551",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 674,
+   "details": {
+    "xCoord": -66,
+    "yCoord": 11,
+    "zoneCode": "O",
+    "typeCode": "MIS",
+    "descKey": "misconduct",
+    "duration": 10,
+    "committedByPlayerId": 8465025,
+    "drawnByPlayerId": 8470609,
+    "eventOwnerTeamId": 3
+   }
+  },
+  {
+   "eventId": 675,
+   "periodDescriptor": {
+    "number": 3,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "19:25",
+   "timeRemaining": "00:35",
+   "situationCode": "1551",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 680,
+   "details": {
+    "xCoord": -8,
+    "yCoord": 42,
+    "zoneCode": "N",
+    "typeCode": "GAM",
+    "descKey": "game-misconduct-head-coach",
+    "duration": 0,
+    "drawnByPlayerId": 8470192,
+    "eventOwnerTeamId": 1
+   }
+  }
+ ]
+}

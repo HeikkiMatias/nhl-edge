@@ -1,0 +1,405 @@
+{
+ "id": 2010020001,
+ "season": 20102011,
+ "gameType": 2,
+ "limitedScoring": false,
+ "gameDate": "2010-10-07",
+ "venue": {
+  "default": "Air Canada Centre"
+ },
+ "venueLocation": {
+  "default": "Toronto"
+ },
+ "startTimeUTC": "2010-10-07T23:00:00Z",
+ "easternUTCOffset": "-04:00",
+ "venueUTCOffset": "-04:00",
+ "gameState": "OFF",
+ "gameScheduleState": "OK",
+ "periodDescriptor": {
+  "number": 3,
+  "periodType": "REG",
+  "maxRegulationPeriods": 3
+ },
+ "awayTeam": {
+  "id": 8,
+  "commonName": {
+   "default": "Canadiens"
+  },
+  "abbrev": "MTL",
+  "score": 2,
+  "sog": 28,
+  "logo": "https://assets.nhle.com/logos/nhl/svg/MTL_light.svg",
+  "darkLogo": "https://assets.nhle.com/logos/nhl/svg/MTL_dark.svg",
+  "placeName": {
+   "default": "Montréal"
+  },
+  "placeNameWithPreposition": {
+   "default": "Montréal",
+   "fr": "de Montréal"
+  }
+ },
+ "homeTeam": {
+  "id": 10,
+  "commonName": {
+   "default": "Maple Leafs"
+  },
+  "abbrev": "TOR",
+  "score": 3,
+  "sog": 24,
+  "logo": "https://assets.nhle.com/logos/nhl/svg/TOR_19871988-20152016_light.svg",
+  "darkLogo": "https://assets.nhle.com/logos/nhl/svg/TOR_19871988-20152016_dark.svg",
+  "placeName": {
+   "default": "Toronto"
+  },
+  "placeNameWithPreposition": {
+   "default": "Toronto",
+   "fr": "de Toronto"
+  }
+ },
+ "shootoutInUse": true,
+ "otInUse": true,
+ "clock": {
+  "timeRemaining": "00:00",
+  "secondsRemaining": 0,
+  "running": false,
+  "inIntermission": false
+ },
+ "displayPeriod": 1,
+ "maxPeriods": 5,
+ "gameOutcome": {
+  "lastPeriodType": "REG"
+ },
+ "regPeriods": 3,
+ "plays": [
+  {
+   "eventId": 6,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "00:00",
+   "timeRemaining": "20:00",
+   "situationCode": "1551",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 6,
+   "details": {
+    "eventOwnerTeamId": 8,
+    "losingPlayerId": 8470283,
+    "winningPlayerId": 8467351,
+    "xCoord": 0,
+    "yCoord": 0,
+    "zoneCode": "N"
+   }
+  },
+  {
+   "eventId": 13,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "02:27",
+   "timeRemaining": "17:33",
+   "situationCode": "1551",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 33,
+   "details": {
+    "eventOwnerTeamId": 8,
+    "losingPlayerId": 8471362,
+    "winningPlayerId": 8471310,
+    "xCoord": 70,
+    "yCoord": 22,
+    "zoneCode": "O"
+   }
+  },
+  {
+   "eventId": 16,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "04:27",
+   "timeRemaining": "15:33",
+   "situationCode": "1551",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 53,
+   "details": {
+    "eventOwnerTeamId": 10,
+    "losingPlayerId": 8467351,
+    "winningPlayerId": 8471362,
+    "xCoord": 78,
+    "yCoord": -33,
+    "zoneCode": "D"
+   }
+  },
+  {
+   "eventId": 91,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "12:19",
+   "timeRemaining": "07:41",
+   "situationCode": "1551",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 147,
+   "details": {
+    "eventOwnerTeamId": 10,
+    "losingPlayerId": 8471310,
+    "winningPlayerId": 8475098,
+    "xCoord": 0,
+    "yCoord": 0,
+    "zoneCode": "N"
+   }
+  },
+  {
+   "eventId": 38,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "12:32",
+   "timeRemaining": "07:28",
+   "situationCode": "1551",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 150,
+   "details": {
+    "eventOwnerTeamId": 8,
+    "losingPlayerId": 8475098,
+    "winningPlayerId": 8471310,
+    "xCoord": -68,
+    "yCoord": 21,
+    "zoneCode": "D"
+   }
+  },
+  {
+   "eventId": 96,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "14:02",
+   "timeRemaining": "05:58",
+   "situationCode": "1560",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 167,
+   "details": {
+    "xCoord": -81,
+    "yCoord": -1,
+    "zoneCode": "D",
+    "typeCode": "MIN",
+    "descKey": "hooking",
+    "duration": 2,
+    "committedByPlayerId": 8474189,
+    "drawnByPlayerId": 8469464,
+    "eventOwnerTeamId": 8
+   }
+  },
+  {
+   "eventId": 45,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "14:02",
+   "timeRemaining": "05:58",
+   "situationCode": "1451",
+   "typeCode": 502,
+   "typeDescKey": "faceoff",
+   "sortOrder": 172,
+   "details": {
+    "eventOwnerTeamId": 10,
+    "losingPlayerId": 8467831,
+    "winningPlayerId": 8475098,
+    "xCoord": -70,
+    "yCoord": -22,
+    "zoneCode": "O"
+   }
+  },
+  {
+   "eventId": 358,
+   "periodDescriptor": {
+    "number": 1,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "18:57",
+   "timeRemaining": "01:03",
+   "situationCode": "1560",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 215,
+   "details": {
+    "xCoord": -52,
+    "yCoord": 39,
+    "zoneCode": "D",
+    "typeCode": "MIN",
+    "descKey": "tripping",
+    "duration": 2,
+    "committedByPlayerId": 8468463,
+    "drawnByPlayerId": 8473579,
+    "eventOwnerTeamId": 8
+   }
+  },
+  {
+   "eventId": 369,
+   "periodDescriptor": {
+    "number": 2,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "04:20",
+   "timeRemaining": "15:40",
+   "situationCode": "1551",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 279,
+   "details": {
+    "xCoord": -48,
+    "yCoord": 24,
+    "zoneCode": "D",
+    "typeCode": "MIN",
+    "descKey": "hooking",
+    "duration": 2,
+    "committedByPlayerId": 8470602,
+    "drawnByPlayerId": 8471310,
+    "eventOwnerTeamId": 10
+   }
+  },
+  {
+   "eventId": 376,
+   "periodDescriptor": {
+    "number": 2,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "07:44",
+   "timeRemaining": "12:16",
+   "situationCode": "1551",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 315,
+   "details": {
+    "xCoord": 6,
+    "yCoord": 39,
+    "zoneCode": "N",
+    "typeCode": "BEN",
+    "descKey": "too-many-men-on-the-ice",
+    "duration": 2,
+    "servedByPlayerId": 8470667,
+    "eventOwnerTeamId": 10
+   }
+  },
+  {
+   "eventId": 388,
+   "periodDescriptor": {
+    "number": 2,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "13:15",
+   "timeRemaining": "06:45",
+   "situationCode": "1551",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 377,
+   "details": {
+    "xCoord": -79,
+    "yCoord": -1,
+    "zoneCode": "D",
+    "typeCode": "MIN",
+    "descKey": "slashing",
+    "duration": 2,
+    "committedByPlayerId": 8474568,
+    "drawnByPlayerId": 8474189,
+    "eventOwnerTeamId": 10
+   }
+  },
+  {
+   "eventId": 552,
+   "periodDescriptor": {
+    "number": 2,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "18:12",
+   "timeRemaining": "01:48",
+   "situationCode": "1551",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 433,
+   "details": {
+    "xCoord": 15,
+    "yCoord": -39,
+    "zoneCode": "N",
+    "typeCode": "MIN",
+    "descKey": "delaying-game-puck-over-glass",
+    "duration": 2,
+    "committedByPlayerId": 8468463,
+    "eventOwnerTeamId": 8
+   }
+  },
+  {
+   "eventId": 581,
+   "periodDescriptor": {
+    "number": 3,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "07:57",
+   "timeRemaining": "12:03",
+   "situationCode": "1560",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 554,
+   "details": {
+    "xCoord": -51,
+    "yCoord": 10,
+    "zoneCode": "D",
+    "typeCode": "MIN",
+    "descKey": "tripping",
+    "duration": 2,
+    "committedByPlayerId": 8474056,
+    "drawnByPlayerId": 8475098,
+    "eventOwnerTeamId": 8
+   }
+  },
+  {
+   "eventId": 592,
+   "periodDescriptor": {
+    "number": 3,
+    "periodType": "REG",
+    "maxRegulationPeriods": 3
+   },
+   "timeInPeriod": "16:06",
+   "timeRemaining": "03:54",
+   "situationCode": "1560",
+   "typeCode": 509,
+   "typeDescKey": "penalty",
+   "sortOrder": 620,
+   "details": {
+    "xCoord": -65,
+    "yCoord": 5,
+    "zoneCode": "D",
+    "typeCode": "MIN",
+    "descKey": "hooking",
+    "duration": 2,
+    "committedByPlayerId": 8471768,
+    "drawnByPlayerId": 8473579,
+    "eventOwnerTeamId": 8
+   }
+  }
+ ]
+}

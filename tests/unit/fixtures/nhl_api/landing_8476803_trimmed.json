@@ -1,0 +1,80 @@
+{
+ "playerId": 8476803,
+ "birthDate": "1987-04-09",
+ "seasonTotals": [
+  {
+   "season": 20032004,
+   "leagueAbbrev": "MWEHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 34
+  },
+  {
+   "season": 20052006,
+   "leagueAbbrev": "WOHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 37
+  },
+  {
+   "season": 20052006,
+   "leagueAbbrev": "WOHL",
+   "gameTypeId": 3,
+   "gamesPlayed": 5
+  },
+  {
+   "season": 20062007,
+   "leagueAbbrev": "NAHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 31
+  },
+  {
+   "season": 20072008,
+   "leagueAbbrev": "CCHA",
+   "gameTypeId": 2,
+   "gamesPlayed": 1
+  },
+  {
+   "season": 20092010,
+   "leagueAbbrev": "CCHA",
+   "gameTypeId": 2,
+   "gamesPlayed": 11
+  },
+  {
+   "season": 20102011,
+   "leagueAbbrev": "CCHA",
+   "gameTypeId": 2,
+   "gamesPlayed": 35
+  },
+  {
+   "season": 20112012,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 1,
+   "goals": 0,
+   "assists": 0
+  },
+  {
+   "season": 20112012,
+   "leagueAbbrev": "CCHA",
+   "gameTypeId": 2,
+   "gamesPlayed": 40
+  },
+  {
+   "season": 20122013,
+   "leagueAbbrev": "Germany",
+   "gameTypeId": 2,
+   "gamesPlayed": 8
+  },
+  {
+   "season": 20122013,
+   "leagueAbbrev": "ECHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 9
+  },
+  {
+   "season": 20122013,
+   "leagueAbbrev": "ECHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 2
+  }
+ ]
+}

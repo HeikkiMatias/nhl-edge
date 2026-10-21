@@ -1,0 +1,318 @@
+{
+ "playerId": 8467844,
+ "birthDate": "1973-09-02",
+ "seasonTotals": [
+  {
+   "season": 19911992,
+   "leagueAbbrev": "High-MN",
+   "gameTypeId": 2,
+   "gamesPlayed": 25,
+   "goals": 30,
+   "assists": 30
+  },
+  {
+   "season": 19921993,
+   "leagueAbbrev": "USHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 45,
+   "goals": 24,
+   "assists": 27
+  },
+  {
+   "season": 19931994,
+   "leagueAbbrev": "USHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 47,
+   "goals": 50,
+   "assists": 50
+  },
+  {
+   "season": 19941995,
+   "leagueAbbrev": "CCHA",
+   "gameTypeId": 2,
+   "gamesPlayed": 36,
+   "goals": 16,
+   "assists": 16
+  },
+  {
+   "season": 19961997,
+   "leagueAbbrev": "WCHA",
+   "gameTypeId": 2,
+   "gamesPlayed": 43,
+   "goals": 19,
+   "assists": 32
+  },
+  {
+   "season": 19971998,
+   "leagueAbbrev": "WCHA",
+   "gameTypeId": 2,
+   "gamesPlayed": 38,
+   "goals": 24,
+   "assists": 27
+  },
+  {
+   "season": 19981999,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 1,
+   "goals": 1,
+   "assists": 0
+  },
+  {
+   "season": 19981999,
+   "leagueAbbrev": "WC-Q",
+   "gameTypeId": 2,
+   "gamesPlayed": 2,
+   "goals": 0,
+   "assists": 1
+  },
+  {
+   "season": 19981999,
+   "leagueAbbrev": "WCHA",
+   "gameTypeId": 2,
+   "gamesPlayed": 38,
+   "goals": 28,
+   "assists": 41
+  },
+  {
+   "season": 19981999,
+   "leagueAbbrev": "IHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 5,
+   "goals": 3,
+   "assists": 5
+  },
+  {
+   "season": 19981999,
+   "leagueAbbrev": "IHL",
+   "gameTypeId": 3,
+   "gamesPlayed": 13,
+   "goals": 3,
+   "assists": 4
+  },
+  {
+   "season": 19992000,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 64,
+   "goals": 5,
+   "assists": 18
+  },
+  {
+   "season": 19992000,
+   "leagueAbbrev": "IHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 7,
+   "goals": 3,
+   "assists": 6
+  },
+  {
+   "season": 19992000,
+   "leagueAbbrev": "WC-A",
+   "gameTypeId": 2,
+   "gamesPlayed": 7,
+   "goals": 1,
+   "assists": 1
+  },
+  {
+   "season": 19992000,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 3,
+   "gamesPlayed": 3,
+   "goals": 0,
+   "assists": 0
+  },
+  {
+   "season": 20002001,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 17,
+   "goals": 1,
+   "assists": 3
+  },
+  {
+   "season": 20002001,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 30,
+   "goals": 4,
+   "assists": 8
+  },
+  {
+   "season": 20002001,
+   "leagueAbbrev": "AHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 2,
+   "goals": 0,
+   "assists": 1
+  },
+  {
+   "season": 20012002,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 82,
+   "goals": 8,
+   "assists": 10
+  },
+  {
+   "season": 20012002,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 3,
+   "gamesPlayed": 7,
+   "goals": 0,
+   "assists": 1
+  },
+  {
+   "season": 20022003,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 81,
+   "goals": 25,
+   "assists": 30
+  },
+  {
+   "season": 20022003,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 3,
+   "gamesPlayed": 5,
+   "goals": 0,
+   "assists": 1
+  },
+  {
+   "season": 20032004,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 75,
+   "goals": 22,
+   "assists": 25
+  },
+  {
+   "season": 20032004,
+   "leagueAbbrev": "WCup",
+   "gameTypeId": 2,
+   "gamesPlayed": 4,
+   "goals": 1,
+   "assists": 0
+  },
+  {
+   "season": 20032004,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 3,
+   "gamesPlayed": 4,
+   "goals": 2,
+   "assists": 0
+  },
+  {
+   "season": 20032004,
+   "leagueAbbrev": "W-Cup",
+   "gameTypeId": 6,
+   "gamesPlayed": 4,
+   "goals": 1,
+   "assists": 0
+  },
+  {
+   "season": 20042005,
+   "leagueAbbrev": "Swiss",
+   "gameTypeId": 2,
+   "gamesPlayed": 7,
+   "goals": 2,
+   "assists": 2
+  },
+  {
+   "season": 20052006,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 76,
+   "goals": 28,
+   "assists": 29
+  },
+  {
+   "season": 20052006,
+   "leagueAbbrev": "Olympics",
+   "gameTypeId": 2,
+   "gamesPlayed": 6,
+   "goals": 0,
+   "assists": 0
+  },
+  {
+   "season": 20062007,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 82,
+   "goals": 40,
+   "assists": 29
+  },
+  {
+   "season": 20062007,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 3,
+   "gamesPlayed": 5,
+   "goals": 1,
+   "assists": 2
+  },
+  {
+   "season": 20072008,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 82,
+   "goals": 15,
+   "assists": 37
+  },
+  {
+   "season": 20082009,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 78,
+   "goals": 25,
+   "assists": 38
+  },
+  {
+   "season": 20082009,
+   "leagueAbbrev": "WC-A",
+   "gameTypeId": 2,
+   "gamesPlayed": 9,
+   "goals": 1,
+   "assists": 3
+  },
+  {
+   "season": 20092010,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 56,
+   "goals": 10,
+   "assists": 16
+  },
+  {
+   "season": 20092010,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 26,
+   "goals": 6,
+   "assists": 9
+  },
+  {
+   "season": 20102011,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 76,
+   "goals": 16,
+   "assists": 16
+  },
+  {
+   "season": 20102011,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 3,
+   "gamesPlayed": 6,
+   "goals": 3,
+   "assists": 1
+  },
+  {
+   "season": 20112012,
+   "leagueAbbrev": "NHL",
+   "gameTypeId": 2,
+   "gamesPlayed": 45,
+   "goals": 7,
+   "assists": 5
+  }
+ ]
+}

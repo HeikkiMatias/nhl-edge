@@ -5,9 +5,8 @@ import httpx
 import polars as pl
 import pytest
 
-from nhl_edge.ingest.nhl_api import NotCachedError
+from nhl_edge.ingest.nhl_api import BROWSER_USER_AGENT, NotCachedError
 from nhl_edge.ingest.sbr import (
-    BROWSER_USER_AGENT,
     SbrArchive,
     american_to_decimal,
     import_seasons,

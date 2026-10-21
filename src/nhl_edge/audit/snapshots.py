@@ -9,6 +9,9 @@ day by a later listing counts on its new date only, so a slot due only for it co
 
 A run belongs to the ET day of its slot time, which is the ET day it was fetched on, or the day
 before when the fetch came before that day's slot time: a run can start late but never early.
+
+The closing-proxy report (#21) gives, per game started by the audit date, how long before the
+start Pinnacle's closing proxy was taken, grouped by ET start time, and why a game has none.
 """
 
 from collections.abc import Iterable
@@ -20,6 +23,7 @@ from nhl_edge.ingest.nhl_api import ScheduledGame, parse_utc
 from nhl_edge.ingest.odds import ET, SLOT_PLANS, SOURCE, Slot, slot_has_games
 from nhl_edge.ingest.odds_lake import dated_raw_keys, is_complete
 from nhl_edge.lake.raw import RawStore
+from nhl_edge.market import closing
 
 PLAN = "free-tier"
 # A run this much after its slot time is listed as late. A reporting threshold only: a pre-game
@@ -241,3 +245,62 @@ def markdown_report(
         for r in credits.iter_rows(named=True)
     ]
     return "\n".join(lines)
+
+
+def closing_report(closes: pl.DataFrame) -> pl.DataFrame:
+    """Pinnacle's closing proxies (market.closing.pinnacle_closes) by ET start time: games, how
+    many have a proxy, how long before the start it was taken, and the games without one by
+    reason (ADR 0033)."""
+    # The lead of the games that count a proxy: an ineligible game's incidental one is left out.
+    minutes = (pl.col("lead").dt.total_seconds() / 60).filter(pl.col("status") == closing.PROXY)
+    return (
+        closes.with_columns(
+            start_et=pl.col("start_utc").dt.convert_time_zone(ET.key).dt.strftime("%H:%M")
+        )
+        .group_by("start_et")
+        .agg(
+            games=pl.len(),
+            proxy=(pl.col("status") == closing.PROXY).sum(),
+            lead_median_min=minutes.median(),
+            lead_max_min=minutes.max(),
+            no_pregame=(pl.col("status") == closing.NO_PREGAME).sum(),
+            stale=(pl.col("status") == closing.STALE).sum(),
+            missing=(pl.col("status") == closing.MISSING).sum(),
+        )
+        .sort("start_et")
+    )
+
+
+def closing_markdown(report: pl.DataFrame) -> str:
+    """The closing proxies by start time as markdown, for the audit report."""
+    lines = [
+        "Pinnacle's closing proxy (ADR 0033): the latest snapshot after the day's decision "
+        "snapshot and before the start, at most 90 minutes before it, with both h2h sides at "
+        "most 5 minutes old. Games without one: no pre-game slot within 90 minutes of the start "
+        "(outside ADR 0032's coverage floor), a stale quote, or none (both count against it).",
+        "",
+        "| Start (ET) | Games | Proxy | Median lead (min) | Max lead (min) | No pre-game snapshot "
+        "| Stale | Missing |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    lines += [
+        f"| {r['start_et']} | {r['games']} | {r['proxy']} | {_number(r['lead_median_min'])} "
+        f"| {_number(r['lead_max_min'])} | {r['no_pregame']} | {r['stale']} | {r['missing']} |"
+        for r in report.iter_rows(named=True)
+    ]
+    return "\n".join(lines)
+
+
+def closing_problems(closes: pl.DataFrame) -> list[str]:
+    """A game whose pre-game slots were due but left no fresh Pinnacle quote in its last 90
+    minutes: each costs ADR 0032's coverage floor a bet. Missing points at a missed or late slot,
+    or a game Pinnacle didn't price; stale at Pinnacle's feed."""
+    reasons = {
+        closing.MISSING: "no Pinnacle quote in its last 90 minutes though a pre-game slot was due",
+        closing.STALE: "Pinnacle's quotes in its last 90 minutes were never fresh",
+    }
+    return [
+        f"game {row['game_id']} ({row['start_utc']:%Y-%m-%d %H:%M} UTC): no closing proxy, "
+        + reasons[row["status"]]
+        for row in closes.filter(pl.col("status").is_in(list(reasons))).iter_rows(named=True)
+    ]

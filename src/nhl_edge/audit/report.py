@@ -6,7 +6,7 @@ reviewed.
 """
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -14,14 +14,19 @@ import polars as pl
 from nhl_edge.audit import corrections as correction_audit
 from nhl_edge.audit import games as game_audit
 from nhl_edge.audit import goalies as goalie_audit
+from nhl_edge.audit import player_seasons as player_season_audit
+from nhl_edge.audit import plays as play_audit
 from nhl_edge.audit import sbr as sbr_audit
 from nhl_edge.audit import snapshots as snapshot_audit
+from nhl_edge.audit import stints as stint_audit
 from nhl_edge.audit import strength_time as strength_audit
 from nhl_edge.backtest.seasons import OPEN_SEASONS, SEASON_ROLES, SeasonRole
 from nhl_edge.ingest import shift_coverage
+from nhl_edge.ingest.odds import ET
 from nhl_edge.ingest.sbr import SBR_SEASONS
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import Lake
+from nhl_edge.market import closing
 from nhl_edge.reference import check_games
 
 DEFAULT_OUT = Path("reports/audit")
@@ -50,6 +55,9 @@ def build(lake: Lake, store: RawStore, as_of: date) -> list[Section]:
         _sbr_section(lake, store, listed, games, as_of),
         _shift_section(lake.read("shift_coverage").filter(pl.col("game_date") <= as_of)),
         _strength_section(lake.read("strength_time"), games),
+        _plays_section(lake, store, games),
+        _stints_section(lake, games),
+        _player_seasons_section(lake, store, as_of),
         _reference_section(games),
         _snapshot_section(lake, store, listed, as_of),
         _goalie_section(lake, games, as_of),
@@ -85,8 +93,8 @@ def _sbr_section(
         "The SBR archive for the seasons over by the audit date. Prices are de-vigged with the "
         "default multiplicative method (`market/devig.py`, ADR 0008)"
         + (
-            f"; the price checks leave out {', '.join(map(str, held_out))}, which phase 1 does "
-            "not inspect (#10)"
+            f"; the price checks leave out {', '.join(map(str, held_out))}, whose prices the "
+            "audit does not inspect"
             if held_out
             else ""
         )
@@ -132,6 +140,94 @@ def _strength_section(frame: pl.DataFrame, games: pl.DataFrame) -> Section:
     return Section("Strength time", body, strength_audit.problems(frame, games))
 
 
+def _plays_section(lake: Lake, store: RawStore, games: pl.DataFrame) -> Section:
+    # As the strength section: the one-time test season stays out, and the per-game rates show
+    # only for open seasons.
+    design = [s for s, role in SEASON_ROLES.items() if role is not SeasonRole.ONE_TIME_TEST]
+    games = games.filter(pl.col("season").is_in(design))
+    wanted = games["game_id"].implode()
+    penalties, faceoffs = (
+        lake.read(table).filter(pl.col("game_id").is_in(wanted))
+        for table in ("penalties", "faceoffs")
+    )
+    lineups = lake.read("actual_lineups").filter(pl.col("game_id").is_in(wanted))
+    checked = play_audit.pim_check(penalties, play_audit.boxscore_pims(store, lineups), games)
+    report = play_audit.season_report(penalties, faceoffs, checked, games, OPEN_SEASONS)
+    body = (
+        "Penalties and faceoffs from play-by-play (`penalties`, `faceoffs`, #96), without the "
+        "one-time test season: the share of penalties that name the player who took it and the "
+        "one who drew it, and the team-games whose penalties with a player add up to the "
+        "penalty minutes of its players in the boxscore the tables read. For the seasons open "
+        "now, penalties, minors (bench minors included) and faceoffs per game.\n\n"
+        + play_audit.markdown_report(report)
+    )
+    return Section("Penalties and faceoffs", body, play_audit.problems(faceoffs, checked, games))
+
+
+def _stints_section(lake: Lake, games: pl.DataFrame) -> Section:
+    # As the strength section: the one-time test season stays out, and the shares of time and xG
+    # show only for open seasons.
+    design = [s for s, role in SEASON_ROLES.items() if role is not SeasonRole.ONE_TIME_TEST]
+    games = games.filter(pl.col("season").is_in(design))
+    wanted = games["game_id"].implode()
+    stints, coverage, strength_time, shot_xg, faceoffs = (
+        lake.read(table).filter(pl.col("game_id").is_in(wanted))
+        for table in ("stints", "shift_coverage", "strength_time", "shot_xg", "faceoffs")
+    )
+    if stints.is_empty():
+        return Section("Stints", "No stints in the lake: run `nhl stints`.", ["no stints"])
+    report = stint_audit.season_report(
+        stints, coverage, strength_time, shot_xg, faceoffs, games, OPEN_SEASONS
+    )
+    body = (
+        "Stints from complete shift charts (`stints`, #97, ADR 0015), without the one-time test "
+        "season: the games with stints, and for the seasons open now the stints RAPM leaves out "
+        "and why (a team with fewer than 3 or more than 6 skaters, or two goalies), the share of "
+        "faceoffs that open a stint and so give it a zone, and the share of all games' playing "
+        "time and of all xG in the stints RAPM keeps. Goals cut stints, so a held-out season shows "
+        "only its chart coverage.\n\n" + stint_audit.markdown_report(report)
+    )
+    return Section("Stints", body, stint_audit.problems(stints, coverage))
+
+
+def _player_seasons_section(lake: Lake, store: RawStore, as_of: date) -> Section:
+    # Counts only: the landing pages hold held-out seasons' goals and assists. As the stints
+    # section, the one-time test season and the live seasons stay out.
+    players = lake.read("players")
+    found = player_season_audit.problems(players, store)
+    table, lineups = lake.read("player_league_seasons"), lake.read("actual_lineups")
+    found += player_season_audit.unlisted_players(players, lineups)
+    found += player_season_audit.first_game_problems(table, lineups)
+    frame = player_season_audit.drop_hidden_debuts(
+        table.filter(
+            pl.col("observed_utc").dt.date() <= as_of, player_season_audit.shown(pl.col("season"))
+        ),
+        lineups,
+    )
+    if frame.is_empty():
+        return Section(
+            "Player league seasons",
+            "No player league seasons in the lake: run `nhl player-seasons`.",
+            ["no player league seasons", *found],
+        )
+    leagues = player_season_audit.top_leagues(frame)
+    shared = player_season_audit.shared_leagues(frame)
+    body = (
+        "Each player's season lines in every league, from his cached landing page "
+        "(`player_league_seasons`, #98), for the NHLe priors: per season public by the audit "
+        "date, without the one-time test season and the live seasons or the players who debuted "
+        "in them, the players with lines and "
+        "the lines (one per player, league abbreviation and game type, his teams summed) in the "
+        f"{len(leagues)} leagues with the most of them. Counts only: no goals, assists or rates. "
+        f"{shared:,} player-season-game types have lines of one league under two abbreviations, "
+        "which a reader adding up by league must check.\n\n"
+        + player_season_audit.markdown_report(
+            player_season_audit.season_report(frame, leagues), leagues
+        )
+    )
+    return Section("Player league seasons", body, found)
+
+
 def _reference_section(games: pl.DataFrame) -> Section:
     found = check_games(games)
     return Section(
@@ -162,7 +258,12 @@ def _snapshot_section(lake: Lake, store: RawStore, listed: pl.DataFrame, as_of: 
             events,
         )
     )
+    # Pinnacle's closing proxy of each game started by the end of as_of (ET).
+    end = datetime.combine(as_of + timedelta(days=1), time(), ET)
+    closes = closing.pinnacle_closes(odds, end)
+    body += "\n\n" + snapshot_audit.closing_markdown(snapshot_audit.closing_report(closes))
     problems = snapshot_audit.problems(runs, due, events, as_of)
+    problems += snapshot_audit.closing_problems(closes)
     return Section("Live odds snapshots", body, problems)
 
 
@@ -171,12 +272,20 @@ def _goalie_section(lake: Lake, games: pl.DataFrame, as_of: date) -> Section:
     polls = [lake.read(table) for table in ("pregame_goalies", "dailyfaceoff_goalies")]
     before = [poll.filter(pl.col("game_date") <= as_of) for poll in polls]
     frame = goalie_audit.team_games(starters, *before)
+    odds = lake.read("odds_snapshots").filter(pl.col("snapshot_utc").dt.date() <= as_of)
+    nhl, dailyfaceoff = before
+    decided = goalie_audit.at_decision(
+        starters, nhl, dailyfaceoff, goalie_audit.midday_snapshots(odds)
+    )
     body = (
         "Each pre-game goalie poll (#42, #48) against the starter in `actual_lineups`: when "
         "each source first named a goalie, and whether it was the starter.\n\n"
         + goalie_audit.markdown_report(frame)
+        + "\n\n"
+        + goalie_audit.decision_markdown(decided)
     )
-    return Section("Starting goalies", body, goalie_audit.problems(frame))
+    problems = goalie_audit.problems(frame) + goalie_audit.decision_problems(decided)
+    return Section("Starting goalies", body, problems)
 
 
 def _corrections_section(

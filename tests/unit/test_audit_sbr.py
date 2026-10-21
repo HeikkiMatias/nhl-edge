@@ -295,8 +295,14 @@ def test_a_clear_favourite_at_plus_one_and_a_half_is_a_problem() -> None:
     ]
 
 
-def test_prices_of_the_market_validation_season_are_not_read(tmp_path: Path) -> None:
-    assert sbr_audit.price_seasons([20182019, 20212022, 20222023]) == [20182019, 20212022]
+def test_prices_of_a_held_out_season_are_not_read(tmp_path: Path) -> None:
+    # Phase 4 opens 2022-23's prices to the checks (#66); later seasons have no SBR prices and stay
+    # held out like every other held-out season.
+    assert sbr_audit.price_seasons([20182019, 20212022, 20222023, 20232024, 20252026]) == [
+        20182019,
+        20212022,
+        20222023,
+    ]
     # A held-out season keeps its join counts, but not its count of unusable prices.
     reports, _, _ = sbr_audit.join_reports(
         stored_2010(tmp_path), OLD_SCHEDULE, results_empty(OLD_SCHEDULE), [20102011], {20102011: 3}

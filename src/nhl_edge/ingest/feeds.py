@@ -1,10 +1,10 @@
 """What the per-game feed parsers share: the game a feed belongs to, and clock parsing.
 
-Play-by-play, boxscore and shift chart are parsed into shots, actual_lineups and shifts, and the
-three together into shift_coverage (docs/data-sources.md, "Per-game tables"). Every row of those
-tables counts as public at 10:00 UTC the morning after its game date, the rule ADR 0003 sets for
-results: the live pipeline fetches the feeds with the results, and a game's own feeds must never
-predict it (hard rules 1 and 9).
+Play-by-play is parsed into shots, penalties and faceoffs, the boxscore into actual_lineups and the
+shift chart into shifts, and the three together into shift_coverage and strength_time
+(docs/data-sources.md, "Per-game tables"). Every row of those tables counts as public at 10:00 UTC
+the morning after its game date, the rule ADR 0003 sets for results: the live pipeline fetches the
+feeds with the results, and a game's own feeds must never predict it (hard rules 1 and 9).
 """
 
 import json

@@ -6,6 +6,7 @@ authors = [{ name = "Heikki Mattila" }]
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "boto3>=1.43.103",
+    "cryptography>=50.0.2",
     "duckdb>=1.1",
     "httpx>=0.28.1",
     "numpy>=2.0",
@@ -30,7 +31,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.11.0,<0.13.0"]
+requires = ["uv_build>=0.11.0,<0.14.0"]
 build-backend = "uv_build"
 
 [tool.ruff]

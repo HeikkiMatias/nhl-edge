@@ -216,12 +216,21 @@ def test_a_goalie_start_row_known_only_at_the_prediction_time_is_not_read() -> N
 def test_a_fold_before_a_tuning_cutoff_is_refused() -> None:
     assert (BEFORE["train_cutoff"] < START).all()
     assert (BEFORE["train_cutoff"] >= b2.TUNED_CUTOFF).all()
-    # A feature table retuned on results after the fold start moves the cutoff past it.
-    retuned = LEAGUE.team_strength.with_columns(
-        train_cutoff=pl.lit(START + timedelta(days=1), pl.Datetime("us", "UTC"))
-    )
-    with pytest.raises(ValueError, match="before the tuning cutoff"):
-        b2.predictions(replaced(team_strength=retuned), MOMENTS, TEST, START, b2.TUNED)
+    # A feature table whose own-season rows were retuned on results after the fold start moves
+    # the cutoff past it: goalie_starts too (#132), which B2 reads at prediction time.
+    assert "goalie_starts" in b2.CUTOFF_TABLES
+    utc = pl.Datetime("us", "UTC")
+    for name in b2.CUTOFF_TABLES:
+        table = getattr(LEAGUE, name)
+        if "season" not in table.columns:  # the fixture's team strength has none; the lake's has
+            table = table.join(LEAGUE.games.select("game_id", "season"), on="game_id")
+        retuned = table.with_columns(
+            train_cutoff=pl.when(pl.col("season") == TEST)
+            .then(pl.lit(START + timedelta(days=1), utc))
+            .otherwise(pl.lit(b2.TUNED_CUTOFF, utc))
+        )
+        with pytest.raises(ValueError, match="before the tuning cutoff"):
+            b2.predictions(replaced(**{name: retuned}), MOMENTS, TEST, START, b2.TUNED)
     early = league((20152016, 20162017), games=40)
     start = fold_start(early.games.select("season", "start_utc"), 20162017)
     moments = early.games.filter(pl.col("season") == 20162017).select(
@@ -229,6 +238,23 @@ def test_a_fold_before_a_tuning_cutoff_is_refused() -> None:
     )
     with pytest.raises(ValueError, match="before the tuning cutoff"):
         b2.predictions(early, moments, 20162017, start, b2.TUNED)
+
+
+def test_a_later_seasons_cutoffs_do_not_refuse_the_fold() -> None:
+    # #132: goalie_starts is refit each season, so its later seasons' rows carry later cutoffs
+    # that this fold never reads.
+    utc = pl.Datetime("us", "UTC")
+    later = START + timedelta(days=200)
+    copied = LEAGUE.goalie_starts.filter(pl.col("season") == TEST).with_columns(
+        pl.col("game_id") + 1_000_000_000,
+        season=pl.lit(TEST + 10001, pl.Int32),
+        train_cutoff=pl.lit(later, utc),
+        observed_utc=pl.lit(later, utc),
+    )
+    tables = replaced(goalie_starts=pl.concat([LEAGUE.goalie_starts, copied]))
+    assert b2.tuning_cutoff(tables, TEST) == b2.tuning_cutoff(LEAGUE, TEST)
+    assert b2.tuning_cutoff(tables, TEST + 10001) == later
+    assert same(predict(tables), BEFORE)
 
 
 def test_the_fits_cutoff_is_the_last_row_it_read() -> None:

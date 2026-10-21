@@ -9,6 +9,10 @@ from typing import Any, Protocol, cast
 from nhl_edge.settings import MissingSettingError, optional
 
 R2_ENV = ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET")
+# The client's connections, at least as many as the threads of a pull (#207). boto3's default
+# of 10 held 16 threads to 10 requests at a time: 30,674 files took 10m41s before the first live
+# decision. With 64, a test of 5,223 files took 25s against 124s.
+POOL_CONNECTIONS = 64
 
 
 class ObjectStore(Protocol):
@@ -53,6 +57,7 @@ class R2Config:
 
     def client(self) -> ObjectStore:
         import boto3
+        from botocore.config import Config
 
         client = boto3.client(
             "s3",
@@ -60,6 +65,7 @@ class R2Config:
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
             region_name="auto",
+            config=Config(max_pool_connections=POOL_CONNECTIONS),
         )
         return cast(ObjectStore, client)
 

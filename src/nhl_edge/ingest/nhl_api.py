@@ -5,11 +5,14 @@ in the raw store under nhl/<kind>/<entity>/<fetch stamp> before anything parses 
 checks the cache: the newest stored copy is reused when the caller's reuse rule accepts it, so a
 backfill can stop and restart without refetching. In offline (replay) mode the client never touches
 the network and fails on a cache miss.
+
+The same client fetches the NHL's HTML time-on-ice reports on www.nhl.com (#68), for the games
+whose shift chart is empty, once only and by `nhl toi-reports` alone (ingest/toi_reports.py).
 """
 
 import json
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -22,11 +25,18 @@ from nhl_edge.lake.schemas import PERIOD_S
 
 BASE_URL = "https://api-web.nhle.com"
 STATS_URL = "https://api.nhle.com/stats/rest"
+REPORTS_URL = "https://www.nhl.com/scores/htmlreports"
 SOURCE = "nhl"
 MIN_INTERVAL_S = 1.0
 BACKOFF_S = (5.0, 10.0, 20.0)
 RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 USER_AGENT = "nhl-edge/0.1 (personal research)"
+# For web pages that refuse a non-browser client: the SBR archive answers 404 to the httpx default.
+# The NHL's report pages are asked for the same way, as a request with "Mozilla/5.0" was served.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36"
+)
 REGULAR_SEASON = 2
 PLAYOFFS = 3
 # Shift chart rows of this type are shifts; type 505 rows are goal markers.
@@ -42,6 +52,9 @@ MIN_TEAM_PERIOD_S = 4 * PERIOD_S
 # the per-game tables never read.
 FEED_KINDS = ("play-by-play", "boxscore", "shiftcharts")
 RECHECK_SUFFIX = "-recheck"
+# A team's time-on-ice report by side, its raw kind and the letter in the page's name (#68).
+TOI_KINDS = {"home": "toi-home", "visitor": "toi-visitor"}
+TOI_LETTERS = {"home": "H", "visitor": "V"}
 
 
 @dataclass(frozen=True)
@@ -151,6 +164,13 @@ def chart_complete_or_settled(game_id: int, game_date: date) -> Reuse:
     return reuse
 
 
+def has_shifts(body: bytes) -> bool:
+    """Whether a shift chart response lists any row. For a chart it doesn't serve, the NHL answers
+    {"data": [], "total": 0}, as it did a week later for 47 of this season's first 52 games
+    (#237)."""
+    return bool(json.loads(body).get("data"))
+
+
 def feed_url(kind: str, game_id: int) -> str:
     """The URL of one of a game's per-game feeds (FEED_KINDS)."""
     if kind == "shiftcharts":
@@ -158,6 +178,12 @@ def feed_url(kind: str, game_id: int) -> str:
     if kind in ("play-by-play", "boxscore"):
         return f"/v1/gamecenter/{game_id}/{kind}"
     raise ValueError(f"{kind} is not a per-game feed")
+
+
+def toi_report_url(season: int, game_id: int, side: str) -> str:
+    """The URL of one team's time-on-ice report: TH for the home team, TV for the visitors, then
+    the last six digits of the game id, in the season's folder."""
+    return f"{REPORTS_URL}/{season}/T{TOI_LETTERS[side]}{game_id % 1_000_000:06d}.HTM"
 
 
 def fetched_after(moment: datetime) -> Reuse:
@@ -200,15 +226,18 @@ class NhlApi:
             self.sleep(wait)
         self._last_request = self.monotonic()
 
-    def _get(self, url: str) -> tuple[bytes, datetime, dict[str, Any]]:
-        """GET with retries on timeouts, 429 and 5xx. A 404 raises NotFoundError at once."""
+    def _get(
+        self, url: str, headers: Mapping[str, str] | None = None
+    ) -> tuple[bytes, datetime, dict[str, Any]]:
+        """GET with retries on timeouts, 429 and 5xx. A 404 raises NotFoundError at once. headers
+        go with this request only, over the client's own."""
         error = ""
         for attempt, backoff in enumerate((*self.backoff_s, None), start=1):
             self._throttle()
             self.requests += 1
             retry_after: float | None = None
             try:
-                response = self.client.get(url)
+                response = self.client.get(url, headers=headers)
             except httpx.TransportError as exc:
                 error = type(exc).__name__
             else:
@@ -231,7 +260,14 @@ class NhlApi:
             self.sleep(max(backoff, retry_after or 0.0))
         raise NhlApiError(f"GET {url} failed after {len(self.backoff_s) + 1} attempts: {error}")
 
-    def fetch(self, kind: str, entity: str, url: str, reuse: Reuse) -> Response:
+    def fetch(
+        self,
+        kind: str,
+        entity: str,
+        url: str,
+        reuse: Reuse,
+        headers: Mapping[str, str] | None = None,
+    ) -> Response:
         """The newest cached copy when reuse accepts it (or in replay), otherwise a fresh GET that
         is stored raw before it is returned."""
         prefix = f"{SOURCE}/{kind}/{entity}"
@@ -243,7 +279,7 @@ class NhlApi:
                 return Response(body, cached, parse_utc(meta["fetched_utc"]), cached=True)
         if self.offline:
             raise NotCachedError(f"{prefix} is not in the raw cache; run without --replay")
-        body, fetched_utc, meta = self._get(url)
+        body, fetched_utc, meta = self._get(url, headers)
         raw_key = self.store.put(
             SOURCE, f"{kind}/{entity}/{fetched_utc:%Y%m%dT%H%M%SZ}", body, meta
         )
@@ -268,21 +304,38 @@ class NhlApi:
         url = feed_url("shiftcharts", game_id)
         return self.fetch("shiftcharts", f"{season}/{game_id}", url, reuse)
 
-    def recheck(self, kind: str, season: int, game_id: int, after: datetime) -> Response:
+    def recheck(
+        self, kind: str, season: int, game_id: int, after: datetime, *, listed: bool = False
+    ) -> Response:
         """A later copy of one of a game's feeds, fetched at or after `after` (#30). It is stored
         under <kind>-recheck, so the per-game tables, which read the copies under <kind>, never
-        parse it: they keep the copy the nightly ingest read, as live does (ADR 0004)."""
+        parse it: they keep the copy the nightly ingest read, as live does (ADR 0004). With
+        listed, for a shift chart whose first copy has shifts, a cached copy without any is not
+        reused, so the next run fetches it again (#237)."""
         url = feed_url(kind, game_id)
-        return self.fetch(
-            f"{kind}{RECHECK_SUFFIX}", f"{season}/{game_id}", url, fetched_after(after)
-        )
+        later = fetched_after(after)
+
+        def reuse(body: bytes, meta: dict[str, Any]) -> bool:
+            return later(body, meta) and (not listed or has_shifts(body))
+
+        return self.fetch(f"{kind}{RECHECK_SUFFIX}", f"{season}/{game_id}", url, reuse)
+
+    def toi_report(self, season: int, game_id: int, side: str) -> Response:
+        """One team's HTML time-on-ice report (#68), side "home" or "visitor", stored under
+        nhl/toi-<side>/ and always reused: the owner allowed one fetch of each page."""
+        url = toi_report_url(season, game_id, side)
+        headers = {"User-Agent": BROWSER_USER_AGENT}
+        return self.fetch(TOI_KINDS[side], f"{season}/{game_id}", url, always, headers)
 
     def roster(self, team: str, season: int, reuse: Reuse) -> Response:
         return self.fetch("roster", f"{season}/{team}", f"/v1/roster/{team}/{season}", reuse)
 
-    def player_landing(self, player_id: int) -> Response:
+    def player_landing(self, player_id: int, reuse: Reuse = always) -> Response:
+        """A player's landing page: his bio and draft facts and every season line. The ingest
+        fetches it once and reuses it; the yearly refresh (#117) passes fetched_after the day a
+        season's lines are public, so its new season comes in once."""
         path = f"/v1/player/{player_id}/landing"
-        return self.fetch("player-landing", str(player_id), path, always)
+        return self.fetch("player-landing", str(player_id), path, reuse)
 
 
 def retry_after_s(value: str | None, now: datetime) -> float | None:

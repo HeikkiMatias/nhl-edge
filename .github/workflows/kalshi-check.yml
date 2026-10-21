@@ -1,0 +1,40 @@
+name: kalshi-check
+# Proves a Kalshi API key and the order path (#286), dispatched by the owner once the key's secrets
+# are added: it reads the balance, places a post-only bid of 1.50 contracts at 1¢ on an open NHL
+# market whose Yes ask is at least 10¢, so it can't fill, reads it back and cancels it. The order
+# expires by itself after 2 minutes should the cancel fail. The log shows the steps only, since run
+# logs are public; the responses are stored raw in R2. Only the chosen environment's key is passed.
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Kalshi's demo exchange (mock funds) or the live one
+        type: choice
+        options: [demo, live]
+        default: demo
+concurrency: kalshi-check
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The live Kalshi key is the kalshi-live environment's secret, which the owner restricts to
+    # main (#294): a workflow pushed on any other branch can't read it.
+    environment: kalshi-live
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - run: uv sync --frozen
+      - name: Check
+        env:
+          KALSHI_ENV: ${{ inputs.env }}
+          KALSHI_DEMO_KEY_ID: ${{ inputs.env == 'demo' && secrets.KALSHI_DEMO_KEY_ID || '' }}
+          KALSHI_DEMO_PRIVATE_KEY: ${{ inputs.env == 'demo' && secrets.KALSHI_DEMO_PRIVATE_KEY || '' }}
+          KALSHI_KEY_ID: ${{ inputs.env == 'live' && secrets.KALSHI_KEY_ID || '' }}
+          KALSHI_PRIVATE_KEY: ${{ inputs.env == 'live' && secrets.KALSHI_PRIVATE_KEY || '' }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: uv run nhl kalshi check --env "$KALSHI_ENV" --mirror-raw

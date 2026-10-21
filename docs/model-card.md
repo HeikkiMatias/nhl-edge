@@ -4,12 +4,23 @@ Current production model, how it scored, and its known weaknesses. It is updated
 
 ## Current model
 
-None. The backtest has the two market baselines and phase 2's model:
+None in production: gate 3 is not met (ADR 0031). The blend adds no information beyond the recalibrated market on history, and phase 5 paper-trades the frozen policy on live 2026-27: v1 (`policy-20261005-8ec5cf3`) from 2026-10-08 to 2026-10-14, and v2 (`policy-20261014-e15db87`, ADR 0037), which adds the day's confirmed starting goalies, from 2026-10-15. The backtest has the two market baselines, phase 2's model and phase 3's:
 - **B0** is the de-vigged SBR moneyline, with nothing fitted, under the default multiplicative method (ADR 0008).
 - **B1** is the recalibrated market, a logistic regression on B0's log-odds fitted per test season on the earlier seasons.
 - **B2** is the team and goalie model (ADR 0013). It is an L2 logistic regression on team strength, goalie effects, rest and travel and empty seats, with the season home edge as a fixed term. Each fold fits it on earlier games with their actual starters. It predicts by averaging over the goalie-start model's pairs of starters, and reads no price. Gate 1 (#79) judges it against B1.
+- **B3** is the player layer (ADR 0023). It is B2's model with one input, Δĝ, in place of team strength and goalie effects. Δĝ is the home team's expected goals less the away team's, built from:
+  - the projected lineups and their minutes;
+  - RAPM ratings and league rates;
+  - expected power plays;
+  - finishing and the opposing goalie's conversion.
 
-The run is backtest `backtest-20261001-388bb85` on the development seasons 2018-19 and 2021-22. E2 refuses implausible SBR openers (ADR 0007). B0 and B1 are unchanged from `backtest-20260930-7301709`.
+  It keeps h_s, rest, travel, empty seats, B2's L2 of 100 and B2's mixture over goalie pairs. Each fold trains it on the projected skaters and the starters who played. It reads no price. Gate 2 carried it forward as phase 4's model (ADR 0024), though the one-time 2025-26 test did not confirm its gain over B2.
+
+- **The blend** (phase 4, ADR 0027) is the de-vigged market and B3 combined by a logistic regression whose model weight moves with the uncertainty score u (ADR 0026). It is fitted per whole-season fold on out-of-sample predictions of the folds before it, so on history it scores 2021-22 only. A twin on B2 and a market-only control are fitted beside it. The selection and staking policy (ADR 0028) and the market move guard (ADR 0029) bet with it. Live, the policy bets with the blend fitted on SBR's close (E1), at Pinnacle's 12:45 ET price (ADR 0030).
+
+Challengers, candidate models scored only on decision days after their registration, are pre-registered under ADR 0038 and reported in the live report's Challengers section. None is part of a policy: one enters only through a new policy version and the owner's decision. The first, `market_only`, checks the mechanism and is not a candidate.
+
+The run is backtest `backtest-20261004-6f74840` on the development seasons 2018-19 and 2021-22, reproduced with every figure identical by `backtest-20261005-b7639f5`, whose files are committed with the gaps' prediction times. E2 refuses implausible SBR openers (ADR 0007). B0 to B3 are unchanged from `backtest-20261003-b1a7b04`.
 
 ## Metrics
 
@@ -17,29 +28,102 @@ Every metric is reported with a 95% weekly block bootstrap interval, pooled over
 
 | Metric | B0 | B1 | B2 | B3 | Blend |
 | --- | --- | --- | --- | --- | --- |
-| Log loss, E1 (close) | 0.6571 [0.6469, 0.6668] | 0.6567 [0.6456, 0.6670] | 0.6679 [0.6607, 0.6749] | | |
-| Log loss, E2 (opener) | 0.6603 [0.6505, 0.6698] | 0.6598 [0.6491, 0.6702] | 0.6677 [0.6605, 0.6748] | | |
-| Paired log-loss difference against B1, E1 | +0.0004 [-0.0005, +0.0013] | reference | +0.0112 [+0.0044, +0.0185] | | |
-| Paired log-loss difference against B1, E2 | +0.0005 [-0.0006, +0.0015] | reference | +0.0078 [+0.0013, +0.0146] | | |
-| Calibration intercept | | | E1 -0.098 [-0.211, +0.015]; E2 -0.099 [-0.209, +0.013] | | |
-| Calibration slope | | | E1 1.35 [1.09, 1.62]; E2 1.35 [1.10, 1.62] | | |
-| E3 CLV under the frozen policy | | | | | |
+| Log loss, E1 (close) | 0.6571 [0.6469, 0.6668] | 0.6567 [0.6456, 0.6670] | 0.6679 [0.6607, 0.6749] | 0.6600 [0.6521, 0.6678] | 0.6397 [0.6247, 0.6545], 2021-22 only |
+| Log loss, E2 (opener) | 0.6603 [0.6505, 0.6698] | 0.6598 [0.6491, 0.6702] | 0.6677 [0.6605, 0.6748] | 0.6598 [0.6519, 0.6675] | 0.6410 [0.6262, 0.6559], 2021-22 only |
+| Paired log-loss difference against B1, E1 | +0.0004 [-0.0005, +0.0013] | reference | +0.0112 [+0.0044, +0.0185] | +0.0033 [-0.0013, +0.0077] | -0.0015 [-0.0043, +0.0018] |
+| Paired log-loss difference against B1, E2 | +0.0005 [-0.0006, +0.0015] | reference | +0.0078 [+0.0013, +0.0146] | -0.0000 [-0.0047, +0.0043] | -0.0042 [-0.0078, -0.0007] |
+| Paired log-loss difference against B2, E1 | | | reference | -0.0079 [-0.0130, -0.0028] | -0.0018 [-0.0040, +0.0005] against the B2 blend |
+| Paired log-loss difference against B2, E2 | | | reference | -0.0078 [-0.0130, -0.0028] | -0.0033 [-0.0062, -0.0002] against the B2 blend |
+| Calibration intercept | | | E1 -0.098 [-0.211, +0.015]; E2 -0.099 [-0.209, +0.013] | E1 -0.088 [-0.194, +0.020]; E2 -0.089 [-0.194, +0.018] | E1 +0.021 [-0.138, +0.170]; E2 +0.029 [-0.127, +0.180] |
+| Calibration slope | | | E1 1.35 [1.09, 1.62]; E2 1.35 [1.10, 1.62] | E1 1.34 [1.11, 1.58]; E2 1.34 [1.12, 1.58] | E1 1.16 [0.95, 1.39]; E2 1.17 [0.94, 1.41] |
+| E3 CLV under the frozen policy | | | | | -1.24% [-2.15%, -0.24%] per bet against SBR's close, not Pinnacle's (465 bets, 2021-22) |
+
+**Gate 3 (ADR 0031), with 2022-23's 342 SBR-priced games scored once after the freeze** (`market-validation-20261005-6ec331b`). The pooled figures combine the seasons' weekly block bootstraps by a normal approximation (`reports/backtest/accepted.json`).
+
+| | 2021-22 | 2022-23 | Pooled | §1 verdict |
+| --- | --- | --- | --- | --- |
+| BLEND minus B1, E1 | -0.0015 [-0.0043, +0.0018] | +0.0044 [-0.0062, +0.0180] | -0.0002 [-0.0037, +0.0032] | fails |
+| BLEND minus B1, E2 | -0.0042 [-0.0078, -0.0007] | +0.0033 [-0.0118, +0.0224] | -0.0027 [-0.0072, +0.0019] | fails |
+| B3 minus B2, E1 (2018-19 joins the pool) | -0.0091 [-0.0163, -0.0025] | +0.0013 [-0.0241, +0.0254] | -0.0068 [-0.0120, -0.0016] | passes overall; the lineup-change subset (39 games) is inconclusive |
+| Blend calibration slope, E1 | 1.16 [0.95, 1.39] | 0.71 [0.25, 1.21] | | passes on intervals |
+| CLV per bet against SBR's close, E2's fit at the opener | -1.24% [-2.15%, -0.24%] | -1.22% [-2.41%, -0.01%] | -1.23% [-2.01%, -0.46%] | fails for E2's fit; the live E1 policy is untested on history |
+
+The gaps of both seasons were reviewed by hand: one data error, no bug.
 
 ## Artifact versions
 
 | Component | Version | train_cutoff |
 | --- | --- | --- |
-| Backtest (B0, B1, B2; E2 refuses implausible openers, with every opener as a sensitivity) | backtest-20261001-388bb85 | per fold, below |
+| Backtest (B0 to B3 and the blend; E2 refuses implausible openers, with every opener as a sensitivity) | backtest-20261004-6f74840 | per fold, below |
+| Blend, 2021-22 fold (E1 and E2; ADR 0027), learning from 2018-19 to 2020-21 | backtest-20261004-6f74840 | 2021-05-20 10:00 UTC |
+| 2022-23's one run (ADR 0025): B1, B2, B3 and the blend, learning from 2018-19 to 2021-22 | market-validation-20261005-6ec331b | 2022-05-02 10:00 UTC |
+| The frozen policy: u, the blend, selection, staking and the guard (ADR 0026 to 0030) | policy-20261005-8ec5cf3, see "The freeze" below | the blend per fold; θ from 2011-12 to 2017-18 prices |
 | B0 | the de-vigged market (multiplicative, ADR 0008) | none: B0 fits nothing |
-| B1, 2018-19 fold (E1 and E2) | backtest-20261001-388bb85 | 2018-04-09 10:00 UTC |
-| B1, 2021-22 fold (E1 and E2) | backtest-20261001-388bb85 | 2021-05-20 10:00 UTC |
-| B2, 2018-19 fold (E1 and E2), L2 100 tuned by b2-20261001-fe11def | backtest-20261001-388bb85 | 2018-04-09 10:00 UTC |
-| B2, 2021-22 fold (E1 and E2) | backtest-20261001-388bb85 | 2021-05-20 10:00 UTC |
+| B1, 2018-19 fold (E1 and E2) | backtest-20261003-b1a7b04 | 2018-04-09 10:00 UTC |
+| B1, 2021-22 fold (E1 and E2) | backtest-20261003-b1a7b04 | 2021-05-20 10:00 UTC |
+| B2, 2018-19 fold (E1 and E2), L2 100 tuned by b2-20261001-fe11def | backtest-20261003-b1a7b04 | 2018-04-09 10:00 UTC |
+| B2, 2021-22 fold (E1 and E2) | backtest-20261003-b1a7b04 | 2021-05-20 10:00 UTC |
+| B3, 2018-19 fold (E1 and E2), B2's L2 100 | backtest-20261003-b1a7b04 | 2018-04-09 10:00 UTC |
+| B3, 2021-22 fold (E1 and E2) | backtest-20261003-b1a7b04 | 2021-05-20 10:00 UTC |
+| B2 and B3, hockey validation folds 2023-24 and 2024-25 | backtest-hockey-20261003-93d0f92 | 2023-04-15 and 2024-04-19 10:00 UTC |
+| B2 and B3, the one-time 2025-26 fold | backtest-hockey-20261003-82fbada | 2025-04-18 10:00 UTC |
+| Lineup projection and minutes (ADR 0017, 0018) | lineup-20261002-6297f8c | per season, before its first game |
+| RAPM ratings and league rates (ADR 0019, 0020, 0011) | rapm-20261003-86a736f | 2018-04-09 10:00 UTC (tuning) |
+| Penalty rates and expected power plays (ADR 0021) | power-plays-20261003-86a736f | 2018-04-09 10:00 UTC (tuning), then per season |
+| Finishing and goal multipliers (ADR 0022) | finishing-20261003-f87acde | 2018-04-09 10:00 UTC (tuning), then per season |
 | Team strength ΔS (ADR 0011) | team-strength-20261001-1b2a5b8 | 2018-04-09 10:00 UTC (tuning) |
 | Goalie-start model (ADR 0012) | goalie-start-20261001-784c4fb | per season, before its first game |
 | Goalie effects ΔG (ADR 0011) | goalie-effect-20261001-c05c300 | 2018-04-09 10:00 UTC (tuning) |
 | Schedule terms and home edge h_s (ADR 0011) | schedule-terms-20261001-84bc182 | 2018-04-09 10:00 UTC (tuning) |
 | xG (ADR 0010) | xg-20261001-de27a2c | per season, before its first game |
+
+## The freeze
+
+**Policy v2** was frozen on 2026-10-14 as **`policy-20261014-e15db87`** (#222, ADR 0037). It counts from 2026-10-15, and its record starts there. It is v1, below, with each slate team's starter at the decision:
+- **The order:**
+  1. the NHL's starter flag;
+  2. Daily Faceoff's "Confirmed", which makes that goalie certain;
+  3. Daily Faceoff's "Likely", which makes him start with probability max(L, his p_start), L = 46/47, the rest going to the other candidates in the model's proportions;
+  4. otherwise, v1's goalie-start mix.
+- **Where they go:** the starters replace the slate games' goalie rows that B2, B3 and u read. A confirmed team's goalie doubt is 0, and a likely one's is 1 − his chance.
+- **Unchanged:** the blend, selection, staking and the guard. v2 reuses v1's live fit, since v2's B3 on history is v1's.
+- **L:** #238's audit found 45 of 45 Likely calls right at the decision, and the owner chose the rule of succession.
+- **No backtest is possible:** confirmations don't exist on history (hard rule 9).
+- **The bankroll** carries on from v1's balance.
+- **v1's record:** 2026-10-08 to 2026-10-14 stays under v1 (`nhl live report --policy policy-20261005-8ec5cf3`).
+
+**Policy v1** was frozen on 2026-10-05 as **`policy-20261005-8ec5cf3`** (#144). It is recorded as `POLICY_VERSION`, `FROZEN_ON` and `LIVE_BLEND_EXPERIMENT` in `betting/selection.py`.
+- **When:** after the owner accepted ADRs 0026 to 0030, and after three checks of `backtest-20261004-6f74840` found no bug: the leakage check, the backtest review and the hand review of the blend's gaps.
+  - The backtest review found two places where the live policy wasn't fixed. ADR 0030 settles both.
+- **What is frozen:** the code on main at 8ec5cf3 in `game/uncertainty.py`, `market/blend.py` and `betting/`, with ADR 0030's live inputs:
+  - **u:** its three equally weighted parts, standardized on each fold's training games (ADR 0026). Live goalie doubt reads the goalie-start model, never a confirmation, as on history (ADR 0030).
+  - **Live B3** uses no confirmed starter either: it mixes over the goalie-start model's likely starters, as on history (ADR 0030, the owner's ruling of 2026-10-05).
+  - **The blend:** its form and its unpenalized fit on earlier out-of-sample folds. Only its four weights are refit (ADR 0027).
+    - Live bets use the E1 fit, learned against SBR's close. It trains on 2018-19 to 2021-22, plus 2022-23 once its one run has scored it, and is fed Pinnacle's 12:45 ET price (ADR 0030).
+    - **The live fit** (#163) is `blend-live-20261007-89ec631`: BLEND a −0.065, b_m 0.710, b_x 0.492, b_u 0.203, and B1 intercept −0.034, slope 1.099.
+      - It was fitted once for 2026-27 by `nhl live blend-fit --r2` on 2026-10-07, claimed in R2 and committed under `reports/live/`. Live games never refit it.
+      - **Its rows:** E1's out-of-sample rows of 2018-19 to 2022-23 are rebuilt per game. They give 4,875 training games, the last public on 2022-11-28.
+      - **2022-23's 342 games** are predicted, never scored. By the owner's ruling of 2026-10-05, that is not a second run.
+      - **The check:** before anything is written, the rebuilt rows of 2018-19 to 2021-22 must reproduce the 2022-23 fold's E1 fits that the one run recorded, to within 1e-9.
+  - **Selection and staking (ADR 0028):**
+    - a hurdle of 2.5% plus 1 point per standard deviation of u above average;
+    - a quarter of Kelly, divided by (1 + u⁺);
+    - caps of 1.5% per bet and 5% per day;
+    - 100 units a season.
+  - **Live bets:** placed at the 12:45 ET snapshot at Pinnacle's price, with the best EU book logged beside it (ADR 0028).
+  - **The guard:** θ = 0.0535, between Pinnacle's 07:05 and 12:45 ET quotes of the decision day (ADR 0029).
+- **What counts:**
+  - live regular-season games from 2026-10-06 on;
+  - 2022-23's 342 games, scored once after the freeze (ADR 0025).
+
+  §1's CLV count against Pinnacle's closing proxy starts with those live games.
+- **Seen before the freeze, never counted:**
+  - The lake holds 2026-27's first 16 regular-season games, played 2026-09-29 to 10-01, with Pinnacle snapshots to 2026-10-02.
+  - The guard's `live_moves` was smoke-checked on the 2026-10-01 slate's prices (#142). That read prices only, and no setting changed.
+  - No model or policy result was read on these games.
+- **A change** to any of these is a new policy version with its own ADR.
+  - It is judged only on games after its own freeze date, and the CLV count restarts.
+  - `tests/unit/test_freeze.py` fails if a frozen number changes.
 
 ## Known weaknesses
 
@@ -80,6 +164,126 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
 - **Weights** (on standardized inputs, 2021-22 fold): ΔS 0.29, ΔG 0.06, home back-to-back -0.08, away back-to-back +0.09. Rest, travel, time zones and empty seats are all within 0.03.
 - **Lineup quality:** the goalie-start model's Brier score over the team-games of the games B2 scored is 0.415 [0.404, 0.426] on E1 and 0.415 [0.405, 0.427] on E2 (0.405 in 2018-19, 0.424 in 2021-22). 0.9% of starters were not among its candidates.
 - **Training on the starters who played** (ADR 0013): Codex read hard rule 9 as forbidding it (P0 on #90). The owner kept it, since the rule governs predictions, and no game's own lineup feeds its own prediction.
+
+**B3 (ADR 0023), from `backtest-20261003-b1a7b04`:**
+- **It beats B2.** B3 minus B2 is -0.0079 [-0.0130, -0.0028] on E1 and -0.0078 [-0.0130, -0.0028] on E2.
+  - Per season on E1: -0.0066 [-0.0137, +0.0000] in 2018-19 and -0.0091 [-0.0163, -0.0025] in 2021-22.
+  - Its own log loss per season is 0.6737 and 0.6467 on E1.
+- **It is level with the market at the opener, and short of it at the close.** B3 minus B1 is -0.0000 [-0.0047, +0.0043] on E2 and +0.0033 [-0.0013, +0.0077] on E1.
+  - Per season on E1: +0.0010 [-0.0067, +0.0089] and +0.0056 [+0.0004, +0.0106].
+  - Being level with B1 is not an edge: the blend (phase 4) is what must add information beyond the market.
+- **Gate 2's subsets** (B3 minus B2 on E1; a game is in a subset if either team qualifies):
+
+  | Subset | Games | B3 minus B2 |
+  | --- | --- | --- |
+  | Trade | 1,652 | -0.0093 [-0.0151, -0.0035] |
+  | Injury | 1,811 | -0.0101 [-0.0155, -0.0046] |
+  | Lineup change | 39 | -0.0394, no interval |
+  | Any | 2,229 | -0.0085 [-0.0134, -0.0035] |
+
+  E2 is within 0.0002 of E1 on each.
+  - **The subsets are broad, as defined.** A skater counts as traded for 10 of his games after any move, an offseason signing included. A regular counts as injured when he is missing for any reason.
+  - **Every lineup change falls in an opening week.** The projection reads only earlier boxscores, so in season it never drops 3 of the previous game's skaters. The 39 games fall in one week of each season, which a weekly block bootstrap cannot resample, so the report gives them no interval.
+  - Gate 2 (ADR 0024) found the lineup-change subset too small to judge in every test, with 20 to 39 games each.
+- **It is under-confident, like B2.** The calibration slope is 1.34 [1.11, 1.58] on E1 (2018-19 1.22 [0.85, 1.58], 2021-22 1.42 [1.15, 1.73]), and the intercept is -0.088 [-0.194, +0.020].
+- **Gaps above 8 points against B1** (hard rule 8): 411 of 2,583 games on E1 (203 in 2018-19, 208 in 2021-22) and 359 of 2,573 on E2. That is half of B2's. 26 exceed 15 points and 2 exceed 20. They are listed in `reports/backtest/gaps_b3.csv` without results.
+  - **Reviewed at gate 2** (`reports/gaps/b3-gap-review.md`, screen `b3-gaps-20261003-291302e`): every flagged game (51), the gap above 20 points, and a seeded sample of 40, read without results. **No data error was found.**
+  - **What drives them:** B3 is closer to 50% than the market in 81% of them. Δĝ is the largest term in 313, and a back-to-back or time zone in 98.
+  - **The flagged ones show news the boxscores carry late:**
+    - summer moves in each season's first weeks (#120);
+    - returns from injury and from 2021-22's COVID protocols;
+    - rested regulars at season's end;
+    - new, recalled or returning goalies.
+  - **The sample** is mostly weak teams B3 rates closer to average than the market does: Seattle and Arizona in 2021-22, New Jersey and Anaheim in 2018-19.
+- **Weights** (standardized inputs, 2021-22 fold): Δĝ 0.34, home back-to-back -0.07, away back-to-back +0.08. Rest, travel, time zones and empty seats are all within 0.03. The 2018-19 fold gives Δĝ 0.31.
+- **Training games:** 8,138 for the 2018-19 fold and 11,359 for the 2021-22 fold, from 2011-12. The three games of 2011-12's opening night have no RAPM league rate, since nothing was public before them, and drop out.
+- **Lineup quality on the scored games** (E1):
+  - the projection's 5v5 minutes are off by 1.81 [1.78, 1.83] minutes per dressed skater;
+  - its power-play unit names 76.1% [75.0%, 77.2%] of the actual top five;
+  - the goalie-start Brier score is 0.415 [0.404, 0.426].
+- **An expansion team's first game** has no candidate skaters, so it plays its replacements, rated 0. Seattle on 2021-10-12 is the one such game in these seasons. 0 is RAPM's reference skater, not a replacement-level one, so such a team comes out about average (#134).
+- **B2's schedule terms, shared with B3, are large.** A home back-to-back costs 0.21 log-odds in the 2021-22 fold. The time-zone terms reach +0.35 in a game played in Europe, which rests on few overseas games in training (#13).
+- **The training seasons are in-sample for B3's inputs.** RAPM's, the penalty model's and finishing's settings were tuned on 2010-11 to 2017-18 (ADR 0011). No B3 result on those seasons counts as out-of-sample.
+- **Gate 2's hockey validation** (#107; `backtest-hockey-20261003-93d0f92`, `reports/backtest/hockey-20261003-93d0f92.json`). This scores B2 and B3 on the held-out 2023-24 and 2024-25 seasons, on outcomes alone, a second after each game's as-of time. Each fold is trained on every earlier season from 2011-12, 2022-23's results included but none of its prices.
+
+  | | Games | B3 minus B2 |
+  | --- | --- | --- |
+  | Pooled | 2,624 | -0.0078 [-0.0130, -0.0027] |
+  | 2023-24 | 1,312 | -0.0099 [-0.0178, -0.0022] |
+  | 2024-25 | 1,312 | -0.0057 [-0.0124, +0.0007] |
+  | Trade | 1,723 | -0.0106 [-0.0179, -0.0032] |
+  | Injury | 1,650 | -0.0074 [-0.0139, -0.0003] |
+  | Lineup change | 37 | -0.0163, no interval (one week in 2023-24) |
+  | Any | 2,221 | -0.0084 [-0.0140, -0.0024] |
+
+  - **Log loss:** B3 0.6594 [0.6501, 0.6686] against B2's 0.6672 [0.6587, 0.6759].
+  - **B3 is better calibrated here than on the development seasons.** Its slope is 0.94 [0.80, 1.08] (B2's 0.83 [0.70, 0.96]). Its intercept is +0.089 [+0.015, +0.160], so it rates home teams slightly too low, most in 2024-25 (+0.118 [+0.031, +0.209]).
+  - **Fits:** Δĝ's weight is 0.39 and 0.40 on standardized inputs. The folds train on 13,983 and 15,295 games, with `train_cutoff` 2023-04-15 and 2024-04-19.
+- **Gate 2's one-time 2025-26 test does not confirm B3's gain** (#107; `backtest-hockey-20261003-82fbada`, `reports/backtest/hockey-20261003-82fbada-171522.json`). It ran once, on the owner's go-ahead, after the gap review and the PR's review rounds, in the same hockey-only mode. The run is claimed in R2, beside the lake and in `reports/backtest/one_time_test.txt`, so no machine can run it again.
+
+  | | Games | B3 minus B2 |
+  | --- | --- | --- |
+  | Pooled | 1,312 | -0.0030 [-0.0094, +0.0034] |
+  | Trade | 845 | -0.0003 [-0.0073, +0.0060] |
+  | Injury | 847 | -0.0073 [-0.0161, +0.0020] |
+  | Lineup change | 20 | +0.0654 [+0.0621, +0.1275] (two weeks only) |
+  | Any | 1,114 | -0.0034 [-0.0103, +0.0033] |
+
+  - **Both models are over-confident on 2025-26.** B3's calibration slope is 0.55 [0.29, 0.80] and B2's 0.49 [0.24, 0.77]. Their log loss is 0.6898 [0.6768, 0.7035] and 0.6928 [0.6816, 0.7046], so B2 barely beats a coin flip (0.6931).
+  - **The inputs show no data shift** (an inputs-only check, which read no results). The spread of ΔS, ΔG and Δĝ is within the range of 2021-22 to 2024-25. Lineup projections miss as often as before, with 0.33 dressed skaters a team-game unprojected. The actual starter gets the usual probability, 0.58 on average.
+  - **Fits:** Δĝ's weight is 0.40 on standardized inputs, trained on 16,607 games with `train_cutoff` 2025-04-18.
+  - **The verdict** (ADR 0024): B3 goes forward as the model phase 4 compares with B1, because every test points the same way and 2025-26's interval includes the earlier gain. B3 minus B2 stays in every report (hard rule 3), and the live 2026-27 market test is its next independent evidence.
+
+**The blend and the policy (phase 4, `backtest-20261004-6f74840`; ADR 0026 to 0029):**
+- **Two seasons of evidence, and they disagree.** 2018-19 has no earlier out-of-sample fold, so the blend is scored on 2021-22 and on 2022-23's 342 games, scored once after the freeze (ADR 0025). The blend beats B1 on 2021-22's E2 and loses to it on both of 2022-23's experiments, so gate 3 is not met (ADR 0031).
+- **It beats the opener and not the close.**
+  - On E2, BLEND minus B1 is -0.0042 [-0.0078, -0.0007]. It also beats the B2 blend (-0.0033 [-0.0062, -0.0002]) and the market-only control (-0.0049 [-0.0087, -0.0011]), so the gain is not only recalibration.
+  - On E1, against the close, it is -0.0015 [-0.0043, +0.0018].
+  - The E2 blend's log loss, 0.6410, is about that of the recalibrated close.
+- **u leans the wrong way.** Its weight b_u is +0.22 [-0.06, +0.51] on E2 in 2021-22's fit (from the fit's standard errors): the model is trusted more as doubt grows. In 2022-23's fit it is +0.25 [+0.02, +0.49], which is ADR 0026's revisit trigger. The owner kept u frozen: live evidence decides (ADR 0031). In 2021-22, u reaches 5.3 standard deviations among the bets. The policy still reads u in its hurdle and stake. Under v1, live u is history's quantity (ADR 0030). Under v2 a confirmed starter sets his team's goalie doubt to 0, which pushes u about 1.7 standard deviations below the training games when both are confirmed (ADR 0037). The fit's weights are then applied outside the range they were fitted on.
+- **The bets don't beat the close.**
+  - The policy bets 465 of 1,306 games at the opener, mostly away teams and underdogs, at a mean expected return of 7.7%.
+  - The return per unit staked is +6.1% [-0.5%, +13.3%].
+  - CLV against SBR's close is -1.24% [-2.15%, -0.24%], though the market moved toward the bets: the fair move is +2.82% [+1.90%, +3.85%].
+  - The opener's ~4.1% margin costs more than that move: CLV = (1 + fair move) / the opener's overround − 1, and the de-vigged close's own margin plays no part (ADR 0030).
+  - Live, the price is Pinnacle's at 12:45 ET, and phase 5 measures CLV against Pinnacle's closing proxy.
+- **The data error.** One bet was on a swapped SBR opener (2021020487, `reports/gaps/blend-gap-review.md`). Without it, CLV is -1.53% [-2.25%, -0.79%].
+- **Much of the E2 gain is the soft opener.**
+  - In 2021-22, B0 lost +0.0049 [-0.0000, +0.0102] of log loss from the close to the opener, against +0.0018 [+0.0007, +0.0029] in 2011-12 to 2017-18.
+  - B3 alone is level with that opener: log loss 0.6461 [0.6345, 0.6573] against B0's 0.6463 [0.6337, 0.6596] on the same 1,306 games. Part of the blend's gain is two forecasts of similar quality averaged.
+  - Against Pinnacle at 12:45, E1's -0.0015 [-0.0043, +0.0018] is the better guide, which is why live bets use E1's fit (ADR 0030).
+- **Bets lean on this season's quirks.**
+  - The blend's intercept, -0.08 on E2, tilts every game about 2 points toward the away team, and 77% of the bets are away bets. B3's home bias changes sign between eras: its calibration intercept is -0.089 [-0.194, +0.018] on the development seasons (E2) and +0.089 [+0.015, +0.160] on 2023-24 and 2024-25.
+  - All 59 bets on Seattle's games backed Seattle, 13% of the bets, and so did 9 of the 12 with the highest expected return. That is B3's view of the new team (gate 2's review), which no live season repeats.
+- **The bet's driver** (#154). `e3.attribution` measures each B3 input against its usual level at the game's market price. That level is a line learnt on the fold's earlier blend-training seasons, from inputs only. The market's part is then only the blend's reshaping of the market price.
+  - **Before #154,** the split was from the raw market, and the driver marked favourite against underdog. All 187 "market" bets backed underdogs, and 199 of the 223 "skaters" bets backed favourites. `reports/backtest/bets.csv` of `backtest-20261004-6f74840` still carries that split.
+  - **Rerun on 2021-22's 465 bets,** with the same picks, the drivers are:
+    - skaters 233 (129 favourites, 104 underdogs);
+    - goalies 98 (49 and 49);
+    - schedule 66 (32 and 34);
+    - the market's part 66 (17 and 49, the blend's shrinkage toward 50%);
+    - home ice 2.
+  - **Fair move per bet:** +0.035 [+0.022, +0.051] for the skaters' bets and +0.042 [+0.023, +0.060] for the schedule's.
+  - **CLV per bet:** −0.028 [−0.043, −0.012] for the goalies' bets and −0.030 [−0.043, −0.018] for the market's.
+  - This is one season, described after the fact, and nothing in the policy reads it. It is no evidence of where an edge lies.
+- **The guard can't act on history.** Its θ of 0.0535 is a whole-day move. It would have fired on 7 of the 465 bets between the opener and the close.
+- **Gaps above 8 points against B1:** 17 on E1 and 49 on E2, against B3's 208 in 2021-22 on E1. All were reviewed by hand, and no bug was found.
+- **Calibration on the selected bets** (#253, `reports/backtest/selected-calibration.json`, `backtest-20261019-1a2e571`). Each game is scored on its side of higher expected return at the price, on the splits fixed on #253 before the reading. Figures are against B1, negative favouring the blend.
+  - **The 465 E2 bets:** log loss −0.0133 [−0.0233, −0.0038], Brier −0.0058 [−0.0105, −0.0014]. Their calibration slope is 1.52 [1.18, 1.93], under-confident like B3 on this season, not over-confident.
+  - **The other 841 games:** +0.0008 [−0.0020, +0.0035], with a slope of 1.05 [0.81, 1.33].
+  - **Favourites and underdogs:** the gain is on the favourites (−0.0086 [−0.0141, −0.0027]) and none on the underdogs (+0.0007 [−0.0049, +0.0054]).
+  - **u:** at or above its training mean −0.0076 [−0.0135, −0.0016], below it +0.0003 [−0.0042, +0.0052].
+  - **E1, the same rule at the close:** the 538 games it would pick, −0.0038 [−0.0115, +0.0034].
+  - **Caveat:** this is one seen season, whose market was itself under-confident, so it is a diagnostic. Nothing in the policy reads it. Live, the weekly report shows the same splits (counts until 4 weeks).
+
+**Phase 4's inputs:**
+- **The uncertainty score u (ADR 0026):** history's goalie doubt comes from the goalie-start model alone, since no historical starter confirmations exist. Under v1, live u reads the same goalie-start probabilities and ignores confirmations (ADR 0030), and so does live B3. Under v2, from 2026-10-15, both read the day's confirmed and likely starters (ADR 0037).
+
+**Held-out seasons seen for data format only** (#96, PR #108):
+- **What was seen:** the first draft of the `penalties` and `faceoffs` tables surveyed every cached season, 2023-24, 2025-26 and the first 2026-27 games included. It recorded which penalty codes exist and which fields can be blank, and it checked the faceoff zones of 200 games of 2023-24.
+- **What was not:** no outcome, rate or model figure from those seasons.
+- **The fix:** the leakage check caught it. The survey and the zone check were redone on 2010-11 to 2021-22, the design came out the same, and the tables quote only those figures.
+- **The owner's ruling, 2026-10-01:** gate 2's tests on those seasons stay valid, and this note records that their format was seen.
 
 ## Run history
 

@@ -1,6 +1,6 @@
 """One pandera schema per table. Every write validates against its schema."""
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 import pandera.polars as pa
@@ -90,8 +90,10 @@ class LakeOddsSnapshots(OddsSnapshots):
     and start (other NHL types, such as 4 for the All-Star game, are kept as they are); they are
     null for an event no listing matches. They are keys, not observed facts:
     anything joined through game_id still goes through its own point-in-time selector, and a
-    closing proxy keys on the event and its commence time, since quotes priced before a
-    postponement carry the rescheduled game's id.
+    closing proxy keys on the event, its start the commence time of its latest snapshot, since
+    quotes priced before a postponement carry the rescheduled game's id. is_closing_proxy marks
+    both sides of each started game's closing proxy per book, h2h only (#21, ADR 0033,
+    market/closing.py).
     """
 
     snapshot_date: pl.Date
@@ -387,6 +389,511 @@ class Schedule(pa.DataFrameModel):
         return data.lazyframe.select((observed >= start - SCHEDULE_LEAD) & (observed < start))
 
 
+class Slate(pa.DataFrameModel):
+    """One regular-season game scheduled for a game date, as the NHL schedule listed it when it
+    was fetched: the targets a live prediction rates (docs/plans/phase-5.md, task 1, #162).
+
+    observed_utc is the actual fetch time of the schedule response, not a convention: the slate
+    is what this installation knew at that moment. Only games whose schedule state is OK are
+    listed, so a postponed or cancelled game has no row. A slate never holds a result; the game's
+    state when fetched (FUT before the start) is kept for the decision's checks.
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    venue: pl.String
+    neutral_site: pl.Boolean
+    limited_attendance: pl.Boolean
+    game_state: pl.String
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = "game_id"
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def home_is_not_away(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("home") != pl.col("away"))
+
+
+class PaperLedger(pa.DataFrameModel):
+    """One slate game's paper decision (nhl predict, #164; ADRs 0028, 0030 and 0033): its
+    prediction and bet, or why it has none (status).
+
+    Every row carries the decision instant (prediction_utc, fixed when the run started; one per
+    date), when the decision was published (published_utc: the actual clock as the ledger was
+    built and written, minutes later once the models were read; #170), the policy and the
+    versions of the live fit, the feature build and the code. Every model input was known before
+    the decision snapshot, when the price bet was observed. A predicted row adds
+    Pinnacle's prices at the decision snapshot with their last update, the best other EU book's
+    beside them, B0 to B3, u's parts, u and u_sd, and the blend and its twins. A picked row adds
+    the side, its price and expected return, the hurdle, the guard's move, and the stake: its
+    share of the day's bankroll times the bankroll. Bets settle on the full game, OT and shootout
+    included. Each date is written once to R2 (ledger/live/<date>.parquet), and every prediction
+    is decided and published before its game's start.
+    """
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    prediction_utc: UtcDatetime
+    published_utc: UtcDatetime
+    status: pl.String
+    event_id: pl.String = pa.Field(nullable=True)
+    decision_snapshot_utc: UtcDatetime = pa.Field(nullable=True)
+    home_price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    away_price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    last_update_utc: UtcDatetime = pa.Field(nullable=True)
+    best_home_price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    best_home_book: pl.String = pa.Field(nullable=True)
+    best_home_update_utc: UtcDatetime = pa.Field(nullable=True)
+    best_away_price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    best_away_book: pl.String = pa.Field(nullable=True)
+    best_away_update_utc: UtcDatetime = pa.Field(nullable=True)
+    p_b0: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_b1: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_b2: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_b3: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    goalie_doubt: pl.Float64 = pa.Field(nullable=True)
+    availability_doubt: pl.Float64 = pa.Field(nullable=True)
+    rookie_share: pl.Float64 = pa.Field(nullable=True)
+    u: pl.Float64 = pa.Field(nullable=True)
+    u_sd: pl.Float64 = pa.Field(nullable=True)
+    p_blend: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_blend_b2: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_blend_market: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    side: pl.String = pa.Field(isin=["home", "away"], nullable=True)
+    price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    p_side: pl.Float64 = pa.Field(nullable=True)
+    ev: pl.Float64 = pa.Field(nullable=True)
+    hurdle: pl.Float64 = pa.Field(nullable=True)
+    picked: pl.Boolean = pa.Field(nullable=True)
+    p_morning: pl.Float64 = pa.Field(nullable=True)
+    morning_utc: UtcDatetime = pa.Field(nullable=True)
+    p_decision: pl.Float64 = pa.Field(nullable=True)
+    guard_decision_utc: UtcDatetime = pa.Field(nullable=True)
+    moved_against: pl.Float64 = pa.Field(nullable=True)
+    guarded: pl.Boolean = pa.Field(nullable=True)
+    bet: pl.Boolean = pa.Field(nullable=True)
+    fraction: pl.Float64 = pa.Field(ge=0, le=0.015, nullable=True)
+    bankroll: pl.Float64 = pa.Field(nullable=True)
+    stake: pl.Float64 = pa.Field(ge=0, nullable=True)
+    policy_version: pl.String
+    blend_version: pl.String = pa.Field(str_matches=r"^blend-live-\d{8}-")
+    feature_build: pl.String = pa.Field(nullable=True)
+    code_version: pl.String
+    b2_train_cutoff: UtcDatetime = pa.Field(nullable=True)
+    b3_train_cutoff: UtcDatetime = pa.Field(nullable=True)
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        # A game postponed after its decision is decided again on its new date.
+        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def decided_and_published_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("status") != "predicted")
+            | (
+                (pl.col("prediction_utc") < pl.col("start_utc"))
+                & (pl.col("published_utc") < pl.col("start_utc"))
+            )
+        )
+
+    @pa.dataframe_check
+    def published_after_the_decision(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("published_utc") >= pl.col("prediction_utc"))
+
+    @pa.dataframe_check
+    def a_bet_only_on_a_prediction(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            ~pl.col("bet").fill_null(False) | (pl.col("status") == "predicted")
+        )
+
+    @pa.dataframe_check
+    def one_decision_a_day(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("prediction_utc").n_unique().over("game_date") == 1)
+            & (pl.col("published_utc").n_unique().over("game_date") == 1)
+        )
+
+
+class PaperSettlements(pa.DataFrameModel):
+    """One settled paper bet (nhl live settle, #165): a bet of the paper ledger whose game is
+    final, with its result on the full game (OT and shootout included, hard rule 2), its profit,
+    and its closing line value against Pinnacle's closing proxy (ADR 0033, market/closing.py).
+
+    won is whether the bet's side won the full game (home_win from games' scores, which count the
+    shootout winner's goal), and profit is stake·(price - 1) when it did, -stake when it didn't. A
+    game played more than 12 hours from the ledger's start is a postponed game: its bet is void
+    (status "void"), with no profit and no CLV. close_status is "proxy" when the game is eligible
+    and Pinnacle has a closing proxy taken after the bet's decision snapshot, or why it counts
+    without one (no pre-game snapshot, which holds even for an incidental proxy, stale, missing).
+    Only a proxy gives close_home and close_away, p_close (the bet's side, de-vigged
+    multiplicatively), clv = price·p_close - 1, and fair_move (p_close over the decision's
+    de-vigged probability of the side, less 1). The ledger's own columns travel along:
+    the price taken, the decision's Pinnacle pair (home_price, away_price) and its snapshot.
+    settled_utc and code_version name the run; the table is rebuilt whole each night from the
+    ledgers in R2, the games and the odds.
+    """
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    event_id: pl.String
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    decision_snapshot_utc: UtcDatetime
+    side: pl.String = pa.Field(isin=["home", "away"])
+    price: pl.Float64 = pa.Field(gt=1)
+    home_price: pl.Float64 = pa.Field(gt=1)
+    away_price: pl.Float64 = pa.Field(gt=1)
+    stake: pl.Float64 = pa.Field(gt=0)
+    status: pl.String = pa.Field(isin=["settled", "void"])
+    home_win: pl.Int8 = pa.Field(isin=[0, 1], nullable=True)
+    won: pl.Boolean = pa.Field(nullable=True)
+    profit: pl.Float64
+    result_utc: UtcDatetime
+    close_status: pl.String = pa.Field(isin=["proxy", "no pre-game snapshot", "stale", "missing"])
+    close_snapshot_utc: UtcDatetime = pa.Field(nullable=True)
+    close_home: pl.Float64 = pa.Field(gt=1, nullable=True)
+    close_away: pl.Float64 = pa.Field(gt=1, nullable=True)
+    p_close: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    clv: pl.Float64 = pa.Field(nullable=True)
+    fair_move: pl.Float64 = pa.Field(nullable=True)
+    policy_version: pl.String
+    blend_version: pl.String
+    settled_utc: UtcDatetime
+    code_version: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def a_close_only_from_a_proxy_after_the_decision(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        proxy = (pl.col("close_status") == "proxy") & (pl.col("status") == "settled")
+        valued = pl.col("clv").is_not_null()
+        after = pl.col("close_snapshot_utc") > pl.col("decision_snapshot_utc")
+        return data.lazyframe.select((proxy == valued) & (~valued | after.fill_null(False)))
+
+    @pa.dataframe_check
+    def the_profit_follows_the_result(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        expected = (
+            pl.when(pl.col("status") == "void")
+            .then(0.0)
+            .when(pl.col("won"))
+            .then(pl.col("stake") * (pl.col("price") - 1))
+            .otherwise(-pl.col("stake"))
+        )
+        return data.lazyframe.select((pl.col("profit") - expected).abs() < 1e-9)
+
+
+class ChallengerPredictions(pa.DataFrameModel):
+    """One slate game's probability from a registered challenger (nhl live challengers, #255, ADR
+    0038): a candidate model scored after the decision on the day's run bundle, never part of a
+    decision. p_home is its full-game home probability (OT and shootout included, hard rule 2),
+    with status "predicted", or null with the reason in status. bundle_sha256 is the sha256 of
+    the day's bundle manifest and input_cutoff_utc its input cutoff. reads maps each lake table
+    read beyond the bundle, point in time, to the sha256 of the rows read, as JSON. Each
+    challenger, version and day is written once to R2
+    (challengers/live/<name>/<version>/<date>.parquet), and the table is rebuilt from them, only
+    for days after the challenger's registration.
+    """
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    challenger: pl.String
+    challenger_version: pl.String
+    adr: pl.String
+    p_home: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    status: pl.String
+    bundle_sha256: pl.String = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    input_cutoff_utc: UtcDatetime
+    reads: pl.String
+    code_version: pl.String
+    computed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = [  # noqa: RUF012 (pandera config)
+            "game_date",
+            "game_id",
+            "challenger",
+            "challenger_version",
+        ]
+
+    @pa.dataframe_check
+    def a_probability_only_when_predicted(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("p_home").is_not_null() == (pl.col("status") == "predicted")
+        )
+
+    @pa.dataframe_check
+    def computed_after_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("computed_utc") > pl.col("input_cutoff_utc"))
+
+
+REAL_MODES = ("practice", "real", "paused", "stopped", "closed")
+REAL_OUTCOMES = ("placed", "not placed", "skipped")
+REAL_REASONS = ("the price fell under the minimum", "not matched", "missed it")
+
+
+class RealAlerts(pa.DataFrameModel):
+    """One paper bet of a day as alerted for a real stake (nhl real alert, #268, ADR 0039),
+    keyed on its paper twin (game_date, game_id, policy_version). mode is the day's: practice
+    before the start, real, or paused, stopped or closed, when nothing is alerted. status is
+    "alerted", or why the bet was skipped. min_price is the lowest price at which its expected
+    return clears its hurdle (hard rule 4); stakes, as JSON [[price, stake], ...], gives the stake
+    in euros at each price from it to the paper price, the frozen staking rule recomputed there
+    and never above the paper fraction, rounded down to the venue's increment; above the paper
+    price the stake stays at max_stake. bankroll is the mode's bankroll at the decision
+    (prediction_utc). Each day is written once to R2 (real/live/alerts/<date>.json)."""
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    policy_version: pl.String
+    prediction_utc: UtcDatetime
+    alert_utc: UtcDatetime
+    mode: pl.String = pa.Field(isin=REAL_MODES)
+    venue: pl.String
+    status: pl.String
+    side: pl.String = pa.Field(isin=["home", "away"])
+    paper_price: pl.Float64 = pa.Field(gt=1)
+    p_side: pl.Float64 = pa.Field(gt=0, lt=1)
+    hurdle: pl.Float64
+    paper_fraction: pl.Float64 = pa.Field(gt=0, le=0.015)
+    min_price: pl.Float64 = pa.Field(gt=1)
+    bankroll: pl.Float64 = pa.Field(gt=0)
+    max_stake: pl.Float64 = pa.Field(ge=0)
+    stakes: pl.String
+    code_version: pl.String
+    # An exchange venue's buy order for an alerted bet (ADR 0040), as JSON: its environment, limit
+    # in dollars, contracts, most cost in USD and in euros, effective price, rate and expiry.
+    # Null on a sportsbook or practice venue, and for a skipped bet.
+    exchange: pl.String = pa.Field(nullable=True)
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def an_order_only_for_an_alerted_bet(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("exchange").is_null() | (pl.col("status") == "alerted"))
+
+    @pa.dataframe_check
+    def alerted_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("status") != "alerted")
+            | (
+                (pl.col("alert_utc") < pl.col("start_utc"))
+                & pl.col("mode").is_in(["practice", "real"])
+                & (pl.col("max_stake") > 0)
+            )
+        )
+
+    @pa.dataframe_check
+    def the_minimum_price_clears_the_hurdle(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        ev = pl.col("p_side") * pl.col("min_price") - 1
+        return data.lazyframe.select(
+            (ev >= pl.col("hurdle") - 1e-9) & (pl.col("min_price") <= pl.col("paper_price"))
+        )
+
+
+class RealBets(pa.DataFrameModel):
+    """Every alert row with what the owner did (nhl real sync, #268): outcome "placed", with the
+    matched price, the stake placed, the venue's bet id and when it was placed; "not placed", with
+    the owner's reason, or none when no entry was made (never missing); or "skipped" when nothing
+    was alerted (the alert's status). entered_utc is when the owner recorded it, late when that
+    was at or after the game's start; a placed bet was always placed after its alert and before
+    the start. allowed_stake is
+    the alert's stake at the matched price, and within_rule whether the matched price cleared the
+    minimum and the stake placed was within the allowed one. corrections counts the corrections
+    applied (real/live/corrections/), each appended at the weekly check against the venue's
+    statement, never an edit."""
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    policy_version: pl.String
+    prediction_utc: UtcDatetime
+    alert_utc: UtcDatetime
+    mode: pl.String = pa.Field(isin=REAL_MODES)
+    venue: pl.String
+    status: pl.String
+    side: pl.String = pa.Field(isin=["home", "away"])
+    paper_price: pl.Float64 = pa.Field(gt=1)
+    min_price: pl.Float64 = pa.Field(gt=1)
+    max_stake: pl.Float64 = pa.Field(ge=0)
+    outcome: pl.String = pa.Field(isin=REAL_OUTCOMES)
+    reason: pl.String = pa.Field(isin=REAL_REASONS, nullable=True)
+    matched_price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    stake: pl.Float64 = pa.Field(gt=0, nullable=True)
+    bet_id: pl.String = pa.Field(nullable=True)
+    placed_utc: UtcDatetime = pa.Field(nullable=True)
+    entered_utc: UtcDatetime = pa.Field(nullable=True)
+    late: pl.Boolean = pa.Field(nullable=True)
+    allowed_stake: pl.Float64 = pa.Field(ge=0, nullable=True)
+    within_rule: pl.Boolean = pa.Field(nullable=True)
+    corrections: pl.Int32 = pa.Field(ge=0)
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def a_placed_bet_is_complete_and_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        placed = pl.col("outcome") == "placed"
+        complete = (
+            pl.col("matched_price").is_not_null()
+            & pl.col("stake").is_not_null()
+            & pl.col("bet_id").is_not_null()
+            & pl.col("placed_utc").is_not_null()
+            & (pl.col("placed_utc") < pl.col("start_utc"))
+            & (pl.col("placed_utc") >= pl.col("alert_utc"))
+            & (pl.col("status") == "alerted")
+            & pl.col("mode").is_in(["practice", "real"])
+        )
+        return data.lazyframe.select(~placed | complete.fill_null(False))
+
+    @pa.dataframe_check
+    def skipped_exactly_when_not_alerted(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("outcome") == "skipped") == (pl.col("status") != "alerted")
+        )
+
+
+class RealSettlements(pa.DataFrameModel):
+    """One settlement of a placed bet (nhl real settle, #268, ADR 0039), appended once its game is
+    final and its result public, never rewritten: the result on the full game, OT and shootout
+    included (hard rule 2), and the profit at the matched price and stake placed; a game played
+    more than 12 hours from its listed start voids the bet. A correction that changes a settled
+    bet appends its next revision, "cancelled" with no profit when it was not placed after all.
+    bankroll_after is the mode's bankroll counting every bet's latest revision up to this one.
+    Each revision is written once to R2
+    (real/live/settlements/<date>/<game_id>-<revision>.parquet)."""
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    revision: pl.Int32 = pa.Field(ge=0)
+    mode: pl.String = pa.Field(isin=["practice", "real"])
+    venue: pl.String
+    side: pl.String = pa.Field(isin=["home", "away"])
+    matched_price: pl.Float64 = pa.Field(gt=1)
+    stake: pl.Float64 = pa.Field(gt=0)
+    bet_id: pl.String
+    status: pl.String = pa.Field(isin=["settled", "void", "cancelled"])
+    home_win: pl.Int8 = pa.Field(isin=[0, 1], nullable=True)
+    won: pl.Boolean = pa.Field(nullable=True)
+    profit: pl.Float64
+    result_utc: UtcDatetime
+    settled_utc: UtcDatetime
+    bankroll_after: pl.Float64
+    code_version: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = [  # noqa: RUF012 (pandera config)
+            "game_date",
+            "game_id",
+            "revision",
+        ]
+
+    @pa.dataframe_check
+    def the_profit_follows_the_result(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        expected = (
+            pl.when(pl.col("status").is_in(["void", "cancelled"]))
+            .then(0.0)
+            .when(pl.col("won"))
+            .then(pl.col("stake") * (pl.col("matched_price") - 1))
+            .otherwise(-pl.col("stake"))
+        )
+        return data.lazyframe.select((pl.col("profit") - expected).abs() < 1e-9)
+
+    @pa.dataframe_check
+    def settled_after_the_result(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("settled_utc") >= pl.col("result_utc"))
+
+
+class FeatureBuilds(pa.DataFrameModel):
+    """One table a live feature build (nhl live features, #162) wrote for a game date's slate: the
+    record a prediction checks before it reads the slate's feature rows (#170).
+
+    A build deletes its date's record before it changes any table, and writes it once every step
+    is done, so a record means the whole build finished. The table "slate" is the slate itself:
+    its rows are every slate game, and its games those fetched before their as-of time, the only
+    ones rated. Each other row gives a feature table's rows of the date under one
+    artifact_version, and how many of the slate's games they cover (games; null for a table
+    without game_id). A table can hold another component's rows, as lineups holds goalie_starts'
+    goalies, but never two versions of one component: a build that left them is refused.
+    build_id and code_version name the build and the commit it ran. slate_raw_key and
+    slate_fetched_utc name the schedule response, and started_utc and finished_utc are the
+    build's actual clock times, never a convention.
+    """
+
+    game_date: pl.Date
+    season: pl.Int32
+    table: pl.String
+    artifact_version: pl.String
+    rows: pl.Int64 = pa.Field(ge=0)
+    games: pl.Int64 = pa.Field(ge=0, nullable=True)
+    slate_games: pl.Int64 = pa.Field(ge=0)
+    build_id: pl.String = pa.Field(str_matches=r"^live-features-\d{8}-")
+    code_version: pl.String
+    slate_raw_key: pl.String
+    slate_fetched_utc: UtcDatetime
+    started_utc: UtcDatetime
+    finished_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = [  # noqa: RUF012 (pandera config)
+            "game_date",
+            "table",
+            "artifact_version",
+        ]
+
+    @pa.dataframe_check
+    def finished_after_it_started(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("finished_utc") >= pl.col("started_utc"))
+
+    @pa.dataframe_check
+    def covers_no_more_games_than_the_slate(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("games").is_null() | (pl.col("games") <= pl.col("slate_games"))
+        )
+
+
 class Players(pa.DataFrameModel):
     """One NHL player, from the player landing page.
 
@@ -415,6 +922,151 @@ class Players(pa.DataFrameModel):
     def drafted_or_not(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(
             pl.col("draft_year").is_null() == pl.col("draft_overall").is_null()
+        )
+
+
+PLAYER_LEAGUE_SEASONS_KEY = ("player_id", "season", "league_abbrev", "game_type")
+# The game types a season line is kept for: regular season (2) and playoffs (3).
+SEASON_LINE_GAME_TYPES = (2, 3)
+# A season's lines count as public on this day (month, day), at 00:00 UTC, after the season:
+# nearly every league's season and the NHL playoffs are over by then (#98). The exceptions below
+# come later.
+SEASON_LINES_PUBLIC = (7, 1)
+# Leagues whose season, as the NHL labels it, can end after July 1. Their lines count as public on
+# October 1 instead, before any NHL season but 2026-27 starts, and none of them matters to an NHL
+# player's prior then.
+LATE_LEAGUES = (
+    # The Australian league, played from April to September in a calendar year the label does not
+    # give.
+    "AIHL",
+    "AUSTRALIA",
+    # The World Cup of Hockey, played in August and September (2004's labelled 2003-04).
+    "WCUP",
+    # The Brick Invitational, a tournament for 10-year-olds played in early July and labelled with
+    # the season before.
+    "BRICK INVITATIONAL",
+    # The Olympic qualification: the August 2025 final round is labelled 2024-25, while the August
+    # 2021 one is labelled 2021-22.
+    "OGQ",
+    # JPL-Pro, a summer pro-am league whose label is not known.
+    "JPL-PRO",
+    # Small events whose dates or labels are not known, as a precaution: exhibitions, camps, an
+    # early Olympic qualification and youth tournaments whose players' ages fit either a spring
+    # event or a summer one labelled with the season before.
+    "EXHIB.",
+    "IIHF DEV. CAMP",
+    "OLY-Q",
+    "OGC-16",
+    "QGC-16",
+    "WCCC-16",
+    "WSI U12",
+    "WSI U13",
+    "WSI U14",
+    "WSI U15",
+    "WSI U16",
+)
+LATE_LINES_PUBLIC = (10, 1)
+# Seasons whose NHL playoffs ended after July 1: the 2020 bubble (Cup Final on September 28) and
+# 2020-21 (July 7). None of their lines counts as public before the day given.
+LATE_SEASONS = {
+    20192020: datetime(2020, 10, 1, tzinfo=UTC),
+    20202021: datetime(2021, 7, 9, tzinfo=UTC),
+}
+# One league's season that ended after July 1, by (season, league): the 2022 World Juniors,
+# stopped in December 2021 and replayed in August 2022 under the 2021-22 label.
+LATE_LEAGUE_SEASONS = {(20212022, "WJC-20"): datetime(2022, 10, 1, tzinfo=UTC)}
+
+
+def season_lines_public_utc(season: pl.Expr, league: pl.Expr) -> pl.Expr:
+    """When the lines of a season given as 20152016 count as public: July 1 of its second year,
+    October 1 for a late league (LATE_LEAGUES), and never before the end of a late season
+    (LATE_SEASONS) or a late league-season (LATE_LEAGUE_SEASONS)."""
+    year = season % 10_000
+    by_league = (
+        pl.when(league.is_in(LATE_LEAGUES))
+        .then(pl.datetime(year, LATE_LINES_PUBLIC[0], LATE_LINES_PUBLIC[1], time_zone="UTC"))
+        .otherwise(
+            pl.datetime(year, SEASON_LINES_PUBLIC[0], SEASON_LINES_PUBLIC[1], time_zone="UTC")
+        )
+    )
+    season_end = season.replace_strict(
+        LATE_SEASONS, default=None, return_dtype=pl.Datetime("us", "UTC")
+    )
+    league_season_end = [
+        pl.when((season == late_season) & (league == late_league)).then(pl.lit(end))
+        for (late_season, late_league), end in LATE_LEAGUE_SEASONS.items()
+    ]
+    return pl.max_horizontal(by_league, season_end, *league_season_end)
+
+
+class PlayerLeagueSeasons(pa.DataFrameModel):
+    """A player's season in one league and game type (#98), from the seasonTotals array of his
+    landing page, the NHL's career stats in every league: the input of the NHLe offensive priors
+    (#102).
+
+    A player with several teams in a league-season has one line per team; they are summed, and
+    teams counts them. league_abbrev is the page's leagueAbbrev as it is and part of the key.
+    league is the same name trimmed and in upper case, with the known variants of one league
+    mapped to one name (Sweden to SHL, Swiss and NLA to NL; LEAGUE_VARIANTS in
+    ingest/player_seasons.py), so one league can sit under two keys in a player's season.
+    game_type is 2 (regular season) or 3 (playoffs). games_played, goals and assists are null
+    when a line summed lacks them, as most goalie lines lack goals and assists. age_at_season is
+    the player's age in whole years on September 15 of the season's first year, the NHL draft
+    cutoff, from players.birth_date.
+
+    A season's lines are public on July 1 (00:00 UTC) after it; October 1 for the leagues that
+    can end later or whose dates are not known (LATE_LEAGUES), such as the Australian league, the
+    World Cup of Hockey and the Olympic qualification; and never before the end of the 2020 and
+    2021 NHL playoffs, which ran past July 1 (LATE_SEASONS), or of the 2022 World Juniors, replayed
+    in August 2022 (LATE_LEAGUE_SEASONS). The pages were fetched in 2026, so their fetch time would
+    hide all history from the backtest. A line whose season was not yet public when the page was
+    fetched is a partial season and is not kept. A page fetched long after a season may carry
+    later corrections to its goals and assists, which ADR 0016 accepts.
+
+    The table holds only players who reached the NHL, so that a player has rows is hindsight
+    before his first NHL game. first_boxscore_utc is when his first boxscore in the lake became
+    public (actual_lineups), and observed_utc is the later of it and his season's public date. So
+    known_at shows a player's lines only once he has played, and a player without a boxscore has
+    no rows. The lake starts in 2010-11, so a player who debuted earlier counts from his first
+    game in it.
+    """
+
+    player_id: pl.Int64
+    season: pl.Int32
+    league_abbrev: pl.String = pa.Field(str_length={"min_value": 1})
+    league: pl.String = pa.Field(str_length={"min_value": 1})
+    game_type: pl.Int8 = pa.Field(isin=SEASON_LINE_GAME_TYPES)
+    teams: pl.Int16 = pa.Field(ge=1)
+    games_played: pl.Int16 = pa.Field(ge=0, nullable=True)
+    goals: pl.Int16 = pa.Field(ge=0, nullable=True)
+    assists: pl.Int16 = pa.Field(ge=0, nullable=True)
+    age_at_season: pl.Int16 = pa.Field(ge=0, nullable=True)
+    first_boxscore_utc: UtcDatetime
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(PLAYER_LEAGUE_SEASONS_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def season_spans_two_years(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        season = pl.col("season")
+        return data.lazyframe.select(season % 10_000 == season // 10_000 + 1)
+
+    @pa.dataframe_check
+    def league_trimmed_upper_case(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        league = pl.col("league")
+        return data.lazyframe.select(league == league.str.strip_chars().str.to_uppercase())
+
+    @pa.dataframe_check
+    def observed_when_the_season_is_over_and_he_has_played(
+        cls, data: pa.PolarsData
+    ) -> pl.LazyFrame:
+        public = season_lines_public_utc(pl.col("season"), pl.col("league"))
+        return data.lazyframe.select(
+            pl.col("observed_utc") == pl.max_horizontal(public, pl.col("first_boxscore_utc"))
         )
 
 
@@ -564,6 +1216,106 @@ class StrengthTime(pa.DataFrameModel):
         return data.lazyframe.select(regular_season_id_of_its_season())
 
 
+# Penalty types in play-by-play (#96): minor (a double minor is a minor of 4 minutes), major,
+# misconduct, game misconduct, match, bench minor, and a penalty shot, which puts no one in the box.
+PENALTY_TYPES = ("MIN", "MAJ", "MIS", "GAM", "MAT", "BEN", "PS")
+
+
+class Penalties(pa.DataFrameModel):
+    """One penalty in a game's play-by-play (#96), periods 1 to 4. A penalty logged in the
+    shootout is not play and is left out: 2 in 2010-11 to 2021-22.
+
+    seconds is elapsed game time, as in Shots. team is the penalized team, the play's
+    eventOwnerTeamId. committed_by is the player penalized, drawn_by the player fouled and
+    served_by the player who sat in the box for someone else, such as a bench minor or a goalie's
+    penalty; each is null where the feed names no one. type_code is in PENALTY_TYPES and
+    duration_min is the feed's minutes in the box: a misconduct's 10 minutes do not leave the team
+    short-handed, and a penalty shot's 0 is not a power play.
+
+    observed_utc is 10:00 UTC the morning after game_date, as for Shots (ADR 0004).
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    event_id: pl.Int32
+    sort_order: pl.Int32
+    period: pl.Int8 = pa.Field(ge=1, le=OT_PERIOD)
+    seconds: pl.Int32 = pa.Field(ge=0)
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    is_home: pl.Boolean
+    committed_by: pl.Int64 = pa.Field(nullable=True)
+    drawn_by: pl.Int64 = pa.Field(nullable=True)
+    served_by: pl.Int64 = pa.Field(nullable=True)
+    type_code: pl.String = pa.Field(isin=PENALTY_TYPES)
+    desc_key: pl.String
+    duration_min: pl.Int8 = pa.Field(ge=0)
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "event_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def seconds_inside_the_period(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        seconds, period = pl.col("seconds"), pl.col("period")
+        return data.lazyframe.select(
+            (seconds >= period_start_s(period)) & (seconds <= period_end_s(period))
+        )
+
+
+class Faceoffs(pa.DataFrameModel):
+    """One faceoff in a game's play-by-play (#96), periods 1 to 4.
+
+    seconds is elapsed game time, as in Shots. winning_team is the play's eventOwnerTeamId, and
+    home_won says whether it is the home team. zone is where the faceoff was, from the home
+    team's side: the feed's zoneCode is from the winner's side, so it flips O and D when the away
+    team won. Checked on every game of 2019-20 to 2021-22, where plays say which end the home team
+    defends: of 150,175 faceoffs away from center ice, the coordinates agree with the zone for all
+    but 101. All but one of those fill two whole games (2019020249, 2019020256) and a period of
+    2020020175, where the side or the coordinates are flipped throughout.
+
+    observed_utc is 10:00 UTC the morning after game_date, as for Shots (ADR 0004).
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    event_id: pl.Int32
+    sort_order: pl.Int32
+    period: pl.Int8 = pa.Field(ge=1, le=OT_PERIOD)
+    seconds: pl.Int32 = pa.Field(ge=0)
+    winning_team: pl.String = pa.Field(str_matches=TRI_CODE)
+    home_won: pl.Boolean
+    winner_id: pl.Int64
+    loser_id: pl.Int64
+    zone: pl.String = pa.Field(isin=ZONES)
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "event_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def seconds_inside_the_period(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        seconds, period = pl.col("seconds"), pl.col("period")
+        return data.lazyframe.select(
+            (seconds >= period_start_s(period)) & (seconds <= period_end_s(period))
+        )
+
+
 class ShotXg(pa.DataFrameModel):
     """A shot's expected goals (#73, ADR 0010): the probability that the unblocked shot became a
     goal, from the xG model of its season, which was fitted only on shots public before the
@@ -683,6 +1435,10 @@ class ScheduleTerms(pa.DataFrameModel):
         unique: str | list[str] | None = ["game_id"]  # noqa: RUF012 (pandera config)
 
     @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
     def known_no_earlier_than_its_cutoffs(cls, data: pa.PolarsData) -> pl.LazyFrame:
         observed = pl.col("observed_utc")
         return data.lazyframe.select(
@@ -771,6 +1527,482 @@ class GoalieStarts(pa.DataFrameModel):
         return data.lazyframe.select((total - 1).abs() < 1e-9)
 
 
+# The skaters who dress for a team-game: 18 in all but 20 of 18,711 team-games of 2010-11 to
+# 2017-18 (ADR 0017).
+DRESSED_SKATERS = 18
+# The skaters a team dresses by role, and its first power-play unit (#100, ADR 0018).
+SKATER_SLOTS = {"F": 12, "D": 6}
+PP_UNIT = 5
+
+
+class Lineups(pa.DataFrameModel):
+    """A team's projected lineup before a game (#99, ADR 0017), one row per candidate: each player
+    who dressed for the team in its last ten games public before observed_utc, through its line
+    of team codes, and has not dressed for another team since. A team with no earlier game has
+    no rows.
+
+    A skater (role F or D, as listed in his latest game for the team) has p_available, the
+    probability that he dresses. A team-game's skaters add up to the 18 who dress less the
+    newcomers expected among them, so to at most 18. Their model was fitted on earlier seasons'
+    boxscores public before the season's first as-of time; train_cutoff is the last of them, and
+    artifact_version names the run. A goalie (role G) has p_start, copied with its train_cutoff
+    and artifact_version from goalie_starts (ADR 0012), and a team-game's goalies add up to 1.
+
+    A skater also has his expected minutes at 5v5, on the power play and on the penalty kill
+    (exp_5v5, exp_pp, exp_pk; #100, ADR 0018): his probability of dressing times his decayed,
+    pulled minutes, scaled so that a team-game's candidates of a role and its replacement skaters
+    (LineupReplacements) add up to the league's minutes of the role the season before. pp_unit
+    marks the five with the most expected power-play minutes. Goalies have none of these.
+    train_cutoff covers both the availability model and the season-before figures of the minutes.
+
+    observed_utc is the game's as-of time: 10:00 US Eastern on the game date, or an hour before
+    the start if that is earlier, as for team strength."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    player_id: pl.Int64
+    role: pl.String = pa.Field(isin=ROLES)
+    p_available: pl.Float64 = pa.Field(gt=0, le=1, nullable=True)
+    p_start: pl.Float64 = pa.Field(gt=0, le=1, nullable=True)
+    exp_5v5: pl.Float64 = pa.Field(ge=0, nullable=True)
+    exp_pp: pl.Float64 = pa.Field(ge=0, nullable=True)
+    exp_pk: pl.Float64 = pa.Field(ge=0, nullable=True)
+    pp_unit: pl.Boolean = pa.Field(nullable=True)
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^(lineup|goalie-start)-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "team", "player_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def skaters_dress_and_goalies_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        goalie = pl.col("role") == "G"
+        return data.lazyframe.select(
+            (goalie == pl.col("p_available").is_null())
+            & (goalie == pl.col("p_start").is_not_null())
+            & (goalie == pl.col("artifact_version").str.starts_with("goalie-start-"))
+        )
+
+    @pa.dataframe_check
+    def only_skaters_have_minutes(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        goalie = pl.col("role") == "G"
+        columns = ("exp_5v5", "exp_pp", "exp_pk", "pp_unit")
+        return data.lazyframe.select(
+            pl.all_horizontal(goalie == pl.col(column).is_null() for column in columns)
+        )
+
+    @pa.dataframe_check
+    def a_power_play_unit_of_at_most_five(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        unit = pl.col("pp_unit").fill_null(False).cast(pl.Int32).sum().over("game_id", "team")
+        return data.lazyframe.select(unit <= PP_UNIT)
+
+    @pa.dataframe_check
+    def model_predates_the_game(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("train_cutoff") < pl.col("observed_utc"))
+
+    @pa.dataframe_check
+    def one_as_of_time_per_team_game(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("observed_utc").n_unique().over("game_id", "team") == 1)
+
+    @pa.dataframe_check
+    def skaters_add_up_to_at_most_those_who_dress(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        total = pl.col("p_available").sum().over("game_id", "team")
+        return data.lazyframe.select(total <= DRESSED_SKATERS + 1e-9)
+
+    @pa.dataframe_check
+    def goalies_add_up_to_one(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        total = pl.col("p_start").sum().over("game_id", "team")
+        return data.lazyframe.select((pl.col("role") != "G") | ((total - 1).abs() < 1e-9))
+
+
+class LineupReplacements(pa.DataFrameModel):
+    """A team's replacement skaters before a game (#100, ADR 0018), one row per role: the slots
+    (SKATER_SLOTS) its candidates in Lineups leave short of, expected count, and their expected
+    minutes in all at 5v5, on the power play and on the penalty kill. Each gets a newcomer's
+    average minutes of the season before, one average for a team's first game of a season and one
+    for its other games. A team-game's candidates of a role and its replacements add up to the
+    league's skater-minutes of the role the season before.
+
+    train_cutoff, artifact_version and observed_utc are those of the team-game's skaters in
+    Lineups."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    role: pl.String = pa.Field(isin=list(SKATER_SLOTS))
+    count: pl.Float64 = pa.Field(ge=0)
+    exp_5v5: pl.Float64 = pa.Field(ge=0)
+    exp_pp: pl.Float64 = pa.Field(ge=0)
+    exp_pk: pl.Float64 = pa.Field(ge=0)
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^lineup-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "team", "role"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def model_predates_the_game(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("train_cutoff") < pl.col("observed_utc"))
+
+    @pa.dataframe_check
+    def at_most_the_role_s_slots(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        slots = pl.col("role").replace_strict(SKATER_SLOTS, return_dtype=pl.Float64)
+        return data.lazyframe.select(pl.col("count") <= slots)
+
+
+# RAPM's player components (#101, ADR 0019): 5v5 offense and defense, power-play offense and
+# penalty-kill defense. Finishing and penalties (plan §4) come with their tasks.
+RATING_COMPONENTS = ("ev_off", "ev_def", "pp", "pk")
+RAPM_MODELS = ("ev", "pp")
+
+
+class PlayerRatings(pa.DataFrameModel):
+    """A candidate skater's RAPM ratings before a game (#101, ADR 0019), one row per component:
+    his effect on xG per hour of ice time, offense raising his team's and defense lowering the
+    other's (plan §5), from the stints public before as_of_utc, team strength's as-of time.
+    known_utc is the latest stint time read, null before the first stints with xG. The candidates
+    are those of Lineups.
+
+    mean is relative to the average skater at 5v5 and on the penalty kill. On the power play it is
+    relative to the average forward, a defenseman's adding his role's average there. sd is the
+    ridge's posterior spread, the prior's for a player without data, and null before any data; a
+    defenseman's power-play sd includes the role term's variance and covariance with his own.
+    hours is the decayed ice time behind the rating, 0 without data. prior is the mean the rating
+    is pulled toward (#102, ADR 0020): the player's traits times the season's effects, on the same
+    footing as mean; a player without data is at it. half_life_days, pull_hours and aging are
+    the settings (aging, the share of the age curve that moves past evidence, #103).
+
+    train_cutoff is the last result the specification's figures read, as for team strength; and
+    observed_utc, when the rating could be known, is the later of as_of_utc and train_cutoff."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    player_id: pl.Int64
+    role: pl.String = pa.Field(isin=["F", "D"])
+    component: pl.String = pa.Field(isin=list(RATING_COMPONENTS))
+    mean: pl.Float64
+    prior: pl.Float64
+    sd: pl.Float64 = pa.Field(ge=0, nullable=True)
+    hours: pl.Float64 = pa.Field(ge=0)
+    known_utc: UtcDatetime = pa.Field(nullable=True)
+    half_life_days: pl.Float64 = pa.Field(gt=0)
+    pull_hours: pl.Float64 = pa.Field(gt=0)
+    aging: pl.Float64 = pa.Field(ge=0)
+    as_of_utc: UtcDatetime
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^rapm-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "player_id", "component"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def reads_only_stints_public_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("known_utc").is_null() | (pl.col("known_utc") < pl.col("as_of_utc"))
+        )
+
+    @pa.dataframe_check
+    def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        later = pl.max_horizontal("as_of_utc", "train_cutoff")
+        return data.lazyframe.select(pl.col("observed_utc") == later)
+
+
+class RapmTerms(pa.DataFrameModel):
+    """The terms of each RAPM fit behind PlayerRatings (#101, ADR 0019), once per game date and
+    fit: the intercept, the season, arena, home, score and zone terms that only remove bias, the
+    power play's situation and defensemen terms, the priors' trait effects in force
+    (prior:<component>:<trait>, fitted at the season's start, ADR 0020), and sigma, the residual
+    sd per square-root hour.
+    B3 reads its xG rates from the intercept and season terms, since ratings are relative to a
+    skater rated 0. hours is the decayed ice time of the rows with the term, null for the
+    defensemen term, a count, the trait effects and sigma.
+
+    known_utc is the latest stint time the fit read, and as_of_utc the earliest as-of time of the
+    date's games it serves; train_cutoff and observed_utc as in PlayerRatings."""
+
+    season: pl.Int32
+    game_date: pl.Date
+    model: pl.String = pa.Field(isin=list(RAPM_MODELS))
+    term: pl.String
+    value: pl.Float64
+    hours: pl.Float64 = pa.Field(ge=0, nullable=True)
+    known_utc: UtcDatetime
+    half_life_days: pl.Float64 = pa.Field(gt=0)
+    pull_hours: pl.Float64 = pa.Field(gt=0)
+    aging: pl.Float64 = pa.Field(ge=0)
+    as_of_utc: UtcDatetime
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^rapm-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_date", "known_utc", "model", "term"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def read_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("known_utc") < pl.col("as_of_utc"))
+
+    @pa.dataframe_check
+    def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        later = pl.max_horizontal("as_of_utc", "train_cutoff")
+        return data.lazyframe.select(pl.col("observed_utc") == later)
+
+
+# Penalty rates' components (#104, ADR 0021): penalties taken and drawn per hour.
+PENALTY_COMPONENTS = ("pen_taken", "pen_drawn")
+
+
+class PenaltyRates(pa.DataFrameModel):
+    """A candidate skater's penalty rates before a game (#104, ADR 0021), one row per component:
+    his unoffset penalties taken (pen_taken) or drawn (pen_drawn) per hour at 5v5, on the power
+    play and on the penalty kill, from his earlier games with stints public before as_of_utc,
+    team strength's as-of time. The candidates are those of Lineups, as in PlayerRatings.
+
+    mean is pulled toward prior, his role's rate over all skaters of the role with the same
+    weights, by pull_hours hours, measured per role and component on the season before
+    (infinite when players' rates did not differ beyond noise, which puts everyone at prior). sd
+    is the gamma posterior's spread, 0 at an infinite pull. hours is his decayed exposure, 0
+    without games, and half_life_days RAPM's frozen memory (#103). known_utc is the latest
+    player-game time read.
+
+    train_cutoff is the later of RAPM's tuning cutoff, since the memory was tuned (ADR 0011), and
+    the season's pulls' cutoff; observed_utc is the later of as_of_utc and train_cutoff."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    player_id: pl.Int64
+    role: pl.String = pa.Field(isin=["F", "D"])
+    component: pl.String = pa.Field(isin=list(PENALTY_COMPONENTS))
+    mean: pl.Float64 = pa.Field(ge=0)
+    prior: pl.Float64 = pa.Field(ge=0)
+    sd: pl.Float64 = pa.Field(ge=0)
+    hours: pl.Float64 = pa.Field(ge=0)
+    known_utc: UtcDatetime
+    half_life_days: pl.Float64 = pa.Field(gt=0)
+    pull_hours: pl.Float64 = pa.Field(gt=0)
+    as_of_utc: UtcDatetime
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^power-plays-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "player_id", "component"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def reads_only_games_public_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("known_utc") < pl.col("as_of_utc"))
+
+    @pa.dataframe_check
+    def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        later = pl.max_horizontal("as_of_utc", "train_cutoff")
+        return data.lazyframe.select(pl.col("observed_utc") == later)
+
+
+class ExpectedPowerPlays(pa.DataFrameModel):
+    """One team's expected power plays in a game (#104, ADR 0021), as of team strength's as-of
+    time. taken_index is the opponent's projected lineup's penalties taken over a league-average
+    lineup's for the same minutes, and drawn_index the team's own penalties drawn, likewise (1 is
+    average). opportunities is league_opportunities (the league's unoffset penalties per
+    team-game, the games public before as_of_utc in the season and the one before) times the
+    average of the two indexes; pp_minutes is opportunities times pp_length, the league's
+    power-play minutes per unoffset penalty; pk_minutes is the opponent's pp_minutes; and sh_xg
+    is pk_minutes times sh_xg_per_pk_minute, the league's shorthanded xG per penalty-kill minute,
+    null before any game with xG is public. known_utc is the latest player-game or team-game
+    read.
+
+    train_cutoff is the latest of RAPM's tuning cutoff, the season's pulls' and the train_cutoff
+    of the game's lineups and replacements, whose expected minutes it reads; observed_utc is the
+    later of as_of_utc and train_cutoff."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    opponent: pl.String = pa.Field(str_matches=TRI_CODE)
+    is_home: pl.Boolean
+    taken_index: pl.Float64 = pa.Field(gt=0)
+    drawn_index: pl.Float64 = pa.Field(gt=0)
+    opportunities: pl.Float64 = pa.Field(gt=0)
+    pp_minutes: pl.Float64 = pa.Field(gt=0)
+    pk_minutes: pl.Float64 = pa.Field(gt=0)
+    sh_xg: pl.Float64 = pa.Field(ge=0, nullable=True)
+    league_opportunities: pl.Float64 = pa.Field(gt=0)
+    pp_length: pl.Float64 = pa.Field(gt=0)
+    sh_xg_per_pk_minute: pl.Float64 = pa.Field(ge=0, nullable=True)
+    known_utc: UtcDatetime
+    as_of_utc: UtcDatetime
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^power-plays-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "team"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def reads_only_games_public_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("known_utc") < pl.col("as_of_utc"))
+
+    @pa.dataframe_check
+    def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        later = pl.max_horizontal("as_of_utc", "train_cutoff")
+        return data.lazyframe.select(pl.col("observed_utc") == later)
+
+
+class Finishing(pa.DataFrameModel):
+    """A candidate skater's finishing before a game (#105, ADR 0022): phi, his goals over the
+    expected goals of his unblocked shots with xG, the league's finishing being 1, pulled toward
+    1 by finishing_pull expected goals; phi_sd the gamma posterior's spread, 0 at an infinite
+    pull (no earlier season to measure it on, or no spread beyond noise). goals and
+    expected_goals are his decayed sums (xG times the league's finishing, league_finishing), and
+    hours his decayed ice time at 5v5, on the power play and on the penalty kill. xg_rate is his
+    xG per hour pulled toward his role's (xg_rate_prior) by rate_pull hours, null before any xG
+    is public, and share his share of his team's expected xG by his expected minutes, which
+    weighs his phi in the team's. half_life_days is RAPM's frozen memory (#103); known_utc the
+    latest skater-game read, null before any.
+
+    train_cutoff is the latest of RAPM's and the goalie effect's tuning cutoff (ADR 0011), the
+    season's pulls' and the game's lineups', whose expected minutes the share reads; observed_utc
+    the later of as_of_utc and train_cutoff."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    player_id: pl.Int64
+    role: pl.String = pa.Field(isin=["F", "D"])
+    phi: pl.Float64 = pa.Field(gt=0)
+    phi_sd: pl.Float64 = pa.Field(ge=0)
+    goals: pl.Float64 = pa.Field(ge=0)
+    expected_goals: pl.Float64 = pa.Field(ge=0)
+    xg_rate: pl.Float64 = pa.Field(ge=0, nullable=True)
+    xg_rate_prior: pl.Float64 = pa.Field(ge=0, nullable=True)
+    hours: pl.Float64 = pa.Field(ge=0)
+    share: pl.Float64 = pa.Field(ge=0, le=1)
+    finishing_pull: pl.Float64 = pa.Field(gt=0)
+    rate_pull: pl.Float64 = pa.Field(gt=0)
+    league_finishing: pl.Float64 = pa.Field(gt=0, nullable=True)
+    known_utc: UtcDatetime = pa.Field(nullable=True)
+    half_life_days: pl.Float64 = pa.Field(gt=0)
+    as_of_utc: UtcDatetime
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^finishing-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "player_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def reads_only_games_public_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("known_utc").is_null() | (pl.col("known_utc") < pl.col("as_of_utc"))
+        )
+
+    @pa.dataframe_check
+    def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        later = pl.max_horizontal("as_of_utc", "train_cutoff")
+        return data.lazyframe.select(pl.col("observed_utc") == later)
+
+
+class GoalMultipliers(pa.DataFrameModel):
+    """A team's goal multipliers in a game against one candidate goalie of the opponent (#105,
+    ADR 0022): phi, its projected shooters' finishing weighted by their shares of its expected
+    xG (Finishing), gamma, the goalie's conversion, 1 less his goals saved above expected per
+    unblocked shot (goalie_effects) over the league's xG per such shot (xg_per_shot, null before
+    any is public, when gamma is 1), and multiplier, their product times league_finishing, the
+    league's goals over xG (1 before any is public), B3's factor on the team's xG with that
+    goalie in net. An opponent without candidate goalies (a new team's first game) gets one row
+    with goalie_id null and gamma 1, as B2 takes a missing goalie as average. known_utc is the
+    latest game read.
+
+    train_cutoff is the latest of Finishing's, the game's lineups' and the goalie effect's;
+    observed_utc the later of as_of_utc and train_cutoff."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    opponent: pl.String = pa.Field(str_matches=TRI_CODE)
+    goalie_id: pl.Int64 = pa.Field(nullable=True)
+    phi: pl.Float64 = pa.Field(gt=0)
+    gamma: pl.Float64 = pa.Field(gt=0)
+    multiplier: pl.Float64 = pa.Field(gt=0)
+    xg_per_shot: pl.Float64 = pa.Field(gt=0, nullable=True)
+    league_finishing: pl.Float64 = pa.Field(gt=0, nullable=True)
+    known_utc: UtcDatetime = pa.Field(nullable=True)
+    as_of_utc: UtcDatetime
+    train_cutoff: UtcDatetime
+    artifact_version: pl.String = pa.Field(str_matches=r"^finishing-\d{8}-")
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "team", "goalie_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def reads_only_games_public_before_the_as_of_time(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("known_utc").is_null() | (pl.col("known_utc") < pl.col("as_of_utc"))
+        )
+
+    @pa.dataframe_check
+    def observed_at_the_as_of_time_or_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        later = pl.max_horizontal("as_of_utc", "train_cutoff")
+        return data.lazyframe.select(pl.col("observed_utc") == later)
+
+
 class Shifts(pa.DataFrameModel):
     """One player shift from the shift chart (type 517 rows), periods 1 to 4.
 
@@ -778,6 +2010,11 @@ class Shifts(pa.DataFrameModel):
     event at second t when start_s < t <= end_s. team comes from the shift's teamId, mapped
     through the game's two teams. The parser drops zero-length placeholders, rows of teams not in
     the game, shootout rows and malformed rows, and ShiftCoverage counts them.
+
+    A game whose chart has no shifts takes them from the NHL's time-on-ice reports when both are
+    in the raw cache (#68, ingest/toi_reports.py): the 57 games of 2024-25 with an empty chart.
+    There a player is found by his sweater number in the game's boxscore, and raw_key is the
+    report's (nhl/toi-home/ or nhl/toi-visitor/).
 
     observed_utc is 10:00 UTC the morning after game_date, as for Shots.
     """
@@ -876,10 +2113,13 @@ class ShiftCoverage(pa.DataFrameModel):
 
     Strength: at every unblocked shot except penalty shots (shots_checked), the skaters and
     goalies on the ice from the shifts are compared with situationCode. skater_mismatches and
-    goalie_mismatches count the shots where they differ. RAPM drops stints that contradict it.
+    goalie_mismatches count the shots where they differ. Stints keep the chart's counts and leave
+    out only impossible ones (ADR 0015).
 
-    observed_utc is 10:00 UTC the morning after game_date, as for Shots; raw_key is the shift
-    chart's.
+    observed_utc is 10:00 UTC the morning after game_date, as for Shots. raw_key is the shift
+    chart's, or, for a game whose shifts come from its time-on-ice reports (#68), the home team's
+    report's: one key per row, though the visitors' report gave half the shifts. The row's counts
+    and checks then describe the reports' shifts, by the same rules.
     """
 
     game_id: pl.Int64
@@ -920,6 +2160,113 @@ class ShiftCoverage(pa.DataFrameModel):
         checked = pl.col("shots_checked")
         return data.lazyframe.select(
             (pl.col("skater_mismatches") <= checked) & (pl.col("goalie_mismatches") <= checked)
+        )
+
+
+# Why a stint is left out of RAPM (ADR 0015): a team with fewer than 3 or more than 6 skaters on
+# the ice by the shift chart, or with two goalies.
+STINT_DROPS = ("skaters", "goalies")
+# The skaters of one team a stint may have, its goalie in or pulled (as CHART_SKATERS).
+STINT_SKATERS = (3, 6)
+
+
+class Stints(pa.DataFrameModel):
+    """One stint (#97, ADR 0015): a stretch of a period in which the players on the ice, by the
+    game's shift chart, and the score do not change. Only games whose chart is complete
+    (ShiftCoverage) have stints. RAPM's rows (docs/plan.md sections 4 and 5).
+
+    start_s and end_s are elapsed game seconds, and the stint holds every moment t with
+    start_s < t <= end_s, as a shift does. stint_id numbers a game's stints in time order.
+    home_skaters and away_skaters are the skaters' player ids, sorted; a player not in the
+    boxscore's goalies group counts as a skater. home_goalie and away_goalie are each team's one
+    goalie on the ice, null when its net is empty or it has two. strength is the home team's
+    skaters, then the away team's, as 5v4: a pulled goalie's team has 6.
+
+    score_state is the home team's goals minus the away team's at the stint's start, every goal of
+    periods 1 to 4 counted. zone_start is the zone of a faceoff at the stint's start from the home
+    team's side (Faceoffs), null when the stint starts with a change on the fly. home_xg,
+    away_xg, home_goals and away_goals count each team's unblocked shots in the stint, penalty
+    shots left out: xG from shot_xg, which gives none to shots at an empty net or without
+    coordinates, and goals from shots. The xG columns, xg_version and xg_train_cutoff are null in
+    a season without xG, such as 2010-11. A season's xG comes from one model, fitted before its
+    first game (hard rule 1); features/stints.py refuses anything else, and a shot that model
+    scores without a shot_xg row.
+
+    drop_reason says why RAPM leaves the stint out (STINT_DROPS, ADR 0015), null for a stint it
+    keeps. observed_utc is 10:00 UTC the morning after game_date, with the game's feeds (ADR 0004).
+    """
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    stint_id: pl.Int16 = pa.Field(ge=1)
+    period: pl.Int8 = pa.Field(ge=1, le=OT_PERIOD)
+    start_s: pl.Int32 = pa.Field(ge=0)
+    end_s: pl.Int32
+    seconds: pl.Int32 = pa.Field(gt=0)
+    home_skaters: Annotated[pl.List, pl.Int64()]
+    away_skaters: Annotated[pl.List, pl.Int64()]
+    home_goalie: pl.Int64 = pa.Field(nullable=True)
+    away_goalie: pl.Int64 = pa.Field(nullable=True)
+    strength: pl.String = pa.Field(str_matches=r"^\d+v\d+$")
+    score_state: pl.Int8
+    zone_start: pl.String = pa.Field(isin=ZONES, nullable=True)
+    home_xg: pl.Float64 = pa.Field(ge=0, nullable=True)
+    away_xg: pl.Float64 = pa.Field(ge=0, nullable=True)
+    home_goals: pl.Int8 = pa.Field(ge=0)
+    away_goals: pl.Int8 = pa.Field(ge=0)
+    drop_reason: pl.String = pa.Field(isin=STINT_DROPS, nullable=True)
+    xg_version: pl.String = pa.Field(str_matches=r"^xg-\d{8}-", nullable=True)
+    xg_train_cutoff: UtcDatetime = pa.Field(nullable=True)
+    observed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "stint_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def regular_season_id_of_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(regular_season_id_of_its_season())
+
+    @pa.dataframe_check
+    def inside_its_period(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        period = pl.col("period")
+        return data.lazyframe.select(
+            (pl.col("start_s") >= period_start_s(period))
+            & (pl.col("end_s") <= period_end_s(period))
+            & (pl.col("seconds") == pl.col("end_s") - pl.col("start_s"))
+        )
+
+    @pa.dataframe_check
+    def strength_counts_the_skaters(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        counts = pl.format(
+            "{}v{}", pl.col("home_skaters").list.len(), pl.col("away_skaters").list.len()
+        )
+        return data.lazyframe.select(pl.col("strength") == counts)
+
+    @pa.dataframe_check
+    def dropped_only_when_impossible(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        low, high = STINT_SKATERS
+        possible = pl.col("home_skaters").list.len().is_between(low, high) & pl.col(
+            "away_skaters"
+        ).list.len().is_between(low, high)
+        reason = pl.col("drop_reason")
+        return data.lazyframe.select(
+            pl.when(~possible)
+            .then(reason == "skaters")
+            .otherwise(reason.is_null() | (reason == "goalies"))
+        )
+
+    @pa.dataframe_check
+    def xg_model_predates_the_game(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        cutoff = pl.col("xg_train_cutoff")
+        versioned = pl.col("xg_version").is_not_null()
+        return data.lazyframe.select(
+            (versioned == cutoff.is_not_null())
+            & (versioned == pl.col("home_xg").is_not_null())
+            & (versioned == pl.col("away_xg").is_not_null())
+            & (cutoff.is_null() | (cutoff < pl.col("observed_utc")))
         )
 
 
@@ -1010,6 +2357,162 @@ class DailyFaceoffGoalies(pa.DataFrameModel):
         reported = pl.col("reported_utc")
         return data.lazyframe.select(
             reported.is_null() | (reported <= pl.col("observed_utc") + CLOCK_SKEW)
+        )
+
+
+DAILYFACEOFF_LINES_KEY = ("game_date", "team", "observed_utc", "dfo_player_id", "group")
+
+
+class DailyFaceoffLines(pa.DataFrameModel):
+    """One player in one group of a Daily Faceoff team line-combinations page (#121), fetched
+    with the slot goalie polls for a team playing on game_date: the projected lines (F1-F4,
+    D1-D3, G), the power-play and penalty-kill units, and the injured players (group "ir"), with
+    Daily Faceoff's injury status ("out", "dtd"; null when none) and game-time-decision flag. A
+    player appears once per group he is in.
+
+    observed_utc is the fetch time, which is when a prediction may use the row: the lines and
+    statuses change, so lines_updated_utc (when Daily Faceoff last updated the page's lines, with
+    lines_source naming its source) and news_utc (the player's latest news item) only show how
+    old the information was. Players are kept by name and Daily Faceoff id; matching them to NHL
+    player ids is left to the measurement (#121), which has the players. Logged for live games
+    only: no source dates past statuses, so nothing here enters a backtest (hard rule 1).
+    """
+
+    season: pl.Int32
+    game_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    lines_updated_utc: UtcDatetime = pa.Field(nullable=True)
+    lines_source: pl.String = pa.Field(nullable=True)
+    dfo_player_id: pl.Int64
+    player_name: pl.String
+    jersey: pl.Int16 = pa.Field(nullable=True)
+    position: pl.String = pa.Field(nullable=True)
+    group: pl.String
+    category: pl.String = pa.Field(nullable=True)
+    injury_status: pl.String = pa.Field(nullable=True)
+    game_time_decision: pl.Boolean
+    news_utc: UtcDatetime = pa.Field(nullable=True)
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(DAILYFACEOFF_LINES_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def updated_not_after_observed(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        observed = pl.col("observed_utc") + CLOCK_SKEW
+        return data.lazyframe.select(
+            (pl.col("lines_updated_utc").is_null() | (pl.col("lines_updated_utc") <= observed))
+            & (pl.col("news_utc").is_null() | (pl.col("news_utc") <= observed))
+        )
+
+
+KALSHI_SIDES = ("yes", "no")
+KALSHI_BOOKS_KEY = ("observed_utc", "ticker", "side", "price")
+# Kalshi's NHL moneyline markets, one per team and game: KXNHLGAME-26OCT17NJWSH-WSH is WSH's
+# market of NJ at WSH on 2026-10-17 (US Eastern), away team first.
+KALSHI_TICKER = r"^KXNHLGAME-\d{2}[A-Z]{3}\d{2}[A-Z]{4,6}-[A-Z]{2,3}$"
+# Kalshi's team codes are the NHL triCodes but for these four (checked on 65 games, #282).
+KALSHI_CODES = {"NJD": "NJ", "TBL": "TB", "SJS": "SJ", "LAK": "LA"}
+
+
+class KalshiBooks(pa.DataFrameModel):
+    """One price level of Kalshi's order book for one team's market of a game with an alerted
+    real bet (#282), fetched for the owner's own resting orders (#281): side "yes" lists the bids
+    for the team to win, side "no" the bids against it, each with its price in dollars (0 to 1)
+    and the contracts resting there.
+
+    observed_utc is the fetch time: the book carries no time of its own, and it shows only live,
+    so it can't be fetched afterwards. Only markets of the day's alerted bets are fetched, never a
+    game at or after its start. Private under Kalshi's Developer Agreement (3.1): kept in the
+    local lake and R2 only, for the owner's own trading, never published and never a model input.
+    """
+
+    observed_utc: UtcDatetime
+    season: pl.Int32
+    game_date: pl.Date
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    ticker: pl.String = pa.Field(str_matches=KALSHI_TICKER)
+    side: pl.String = pa.Field(isin=KALSHI_SIDES)
+    price: pl.Float64 = pa.Field(gt=0, lt=1)
+    quantity: pl.Float64 = pa.Field(gt=0)
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(KALSHI_BOOKS_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def observed_before_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("observed_utc") < pl.col("start_utc"))
+
+    @pa.dataframe_check
+    def ticker_names_the_game_date_and_team(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        day = pl.col("game_date").dt.strftime("%y%b%d").str.to_uppercase()
+        team = pl.col("team").replace(KALSHI_CODES)
+        return data.lazyframe.select(
+            pl.col("ticker").str.starts_with(pl.lit("KXNHLGAME-") + day)
+            & (pl.col("ticker").str.split("-").list.last() == team)
+        )
+
+
+KALSHI_ENVS = ("live", "demo")
+REAL_ORDER_STATES = ("planned", "skipped", "placed", "not sent", "canceled", "executed")
+
+
+class RealOrders(pa.DataFrameModel):
+    """One buy order of an alerted bet on Kalshi (ADR 0040, #281): in env "live" a real bet, in
+    "demo" one on Kalshi's demo exchange with mock funds, kept apart from the record. limit is its
+    highest price in dollars, contracts its size and max_cost_usd the most it costs, fee included;
+    it expires at expires_utc, before the game's start. status is planned (written, not sent),
+    skipped (with its reason), placed (sent, resting), or once expired: not sent, canceled or
+    executed, with the contracts filled, their cost and fees in USD, the first fill's time and
+    whether any fill came at or after the start. Rebuilt from R2 (real/live/orders/,
+    real/demo/orders/); private, the owner's own orders, never a model input."""
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    env: pl.String = pa.Field(isin=KALSHI_ENVS)
+    mode: pl.String = pa.Field(isin=REAL_MODES)
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    ticker: pl.String = pa.Field(str_matches=KALSHI_TICKER)
+    client_order_id: pl.String
+    limit: pl.Float64 = pa.Field(gt=0, lt=1)
+    contracts: pl.Float64 = pa.Field(gt=0)
+    max_cost_usd: pl.Float64 = pa.Field(gt=0)
+    expires_utc: UtcDatetime
+    written_utc: UtcDatetime
+    status: pl.String = pa.Field(isin=REAL_ORDER_STATES)
+    reason: pl.String = pa.Field(nullable=True)
+    order_id: pl.String = pa.Field(nullable=True)
+    placed_utc: UtcDatetime = pa.Field(nullable=True)
+    filled: pl.Float64 = pa.Field(nullable=True, ge=0)
+    cost_usd: pl.Float64 = pa.Field(nullable=True, ge=0)
+    fees_usd: pl.Float64 = pa.Field(nullable=True, ge=0)
+    first_fill_utc: UtcDatetime = pa.Field(nullable=True)
+    after_start: pl.Boolean = pa.Field(nullable=True)
+    code_version: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["env", "game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def expires_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("expires_utc") < pl.col("start_utc"))
+
+    @pa.dataframe_check
+    def placed_once_written(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("placed_utc").is_null() | (pl.col("placed_utc") >= pl.col("written_utc"))
         )
 
 

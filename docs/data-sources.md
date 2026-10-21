@@ -7,6 +7,7 @@ The fixed list of sources and endpoints. Work from this file instead of guessing
 | Source | What it gives | Access and limits | Role in the model |
 | --- | --- | --- | --- |
 | [NHL API](https://github.com/Zmalski/NHL-API-Reference) (api-web.nhle.com, api.nhle.com/stats/rest) | Schedule, play-by-play with shot coordinates, boxscores, shift charts, rosters, player bios and career stats, draft picks, team prospects | Free, unofficial and undocumented, no published rate limit; throttle to about 1 request per second and cache every response | Backbone: shifts for RAPM, shots for xG, rosters, schedule for rest and travel |
+| [NHL time-on-ice reports](https://www.nhl.com/scores/htmlreports/20242025/TH021235.HTM) (www.nhl.com/scores/htmlreports) | One HTML page per game and team (TH home, TV visitors): each player's sweater number and name, then every shift with its number, period, start and end, duration and a goal or penalty mark | robots.txt allows `/scores/htmlreports`. NHL.com's terms of service (updated 2025-10-29) forbid "unauthorized spidering, scraping, or harvesting of content or information, or use any other unauthorized automated means to compile information". The owner decided on 2026-10-02 to fetch them once, for #68 only: 114 pages (57 games, home and visitor), throttled, kept in the raw store and R2, never fetched again | Shifts of the 57 games of 2024-25 whose shift chart is empty (#68), so their `shift_coverage`, `strength_time`, chart skater counts and RAPM stints work as for any other game |
 | [MoneyPuck data](https://moneypuck.com/data.htm) | Shot-level data with xG for 2007 to 2026, skater, goalie, team and line stats by season and game, player bios | Free CSV downloads for non-commercial use, attribution required, no scraping | Sanity check for the simple in-house xG model and player stats; not a backtest input, since its xG was likely fitted across many seasons |
 | [The Odds API](https://the-odds-api.com/) | Live NHL moneyline, puck line and totals from EU books including Pinnacle; props per event | Free: 500 credits a month. Paid from $30 a month for 20,000 credits. Historical odds from 2020, paid plans only, 10 credits per market per region ([docs](https://the-odds-api.com/liveapi/guides/v4/)) | Live odds snapshots from day one on the free tier; historical backfill deferred to v2 |
 | [SBR odds archive](https://www.sportsbookreviewsonline.com/scoresoddsarchives/nhl/nhloddsarchives.htm) | Opening and closing moneylines, puck lines and totals, 2007-08 to 2022-23 (2022-23 stops on 2022-11-27) | Free HTML tables (the Excel files are gone), no longer updated, book source not stated; answers 404 without a browser User-Agent | Opening lines for the historical tradable test (E2), closes for the information test (E1); quality unknown until the phase 1 audit |
@@ -14,6 +15,8 @@ The fixed list of sources and endpoints. Work from this file instead of guessing
 | NHLe research ([Bacon](https://towardsdatascience.com/nhl-equivalency-and-prospect-projection-models-building-the-nhl-equivalency-model-part-2-6f275a45e22/), [HockeyStats](https://hockeystats.com/methodology/nhle)) | Published league translation factors and method | Free articles | Starting coefficients for offensive priors only, refit later on your own data |
 | [Daily Faceoff](https://www.dailyfaceoff.com/starting-goalies) | Projected lines, power play units, starting goalie status with report time and source | Web pages only; robots.txt allows them and disallows `/api/`; no terms of use found (2026-09-29) | Starting goalies logged at every goalie poll (#48), compared with the NHL's in the audit; other pages manual reference only |
 | [RotoWire](https://www.rotowire.com/hockey/starting-goalies.php) | Projected lines and starting goalies | Terms forbid scraping and any automated access without written consent | Manual reference only; never automated |
+| [Kalshi](https://docs.kalshi.com/api-reference/market/get-market-orderbook) order book | The resting Yes and No bids of an NHL moneyline market: price levels with their contracts, live only | Public API, no key; token-bucket rate limits, exponential backoff on 429. The [Developer Agreement](https://kalshi-public-docs.s3.amazonaws.com/Kalshi-Developer-Agreement.pdf) allows it only for a member's own trading, kept private (3.1) | The owner's own resting orders (#281): only the alerted bets' markets, kept in the lake and R2 only, never a model input and never published (#282) |
+| [Kalshi trading API](https://docs.kalshi.com/getting_started/api_keys) | The owner's own account: balance, orders, fills and settlements, on the demo exchange (mock funds) or the live one | Requests signed with the owner's API key, one per environment, held in repository secrets only; the same Developer Agreement | Placing and recording the owner's real bets (#281); for now only the key check (#286) |
 | Static files you create | Arena coordinates and time zones, team abbreviation history, coach tenures | One-off CSVs in the repo | Travel, rest and coach-change features |
 
 ## Endpoints
@@ -25,17 +28,22 @@ NHL API (api-web.nhle.com)
   GET /v1/gamecenter/{gameId}/boxscore
   GET /v1/gamecenter/{gameId}/landing     # pre-game goalie poll only
   GET /v1/gamecenter/{gameId}/right-rail  # pre-game goalie poll only
-
-Daily Faceoff (www.dailyfaceoff.com), HTML page, never /api/
-  GET /starting-goalies/{YYYY-MM-DD}      # US Eastern date
   GET /v1/roster/{team}/{season}          # season as 20252026
   GET /v1/player/{playerId}/landing       # bio + career stats by league
   GET /v1/player/{playerId}/game-log/{season}/{gameType}
   GET /v1/draft/picks/{season}/all
   GET /v1/prospects/{team}
+  GET /v1/score/{YYYY-MM-DD}              # the dashboard's live scores only (#211), never stored
+
+Daily Faceoff (www.dailyfaceoff.com), HTML page, never /api/
+  GET /starting-goalies/{YYYY-MM-DD}      # US Eastern date
 
 NHL stats API (api.nhle.com/stats/rest)
   GET /en/shiftcharts?cayenneExp=gameId={gameId}
+
+NHL time-on-ice reports (www.nhl.com, browser User-Agent), once for #68's 57 games, nhl toi-reports only
+  GET /scores/htmlreports/{season}/TH{last 6 digits of gameId}.HTM   # home team, e.g. 20242025/TH021235.HTM
+  GET /scores/htmlreports/{season}/TV{last 6 digits of gameId}.HTM   # visitors
 
 The Odds API (api.the-odds-api.com)
   GET /v4/sports/icehockey_nhl/odds?regions=eu&markets=h2h,spreads,totals&oddsFormat=decimal
@@ -43,13 +51,33 @@ The Odds API (api.the-odds-api.com)
 
 SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
   GET /scoresoddsarchives/nhl-odds-{2010-11 .. 2022-23}/      # 2020-21 is nhl-odds-2021
+
+Telegram Bot API (api.telegram.org), outbound only: the owner's real-bets alert (#268)
+  POST /bot{token}/sendMessage            # chat_id, text; never logged
+
+Kalshi (api.elections.kalshi.com/trade-api/v2), public, no key: the alerted bets' markets only (#282)
+  GET /markets/{ticker}/orderbook         # ticker KXNHLGAME-{YY}{MON}{DD}{AWAY}{HOME}-{TEAM}
+
+Kalshi trading API (external-api.kalshi.com/trade-api/v2; the demo exchange at
+external-api.demo.kalshi.co/trade-api/v2), each request signed with the owner's key (#286)
+  GET    /portfolio/balance
+  GET    /markets?series_ticker=KXNHLGAME&status=open    GET /markets/{ticker}
+  POST   /portfolio/events/orders         # a limit bid: ticker, client_order_id, count, price
+  GET    /portfolio/orders/{order_id}     GET /portfolio/orders?ticker=
+  DELETE /portfolio/events/orders/{order_id}?market_ticker=
+  GET    /portfolio/fills?order_id=       GET /portfolio/settlements?ticker=
 ```
 
 ## Access rules
 
 - Throttle the NHL API to about 1 request per second and cache every response. Raw responses are stored untouched as JSON under `data/raw/` locally and under the `raw/` prefix in the R2 lake, so parser bugs can be fixed and replayed without calling the API again.
+- NHL.com's terms forbid unauthorized automated harvesting of its pages. Its time-on-ice reports are fetched only under the owner's one-time decision of 2026-10-02 (#68): `nhl toi-reports` refuses any game outside 2024021235 to 2024021291 before it makes a request, and a stored page is never fetched again. Any other page or game needs a new decision.
 - The NHL API is unofficial and changes without notice. A nightly contract test on one golden game catches schema drift.
 - The NHL API has no end-of-game time. A result counts as public at 10:00 UTC the morning after its game date, and at least six hours after its start (`games.observed_utc`, ADR 0003).
+- **The dashboard's live scores (#211)** read `/v1/score/{date}` through the app's own route, `web/app/api/scores`, because the API sends no CORS header and a browser can't call it directly.
+  - **How often it calls the NHL:** Vercel's CDN keeps each answer for 20 seconds. However many pages are open, the NHL gets about one request per date in that time. A page refreshes every 30 seconds while a game is on or starts within half an hour, every 5 minutes while one is still to come, and stops once all are over.
+  - **Which dates:** only those within two days of today's US Eastern date, so the route is no proxy for the NHL's archive.
+  - **Display only:** the scores are never stored, so the raw-cache rule above doesn't apply. They never reach the lake, the ledger, the settlement or a model. The official result stays the nightly settlement, under ADR 0003's public time.
 - Shift chart coverage varies for older seasons. Phase 1 checks coverage per season before RAPM depends on it.
 - The Odds API free tier has 500 credits a month. A call costs 1 credit per market per region and returns every game. The slot plan uses about 300 credits a month. Store `last_update` with every quote.
 - Many EU books (13 of 20 on 2026-09-28, among them Marathonbet, Unibet, Betclic and 1xBet) quote the 3-way regulation line under the Odds API `h2h` key, with a `Draw` outcome. The parser stores those quotes as `h2h_3_way`, so `h2h` only holds the two-way moneyline including OT and the shootout. Pinnacle, Betsson and NordicBet quote the two-way line.
@@ -59,9 +87,9 @@ SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
 
 GitHub Actions runs every job, but GitHub's own `schedule` started this repo's runs 3 to 6 hours late in September 2026, while a `workflow_dispatch` starts within seconds (#50). So the Cloudflare Worker in `infra/timer` fires every five minutes and dispatches the workflows due at that minute (`infra/timer/src/schedule.js`):
 
-- `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input.
+- `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input. After the midday snapshot, its Predict step runs `nhl predict --r2`, below, and then `nhl real alert --r2` sends the owner the day's real bets (#268, "Real stakes" below). At midday `nhl real place --r2` then places the alerted bets on Kalshi as `KALSHI_TRADING` says, and every slot runs `nhl real orders --r2`, which tracks them and records each one's fills once it expires (#281, "Kalshi orders" below). Every slot ends with `nhl kalshi books --mirror-raw`, which logs Kalshi's order book of the alerted bets' markets until each game's start (#282, "Kalshi order book" below).
 - `pregame-goalies.yml` at :50 of every hour from 12:50 to 02:50 UTC.
-- `ingest-nightly.yml` at 09:00 UTC. After the ingest, it runs `nhl recheck --recent 3 --r2` (#30, below).
+- `ingest-nightly.yml` at 09:00 UTC. After the ingest, it runs `nhl recheck --recent 3 --r2` (#30, below), the odds and goalie replays, and `nhl live features` for today's slate (#162, below).
 
 The workflows keep their GitHub cron lines as a fallback. While the repository variable `TIMER_ACTIVE` is `true`, a scheduled run skips its job, so only the timer's dispatches run; set it to `false` to fall back to the late GitHub schedule, for example when the timer's token has expired. `infra/timer/README.md` covers setup. A failed dispatch shows as a failed cron event in the Cloudflare dashboard. Any workflow can also be started by hand from the Actions tab.
 
@@ -79,7 +107,8 @@ Raw responses go to `data/raw/nhl/<kind>/<entity>/<fetch stamp>.json.gz`, with a
 | `play-by-play`, `boxscore` | `{season}/{game_id}` | always (fetched only for final games) |
 | `shiftcharts` | `{season}/{game_id}` | two teams each have valid shifts of this game adding up to at least four players' full period in each of periods 1 to 3, or it was fetched 3 days or more after the game. The NHL sometimes publishes a chart late or cut short, so the nightly lookback refetches it. The 3 days match the lookback (`--recent 3`, which a test ties together), and after that a gap counts as the source's. |
 | `roster` | `{season}/{team}` | it was fetched after the team's last ingested game was observed |
-| `player-landing` | `{player_id}` | always (bio and draft facts do not change) |
+| `player-landing` | `{player_id}` | always (bio and draft facts do not change). Its career lines (`player_league_seasons`, below) stop at the fetch, so a later season needs the page fetched again: `nhl player-seasons --refresh` fetches the pages of the players of a season and the two seasons before, once its lines are public (#117, #199, below). |
+| `toi-home`, `toi-visitor` | `{season}/{game_id}` | always. Only `nhl toi-reports` fetches them (#68, below), and only for the 57 games whose shift chart is empty. The HTML is stored untouched like the JSON. |
 
 Two cached responses reflect later knowledge, so neither may feed a point-in-time input:
 - A past season's roster is an after-the-fact view. It only finds player ids for `players` and must never feed a lineup (hard rule 9).
@@ -90,7 +119,7 @@ Two cached responses reflect later knowledge, so neither may feed a point-in-tim
 
 The landing page's `position` is today's, so it stays out of `players`. The boxscore's position code is today's too: Brent Burns is listed `D` in the forwards group through his 2013-14 season at forward. The group a player is listed in (forwards, defense, goalies) is his role in that game, and `actual_lineups.role` comes from it.
 
-`--replay` reads only the local raw cache, never the network, and fails on a miss. It re-parses every player, so a parser fix reaches old rows. The odds job's schedule check always fetches fresh.
+`--replay` reads only the local raw cache, never the network, and fails on a miss. It re-parses every player, so a parser fix reaches old rows. A replay leaves a date as it is, and warns, when the schedule copy it reads lists a game there that is not final: an earlier run with a fresher schedule may already have written that game, and rewriting the date would delete it (#109). The odds job's schedule check always fetches fresh.
 
 **Raw cache copies.** R2 `raw/` is the primary copy, and the laptop's `data/raw/` is the second copy outside R2 that plan §10 asks for. The raw cache holds responses that cannot be fetched again if the API changes.
 - The nightly ingest and the odds snapshots run on GitHub Actions and write only to R2. `nhl lake restore-raw` downloads every complete response missing locally, and never overwrites a local file. Run it weekly and before any replay, so the laptop keeps up.
@@ -117,15 +146,17 @@ The 16 seasons come to 19,152 games. With the feeds this is about 64,000 request
 
 ## Per-game tables
 
-`nhl ingest` parses each final game's three feeds into four lake tables, partitioned like `games` (`season=S/game_date=D/`) and replaced a whole game date at a time. `--replay` rebuilds them from the raw cache. The parsers are in `src/nhl_edge/ingest/` (`shots.py`, `shifts.py`, `lineups.py`, `shift_coverage.py`), and the schemas in `lake/schemas.py` document every column.
+`nhl ingest` parses each final game's three feeds into seven lake tables, partitioned like `games` (`season=S/game_date=D/`) and replaced a whole game date at a time. `--replay` rebuilds them from the raw cache. The parsers are in `src/nhl_edge/ingest/` (`shots.py`, `shifts.py`, `toi_reports.py`, `lineups.py`, `shift_coverage.py`, `strength_time.py`, `plays.py`), and the schemas in `lake/schemas.py` document every column.
 
 | Table | From | Grain | What it holds |
 | --- | --- | --- | --- |
 | `shots` | play-by-play | one unblocked attempt | shots on goal, missed shots and goals in periods 1 to 4, with time, shooter, goalie, coordinates, shot type and strength |
-| `shifts` | shift chart | one player shift | team, period and start and end in elapsed game seconds |
+| `shifts` | shift chart, or the time-on-ice reports where the chart is empty (below) | one player shift | team, period and start and end in elapsed game seconds |
 | `actual_lineups` | boxscore | one dressed player | role (F, D, G), sweater number, starting goalie and time on ice |
 | `shift_coverage` | all three | one game | how far the shift chart can be trusted (below) |
 | `strength_time` | play-by-play and shift chart | one team, game and strength state | seconds at each strength state (such as `5v4`), with each net manned or empty (below) |
+| `penalties` | play-by-play | one penalty | the penalized team, the players who took it, drew it and served it, its type and minutes (below) |
+| `faceoffs` | play-by-play | one faceoff | winning team, winner, loser and the zone from the home team's side (below) |
 
 Every row counts as public at 10:00 UTC the morning after its game date, like the game's result (ADR 0003). A game's own shots, shifts and lineup never feed a prediction for it, and backtest lineups come only from earlier games' boxscores (hard rule 9). The backfilled feeds were fetched years after the games and include post-game corrections, which live does not see. The tables leave out scoring credits, but corrections can still change kept values: a goal's scorer, a shot record, time on ice. ADR 0004 accepts this small look-ahead, and #30 measures it.
 
@@ -133,6 +164,7 @@ Measuring corrections (#30):
 - `nhl recheck` fetches a live-season game's three feeds again once the play-by-play the tables read is a week old. It picks games by when the tables' copy was fetched, the stamp that ends `actual_lineups`' `raw_key`, not by game date, so a game ingested nights late is still rechecked a week after its copy. The nightly run covers copies fetched 7 to 10 days before it, so two missed nights are caught up.
 - The copies go under `nhl/<kind>-recheck/<season>/<game_id>/` in the raw cache. The tables read the newest copy under `nhl/<kind>/`, so they never parse a recheck, and a replay builds the same tables before and after one (`tests/leakage/test_corrections.py`).
 - `nhl audit report`'s "Post-game corrections" section parses both copies the way the ingest does and compares them row by row, per table and field. A moved goal scorer is the correction ADR 0004 accepts as small, so any other difference is listed as a problem. The section also lists 2026-27 games due for a recheck that have none.
+- **An empty rechecked shift chart** (`{"data": [], "total": 0}`), when the tables' copy has shifts, is a failed recheck of the chart, not a copy with every shift removed (#237). A week after their first copies, the NHL served no chart for games 2026020006 to 2026020052, while it served the others. `nhl recheck` never reuses such a copy, so each later run that covers the game fetches its chart again. The report compares the game's play-by-play and boxscore against the tables' chart, and lists its chart as not rechecked. If the NHL serves the charts again after their games have left the nightly window, `nhl recheck --recent 30 --r2` fetches them once.
 
 Conventions:
 - Times are elapsed game seconds: (period − 1) × 1200 plus the period clock. Overtime is period 4 and lasts 300 seconds. The shootout is not play and has no rows.
@@ -158,14 +190,58 @@ Shift chart rows the parser leaves out, counted in `shift_coverage`:
 | `foreign_rows` | teams not in the game | 2021020513 (WSH at NYI) lists every shift twice and STL and MIN shifts besides |
 | `bad_rows` | malformed times, shifts outside their period, a shift number repeated with other times | |
 
-The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (2025-04-08 to 2025-04-15). A live request on 2026-09-29 still gave none, so those games have no shifts and count as incomplete. No other game from 2010-11 on has an empty chart. Those copies were fetched long after their games, so they count as settled and are not fetched again.
+The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (2025-04-08 to 2025-04-15). A live request on 2026-09-29 still gave none. One other game from 2010-11 on gives no shifts, 2013020971, whose chart holds a goal marker and nothing else; it stays without shifts (#68 covers only the 57). Those copies were fetched long after their games, so they count as settled and are not fetched again. Their shifts come from the NHL's time-on-ice reports instead (#68, below).
 
 A game's chart is `complete` when it has no bad rows and every dressed player's shifts add up to his boxscore time on ice within 60 seconds (a missing boxscore time counts as not adding up). At every unblocked shot except penalty shots, the players on the ice by the chart are also compared with `situationCode`, and `skater_mismatches` and `goalie_mismatches` count where they differ. RAPM drops the stints that contradict the strength state. `nhl audit shifts` prints the per-season summary, which is reviewed before RAPM depends on the charts.
 
+`penalties` and `faceoffs` (#96) are for the player layer (#12): each player's penalties taken and drawn give B3's expected power plays, and the faceoff that opens a stint gives RAPM its zone start. Checked on every game of the open seasons, 2010-11 to 2021-22: each of the 110,753 penalties in play has a team of the game and a time, 2,953 name no one who took it and 9,336 no one who drew it, and each of the 819,251 faceoffs names both players and a zone.
+- **Penalties.** `team` is the penalized team, the play's `eventOwnerTeamId`. `committed_by` is the player penalized, `drawn_by` the player fouled, and `served_by` the player who sat in the box for someone else: a bench minor, a goalie's penalty, some majors. Each is null where the feed names no one, such as a head coach's game misconduct. `type_code` is MIN (a double minor is a MIN of 4 minutes), MAJ, MIS, GAM, MAT, BEN or PS. A penalty shot's 0 minutes and a misconduct's 10 put no team short-handed. A new type code fails the schema, which stops the ingest rather than pass unread. The two penalties of 2010-11 to 2021-22 logged in a shootout (2013021096, 2017020755) are left out.
+- **Faceoffs.** `winning_team` is the play's `eventOwnerTeamId`. The feed's `zoneCode` is from the winner's side, so `zone` flips O and D when the away team won and gives the home team's side. On every game of 2019-20 to 2021-22, where plays say which end the home team defends, the coordinates of 150,074 of the 150,175 faceoffs away from center ice agree with their zone. All but one of the other 101 fill two whole games (2019020249, 2019020256) and a period of 2020020175, where the side or the coordinates are flipped throughout.
+- **Checks.** The audit report's "Penalties and faceoffs" section lists games without faceoffs, and the team-games whose penalties with a player do not add up to the penalty minutes of its players in the boxscore. Over the 31,288 team-games of 2010-11 to 2021-22, 20 do not: 5 by 10 minutes (misconducts, two of them logged in a shootout), 11 with a minor more in the boxscore, 3 with one fewer, and 1 by 5. A bench minor counts toward no player in the boxscore, so the check leaves out penalties without a player.
+
+
+### Time-on-ice reports
+
+The NHL's time-on-ice reports (TH for the home team, TV for the visitors) list the same shifts as the shift chart, and they exist for the 57 games of 2024-25 whose chart is empty (#68). NHL.com's terms forbid unauthorized automated harvesting, so the owner allowed one fetch of those 114 pages (2026-10-02, Sources above).
+- **Fetch.** `nhl toi-reports [--seasons 20242025] [--r2]` selects the season's games whose `shift_coverage` row has no shift rows, or has them from the reports already, and prints how many. It fetches each game's two pages through the NHL client's throttle, with a browser User-Agent, under `nhl/toi-home/` and `nhl/toi-visitor/` in the raw store (mirrored to R2 with `--r2`). A stored page is always reused, so a rerun makes no request. It refuses every game outside 2024021235 to 2024021291 before any request. It reads each page to check it is the right game and side, and prints the players and shifts found. It is not part of any workflow.
+- **Two copies only.** The pages can't be fetched again, so `nhl status` compares the whole key sets of `nhl/toi-home/` and `nhl/toi-visitor/` with R2, as it does the pre-game polls, and names `nhl lake restore-raw` or `nhl lake sync-raw` for a page missing on either side (#114). Without them, a replay falls back to the games' empty charts.
+- **Ingest.** When a game's chart gives no shifts and both of its reports are in the raw cache, `nhl ingest` (and `--replay`) builds the game's shifts from them; it never fetches a report. The rest runs as on a chart: `shift_coverage` with the same completeness check, the chart's skater counts in `shots` and `strength_time` when complete (ADR 0009), and so `stints`. Only `raw_key` shows the source: each shift's is its own report's, and the game's `shift_coverage` row takes the home report's. The rows are public at 10:00 UTC the morning after the game, like the chart's, however late the pages were fetched. The window's summary line counts the games whose shifts came from reports.
+- **Parsing** (`ingest/toi_reports.py`). Each player's heading starts with his sweater number ("4 BYRAM, BOWEN"), which the game's boxscore (`actual_lineups`) maps to his player id for that team. A shift's start and end are "elapsed / remaining" period clocks, and the elapsed one gives `start_s` and `end_s` in game seconds, overtime as period 4. The rows then go through the chart's own checks, so `dropped_rows` and `bad_rows` mean the same.
+- **Problems.** These also count as bad rows, which make the game incomplete: a clock whose two halves do not add up to the period, a period other than 1 to 3 or OT, and every shift of a player whose number is not in his team's boxscore (or is there twice). The ingest also prints a warning naming that player. A page of another game or team stops the ingest.
+- **Timing.** The rows count as public at 10:00 UTC the morning after the game, as every per-game table does (ADR 0004): the NHL posts these pages during and right after the game. They are fetched about 18 months later, so they may carry post-game corrections, the backfill risk ADR 0004 accepts and #30 measures. A live game with an empty chart would have no reports read, so these 57 games are the only ones whose backtest shifts have no live counterpart.
+- **Checked** on the pages of 2024021235, 2024021260 and 2024021291 against their boxscores: every number maps to a player, every clock reads, and each player's shifts add up exactly to his boxscore time on ice, so all three games are complete.
+
+## Player league seasons
+
+`player_league_seasons` (#98) holds each player's season lines in every league, from the `seasonTotals` array of his landing page (`GET /v1/player/{playerId}/landing`), for the NHLe offensive priors (#102).
+- **Source:** the newest cached landing page of every player in `players`, read from the raw cache; no request is made. The ingest fetches a player's page once, when he first shows up, and always reuses it (above), so a season played after the fetch needs his page fetched again. The backfill fetched every page in September 2026.
+- **The yearly refresh (#117):** `nhl player-seasons --refresh [--r2]` first fetches again the landing page of every player with a boxscore in the latest season whose lines are public (July 1 after it), or in the two seasons before (`REFRESH_SEASONS`, #199). That was 1,361 pages for 2025-26, against 1,063 for its own players. It refuses any of those seasons without its game count in `EXPECTED_GAMES`, since the boxscores' completeness check couldn't cover it and a missing game would leave its players out. A page already fetched after that day is reused, so a rerun makes no request for it. A player with a boxscore whose page the ingest couldn't fetch, and so isn't in `players`, is added there when the refresh gets his page. The new copy sits beside the old one and becomes the newest, so the season enters the table. Every row's `observed_utc` is still the season's public date or the player's first boxscore, never the fetch. A replay of `players` reads the new copy too, which changes only its `fetched_utc` and `raw_key`: provenance, since `players` has no `observed_utc`. `.github/workflows/player-seasons.yml` runs it with `--r2` on July 2 each year.
+  - **Why the two seasons before (#199):** a season's priors are fixed when it starts, and read each player's lines of the two seasons before it (`NHLE_SEASONS`). A player who spends a season outside the NHL has no boxscore in it, so a refresh of its own players alone would leave his page as it was, and his prior on his return would miss that season. With the window, each of those two seasons' refreshes fetches his page for anyone away for up to two seasons. One away for three keeps only the earlier line, and one away longer neither. Of the 549 returns from 2013-14 to 2025-26, 374 came after one season away, 122 after two, 29 after three and 24 after more, so the window covers 90% in full.
+- **Grain:** one row per player, season, `leagueAbbrev` and game type. A player with several teams in a league-season has one line per team, and they are summed; `teams` counts them. Only the regular season (2) and playoffs (3) are kept: the cache's other lines are 83 lines of the 2004 World Cup of Hockey (6 and 7). `games_played`, `goals` and `assists` are null when any line summed lacks them, since a partial sum would read as a whole season. Most goalie lines (about 10,600) have games played only.
+- **League:** `league_abbrev` keeps the page's name, and `league` trims it, puts it in upper case and maps the known variants of one league to one name (`LEAGUE_VARIANTS` in `ingest/player_seasons.py`, with a comment per mapping). The NHL API names many leagues one way up to about 2015-16 and another way after: Sweden and SHL, Finland and Liiga, Swiss, NLA and NL, the NCAA conferences and NCAA, WC-A and WC, W-Cup and WCup. Predecessor leagues stay apart: Russia's Superleague is not the KHL. Of the 933 names in the cache, 35 are mapped, and upper case merges one more (MtJHL), leaving 897 leagues.
+- **One league under two names:** on 2026-10-02, 124 player-season-game types had lines of one league under two names, all from 2009-10 to 2018-19, so none in a held-out season. In 37 of them both names list the same teams, and in 26 of those the games played match too, so they look like one season listed twice. They stay apart in the table, which keys on `league_abbrev`; a reader adding up by `league` must check them. The audit report counts them.
+- **Age:** `age_at_season` is the age in whole years on September 15 of the season's first year, the NHL draft cutoff, from `players.birth_date`.
+- **Timing:** a season's lines count as public on July 1 (00:00 UTC) after it (`observed_utc`), when nearly every league's season and the NHL playoffs are over (`SEASON_LINES_PUBLIC` in `lake/schemas.py`). The fetch time would hide all history from the backtest. A line that was not yet public when its page was fetched is a partial season and is dropped (on 2026-10-02, 12 lines of 2026-27 and 2 JPL-Pro lines of 2025-26, public only from October 1, 2026).
+  - Pages fetched long after a season may carry later corrections to its goals and assists. ADR 0016 accepts that risk for these season totals, as ADR 0004 does for the per-game feeds, which still leave assists out. #117's yearly refetch will measure it.
+  - Some leagues can end after that July 1, so their lines count as public on October 1 of the season's second year instead (`LATE_LEAGUES`). October 1 comes before every NHL season but 2026-27 starts, and none of these lines matters to an NHL player's prior then. The Australian league (`AIHL`, earlier `Australia`; 25 lines) is played from April to September, and the NHL's season label does not say which calendar year; October 1 is late enough for either. The World Cup of Hockey (`WCup`, once `W-Cup`; 230 lines of game type 2) is played in August and September, and the 2004 tournament's lines are labelled 2003-04. The Brick Invitational (231 lines), a tournament for 10-year-olds, is played in early July and labelled with the season before, as its players' ages show. The Olympic qualification (`OGQ`, 131 lines) is not labelled the same way each cycle: the August 2021 final round is 2021-22, the August 2025 one 2024-25. JPL-Pro (36 lines, and 2 of 2025-26 not yet public) is a summer pro-am league whose label is not known.
+  - As a precaution, a few small events whose dates or labels are not known also wait until October 1: `Exhib.` (48 lines, 1995-96 to 2012-13), the IIHF development camp, `Oly-Q`, and youth tournaments whose players' ages fit either a spring event or a summer one labelled with the season before (`OGC-16`, `QGC-16`, `WCCC-16`, `WSI U12` to `WSI U16`).
+  - Two NHL seasons ended after July 1: the 2020 playoffs on September 28, 2020 and the 2021 ones on July 7, 2021. Every line of 2019-20 counts as public from October 1, 2020, and every line of 2020-21 from July 9, 2021 (`LATE_SEASONS`), whatever its league, so a season's lines become public together.
+  - The 2022 World Juniors were stopped in December 2021 and replayed in August 2022 under the 2021-22 label (74 lines, many of 7 games). Their lines count as public from October 1, 2022 (`LATE_LEAGUE_SEASONS`). That season's Division I A games were played in December 2021.
+  - Remaining risk: not every league's dates were checked. Three leakage checks looked for events played after July 1 under the label of the season before. They found those above and confirmed that others, such as the Hlinka Gretzky Cup and the USA Hockey summer festivals, are labelled with the season that starts after them, so July 1 of the next year is safe.
+  - **First game.** Every player in the table reached the NHL, so that a player has rows is hindsight before his first NHL game: a full backfill would tell an earlier fold who is going to make it. So a player's rows are observed no earlier than his first boxscore in the lake became public (`first_boxscore_utc`, the earliest `observed_utc` of his `actual_lineups` rows), and a player without a boxscore yet has none (24 roster-only players and 547 lines on 2026-10-02). `known_at` at a fold start therefore shows only players who had played by then, which is what the priors' population rule asks (#102). The lake starts in 2010-11, so a player who debuted earlier counts from his first game in it, which is conservative. On 2026-10-02 this moved 62,140 rows later than their season's public date.
+- **Command:** `nhl player-seasons [--r2]` rebuilds the whole table, partitioned by season (`season=S/part-0.parquet`), and deletes any partition the rebuild no longer has. It prints the players read, the lines kept and left out, and the rows written. It also names the players without a page or without a boxscore, and those with a boxscore who are not in `players` because their page could not be fetched (one on 2026-10-02, a 2026-27 debutant). They are reported, not an error, and the audit report lists them too. It refuses to run with no players, no boxscores or no pages, rather than empty the table. It also refuses when the boxscores are incomplete, since a partial copy would date debuts too late: a season short of its games (`EXPECTED_GAMES`), or a game without a boxscore. With `--r2` it first restores the landing pages and pulls `players`, `games` and `actual_lineups` from R2, then mirrors the table. Only the yearly refresh runs it in a workflow. The audit report's "Player league seasons" section gives, per season, the players with lines and the lines in the eight leagues with the most of them, counts only, without the one-time test season and the live seasons, or the players who debuted in them, whose earlier lines would show it. It lists players without a page, and players whose `first_boxscore_utc` is no longer their first boxscore in `actual_lineups`, which calls for a rebuild.
+- **Built on 2026-10-02:** 3,259 players and pages, none missing, 24 without a boxscore yet; 116,469 team lines kept, and 83 of other game types, 14 not yet public at the fetch and 547 of players without a boxscore left out; 109,167 rows over 42 seasons, 1983-84 to 2024-25, leaving out the one-time test season as the audit report does.
 
 ## Fitted tables
 
 `shot_xg` (#73, ADR 0010) is not parsed from a feed but fitted: each scored shot's expected goals, from the xG model of its season. `nhl xg` fits one model per season from 2011-12 on, on every earlier season's shots public before the season's first game. It writes the table, partitioned like `shots`, and a calibration report to `reports/xg/<version>.md`. Each row carries its model's `train_cutoff` and `artifact_version`, and the shot's own `observed_utc`. Penalty shots, shots at an empty net and shots without coordinates get no row. `nhl xg` refuses to fit while a season it reads is short of its games, or has games without shots or not yet replayed with the `prev_` columns.
+
+`stints` (#97, ADR 0015) cuts every game with a complete shift chart into stints, RAPM's rows: the stretches of a period with the same players on the ice and the same score.
+- **Cuts:** every shift start and end, from the shift chart only (ADR 0009 trusts a complete chart over `situationCode`), and every goal. A stint holds the moments t with `start_s` < t <= `end_s`, as a shift does. Two stretches in a row with the same players and score are one stint, and a stretch with nobody recorded on the ice is a stint RAPM leaves out.
+- **Per stint:** each team's skaters (player ids) and goalie (null when its net is empty), the strength from the home side (`6v5` with the home goalie pulled), the score at its start, the zone of a faceoff at its start from `faceoffs` (null for a change on the fly), and each team's xG and goals. Penalty shots stay out of the xG and goals, but count in the score. xG comes from `shot_xg`, with its `xg_version` and `xg_train_cutoff`, and is null in a season without xG, such as 2010-11.
+- **Left out of RAPM:** a stint with a team of fewer than 3 or more than 6 skaters, or with two goalies, keeps a `drop_reason` and stays in the table, so the audit can say what was left out.
+- **Timing:** public with the game's feeds, at 10:00 UTC the morning after (ADR 0004).
+- **Commands:** `nhl stints` writes the table, a season at a time; run it after `nhl xg`. It refuses while a game has no `shift_coverage` row or a season from 2011-12 on has no xG, and refuses a season whose xG comes from more than one model, from a model not fitted before the season's first game, or misses a shot the model scores. `features.stints.player_seconds` gives each skater's seconds at 5v5, on the power play, short-handed and otherwise per game. The audit report's stints section gives each season's games with stints, and for the open seasons the stints left out and why and the share of playing time and xG RAPM keeps. Goals cut stints, so a held-out season shows only its chart coverage.
 
 `team_strength` (#74, ADR 0011) holds each game's rolling team strength ΔS from 2011-12 on: the home team's expected goal margin over the away team.
 - **Inputs:** 5v5 xG for and against per minute, power-play xG for and penalty-kill xG against per minute, and power-play and penalty-kill minutes per game. They come from `shot_xg`, `shots` and `strength_time`.
@@ -195,6 +271,269 @@ A game's chart is `complete` when it has no bad rows and every dressed player's 
 - **Model:** a conditional logit on each candidate's share of recent and season starts, his last start, run of starts, back-to-back, rest and whether he dressed last game, all from `actual_lineups` of earlier games (hard rule 9). One model per season, fitted on earlier seasons' starters public before the season's first as-of time; `train_cutoff` is the last of them.
 - **Timing:** as `team_strength`: 10:00 US Eastern on the game date, or an hour before its start if earlier, which is the rows' `observed_utc`.
 - **Commands:** `nhl goalie-start` writes the table and a report to `reports/goalie-start/<version>.md`: per season, the Brier score, top-pick accuracy and the share of starters who were not candidates, beside the share of the last ten starts as a reference. It refuses while a season is short of its games or a team-game has no flagged starter.
+
+`lineups` (#99, ADR 0017) holds, for every team-game from 2011-12 on, each candidate skater's probability of dressing (`p_available`), his expected minutes and power-play unit (#100, ADR 0018), and each candidate goalie's start probability (`p_start`).
+- **Candidates:** the skaters who dressed for the team in its last 10 games public before the as-of time, followed through its line of team codes. A player whose latest public game was for another team drops out. `role` is F or D as the boxscore listed him in his latest game for the team. A team with no earlier game has no rows.
+- **Model:** a logistic regression on whether he dressed last game, his share of the 10, games since he last dressed, an early exit last game (under half his average ice time in his other games among the 10), his run of straight games and his role, plus, in the team's first game of a season, "dressed last game" and the share again. All come from `actual_lineups` of earlier games (hard rule 9). One model per season, fitted on earlier seasons' boxscores public before the season's first as-of time; `train_cutoff` is the last of them.
+- **Total:** each team-game's probabilities are shifted by one common amount on the log-odds scale, so that they add up to 18 less the expected newcomers. These are dressed skaters who were not candidates, averaged over the same earlier team-games: about 0.28 in a team's other games and 5.0 in its first of a season. So the skaters add up to at most 18. A team-game with no more candidates than its total gives each 1 (one in the training seasons: CAR's first game of 2011-12, 17 candidates).
+- **Minutes (#100, ADR 0018):** each skater's expected minutes at 5v5, on the power play and on the penalty kill (`exp_5v5`, `exp_pp`, `exp_pk`).
+  - **His minutes if he dresses:** a decayed average of his earlier games for the team that have stints, with a half-life of 10 of his games, from games public strictly before the as-of time. It is pulled toward his role's average, as if that were c more games. c is the game-to-game variance of one player's minutes over the variance between players' averages, about 1 to 2 games.
+  - **Expected minutes:** times `p_available`, then scaled so that a team-game's candidates of a role and its replacement skaters add up to the league's skater-minutes of that role in that state (about 144 for forwards and 96 for defensemen at 5v5).
+  - **From the season before:** the role averages, pulls, totals and newcomer minutes. `train_cutoff` is the later of that season's last game and the availability model's cutoff.
+  - **Power-play unit 1** (`pp_unit`) is the five with the most expected power-play minutes.
+- **Replacement skaters:** `lineup_replacements` holds, per team-game and role, the slots the candidates leave short of 12 forwards and 6 defensemen (`count`), and their minutes in all, each at a newcomer's average minutes the season before (one average for a team's first game of a season, one for its other games).
+- **Goalies:** their rows are copied from `goalie_starts` with its `train_cutoff` and `artifact_version`, so a goalie row's version starts `goalie-start-` and a skater row's `lineup-`. Goalies have no minutes.
+- **Timing:** as `team_strength`: 10:00 US Eastern on the game date, or an hour before its start if earlier, which is the rows' `observed_utc`.
+- **Commands:** `nhl lineups` writes the table and a report to `reports/lineups/<version>.md`: per season, the Brier score over each team-game's skaters (a newcomer counts as a candidate at probability 0) beside "dressed last game" as a reference, and the share of dressed skaters who were not candidates. The report also gives the ice time against "last game's minutes": the 5v5 minutes MAE per dressed candidate, and the power-play unit accuracy (the share of the actual top five by power-play minutes the projection named), each with weekly block bootstrap intervals and paired differences, and each season's figures from the season before. The development and held-out seasons show only counts until gate 2. Run it after `nhl goalie-start` and `nhl stints`. It refuses while a season is short of its games, a team-game has no skaters in its boxscore, a team-game it rates has no goalie-start probabilities, or a season it rates has no stints the season before. `--r2` mirrors both tables.
+## Live feature rows
+
+Every feature table lists final games only. `nhl live features --date D [--r2]` (#162, docs/plans/phase-5.md task 1) gives a game date's scheduled games the same rows, so a prediction can read them.
+
+- **The slate:** `GET /v1/schedule/{D}`, always fetched fresh and cached raw. A game can be postponed or re-timed up to its start. The `slate` table keeps D's regular-season games whose schedule state is OK, with venue and neutral site. Its `observed_utc` is the actual fetch time.
+- **Ready first:** two checks, both before any table changes, so a refused run leaves the date's last build standing:
+  - every game of the seven days before D must be final and in `games`, or the command refuses rather than leave a game out of its teams' histories;
+  - only slate games fetched before their as-of time get target rows, since a late response never counts as an on-time input (#170). A game fetched later is reported and left without rows. A run that would rate no game on time refuses.
+- **The steps:** `xg` and `stints` for the slate's season, then every builder in order with `--targets D`. On a season's opening night (#181), with no game of the season final, `xg` and `stints` have nothing to score or build and are skipped. The builders rate the slate from the earlier seasons and the season's start, as history rates its first night: RAPM's season-start fit runs with no row of the season. On the real 2026-27 opener, rated from a lake without 2026-27, all twelve target tables equal history's rows.
+  - team strength, goalie start, lineups and goalie effect;
+  - schedule terms;
+  - RAPM, power plays and finishing.
+
+  Each command rates the season's played games as usual. It appends the slate's games after its input checks: to `games` with null results (`live/targets.py`), and to `schedule` for schedule terms, public at the later of the fetch and a day before the start. A builder reads another table's rows only for the games it rates, so a target row left by a postponed night is ignored.
+- **The rows:** a target row is the quantity history's rows are, at the same as-of time, the earlier of 10:00 ET and an hour before the start. `tests/leakage/test_live_targets.py` checks every builder, on a later night and on the season's opening night: on a night's morning, the lake without that night's and later games, plus the night's slate, gives each game the row the whole season gives it. Once the games are played, the next night's run rewrites the date with history rows.
+- **The record:** `feature_builds` has one row for the slate, and one per target table and artifact version. Each gives the rows of D, the slate games they cover, the build's actual start and finish times, the schedule response and the commit. A table can hold another component's rows (`lineups` carries `goalie_starts`' goalies), but never two versions of one component. The build deletes D's record before it changes any table, and writes it last, so a record means the build finished (#170).
+- **When:** the nightly job runs it at 09:00 UTC with `--r2`, after the ingest and the replays. It pulls the lake's tables from R2 first, about 1.2 GB. On 2026-10-07 the whole build took about six minutes, with a peak of 2.7 GB of memory. The builders' reports go to `data/live/reports/`, never committed.
+
+## Paper decisions
+
+`nhl predict --r2` (#164, docs/plans/phase-5.md task 3) decides the day's paper bets once, at the midday slot.
+- **The window (ADR 0033):** the decision instant is fixed when the run starts. It and the midday snapshot must both fall between 12:45 and 13:15 ET, read from their times, not the slot's label.
+  - A run after the window writes the day as skipped, and so does a day without a midday snapshot in it.
+  - A run before the window writes nothing.
+- **Its inputs, all known before the decision:**
+  - the day's slate and its feature rows (`feature_builds` must show a build of committed code that finished before the decision, on the same slate);
+  - the season's live fit (`reports/live/`);
+  - B2 and B3 refit from history before the live fold start, read at the decision;
+  - the day's morning and midday odds, parsed from the raw responses and matched to the slate's games;
+  - the earlier ledgers, for the bankroll.
+
+  Every model input must be known before the decision snapshot, when the price bet was observed, not merely before the run. It reads no table of confirmed starters (ADR 0030).
+- **Per game, in order:**
+  1. started before the decision, or starts before the decision is published. The ledger reaches R2 minutes after the decision instant, once the lake is pulled and B2 and B3 are read, and a weekend matinee can start inside the window. `published_utc` is the actual clock read at the write, stamped on the ledger milliseconds before the put. The clock is also read after the ledger is built: if a game starts by then, by the slate or the odds, or its quote ages past the limit below, the day is decided again at the later clock, so that game gets its row and the other games keep theirs (#170);
+  2. no Pinnacle midday price;
+  3. no fresh price: Pinnacle's quote more than 5 minutes old at the decision, or more than 15 minutes old at publication (ADR 0033's amendment), so a stalled run can't log a bet at a price long gone;
+  4. a missing input;
+  5. otherwise a prediction: B0 to B3, u, the blend and its twins.
+
+  The frozen selection, guard and staking then decide the bet, and the best other EU book's prices are logged beside Pinnacle's.
+- **A paper bet assumes its price could be had.** It takes Pinnacle's quote at the decision snapshot, at most 5 minutes old at the decision and 15 at publication, as available at the stake's size when the decision is published. The quote is not proof of a fill: the price may have moved by publication, and Pinnacle's limits are not checked. CLV against the closing proxy measures the price, not whether it was obtainable.
+- **The ledger:**
+  - one row per slate game (`PaperLedger`), written once to R2 as `ledger/live/<date>.parquet` with `IfNoneMatch="*"`, and to the lake's `paper_ledger`;
+  - each real run first rebuilds the lake's `paper_ledger` from the ledgers in R2, the record, before reading the bankroll from it;
+  - refused if any prediction is decided or published at or after its game's start;
+  - `--dry-run` writes only to `data/live/dry/`, and with `--at` it decides at a past instant to check a day.
+- **The run bundle (#171),** written once as `bundles/live/<date>/` in R2, or under `--out` for a dry run: its rows and fits before the ledger, and its manifest, which names the publication time, after it (#188). The lake's partitions are rewritten once the games are final, so the bundle keeps what the decision read:
+  - `inputs/<table>.parquet`: the slate, the date's `feature_builds` record and the day's parsed odds quotes; every row the models read for the slate's games, which are the feature tables by `game_id` and `rapm_terms` by the slate's dates; and for u's rookie share, the candidates' boxscores of the season and their league seasons. About 0.2 MB for a three-game day.
+  - `fits.json`: B2's and B3's fitted weights, standardization and cutoffs.
+  - `manifest.json`, written last: the run's identity, including its decision, publication and input-cutoff times and its bankroll; each file's sha256 and rows; and every odds response the run attempted, its body and metadata, with their sha256.
+
+  Every object is written with `IfNoneMatch`. A write that failed part way is run again: an object already there with the same bytes counts as written. A reader refuses a bundle without its manifest or with a file that doesn't match it. If the bundle can't be written, the run exits non-zero and the ledger stands. A dry run into an `--out` that already holds the date's bundle is refused before anything is written.
+- **An unfinished bundle (#188).** The rows and fits go first, each written once, so a run that stops after its ledger leaves them.
+  - **The first write gets one try,** so a slow store never holds up the ledger; the write after the ledger tries again.
+  - **Files already there with other bytes stop the run before its ledger.** An earlier run wrote them from other inputs, and a ledger published over them could never be replayed or finished. If the day has a ledger, that run published it. If it has none, the earlier run stopped between its files and its ledger: its files belong to no decision, and a rerun can decide only once they are removed from `bundles/live/<date>/` by hand.
+  - **`nhl live bundle --check --r2`,** a nightly step, names each decision day whose bundle has no manifest, and fails the step.
+  - **`nhl live bundle --date <d> --finish --r2`** (or `--from <dry-run dir>`) completes one. It rebuilds the manifest from:
+    - the ledger's own columns: decision and publication times, versions, bankroll;
+    - the input cutoff, computed from the saved quotes as the run computed it;
+    - the stored objects' hashes;
+    - the day's raw odds responses, which are immutable;
+    - the committed live fit the ledger names.
+
+    The manifest marks itself `finished_later`, without the run's `uv.lock` hash. It is written only once the stored files reproduce the ledger through replay, every column, so files from another run never seal. The raw responses are those stored by the publication, since the day's later slots weren't there to read. It never writes an input, and refuses a bundle missing any input the run writes.
+- **`nhl live replay --date <d> --r2`** (or `--from <dry-run dir>`) makes the day's decision again from the bundle alone and the committed live fit, whose sha256 must match. It covers B2, B3, u, the blend, the selection, the guard and the stakes, and compares the ledger with the day's, every column. On 2026-10-07's real slate the whole ledger was reproduced, floats within 1e-9.
+- **Challengers (#255, ADR 0038).** `nhl live challengers --r2` runs nightly after the bundle check. It scores each registered challenger (`live/challengers.py`), a candidate model that is never part of a decision, on every complete run bundle of a day after the challenger's registration date. Earlier days are never computed.
+  - **Inputs:** the bundle and the committed live fit it names, whose sha256 must match. The day is replayed first and refused unless it reproduces the day's ledger. A challenger reads the lake only point in time, at the bundle's input cutoff, and only tables it registered that have a reviewed reader (`challengers.READERS`): `games` with results public by then, `schedule` with played games and the slate's own (`schedule_known_at`), and `odds_snapshots` observed by then, without the columns set afterwards (`is_closing_proxy`, `game_id`, `game_type`). Any other table is refused until a challenger's ADR reviews it and adds its reader with a leakage test. Each read is recorded by the sha256 of its rows. The slate's own inputs come from the bundle, since the lake rewrites a date's rows once its games are final.
+  - **Output:** one row per slate game (`ChallengerPredictions`), written once to R2 as `challengers/live/<name>/<version>/<date>.parquet` with `IfNoneMatch="*"`. The lake's `challenger_predictions` is rebuilt from those objects, which stay the record.
+  - **`--check`** recomputes every stored output from its bundle and exits 1 on a difference. `--from <dry-run dir>` runs on a dry run's bundles and writes there.
+  - **The live report** reads the stored outputs, so the nightly report shows a day's challengers a night later. A decision day after the registration without its output withholds the challenger's figures once the end of the next UTC day has passed by the report's clock.
+- **Settlement (#165).** `nhl live settle --r2` runs nightly, after the odds replay. It finds each close by the same rule as the flag, at its own clock, so a game that started after the replay still gets its close. It rebuilds `paper_settlements` from the ledgers in R2, the games and the odds, with one row per paper bet whose game is final:
+  - **The result,** on the full game, OT and shootout included (hard rule 2). The profit is stake·(price − 1) for a win and −stake for a loss.
+  - **Postponed games:** a game played more than 12 hours from the ledger's start voids its bet.
+  - **The close:** Pinnacle's closing proxy of the bet's own Odds API event, taken after its decision snapshot. CLV = price·p_close − 1, and the fair move, both through `backtest/e3.closing_value` as on history.
+  - **Without a proxy,** `close_status` says why: no pre-game snapshot, stale or missing (ADR 0033). A game with no pre-game slot due has no CLV even when a delayed run left it a proxy (ADR 0032).
+
+  Nothing in a decision reads the table: the bankroll reads the ledgers and the games itself.
+- **The paper ledger in Supabase (#167).** `nhl live supabase --r2` copies the R2 ledgers, which stay the record, to two Supabase tables for the dashboard (`supabase/migrations/20261008120000_paper_ledger.sql`):
+  - `predictions`: every slate game's decision, inserted once;
+  - `paper_bets`: every bet as decided, inserted once, with its settlement set afterwards.
+  - **Writes:** both tables are insert-only, with `created_at default now()` and checks that each decision and publication precede the start. The service role may update only `paper_bets`' settlement columns, and the pipeline alone holds its key.
+  - **Reads:** row-level security lets only the signed-in users listed in `dashboard_owners` read either table, and anon sees nothing.
+  - **When:** it runs after the midday Predict step and after the nightly settlement, and a rerun inserts nothing twice, so the first run backfills the season. Both steps wait for the repository variable `SUPABASE_LEDGER`, which the owner sets to `true` once the migration is applied and their user id added (`insert into public.dashboard_owners (user_id) values ('<auth.users id>')`).
+- **The dashboard (#168).** `web/` is a Next.js app, deployed on Vercel from that root directory. It runs in the browser with Supabase's public anon key only, and row-level security decides what it reads. Setup and variables are in `web/README.md`.
+  - **What it reads:** the latest game day's `predictions`, the `paper_bets` without their result or profit, and `live_reports`.
+  - **`live_reports`** (`supabase/migrations/20261008140000_live_reports.sql`) holds one row per report date, with the report's JSON. The nightly step `nhl live report --r2 --supabase` upserts it after the live feature rows, behind `SUPABASE_LEDGER`, and only when the night's ingest, odds replay and settlement all succeeded, never on a dispatch over an earlier window. The dashboard shows the report's own figures, and each night's CLV per bet to date, without computing any itself.
+  - **Owners only:** the same `is_dashboard_owner()` policy as the ledger guards `live_reports`, and the service role writes it. Sign-in is by email link for existing users only.
+- **The live report (#166, ADR 0032).** `nhl live report --r2` writes `reports/live/report-<date>.md` and `.json`, committed weekly. It reads the ledgers in R2, the settlements, the games, the odds and SBR's 2018-19 to 2021-22 prices, and covers the frozen policy's regular-season decisions only.
+  - **Intervals:** every figure has its 95% weekly block bootstrap interval. A figure over fewer than 4 weeks of games gives only its counts, no value.
+  - **Interim until the formal review on 2027-04-12:** no verdict before it, and the return at the taken price, and the drawdown's size, only from then on (plan §11). The review covers every bet and game: while any bet is unsettled or any slate game lacks its result, its verdicts are "insufficient evidence".
+  - **A postponed game's first forecast** is void, as its bet is, and is never scored: the game is decided again on its new date.
+  - **Coverage:** the slate games, those predicted, the bets, the eligible bets and those with a valid proxy, every exclusion by reason, and the quotes' freshness apart from their lead before the start.
+  - **The primary measure:** CLV per bet, with stake-weighted CLV and the fair move beside it. Then the 90% coverage floor, and the bound at the 10th and 90th percentiles of the observed CLV.
+  - **The model comparisons:** BLEND − B1, B3 − B2, BLEND − BLEND_B2 and BLEND − BLEND_MARKET, by log loss, paired on the same games.
+  - **Calibration:** the blend's band at 35%, 50% and 65%.
+  - **Gaps above 8 points,** listed for hand review.
+  - **Operational alerts:** skipped days, missing and stale prices, the guard's firing rate, u beyond 2 and 3 training standard deviations, and whether the 20% drawdown review is triggered.
+  - **ADR 0030's market check:** B0's log loss at Pinnacle's 12:45 price against SBR's opener and close.
+- **The daily slate.** `nhl live slate --date <d> --r2`, or `--from <dry-run ledger>` (its own date by default), prints one day's ledger for the `daily-slate` skill: each game's status, B1, B3, the blend, the gap, u and the bet, then the flags for hand review and the lineup gaps.
+- **Attribution of the live bets (#193).** After the flags, the slate splits each bet's move from Pinnacle's fair price as history's bets are split (`backtest/e3.attribution`, #154).
+  - **The parts:** the market's part, the blend's reshaping of the price, and each B3 input's part (skaters, goalies, home ice, schedule), its departure from its usual level at that price. They are in log-odds toward the bet's side, with the largest as the driver. B3's parts are read at the goalie mixture's expected effect, as on history, so what they leave of the logged move is shown apart as the rest, never a driver.
+  - **B3's parts** come from the day's run bundle: the saved fit and rows at the decision's input cutoff (`bundle.b3_parts`). The price, u and the weights come from the ledger and the live fit.
+  - **The usual levels** are each input part's least-squares line on logit p_mkt over the live fit's training games: E1's rows of 2018-19 to 2022-23, each game's parts from its own fold's B3 fit. Inputs and prices only, never a result.
+  - **`nhl live attribution-levels --write`** fixes them once, from a committed checkout, in `reports/live/attribution-levels-<version>.json` beside the live fit, with their own version and `train_cutoff`. It refuses unless the rebuilt games are the live fit's own: the same count per season, and the live fit refitted from them gives back its recorded blends and u scale (to 1e-9). The record keeps a sha256 of the games. Without `--write` it is a dry run.
+  - Nothing in the policy reads them.
+
+## Real stakes
+
+ADR 0039 bets the frozen policy's paper bets with real money, beside the paper ledger, which goes on unchanged. The venue is Kalshi, where the bets are placed automatically through its API (the owner's decision, 2026-10-18, ADR 0040 proposed; "Kalshi orders" below). Placement by hand from the Telegram alert stays for a venue without an API. The code is `live/real.py` (the start rule, the stops and the venues) and `live/real_ledger.py` (#268).
+
+- **The alert.** `nhl real alert --r2` runs in the midday job after the paper ledger is written, whatever Predict's outcome, and only reads it. It sends one Telegram message to the owner (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, both secrets; the token and chat id never reach a log): each paper bet's game, side, minimum price and stakes, or why there are none. A day with games but no paper ledger gets a message saying so, and fails the step.
+- **The mode,** from committed evidence only:
+  - **practice** before the start, labelled "PRACTICE, don't bet";
+  - **real** from the first weekly report (`reports/live/report-<date>.json`, the frozen policy's, a Monday) dated 2026-11-16 to 11-30 whose start rule holds (#267);
+  - **paused** while the latest weekly report's coverage floor fails;
+  - **stopped** once a weekly report's CLV stop says so, or the real bankroll is at or below 80 €. A stop holds whatever the bankroll does after it, until the owner restarts real bets by setting `real.RESTARTED_ON` in a commit.
+  - **closed:** without a start by 11-30, one message says a start needs the owner's decision, and the alerts end.
+- **The stake and the minimum price.**
+  - **The minimum price** is the lowest price, to the cent, at which p·o − 1 clears the bet's hurdle (hard rule 4).
+  - **The stake at a price** is the frozen staking rule recomputed there, with the day's other bets at their paper prices, never above the paper fraction. It is a share of the mode's bankroll at the decision, rounded down to the venue's increment, and none below its minimum stake (`real.VENUES`, set with `real.VENUE` in #266). Practice uses 0.01 € and no minimum.
+  - **The stake table** gives the stake at each price from the minimum to the paper price; above it the stake stays flat. The message shows up to four of its steps; the dashboard's form looks a price up in the stored table.
+  - **On an exchange venue** (one with `real.Exchange` rules, ADR 0040) each alerted bet also gets its buy order, in the alert row's `exchange` column (`real_ledger.exchange_order`, `live/exchange.py`): the limit, the highest whole cent at which the order clears the hurdle at its effective price with the worst-case taker fee; the contracts, the stake rule's euro stake at that price in USD at the deposit rate, rounded down to 0.01; the most it costs; and its expiry, 5 minutes before the start. A stake that buys no 0.01 contracts is skipped ("the stake buys no contract"). The message then gives each order instead of the stake steps, and says there is nothing to enter.
+  - **The bankroll** is 100 € plus the profit of the mode's placed bets whose results were public before the decision. Practice bets never count in the real one.
+- **The records.** R2 is the record, and every object is written once with `IfNoneMatch="*"`. The lake's tables are rebuilt from them.
+  - `real/live/alerts/<date>.json`: the day's mode, bankroll, venue, message and rows (lake `real_alerts`), written once, with the clock checked again just before, so a game under way is never alerted. The message is sent right after it. A second run writes the day's lake and dashboard copies again from it and sends nothing; `--resend` also sends the message, with any game started since marked no bet.
+  - `real/live/entries/<date>/<game_id>.json`: each entry from the dashboard's form, copied once (`nhl real sync`). An entry already there with other bytes is refused.
+  - `real/live/corrections/<date>/<game_id>-<n>.json`: `nhl real correct --r2`, at the weekly check against the venue's statement (`nhl real statement --r2`). An entry is never edited, and a correction that would leave the record invalid, or carry a price finer than 3 decimals or a stake finer than 2, is refused. With `--supabase` (which needs `--r2`), `nhl real sync` inserts, each row once and parents first: the alert rows into `real_alerts`, so a day whose alert copy failed is filled in; each day's mode into `real_days`, a day without bets too; and the corrections into `real_corrections`, which the dashboard applies over the entries, in order, as `real_bets` does (#270).
+  - Lake `real_bets`: every alert row placed, not placed (with the owner's reason, or none recorded), or skipped, with the corrections applied, the stake the table allowed at the matched price, and whether the bet was within the rule.
+  - `real/live/settlements/<date>/<game_id>-<revision>.parquet` (lake `real_settlements`): `nhl real settle --r2`, nightly; with `--supabase` every revision is also inserted once into Supabase's `real_settlements` for the dashboard's real record (#270, `supabase/migrations/20261016150000_real_record.sql`), and before that migration is applied the copy is skipped with a note. One per placed bet whose result is public, on the full game (hard rule 2), at the matched price and stake placed. At a sportsbook a postponed game (played over 12 hours from its listed start) voids it. On Kalshi it doesn't (#287, ADR 0040): a game played within two weeks of its listed start settles on its result, and a later or cancelled one is held, never settled here, for Kalshi resolves it at its own price; `nhl real statement` lists it as awaiting Kalshi's resolution. A correction to a settled bet appends its next revision, cancelled if it was not placed after all, and each carries the mode's bankroll after it.
+- **The dashboard's form** (`supabase/migrations/20261016120000_real_bets.sql`, behind the repository variable `SUPABASE_REAL`):
+  - `real_alerts`: the alert rows, with the stakes as a list, inserted by the alert's run.
+  - `real_entries`: the owner's entries, inserted through the form only.
+  - **The rules hold in the database:** one entry per alerted bet; a placed bet needs its matched price, stake, bet id and time, after its alert, before its game's start and not in the future. An entry made after the start is accepted, marked late. Nothing is updated or deleted.
+  - **Who:** the owners in `dashboard_owners` read both and insert entries; the service role inserts alerts and reads entries; anon nothing.
+  - **When:** the alert copies the day's rows after its R2 write, and copies new entries first, so the bankroll counts them; the nightly copies them again before settling.
+- **`telegram-test.yml`** sends one test message from the Actions tab, after the bot's secrets change.
+
+## Kalshi order book (#282)
+
+`nhl kalshi books` logs Kalshi's order book for both teams' markets of each game in the day's real bets alert, so #281's gate can measure the queue ahead of a resting bid at the moment the order would be placed. Kalshi shows its book only live, so a queue that wasn't logged then can't be recovered. The code is `ingest/kalshi.py`.
+
+- **What it gives:** each market's resting bids, Yes and No, as price levels in dollars with the contracts at each. A Yes bid at p is a No ask at 1 − p, so the best Yes bid is the last Yes level and the best Yes ask is 1 less the last No level. The response carries no time, so `observed_utc` is the fetch time.
+- **Endpoint:** `GET https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}/orderbook` ([docs](https://docs.kalshi.com/api-reference/market/get-market-orderbook)). It answers `{"orderbook_fp": {"yes_dollars": [[price, contracts], ...], "no_dollars": [...]}}`, both as strings, each list ascending by price. Either list may be empty, null or missing.
+- **Tickers:** one market per team and game, `KXNHLGAME-{YY}{MON}{DD}{AWAY}{HOME}-{TEAM}` on the game's US Eastern date, such as `KXNHLGAME-26OCT17NJWSH-WSH`. Kalshi's team codes are the NHL triCodes except NJ, TB, SJ and LA for NJD, TBL, SJS and LAK (`KALSHI_CODES` in `lake/schemas.py`, checked on 65 games). A 404 is stored raw and counted as not found, never retried and never guessed further.
+- **Access:** public and unauthenticated, so no key is stored. Only the API is called, never Kalshi's website.
+- **Limits:** Kalshi meters requests in token buckets per tier ([Rate Limits and Tiers](https://docs.kalshi.com/getting_started/rate_limits)). A 429 comes without `Retry-After`, and the docs ask for exponential backoff. The poll waits at least 0.25 seconds between requests. It retries a 429, a 5xx or a dropped connection after 1, 2, 4 and 8 seconds, at most 5 tries, then counts the market as failed and fails the step after the others.
+- **Terms (the owner's decision, 2026-10-17):**
+  - Kalshi's [Developer Agreement](https://kalshi-public-docs.s3.amazonaws.com/Kalshi-Developer-Agreement.pdf) (v1.1) limits API use to facilitating a member's own trading. Its data may be stored only for that purpose and never shared with third parties without Kalshi's written authorization (3.1).
+  - It bars benchmarking and competitive use (3.5), and asks for retries with bounded exponential backoff (4.3).
+  - Kalshi's [Data Terms of Use](https://kalshi-public-docs.s3.amazonaws.com/kalshi-data-terms-of-service.pdf) bar scraping its website and using website data for machine learning.
+- **So, since the owner is a Kalshi member and the repository is public:**
+  - **What is fetched:** only both teams' markets of each game with an alerted bet (practice or real), never every game. A skipped bet's game is not fetched, and no game is asked for at or after its start: the clock is checked again just before each request.
+  - **Where it is kept:** only in the local lake and raw store, and in the private R2 bucket.
+  - **What never happens:** nothing from Kalshi enters the repository, its issues, reports or docs. The test fixture is synthetic, hand-made in the documented shape with made-up numbers. The workflow step prints counts of requests only, never a market, price or size, since run logs are public.
+- **When:** the step "Kalshi books (#282)" in `odds-snapshots.yml`, after "Real bets alert", at every slot whatever the steps before did. At midday it runs right after the alert. At the pre-game slots it covers the same day's bets until each game's start. Without the day's alert, as at the morning slot, nothing is fetched. The alert is read from R2 (`real/live/alerts/<date>.json`).
+- **Raw:** each response untouched as `kalshi/orderbook/<ET game date>/<fetch stamp>_<ticker>`, mirrored to R2's `raw/kalshi/`. The sidecar holds the URL, status, fetch time, slot, and the market's ticker, game and team. A dispatched run's slot is the latest one started by its clock.
+- **Table:** `kalshi_books`, one row per fetch, market, side and price level, partitioned by season and game date, with one pandera schema (`KalshiBooks`), validated on every write.
+  - After its requests, `nhl kalshi books` restores the day's responses from R2 and rebuilds the day's partition from them, so every slot's books stay in it.
+  - `nhl kalshi replay [--recent N] [--r2]` rebuilds the table from the stored responses only, never calling Kalshi. Its counts come from Kalshi's data, so it is run by hand, never in a workflow.
+  - `books_before(books, at)` gives what an order placed at `at` could have seen: the rows observed strictly before it (hard rule 1).
+- **Role:** the owner's own resting orders only (#281). It is never a model input, and no feature or model code reads it (`tests/leakage/test_kalshi_books.py` checks). Before #281 sets a Kalshi price beside a model's probability, it checks that the market settles on the full game, OT and shootout included (hard rule 2).
+
+## Kalshi trading API (#286)
+
+The owner bets on Kalshi automatically through its trading API (the owner's decision, 2026-10-18). `live/kalshi_trade.py` is the signed client, used by `nhl kalshi check` and the orders ("Kalshi orders" below).
+
+- **Environments:** Kalshi's demo exchange, with mock funds, and the live one. They are separate accounts with separate keys. The demo exchange lists the same `KXNHLGAME` markets and tickers.
+- **Keys:** an API key is an Ed25519 (recommended) or RSA key pair, created under Account settings → API Keys. Kalshi keeps the public key; the private key is shown once.
+  - The key id and the private key's PEM text go into GitHub secrets only: `KALSHI_DEMO_KEY_ID` and `KALSHI_DEMO_PRIVATE_KEY` as repository secrets, and `KALSHI_KEY_ID` and `KALSHI_PRIVATE_KEY` as secrets of the `kalshi-live` environment (`docs/security.md`). On a laptop they go into `.env`.
+  - A key pasted as one line, with its newlines written as `\n`, is read the same, and so is its base64 text pasted without the `-----BEGIN` and `-----END` lines (#300).
+  - A key that can't be read is named in the log by its shape only: a public key or the key id in its place, encrypted, cut off, or its length and lines.
+  - It fails a run only when `KALSHI_TRADING` names its environment or an order of that environment waits on it. Otherwise the run warns and skips that environment, and `nhl kalshi check` is where the key is proven.
+  - Nothing stores, prints or commits a key.
+- **Signing** ([API Keys](https://docs.kalshi.com/getting_started/api_keys)): each request carries `KALSHI-ACCESS-KEY` (the key id), `KALSHI-ACCESS-TIMESTAMP` (milliseconds) and `KALSHI-ACCESS-SIGNATURE`. The signature is the base64 signature of timestamp + method + path, with the path from the host (`/trade-api/v2/...`) and no query.
+  - An Ed25519 key signs that text.
+  - An RSA key uses RSA-PSS over SHA-256, with MGF1 SHA-256 and a salt of the digest's length.
+- **Orders** ([Create Order (V2)](https://docs.kalshi.com/api-reference/orders/create-order-v2)): `side: bid` buys Yes at a limit `price` in dollars, for `count` contracts in steps of 0.01.
+  - `time_in_force: good_till_canceled` with an `expiration_time` (unix seconds) rests the order until then. `cancel_order_on_pause` cancels it if trading pauses, and `post_only` refuses an order that would fill at once.
+  - A repeated `client_order_id` is refused with 409. The client reads that order back instead of sending another, so a retry or a rerun never places a bet twice.
+  - Order status is `resting`, `canceled` or `executed`. The order carries its fill count, its taker and maker fill costs and its fees. Its fills carry each count, price, fee, time and `is_taker`.
+- **Fees** ([Fee Rounding](https://docs.kalshi.com/getting_started/fee_rounding)): the fee schedule's taker fee is 0.07 × C × P × (1 − P), and a maker pays a quarter of that on markets with maker fees. A direct member's balance is aligned to $0.0001, and a fee accumulator keeps an order's total close to one equivalent fill.
+- **Limits:** the Basic tier refills 200 read and 100 write tokens a second, and most calls cost 10. The client waits at least 0.25 seconds between requests. It retries a 429, a 5xx or a dropped connection after 1, 2, 4 and 8 seconds, at most 5 tries, signing each try afresh. Any other status is an error at once.
+- **Raw:** every response is stored untouched as `kalshi/trade/<env>/<UTC date>/<stamp>_<request n>_<call>_<try>`, mirrored to R2's `raw/kalshi/` with `--mirror-raw`.
+  - The sidecar holds the call, method, path, query, the body sent, the status and the try.
+  - It never holds a header, so never the key or a signature.
+- **Logs:** run logs are public. A run prints its steps and counts only, never a market, price, size, order id or the balance, and an error names only its call and status.
+- **`nhl kalshi check --env demo|live [--mirror-raw]`:** proves a key and the order path.
+  - It reads the balance.
+  - It places a post-only bid of 1.50 contracts at 1¢ on the open NHL market with the highest Yes ask, at least 10¢, so the bid can't fill. The count is fractional, as real orders are (#281), so the check also proves the market takes one.
+  - It reads the order back, cancels it and reads it again.
+  - The order also expires by itself after 2 minutes, should the cancel fail.
+  - It passes when the balance was read, the order rested, the cancel held and nothing filled. Each read waits up to 5 seconds for the write to show, since Kalshi's reads lag its writes a little.
+  - The live check needs a balance of at least a few cents.
+- **When:** `kalshi-check.yml`, dispatched by the owner with `env` demo or live. It passes only the chosen environment's key.
+
+## Kalshi orders (#281)
+
+`live/placement.py` places each alerted bet on Kalshi, tracks its order and writes its entry (ADR 0040, proposed).
+
+- **The switch:** the repository variable `KALSHI_TRADING`.
+  - **`off`**, or unset: nothing is placed, and every run cancels our resting orders.
+  - **`demo`:** every alerted bet, practice or real, goes to Kalshi's demo exchange at the demo rules (`real.DEMO_EXCHANGE`), recorded under `real/demo/`, never in the practice or real record.
+  - **`live`:** the real days' alerted bets go to the live exchange, from their alert rows' orders. These exist only once the venue is Kalshi's (`real.VENUE`).
+- **`nhl real place --r2 [--cron]`:** at the midday slot, right after `nhl real alert`. Each planned order is written once to R2 (`real/<live|demo>/orders/<date>/<game_id>.json`), then checked:
+  - the game's start, as the NHL's schedule lists it now (`/v1/schedule/{date}` for the week from the day before, so a game moved into that day is listed too; fetched fresh and stored raw), is still the alert's. Without the schedule, no order goes;
+  - its expiry is at least a minute away;
+  - its most cost is within 1.5% of the bankroll, and the day's orders, earlier runs' included, within 5%;
+  - the code's own limits (#294), whatever the alert row says:
+    - the exchange is one the code names (the demo exchange, or the live venue's from the venue commit), at the row's rate;
+    - the order's cost, recomputed from its contracts and limit, is no more than the row states;
+    - that cost, and the day's together, are within 1.5% and 5% of 200 € (`placement.CEILING_BANKROLL`) at the code's rate. The orders an earlier run sent count from their own records, never from the day's rows, which could be rewritten after they went;
+  - the balance covers the orders;
+  - the market is active.
+
+  Then it is sent. Kalshi's order id is written after (`...-placed.json`), or the reason it wasn't sent (`...-skipped.json`; the orders table shows it only for an order never sent). A rerun sends nothing for an order already placed. The client order id is the same on every run, so Kalshi refuses a second order (409). The owner's Telegram gets the orders placed, and the counts of those not placed or failed, even on a day when none went.
+  - **Failures:** a market that can't be read skips only its own order. A create that fails after its tries fails the run after the others.
+  - **Lost answers:** an order Kalshi holds though no run recorded it, as when a create's answer was lost, is found by its client order id. Every tracking run looks for each order with no Kalshi id, so it is tracked and told while it rests, and before a cancel or calling it not sent (`...-placed.json` with `adopted`). A placing run that finds its order already recorded this way moves on.
+  - **The day cap** counts every order a run has sent that day, final or not.
+- **The order:** a limit buy of Yes at the alert's limit, `good_till_canceled` with `expiration_time` 5 minutes before the start, and `cancel_order_on_pause`. It fills at once from asks at or below the limit, and the rest rests until it expires.
+- **`nhl real orders --r2 [--cancel]`:** at every odds slot and in the nightly job, for each environment whose key is set.
+  - An environment the switch doesn't name has its resting orders cancelled first, and so does every environment with `--cancel` (`kalshi-cancel.yml`, the manual kill switch). The kill switch sweeps twice, 90 seconds apart, so an order an odds job sends meanwhile is caught by its client order id.
+  - **The deadline:** an order's deadline is its expiry, or earlier when the schedule, read again, lists its game earlier than the alert did. Every earlier start a run sees is written once (`...-moved-<start>.json`), and the earliest holds, so one unread schedule loses no move. A run that can't read the schedule still cancels past the deadline, but writes no final record and no entry: those wait for a run that reads it.
+  - **A resting order** is counted. One past a moved game's deadline is cancelled, and so is one still resting 2 minutes after its own expiry.
+  - **The final record:** once an order's deadline has passed, it is read with its fills and written once (`...-final.json`). It holds the bet, which is the fills before the start (the earlier of the alert's and the schedule's), with their contracts, cost and fees in USD and the first fill's time. Fills at or after the start are kept apart with their count and cost, flagged, and never the bet's. An order whose fills don't add up yet waits for the next run.
+  - On the live exchange the bet's entry follows (`real/live/entries/`):
+    - placed, at contracts ÷ cost and cost ÷ rate in euros, with Kalshi's order id and the first fill's time, and never late;
+    - not placed, "not matched", when nothing filled before the start;
+    - not placed, "missed it", when no order went.
+
+    A fill at or after the start also raises a warning in the log and the owner's message. A fill costing under half a cent still stakes a cent. An entry a stopped run didn't write after its final record is written by the next run.
+  - The lake's `real_orders` is rebuilt from the records.
+- **`nhl real place --dry-run --date <d> [--env demo|live]`:** prints a day's orders with their prices and sends nothing. It is for the owner's terminal only, never a workflow.
+- **Logs and messages:** a run prints counts only. The orders placed and the fills go to the owner's Telegram, a demo one marked "DEMO, mock funds".
+  - **Told once:** each message, once sent, is marked on its orders (`...-notified_placed.json`, `...-notified_final.json`), so a message Telegram refused goes with the next run.
+  - **The alert:** on a Kalshi day it says when `KALSHI_TRADING` isn't live, so that no order goes and nothing is bet.
+- **On the dashboard (#287, `supabase/migrations/20261018180000_kalshi_orders.sql`):**
+  - **The order:** an exchange day's alert rows carry each bet's order in `real_alerts.exchange`. The dashboard shows it in place of the form: placed automatically, its limit, contracts, most cost and expiry, and nothing to enter.
+  - **The entries:** `nhl real sync --supabase` inserts the automatic entries from R2 into `real_entries` with `source = 'kalshi'`. The migration's trigger keeps the pipeline's time, never marks one late and gives it no author. The form's grant leaves `source` out, so the owner can't make one.
+  - **Never copied back:** `sync` doesn't copy those rows back from the dashboard, since R2 already holds them.
+  - **Before the migration:** the dashboard and `sync` leave the new columns out, and the entries wait.
+  - **When to apply it:** before the venue commit, since a Kalshi day's alert rows need the `exchange` column.
+- **`nhl real reconcile-kalshi --r2`, nightly after `settle`:** checks each live order with fills of the last 30 days against Kalshi's own settlement of its market (`GET /portfolio/settlements`):
+  - its result, where a scalar result means Kalshi resolved a cancelled or late game at a fair price;
+  - the contracts held, against the order's fills;
+  - the payout.
+
+  A difference, or a settlement missing on either side 2 days after the game was played, goes to the owner's Telegram (a postponed game counts from the start it was played at, from the lake's final games, and one neither side has settled waits while it isn't final), and the log has counts only. A correction (`nhl real correct`) then brings the record's result, price or stake in line with Kalshi's statement, with its reason. A game Kalshi resolved at its own price (held, or `scalar`) can't be corrected that way yet: its settlement at Kalshi's payout is #290.
+- **Inputs:** an order is built from the day's alert only. No Kalshi price is an input: of the market's data only its status is used (`tests/leakage/test_kalshi_orders.py`, which also checks that no model package reads the real record or the orders).
+
 ## Odds snapshots
 
 `nhl odds snapshot` runs from `.github/workflows/odds-snapshots.yml`, dispatched at each slot with the slot's name (see When jobs run). Slots are set in US Eastern time, so nothing changes by hand when DST starts or ends. The fallback cron has one line per slot for each UTC offset, and the CLI maps the line that fired to a slot for the current offset. A run first checks the NHL schedule and makes no Odds API call when the slot has no regular-season or playoff game.
@@ -214,11 +553,30 @@ At most 10 credits a game day. Each response is stored raw as `data/raw/odds/<da
 - Each event gets the NHL `game_id` and `game_type` of the schedule listing with the same home and away teams whose start is nearest its commence time, within 12 hours. The two sources can differ by minutes (MTL at TOR on 2026-09-29: 23:00 UTC by the NHL, 23:10 by the Odds API).
 - The listings come from every raw NHL schedule response in the cache, since the odds job stores the schedule it checks on every run. Every listing counts, so an event priced before a postponement keeps the game it was priced for.
 - An event no listing covers yet, such as a game more than a week ahead at the time, keeps null ids until a later replay.
-- `game_id` and `game_type` are keys, not observed facts. Anything joined through them still goes through its own point-in-time selector. A closing proxy keys on the event and its commence time, because quotes priced before a postponement carry the rescheduled game's id.
+- `game_id` and `game_type` are keys, not observed facts. Anything joined through them still goes through its own point-in-time selector. A closing proxy keys on the event, with the start its latest snapshot gives, because quotes priced before a postponement carry the rescheduled game's id.
 - The nightly workflow runs `nhl odds replay --recent 14 --r2`: it restores the window's snapshots and schedules from R2, replays the last 14 days and mirrors the table. The report lists matches by game type and every unmatched event.
 - The Odds API historical endpoint is paid. The `guard-bash` hook blocks it unless Claude Code starts with `ALLOW_PAID_ODDS=1`.
 - MoneyPuck data is free for non-commercial use with attribution and must not be scraped. It is a sanity check, not a backtest input.
 - Daily Faceoff's starting-goalies page is fetched at the goalie polls only (#48), about one request a date per run; its other pages stay manual references. RotoWire's terms forbid automated access, so it is never fetched.
+
+
+**The closing proxy (`is_closing_proxy`, #21, ADR 0033).** It is the quote CLV is measured against, since the Odds API gives no true close. `nhl odds replay` derives it from the raw responses itself, so a rebuilt table keeps it (`market/closing.py`).
+- **The rule:** for each started game, book and market (h2h only), the proxy is the quote from the latest snapshot that meets all of these:
+  - it was taken after the day's decision snapshot, the last snapshot between 12:45 and 13:15 ET on the game's ET date (`nhl predict` decides on one no later, and a retry in the window only makes the rule stricter);
+  - it was taken before the start, and at most 90 minutes before it;
+  - both sides are at most 5 minutes old at that snapshot.
+
+  Both sides of that pair are marked.
+- **Games and starts:** a game is its Odds API event, and its start is the commence time its latest snapshot gives, in any market. The day's decision snapshot is likewise read from every market and book.
+- **The whole history:** a game's snapshots span two UTC dates, and a postponed game's new start can come weeks later. So the replay derives the flag over the lake's whole `odds_snapshots`, with the requested dates replayed into it, and rewrites any other date whose flags change. With `--r2` it pulls the table from R2 first.
+- **Started games only:** only games started by the replay's clock are marked.
+- **Supabase:** the nightly runs `nhl odds replay --recent 14 --r2 --supabase`, which upserts the flags of the replayed and rewritten dates' h2h rows of started games that Supabase holds. `--supabase` needs `--r2`, since a local lake may lack part of a game's history.
+- **No Pinnacle proxy:** `nhl audit report` gives Pinnacle's proxy lead per ET start time, and why a game has none:
+  - no pre-game slot within 90 minutes of the start the decision snapshot showed (matinees and 21:30 starts), which is outside ADR 0032's coverage floor. A start moved later can't make a game ineligible, and a delayed run that leaves such a game a proxy can't make it eligible: its quote is still flagged, but the game counts as "no pre-game snapshot";
+  - stale: Pinnacle's pair in the span, never fresh;
+  - missing: no pair in the span (a lone side is none), or a game Pinnacle never priced while another book did.
+
+  A stale or missing proxy where a slot was due is listed as a problem.
 
 ## Pre-game goalies
 
@@ -238,6 +596,26 @@ The same `nhl goalies poll` also fetches Daily Faceoff's starting-goalies page f
 - **Parsed from** the JSON in the page's `__NEXT_DATA__` script (`props.pageProps.data`): per game `dateGmt` and, per side, the team name, goalie name and Daily Faceoff id, status (`NewsStrengthName`, such as Likely or Confirmed), `NewsCreatedAt` and `NewsSourceUrl`.
 - **Table:** `nhl goalies replay` also rebuilds the lake's `dailyfaceoff_goalies`: one row per page fetch, game and team with the goalie, status, `reported_utc` and source. `observed_utc` is the fetch time, not the report time, since a status can change. Games that had started at the fetch give no rows. Goalies stay names; the audit matches them to NHL player ids. There is no NHL `game_id`; `start_utc` and `team` identify the game.
 
+### Daily Faceoff line combinations
+
+With `--lines`, which only the slot polls pass (`odds-snapshots.yml`), `nhl goalies poll` also fetches Daily Faceoff's line-combinations page of every team playing in the window (#121). The pages give each team's projected lines and its injured players, to measure on live games whether Daily Faceoff's injury statuses would improve the lineup availability model (ADR 0017).
+- **Terms (checked 2026-10-08):**
+  - Daily Faceoff's robots.txt disallows only `/api/` and `/cms/`, and no terms of use exist (`/terms-of-use` and `/terms` return 404, and no page links one).
+  - Yahoo's injury statuses were rejected: its terms forbid automated collection, and its robots.txt blocks ClaudeBot and other crawlers.
+- **Endpoint:** `GET https://www.dailyfaceoff.com/teams/<slug>/line-combinations`, the team's public page. Slugs come from `TEAM_SLUGS` by NHL triCode, and the `/api/` behind the page is never called.
+- **Load:** a page is about 240 KB, or 31 KB gzipped.
+  - About 20 teams a slot poll, at least 1 second apart.
+  - At most 2 minutes a poll, so the pages never hold up the odds snapshot or the midday decision. The teams left are skipped, not failed.
+  - About 400 MB a season in R2.
+- **Raw:** each page untouched (HTML) as `dailyfaceoff/line-combinations/<ET game date>/<team>/<fetch stamp>`, mirrored to R2 and compared in full with R2 by `nhl status`.
+- **Parsed from** the JSON in the page's `__NEXT_DATA__` script (`props.pageProps.combinations`):
+  - the lines' `updatedAt` and source;
+  - per player: Daily Faceoff id, name, jersey, position, group (F1-F4, D1-D3, G, PP1-2, PK1-2, IR), `injuryStatus` ("out", "dtd"), `gameTimeDecision`, and his latest news item's `createdAt`.
+- **Table:** `nhl goalies replay` also rebuilds the lake's `dailyfaceoff_lines`: one row per page fetch, player and group.
+  - `observed_utc` is the fetch time: lines and statuses change, so `lines_updated_utc` and `news_utc` only show how old the information was.
+  - Players are kept by name and Daily Faceoff id. Matching them to NHL ids is the measurement's (#121).
+- **Live-only.** No source dates past statuses, so nothing here enters a backtest (hard rule 1), and no model reads it. Any use needs an ADR with the owner, after the measurement on live games.
+
 ## SBR odds archive
 
 `nhl odds sbr` imports 2010-11 to 2022-23 into the lake's `sbr_odds` table, one partition per season (#7).
@@ -247,7 +625,8 @@ The same `nhl goalies poll` also fetches Daily Faceoff's starting-goalies page f
 - Rows match NHL regular-season games through `schedule`, on the game date and the pair of teams. The schedule says which team is home, since SBR lists neutral-site games as N and N and once lists H before V. Playoff rows are counted and left out.
 - Times (ADR 0006): SBR gives none, so `observed_utc` is `start_utc` for every price and `known_at` shows no SBR price before its game starts. `assumed_available_utc` is E2's assumption of when a price could be bet: the opener at 10:00 US Eastern on the game date (never before the game's schedule is public, never after the start), the close at the start. Only E2 reads it, through `assumed_available_at`, which also drops games already started.
 - Join on 2026-09-29: every regular-season game of 2010-11 to 2021-22 has an SBR row (100%). 2022-23 has 342 of 1,312 (26.1%), because the archive stops on 2022-11-27. 14 playoff games of 2020-21, played before the regular season ended, show as unmatched, and 5 games have a final score that disagrees with the NHL's.
-- Suspect openers (#56): `reference/sbr_suspect_openers.csv` lists 40 games of 2010-11 to 2021-22 whose opening moneyline is likely wrong, with the prices, de-vigged probabilities and closing puck line as evidence. `ingest/sbr_suspect.py` rebuilds it from `sbr_odds` (`uv run python -m nhl_edge.ingest.sbr_suspect`) and loads it (`load_suspect_openers`). There are four criteria: 33 games move more than 15 points from open to close; 8 open outside a 0.15 to 0.85 home probability, while no close does (SBR's page prints them so, such as EDM -1010 / MIN +705); 15 have their sides swapped, meaning a clear favourite at both ends, but opposite teams, and the swapped opener within 5 points of the close (in all 13 with a puck line, the closing puck line agrees with the close); and 3 openers sum below 100%. One more column, `bad_close`, is not a criterion: it marks the 3 listed games whose close, not their opener, is the likely error, because the opener and the closing puck line agree against the close (2015020761, 2015020769 and 2015020783, #64). B1 still fits on those closes. They are 3 of the 9,370 games in the 2018-19 fold's fit, and the owner kept the fit as it is on 2026-09-30. The flags read the close, so each row is observed at the start and the list is hindsight, never a model input. Whether E2 excludes, fixes or keeps these openers is the owner's decision.
+- 2022-23's prices (#66, ADR 0025): phase 1 left them unread. Phase 4 opened them to the audit's price checks on 2026-10-04, before any of the season's games is scored. They show the same vig as 2018-19 to 2021-22 (opening median 4.1%, closing 2.4%), no move over 15 points, no puck-line conflict and no opener outside E2's bounds (ADR 0007). The 342 games are scored once, after phase 4's freeze (#145).
+- Suspect openers (#56): `reference/sbr_suspect_openers.csv` lists 40 games of 2010-11 to 2022-23 whose opening moneyline is likely wrong (2022-23's 342 priced games, checked from phase 4 on, add none: #66, ADR 0025), with the prices, de-vigged probabilities and closing puck line as evidence. `ingest/sbr_suspect.py` rebuilds it from `sbr_odds` (`uv run python -m nhl_edge.ingest.sbr_suspect`) and loads it (`load_suspect_openers`). There are four criteria: 33 games move more than 15 points from open to close; 8 open outside a 0.15 to 0.85 home probability, while no close does (SBR's page prints them so, such as EDM -1010 / MIN +705); 15 have their sides swapped, meaning a clear favourite at both ends, but opposite teams, and the swapped opener within 5 points of the close (in all 13 with a puck line, the closing puck line agrees with the close); and 3 openers sum below 100%. One more column, `bad_close`, is not a criterion: it marks the 3 listed games whose close, not their opener, is the likely error, because the opener and the closing puck line agree against the close (2015020761, 2015020769 and 2015020783, #64). B1 still fits on those closes. They are 3 of the 9,370 games in the 2018-19 fold's fit, and the owner kept the fit as it is on 2026-09-30. The flags read the close, so each row is observed at the start and the list is hindsight, never a model input. Whether E2 excludes, fixes or keeps these openers is the owner's decision.
 
 ## Reference files
 

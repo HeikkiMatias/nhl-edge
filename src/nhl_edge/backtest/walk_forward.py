@@ -13,16 +13,24 @@ Outcomes settle the moneyline on the full game, overtime and shootout included (
 are read to score a prediction and, for games before the fold, to fit B1.
 """
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import polars as pl
 
-from nhl_edge.backtest.market import Experiment, market_prices
+from nhl_edge.backtest.market import PREDICTION_LAG, Experiment, market_prices
 from nhl_edge.backtest.metrics import log_loss
-from nhl_edge.backtest.seasons import OPEN_ROLES, OPEN_SEASONS, season_role
+from nhl_edge.backtest.seasons import (
+    HOCKEY_ROLES,
+    MARKET_VALIDATION_SEASONS,
+    ONE_TIME_SEASONS,
+    OPEN_ROLES,
+    OPEN_SEASONS,
+    SeasonRole,
+    season_role,
+)
 from nhl_edge.market import recalibration
 from nhl_edge.market.devig import (
     DEFAULT_METHOD,
@@ -33,6 +41,7 @@ from nhl_edge.market.devig import (
 )
 
 if TYPE_CHECKING:
+    from nhl_edge.game import b3
     from nhl_edge.game.b2 import B2Model, Tables
 
 # B1 recalibrates the default de-vig method's probabilities (ADR 0008).
@@ -43,6 +52,7 @@ NO_METHOD = "none"
 Coverage = dict[str, dict[int, dict[str, int]]]
 Fits = dict[str, dict[int, recalibration.Recalibration]]
 B2Fits = dict[str, dict[int, "B2Model"]]
+B3Fits = dict[str, dict[int, "b3.B3Model"]]
 
 PREDICTION_SCHEMA = {
     "experiment": pl.String,
@@ -129,6 +139,32 @@ def fold_start(calendar: pl.DataFrame, season: int) -> datetime:
     return first
 
 
+def fold_starts(
+    quotes: pl.DataFrame,
+    games: pl.DataFrame,
+    seasons: Iterable[int],
+    calendar_odds: pl.DataFrame | None = None,
+) -> dict[tuple[str, int], datetime]:
+    """Each experiment's fold start per season, the one start every component of the fold is cut
+    at (B1, B2, B3 and the blend): the season's first start (fold_start, over games and the
+    prices of calendar_odds, quotes by default), or, since E2 predicts at the opener before the
+    start, its first prediction from quotes when that comes earlier."""
+    frames = (games, quotes if calendar_odds is None else calendar_odds)
+    calendar = pl.concat([frame.select("season", "start_utc") for frame in frames])
+    seasons = sorted(set(seasons))
+    first_starts = {season: fold_start(calendar, season) for season in seasons}
+    starts: dict[tuple[str, int], datetime] = {}
+    for experiment in Experiment:
+        quoted = market_prices(quotes.filter(pl.col("season").is_in(seasons)), experiment)
+        for season in seasons:
+            first = quoted.filter(pl.col("season") == season)["prediction_utc"].min()
+            start = first_starts[season]
+            starts[(experiment.value, season)] = (
+                min(start, first) if isinstance(first, datetime) else start
+            )
+    return starts
+
+
 def b1(
     market: pl.DataFrame, start: datetime, season: int
 ) -> tuple[pl.DataFrame, recalibration.Recalibration]:
@@ -157,13 +193,15 @@ def b1(
 
 
 def _scored(
-    frame: pl.DataFrame, experiment: Experiment, model: str, method: Method | str
+    frame: pl.DataFrame, experiment: Experiment | str, model: str, method: Method | str
 ) -> pl.DataFrame:
     if "train_cutoff" not in frame.columns:
         frame = frame.with_columns(train_cutoff=pl.lit(None, PREDICTION_SCHEMA["train_cutoff"]))
     return (
         frame.with_columns(
-            experiment=pl.lit(experiment.value),
+            experiment=pl.lit(
+                experiment.value if isinstance(experiment, Experiment) else experiment
+            ),
             model=pl.lit(model),
             method=pl.lit(method.value if isinstance(method, Method) else method),
             log_loss=log_loss(pl.col("p_home"), pl.col("home_win")),
@@ -181,6 +219,10 @@ def run(
     refuse_implausible: bool = True,
     b2_tables: "Tables | None" = None,
     b2_fits: B2Fits | None = None,
+    b3_tables: "b3.Tables | None" = None,
+    b3_fits: B3Fits | None = None,
+    validated: Iterable[int] = (),
+    claim: Callable[[], None] | None = None,
 ) -> tuple[pl.DataFrame, Coverage, Fits]:
     """Every prediction for the test seasons, scored, the coverage per experiment and season, and
     B1's fit per experiment and season. sbr_odds and games hold the test seasons and the earlier
@@ -197,15 +239,32 @@ def run(
 
     With b2_tables, B2 (ADR 0013) predicts the games B1 scores, at the experiment's prediction
     time, from a fit on the games before the fold, and b2_fits receives its fit per experiment and
-    season. Coverage then counts the games B2 scored and those it trained on."""
+    season. Coverage then counts the games B2 scored and those it trained on. b3_tables and
+    b3_fits do the same for B3, the player layer (ADR 0023).
+
+    validated names the market validation seasons a once-only run may score (MARKET_VALIDATION
+    _SEASONS, #145): they are tested, but never fit B1, which reads earlier open seasons only.
+    Such a run needs claim (one_time.claim), called before anything is scored, which refuses a
+    second run."""
     seasons = sorted(set(seasons))
-    held_out = [season for season in seasons if season_role(season) not in OPEN_ROLES]
+    validated = set(validated)
+    if validated - set(MARKET_VALIDATION_SEASONS):
+        raise ValueError(f"{sorted(validated)} are not market validation seasons")
+    if validated and claim is None:
+        raise ValueError("the market validation run must be claimed before it scores (ADR 0025)")
+    held_out = [
+        season
+        for season in seasons
+        if season_role(season) not in OPEN_ROLES and season not in validated
+    ]
     if held_out:
         raise ValueError(f"{held_out} are held out: phase 1 backtests open seasons only (#10)")
-    open_odds = sbr_odds.filter(pl.col("season").is_in(OPEN_SEASONS))
-    results = outcomes(games.filter(pl.col("season").is_in(OPEN_SEASONS)))
-    calendar = pl.concat([frame.select("season", "start_utc") for frame in (games, sbr_odds)])
-    starts = {season: fold_start(calendar, season) for season in seasons}
+    if validated and claim is not None:
+        claim()
+    allowed = set(OPEN_SEASONS) | validated
+    open_odds = sbr_odds.filter(pl.col("season").is_in(allowed))
+    results = outcomes(games.filter(pl.col("season").is_in(allowed)))
+    starts = fold_starts(open_odds, games, seasons, sbr_odds)
     frames = [pl.DataFrame(schema=PREDICTION_SCHEMA)]
     coverage: Coverage = {}
     fits: Fits = {}
@@ -218,14 +277,7 @@ def run(
         quoted = market_prices(open_odds, experiment)
         every = quoted.join(results, on="game_id")
         quoted = quoted.filter(pl.col("season").is_in(seasons))
-        folds = {}
-        for season in seasons:
-            # E2 predicts at the opener, before the start, so its fold starts at its first
-            # prediction when that comes earlier.
-            first = quoted.filter(pl.col("season") == season)["prediction_utc"].min()
-            folds[season] = (
-                min(starts[season], first) if isinstance(first, datetime) else starts[season]
-            )
+        folds = {season: starts[(experiment.value, season)] for season in seasons}
         # E2 refuses the openers outside each fold's bounds, in the fold's test season and in its
         # B1 fit (ADR 0007).
         refusing = experiment is Experiment.E2 and refuse_implausible
@@ -274,6 +326,21 @@ def run(
                 if b2_fits is not None:
                     b2_fits.setdefault(experiment, {})[season] = b2_fit
                 b2_counts = {"b2_scored": scored_b2.height, "b2_trained_on": b2_fit.games}
+            if b3_tables is not None:
+                from nhl_edge.game import b3
+
+                moments = predicted.select("game_id", "prediction_utc")
+                b3_rows, b3_fit = b3.predictions(b3_tables, moments, season, folds[season])
+                scored_b3 = b3_rows.join(
+                    predicted.select(
+                        "game_id", "season", "game_date", "prediction_utc", "home_win"
+                    ),
+                    on="game_id",
+                )
+                frames.append(_scored(scored_b3, experiment, "B3", NO_METHOD))
+                if b3_fits is not None:
+                    b3_fits.setdefault(experiment, {})[season] = b3_fit
+                b2_counts |= {"b3_scored": scored_b3.height, "b3_trained_on": b3_fit.games}
             counts = {
                 "games": games.filter(in_season).height,
                 "priced": quoted.filter(in_season).height,
@@ -293,3 +360,143 @@ def run(
         for method in methods:
             frames.append(_scored(b0(prices, method), experiment, "B0", method))
     return pl.concat(frames), coverage, fits
+
+
+def tests_only(
+    predictions: pl.DataFrame, coverage: Coverage, fits: Fits, tested: Iterable[int]
+) -> tuple[pl.DataFrame, Coverage, Fits]:
+    """A run's tested seasons alone. A run also predicts the folds whose out-of-sample predictions
+    only teach the market blend (seasons.blend_training_seasons, #138), and those stay out of
+    every test metric: the report gives them counts only (training_folds)."""
+    keep = set(tested)
+    return (
+        predictions.filter(pl.col("season").is_in(keep)),
+        {name: {s: c for s, c in by.items() if s in keep} for name, by in coverage.items()},
+        {name: {s: f for s, f in by.items() if s in keep} for name, by in fits.items()},
+    )
+
+
+def training_folds(
+    coverage: Coverage,
+    b2_fits: B2Fits,
+    b3_fits: B3Fits,
+    seasons: Iterable[int],
+) -> dict[str, Any]:
+    """Counts for the folds the market blend learns from (#138), per experiment and season: the
+    games B2 and B3 scored and trained on, and each fit's train_cutoff, which lies before the
+    fold's first prediction. No metric is reported for them: they are training seasons."""
+    return {
+        "seasons": sorted(seasons),
+        "folds": {
+            str(name): {
+                str(season): {
+                    "scored": by[season]["scored"],
+                    "b2_scored": by[season].get("b2_scored"),
+                    "b3_scored": by[season].get("b3_scored"),
+                    "b2_train_cutoff": b2_fits[name][season].train_cutoff.isoformat()
+                    if season in b2_fits.get(name, {})
+                    else None,
+                    "b3_train_cutoff": b3_fits[name][season].train_cutoff.isoformat()
+                    if season in b3_fits.get(name, {})
+                    else None,
+                }
+                for season in sorted(seasons)
+                if season in by
+            }
+            for name, by in sorted(coverage.items())
+        },
+    }
+
+
+HOCKEY = "hockey"
+
+
+def hockey_only(
+    games: pl.DataFrame,
+    seasons: Iterable[int],
+    b2_tables: "Tables",
+    b3_tables: "b3.Tables",
+    b2_fits: B2Fits | None = None,
+    b3_fits: B3Fits | None = None,
+    one_time: Callable[[], None] | None = None,
+    b3_terms: "b3.Terms | None" = None,
+) -> tuple[pl.DataFrame, Coverage]:
+    """B2 and B3 scored at the as-of time on outcomes alone, for seasons without prices (ADR
+    0023): every game of the season with a result, each model fitted on the games before the
+    season's first start. A prediction runs PREDICTION_LAG after the as-of time, as E2's after
+    10:00 ET, so it reads the rows that became known at the as-of time. It scores the open
+    seasons and, from gate 2, the hockey validation seasons (HOCKEY_ROLES); the other held-out
+    seasons are refused, except the one-time test season alone with one_time, which claims the
+    run (one_time.claim) before anything is scored and refuses a second one. The predictions
+    carry the experiment HOCKEY and no method; coverage counts each model's scored and training
+    games. With b3_terms, B3 with those terms (policy v2's, #225) is scored beside it on the same
+    games, as the model b3_terms.label(), and its fits go to b3_fits under that name."""
+    from nhl_edge.features import team_strength as ts
+    from nhl_edge.game import b2, b3
+
+    seasons = sorted(set(seasons))
+    if b3_terms is not None and b3_terms.label() == "B3":
+        raise ValueError("b3_terms switches no term on: it would score B3 twice")
+    if b3_terms is not None and b3_terms.label().count("+") > 1:
+        # ADR 0036 keeps a combination only if it beats each of its terms alone, and the report
+        # pairs a variant against B3 only (Codex on #227): score one term at a time.
+        raise ValueError(
+            f"{b3_terms.label()} combines terms: the report can't pair it against each of them"
+        )
+    roles = HOCKEY_ROLES
+    if one_time is not None:
+        if seasons != list(ONE_TIME_SEASONS):
+            raise ValueError(f"the one-time test scores {list(ONE_TIME_SEASONS)} alone")
+        one_time()
+        roles = HOCKEY_ROLES | {SeasonRole.ONE_TIME_TEST}
+    held_out = [season for season in seasons if season_role(season) not in roles]
+    if held_out:
+        raise ValueError(
+            f"{held_out} are held out from the hockey-only mode: 2022-23 until phase 4 (#66), "
+            "2025-26 until the owner's go-ahead (#107)"
+        )
+    results = outcomes(games.filter(pl.col("season").is_in(seasons)))
+    calendar = games.select("season", "start_utc")
+    frames = [pl.DataFrame(schema=PREDICTION_SCHEMA)]
+    coverage: Coverage = {HOCKEY: {}}
+    for season in seasons:
+        moments = (
+            games.filter(pl.col("season") == season)
+            .select(
+                "game_id",
+                "season",
+                "game_date",
+                prediction_utc=ts.as_of(pl.col("game_date"), pl.col("start_utc")) + PREDICTION_LAG,
+            )
+            .join(results.select("game_id", "home_win"), on="game_id")
+        )
+        timing = moments.select("game_id", "prediction_utc")
+        # The fold starts at its first prediction, before the first puck drop (as E2's).
+        first = moments["prediction_utc"].min()
+        start = fold_start(calendar, season)
+        if isinstance(first, datetime):
+            start = min(start, first)
+        counts = {"games": games.filter(pl.col("season") == season).height}
+        rows, fit2 = b2.predictions(b2_tables, timing, season, start, b2.TUNED)
+        frames.append(_scored(rows.join(moments, on="game_id"), HOCKEY, "B2", NO_METHOD))
+        rows3, fit3 = b3.predictions(b3_tables, timing, season, start)
+        frames.append(_scored(rows3.join(moments, on="game_id"), HOCKEY, "B3", NO_METHOD))
+        if b2_fits is not None:
+            b2_fits.setdefault(HOCKEY, {})[season] = fit2
+        if b3_fits is not None:
+            b3_fits.setdefault(HOCKEY, {})[season] = fit3
+        counts |= {
+            "b2_scored": rows.height,
+            "b2_trained_on": fit2.games,
+            "b3_scored": rows3.height,
+            "b3_trained_on": fit3.games,
+        }
+        if b3_terms is not None:
+            label = b3_terms.label()
+            rows_t, fit_t = b3.predictions(b3_tables, timing, season, start, terms=b3_terms)
+            frames.append(_scored(rows_t.join(moments, on="game_id"), HOCKEY, label, NO_METHOD))
+            if b3_fits is not None:
+                b3_fits.setdefault(label, {})[season] = fit_t
+            counts[f"{label}_scored"] = rows_t.height
+        coverage[HOCKEY][season] = counts
+    return pl.concat(frames), coverage

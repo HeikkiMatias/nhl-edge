@@ -1,0 +1,217 @@
+{
+  "alerts": {
+    "drawdown": {
+      "first_utc": null,
+      "threshold": 0.2,
+      "triggered": false
+    },
+    "operations": {
+      "days": 35,
+      "days_skipped": 0,
+      "guarded": 0,
+      "missing_input": 0,
+      "no_price": 0,
+      "picked": 75,
+      "stale_price": 0
+    },
+    "u_range": {
+      "availability_doubt_beyond_3_sd": 0,
+      "games": 150,
+      "goalie_doubt_beyond_3_sd": 0,
+      "rookie_share_beyond_3_sd": 0,
+      "u_beyond_2_sd": 0,
+      "u_beyond_3_sd": 0
+    }
+  },
+  "as_of": "2026-11-15",
+  "blend_versions": ["blend-live-20261007-89ec631"],
+  "calibration": {
+    "at": [
+      {
+        "band": [0.34125, 0.35874999999999996],
+        "forecast": 0.35,
+        "recalibrated": {
+          "high": 0.4100900429540456,
+          "low": 0.13502832977211793,
+          "value": 0.2740371983227428
+        }
+      },
+      {
+        "band": [0.4875, 0.5125],
+        "forecast": 0.5,
+        "recalibrated": {
+          "high": 0.5457006000131537,
+          "low": 0.4109705506849189,
+          "value": 0.4829344640844629
+        }
+      },
+      {
+        "band": [0.63375, 0.66625],
+        "forecast": 0.65,
+        "recalibrated": {
+          "high": 0.7786867752080997,
+          "low": 0.622007207932926,
+          "value": 0.6979716461566697
+        }
+      }
+    ],
+    "games": 150,
+    "intercept": {
+      "high": 0.18331402169856226,
+      "low": -0.35995462214453583,
+      "value": -0.06828866907924093
+    },
+    "slope": {
+      "high": 2.5665263570127492,
+      "low": 0.7600259092456266,
+      "value": 1.4634715173061783
+    },
+    "weeks": 5
+  },
+  "closing_value": {
+    "bound": {
+      "p10": {
+        "clv_per_bet": {
+          "games": 75,
+          "high": 0.017052912816658276,
+          "low": 0.009711303628749904,
+          "mean": 0.01343271076145393,
+          "weeks": 5
+        },
+        "imputed": 9,
+        "stand_in": -0.020174349357550962
+      },
+      "p90": {
+        "clv_per_bet": {
+          "games": 75,
+          "high": 0.025080718205956677,
+          "low": 0.019570843153466744,
+          "mean": 0.022350136112227494,
+          "weeks": 5
+        },
+        "imputed": 9,
+        "stand_in": 0.05413752856556211
+      }
+    },
+    "clv_per_bet": {
+      "games": 66,
+      "high": 0.020920775316524098,
+      "low": 0.014309096395873114,
+      "mean": 0.018015491686772776,
+      "weeks": 5
+    },
+    "clv_stake_weighted": {
+      "high": 0.02161124831227245,
+      "low": 0.014309096395873114,
+      "value": 0.018015491686772776
+    },
+    "fair_move_per_bet": {
+      "games": 66,
+      "high": 0.003000567579861072,
+      "low": -0.005429815720764965,
+      "mean": -0.0011507575302956887,
+      "weeks": 5
+    },
+    "floor": {
+      "required": 0.9,
+      "share_with_proxy": 0.88
+    }
+  },
+  "comparisons": {
+    "B3 - B2": {
+      "difference": {
+        "games": 150,
+        "high": 0.0,
+        "low": 0.0,
+        "mean": 0.0,
+        "weeks": 5
+      },
+      "left_out": 0
+    },
+    "BLEND - B1": {
+      "difference": {
+        "games": 150,
+        "high": 0.0,
+        "low": 0.0,
+        "mean": 0.0,
+        "weeks": 5
+      },
+      "left_out": 0
+    },
+    "BLEND - BLEND_B2": {
+      "difference": {
+        "games": 150,
+        "high": 0.0,
+        "low": 0.0,
+        "mean": 0.0,
+        "weeks": 5
+      },
+      "left_out": 0
+    },
+    "BLEND - BLEND_MARKET": {
+      "difference": {
+        "games": 150,
+        "high": 0.0,
+        "low": 0.0,
+        "mean": 0.0,
+        "weeks": 5
+      },
+      "left_out": 0
+    }
+  },
+  "coverage": {
+    "awaiting_result": 0,
+    "awaiting_settlement": 0,
+    "bets": 75,
+    "eligible": 75,
+    "eligible_without_proxy": {
+      "missing": 9
+    },
+    "no_pregame_snapshot": 0,
+    "not_predicted": {},
+    "predicted": 150,
+    "settled": 75,
+    "share_with_proxy": 0.88,
+    "slate_games": 150,
+    "void_postponed": 0,
+    "with_proxy": 66
+  },
+  "freshness": {
+    "decision_quote_age_min": {
+      "max": 3.0,
+      "median": 3.0
+    },
+    "proxy_age_min": null,
+    "proxy_lead_min": {
+      "max": 15.0,
+      "median": 15.0
+    }
+  },
+  "gaps": [],
+  "kind": "interim",
+  "market_timing": {
+    "pinnacle_1245": {
+      "games": 150,
+      "high": 0.678428296496412,
+      "low": 0.6027519885535602,
+      "mean": 0.6429199543280691,
+      "weeks": 5
+    },
+    "sbr_close": {
+      "games": 0,
+      "weeks": 0
+    },
+    "sbr_opener": {
+      "games": 0,
+      "weeks": 0
+    },
+    "seasons": [20182019, 20192020, 20202021, 20212022]
+  },
+  "policy_version": "policy-20261005-8ec5cf3",
+  "review_date": "2027-04-12",
+  "verdicts": {
+    "calibration": "interim: no verdict before the formal review",
+    "closing_value": "interim: no verdict before the formal review",
+    "incomplete": {}
+  }
+}

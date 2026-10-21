@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 import pandera.errors
 import polars as pl
@@ -8,8 +9,8 @@ from fakes import MemoryBucket
 
 from nhl_edge.ingest.games import listed_games, parse_games
 from nhl_edge.ingest.players import landing_row, parse_players
-from nhl_edge.lake.r2 import bucket_usage, list_keys
-from nhl_edge.lake.tables import Lake
+from nhl_edge.lake.r2 import POOL_CONNECTIONS, R2Config, bucket_usage, list_keys
+from nhl_edge.lake.tables import PULL_WORKERS, Lake
 
 FIXTURES = Path(__file__).parent / "fixtures" / "nhl_api"
 OPENING_DAYS = {date(2010, 10, 7), date(2010, 10, 8)}
@@ -77,6 +78,23 @@ def test_replacing_dates_leaves_other_dates_alone(tmp_path: Path) -> None:
         lake.replace_dates("players", players(1), {date(2010, 10, 8)})
 
 
+def test_replacing_a_table_drops_every_file_the_frame_no_longer_has(tmp_path: Path) -> None:
+    bucket = MemoryBucket()
+    laptop = Lake(tmp_path / "laptop", "b", bucket)
+    laptop.write("games", GAMES)
+    # A rebuild on a fresh machine no longer has 2010-10-08: it goes here and in R2.
+    runner = Lake(tmp_path / "runner", "b", bucket)
+    kept = GAMES.filter(pl.col("game_date") == date(2010, 10, 7))
+    assert runner.replace("games", kept) == [OCT_7]
+    assert sorted(bucket.objects) == [f"lake/{OCT_7}"]
+    laptop.replace("games", kept)
+    assert not (tmp_path / "laptop" / OCT_8).exists()
+    # An empty rebuild empties the table.
+    assert laptop.replace("games", GAMES.head(0)) == []
+    assert laptop.read("games").is_empty()
+    assert bucket.objects == {}
+
+
 def test_write_validates(tmp_path: Path) -> None:
     with pytest.raises(pandera.errors.SchemaError):
         Lake(tmp_path).write("games", GAMES.with_columns(pl.col("home_score").alias("away_score")))
@@ -87,6 +105,19 @@ def test_missing_table_reads_empty_with_its_columns(tmp_path: Path) -> None:
     empty = Lake(tmp_path).read("players")
     assert empty.is_empty()
     assert empty.schema == players(1).schema
+
+
+def test_read_can_take_only_some_seasons(tmp_path: Path) -> None:
+    lake = Lake(tmp_path)
+    later = GAMES.with_columns(
+        season=pl.lit(20112012, pl.Int32), game_id=pl.col("game_id") + 1_000_000
+    )
+    lake.write("games", pl.concat([GAMES, later]))
+    assert lake.read("games").height == 2 * GAMES.height
+    assert lake.read("games", [20102011]).equals(GAMES.sort("game_id"))
+    assert lake.read("games", [20122013]).is_empty()
+    with pytest.raises(ValueError, match="not partitioned by season"):
+        lake.read("players", [20102011])
 
 
 def test_mirror_uploads_the_same_bytes_under_lake(tmp_path: Path) -> None:
@@ -134,6 +165,40 @@ def test_pull_can_be_limited_to_some_seasons(tmp_path: Path) -> None:
     assert sorted(bucket.gets) == [f"lake/{OCT_7}", f"lake/{OCT_8}"]
     assert not (tmp_path / "runner" / other).exists()
     assert runner.pull("games", []) == 0
+
+
+def test_a_pull_gets_every_file_once_and_fails_on_any_file_it_cannot_get(tmp_path: Path) -> None:
+    # #207: the pull's threads fetch each listed file exactly once, and a file that fails fails
+    # the pull rather than leaving a hole in the table.
+    bucket = MemoryBucket()
+    root = "lake/games/season=20102011"
+    keys = [f"{root}/game_date=2010-10-{d:02d}/part-0.parquet" for d in range(1, 31)]
+    keys += [f"{root}/game_date=2010-11-{d:02d}/part-0.parquet" for d in range(1, 31)]
+    for key in keys:
+        bucket.put_object(Key=key, Body=key.encode())
+    runner = Lake(tmp_path / "runner", "b", bucket)
+    assert runner.pull("games", workers=PULL_WORKERS) == len(keys)
+    assert sorted(bucket.gets) == sorted(keys)
+    for key in keys:
+        assert (tmp_path / "runner" / key.removeprefix("lake/")).read_bytes() == key.encode()
+    get = bucket.get_object
+
+    def flaky(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["Key"] == keys[17]:
+            raise ConnectionError("lost")
+        return get(**kwargs)
+
+    bucket.get_object = flaky  # type: ignore[method-assign]
+    fresh = Lake(tmp_path / "fresh", "b", bucket)
+    with pytest.raises(ConnectionError, match="lost"):
+        fresh.pull("games", workers=PULL_WORKERS)
+
+
+def test_the_r2_client_has_a_connection_for_every_pull_thread() -> None:
+    # #207: boto3's default pool of 10 held a pull's threads to 10 requests at a time.
+    client = R2Config("account", "key", "secret", "bucket").client()
+    assert client.meta.config.max_pool_connections == POOL_CONNECTIONS  # type: ignore[attr-defined]
+    assert POOL_CONNECTIONS >= PULL_WORKERS
 
 
 @pytest.mark.parametrize("table", ["players", "odds_snapshots"])

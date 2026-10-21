@@ -55,11 +55,20 @@ def test_lineups_hold_no_corrected_stats_and_no_listed_position() -> None:
     assert list(dtypes(ActualLineups)) == COLUMNS
 
 
+class NoRawReads:
+    """A raw store for a game whose shift chart has shifts: the ingest looks up nothing in it
+    (the time-on-ice reports are read only for a chart without shifts, #68)."""
+
+    def latest(self, prefix: str) -> str | None:
+        raise AssertionError(f"nothing should be looked up in the raw store, got {prefix}")
+
+
 class FeedsOnly:
     """An NHL API that serves a game's three feeds and fails on anything else."""
 
     def __init__(self) -> None:
         self.kinds: list[str] = []
+        self.store = NoRawReads()
 
     def _serve(self, kind: str, season: int, game_id: int) -> Response:
         self.kinds.append(kind)
