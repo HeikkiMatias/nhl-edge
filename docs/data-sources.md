@@ -453,8 +453,10 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
 
 - **Environments:** Kalshi's demo exchange, with mock funds, and the live one. They are separate accounts with separate keys. The demo exchange lists the same `KXNHLGAME` markets and tickers.
 - **Keys:** an API key is an Ed25519 (recommended) or RSA key pair, created under Account settings → API Keys. Kalshi keeps the public key; the private key is shown once.
-  - The key id and the private key's PEM text go into repository secrets only: `KALSHI_DEMO_KEY_ID` and `KALSHI_DEMO_PRIVATE_KEY`, or `KALSHI_KEY_ID` and `KALSHI_PRIVATE_KEY`. On a laptop they go into `.env`.
-  - A key pasted as one line, with its newlines written as `\n`, is read the same.
+  - The key id and the private key's PEM text go into GitHub secrets only: `KALSHI_DEMO_KEY_ID` and `KALSHI_DEMO_PRIVATE_KEY` as repository secrets, and `KALSHI_KEY_ID` and `KALSHI_PRIVATE_KEY` as secrets of the `kalshi-live` environment (`docs/security.md`). On a laptop they go into `.env`.
+  - A key pasted as one line, with its newlines written as `\n`, is read the same, and so is its base64 text pasted without the `-----BEGIN` and `-----END` lines (#300).
+  - A key that can't be read is named in the log by its shape only: a public key or the key id in its place, encrypted, cut off, or its length and lines.
+  - It fails a run only when `KALSHI_TRADING` names its environment or an order of that environment waits on it. Otherwise the run warns and skips that environment, and `nhl kalshi check` is where the key is proven.
   - Nothing stores, prints or commits a key.
 - **Signing** ([API Keys](https://docs.kalshi.com/getting_started/api_keys)): each request carries `KALSHI-ACCESS-KEY` (the key id), `KALSHI-ACCESS-TIMESTAMP` (milliseconds) and `KALSHI-ACCESS-SIGNATURE`. The signature is the base64 signature of timestamp + method + path, with the path from the host (`/trade-api/v2/...`) and no query.
   - An Ed25519 key signs that text.

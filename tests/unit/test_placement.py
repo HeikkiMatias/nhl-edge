@@ -756,6 +756,51 @@ def test_nhl_real_orders_skips_an_environment_without_its_key(
     assert "kalshi orders live: no key set, skipped" in result.output
 
 
+def unreadable(monkeypatch: pytest.MonkeyPatch, env: str) -> None:
+    """The environment's key can't be read (#300), and the other environment's still works."""
+    working = kt.KalshiTrade.from_env
+
+    def from_env(cls: Any, name: str, raw: Any) -> Any:
+        if name == env:
+            kt.load_key("pasted-wrong", kt.KEY_VARIABLES[name][1])
+        return working(name, raw)
+
+    monkeypatch.setattr(kt.KalshiTrade, "from_env", classmethod(from_env))
+
+
+def test_nhl_real_orders_warns_of_a_key_nothing_needs_and_tracks_the_other(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands(tmp_path, monkeypatch, "live", real_rows())
+    assert runner.invoke(app, ["real", "place", "--r2"]).exit_code == 0
+    unreadable(monkeypatch, pm.DEMO)
+    result = runner.invoke(app, ["real", "orders", "--r2"])
+    assert result.exit_code == 0, result.output
+    assert "::warning::kalshi orders demo: KALSHI_DEMO_PRIVATE_KEY is no unencrypted" in (
+        result.output
+    )
+    assert "kalshi orders live: 3 resting" in result.output
+    assert "pasted-wrong" not in result.output
+
+
+@pytest.mark.parametrize("setting", ["demo", "off"])
+def test_nhl_real_orders_fails_on_a_key_the_switch_or_an_order_needs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setting: str
+) -> None:
+    # The switch naming the environment, or an order of it waiting while the switch is off.
+    commands(tmp_path, monkeypatch, "demo", real_rows())
+    if setting == "off":
+        assert runner.invoke(app, ["real", "place", "--r2"]).exit_code == 0
+        monkeypatch.setenv("KALSHI_TRADING", "off")
+    unreadable(monkeypatch, pm.DEMO)
+    result = runner.invoke(app, ["real", "orders", "--r2"])
+    assert result.exit_code == 1, result.output
+    assert "kalshi orders demo: failed (KALSHI_DEMO_PRIVATE_KEY is no unencrypted" in (
+        result.output
+    )
+    assert "::warning::" not in result.output
+
+
 def test_nhl_real_place_without_the_schedule_places_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

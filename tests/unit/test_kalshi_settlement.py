@@ -278,6 +278,40 @@ def test_nhl_real_reconcile_kalshi_without_the_live_key_checks_nothing(
     assert "no live key set, nothing to check" in result.output
 
 
+def unreadable_live_key(cls: Any, env: str, raw: Any) -> Any:
+    return kt.load_key("pasted-wrong", "KALSHI_PRIVATE_KEY")
+
+
+def test_nhl_real_reconcile_kalshi_warns_of_a_key_with_no_live_order_to_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nhl_edge import cli
+
+    local_raw(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        cli, "_real_record", lambda r2: (None, lb.R2Store(ConditionalBucket(), "b"))
+    )
+    monkeypatch.setattr(kt.KalshiTrade, "from_env", classmethod(unreadable_live_key))
+    result = runner.invoke(app, ["real", "reconcile-kalshi", "--r2"])
+    assert result.exit_code == 0, result.output
+    assert "::warning::kalshi settlements: KALSHI_PRIVATE_KEY is no unencrypted" in result.output
+    assert "no live order to check" in result.output
+
+
+def test_nhl_real_reconcile_kalshi_fails_on_a_key_a_live_order_needs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nhl_edge import cli
+
+    record, *_ = finished(tmp_path)
+    local_raw(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "_real_record", lambda r2: (None, record))
+    monkeypatch.setattr(kt.KalshiTrade, "from_env", classmethod(unreadable_live_key))
+    result = runner.invoke(app, ["real", "reconcile-kalshi", "--r2"])
+    assert result.exit_code == 1, result.output
+    assert "kalshi settlements: failed (KALSHI_PRIVATE_KEY is no unencrypted" in result.output
+
+
 def test_nhl_real_reconcile_kalshi_sends_the_differences_and_logs_counts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

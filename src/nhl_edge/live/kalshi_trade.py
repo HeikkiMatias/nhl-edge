@@ -26,6 +26,7 @@ the record, and an error names only its call and status.
 """
 
 import base64
+import re
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -35,6 +36,7 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa
 
@@ -73,6 +75,10 @@ CENT = Decimal("0.01")
 PRICE_STEP = Decimal("0.0001")
 COUNT_STEP = Decimal("0.01")
 
+# A PEM block's label, and an API key id's shape: what key_shape may say of a key's text.
+PEM_LABEL = re.compile(r"-----BEGIN ([A-Z0-9 ]{1,40})-----")
+KEY_ID_SHAPE = re.compile(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
+
 type PrivateKey = ed25519.Ed25519PrivateKey | rsa.RSAPrivateKey
 
 
@@ -87,15 +93,41 @@ def clock() -> datetime:
 
 def load_key(pem: str, name: str = "the private key") -> PrivateKey:
     """An Ed25519 or RSA private key from its PEM text. A secret pasted as one line, with its
-    newlines written as \\n, is read the same."""
+    newlines written as \\n, is read the same, and so is the key's base64 text pasted without its
+    BEGIN and END lines (#300). A key that can't be read is described by its shape only."""
     text = pem.strip().replace("\\n", "\n")
     try:
-        key = serialization.load_pem_private_key(text.encode(), password=None)
-    except (TypeError, ValueError):
-        raise KalshiTradeError(f"{name} is no unencrypted PEM private key") from None
+        if "-----BEGIN" in text:
+            key = serialization.load_pem_private_key(text.encode(), password=None)
+        else:
+            der = base64.b64decode("".join(text.split()), validate=True)
+            key = serialization.load_der_private_key(der, password=None)
+    except (TypeError, ValueError, UnsupportedAlgorithm):
+        raise KalshiTradeError(
+            f"{name} is no unencrypted PEM private key: {key_shape(text)}"
+        ) from None
     if not isinstance(key, ed25519.Ed25519PrivateKey | rsa.RSAPrivateKey):
         raise KalshiTradeError(f"{name} is neither an Ed25519 nor an RSA key")
     return key
+
+
+def key_shape(text: str) -> str:
+    """Why a key's text isn't a private key, from its shape and never its content (run logs are
+    public): another key or the key id pasted in its place, an encrypted or cut-off key, or its
+    length and lines."""
+    labels = PEM_LABEL.findall(text)
+    if any("PUBLIC" in label for label in labels):
+        return "it is a public key, and the private key goes here"
+    if any("OPENSSH" in label for label in labels):
+        return "it is in OpenSSH's format, and Kalshi's key is PEM"
+    if any("ENCRYPTED" in label for label in labels) or "ENCRYPTED" in text:
+        return "it is encrypted"
+    if KEY_ID_SHAPE.fullmatch(text):
+        return "it is shaped as a key id, and the private key goes here"
+    if labels and "-----END" not in text:
+        return "it has its BEGIN line but no END line, as if cut off"
+    begins = f"a BEGIN {labels[0]} line" if labels else "no BEGIN line"
+    return f"it doesn't parse ({len(text)} characters on {len(text.splitlines())} lines, {begins})"
 
 
 def sign(key: PrivateKey, text: str) -> str:
