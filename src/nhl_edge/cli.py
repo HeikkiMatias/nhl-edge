@@ -1435,7 +1435,7 @@ def research_list(r2: R2Flag = False) -> None:
 
     store = _research_store(r2)
     for run in research.runs(store):
-        manifest = research.read(store, run).manifest
+        manifest = research.manifest(store, run)
         options = {k: v for k, v in manifest.get("options", {}).items() if v}
         seasons = ",".join(map(str, manifest.get("seasons", [])))
         typer.echo(f"{run}  {manifest.get('mode')}  {seasons}  {options or ''}".rstrip())
@@ -1513,7 +1513,9 @@ def research_compare(
                 f"  {name}: {estimate['mean']:+.4f} [{estimate['low']:+.4f}, "
                 f"{estimate['high']:+.4f}] over {estimate['games']:,} games"
             )
-    if compared["inputs_differ"]:
+    if compared["inputs_differ"] is None:
+        typer.echo(f"  inputs not compared: {compared['inputs_note']}")
+    elif compared["inputs_differ"]:
         typer.echo(f"  inputs read differently: {', '.join(compared['inputs_differ'])}")
     else:
         typer.echo("  both runs read the same inputs")

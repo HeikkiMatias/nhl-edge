@@ -33,7 +33,7 @@ from typing import Any
 
 import polars as pl
 
-from nhl_edge.backtest import b3_report, blend, reports, walk_forward
+from nhl_edge.backtest import b2_report, b3_report, blend, reports, walk_forward
 from nhl_edge.game.b2 import B2Model
 from nhl_edge.game.b3 import B3Model
 from nhl_edge.lake.tables import Reader
@@ -50,7 +50,8 @@ COVERAGE, FITS, REPORT, INPUTS = "coverage.json", "fits.json", "report.json", "i
 # Report keys that are no estimate from the kept rows: fits shown beside the estimates, and the
 # train cutoffs the add-ons raise from the fits.
 NOT_REPRODUCED = frozenset({"fits", "train_cutoff"})
-RUN_ID = re.compile(r"^[a-z0-9-]+-\d{6}$")
+# <version>-<HHMMSS>-<microseconds>; the first bundles of 2026-10-21 have no microseconds.
+RUN_ID = re.compile(r"^[a-z0-9-]+-\d{6}(-\d{6})?$")
 
 
 @dataclass
@@ -70,9 +71,9 @@ class Recorded:
 
 
 def run_id(version: str, run_utc: datetime) -> str:
-    """The run's bundle name: its version and UTC time, as the hockey reports are named
-    (b3_report.hockey_file), so two runs of one commit on one day never share one."""
-    return f"{version}-{run_utc:%H%M%S}"
+    """The run's bundle name: its version and UTC start time to the microsecond, so two runs of
+    one commit, even started in the same second, never share one (Codex on #303)."""
+    return f"{version}-{run_utc:%H%M%S-%f}"
 
 
 def where(run: str) -> str:
@@ -193,6 +194,11 @@ def unsealed(store: lb.Store, run: str) -> Bundle:
     return _bundle({}, {name: store.get(f"{prefix}/{name}") for name in names})
 
 
+def manifest(store: lb.Store, run: str) -> dict[str, Any]:
+    """A kept run's manifest alone, as a listing reads it: read() verifies every file."""
+    return json.loads(store.get(f"{where(run)}/{lb.MANIFEST}"))
+
+
 def runs(store: lb.Store) -> list[str]:
     """Every kept run, complete with its manifest, in name order."""
     return sorted(
@@ -255,6 +261,12 @@ def development(bundle: Bundle) -> dict[str, Any]:
                 models[blend.BLEND][f"paired_against_{reference}"] = blend._estimates(
                     blend.paired(by_experiment, blend.BLEND, reference), "difference"
                 )
+        # The calibrations the add-ons report, from the same rows (Codex on #303).
+        for model in (b2_report.MODEL, b3_report.MODEL, blend.BLEND):
+            if model in models:
+                models[model]["calibration"] = b2_report.calibrated(
+                    by_experiment.filter(pl.col("model") == model)
+                )
     return {key: again[key] for key in ("experiments", "e2_against_e1")}
 
 
@@ -316,7 +328,9 @@ def compare(
     """other_model's log loss in other minus base_model's in base, per game of the experiment
     that both runs scored for the method, pooled and per season with weekly block bootstrap
     intervals; and the input tables whose rows differ between the two runs, or that only one
-    read. No pass or fail is read from it."""
+    read. A digest is the sha256 of a table's rows as parquet, which another polars version may
+    encode differently: runs kept with different versions get no input comparison (None), and
+    a note saying why (Codex on #303). No pass or fail is read from it."""
 
     def scored(bundle: Bundle, model: str) -> pl.DataFrame:
         rows = _rows(bundle).filter(
@@ -335,6 +349,8 @@ def compare(
     )
     paired = paired.with_columns(difference=pl.col("other") - pl.col("base"))
     tables = sorted(set(base.inputs) | set(other.inputs))
+    versions = [bundle.manifest.get("polars") for bundle in (base, other)]
+    comparable = versions[0] == versions[1]
     return {
         "base": {"run": base.manifest.get("run"), "model": base_model},
         "other": {"run": other.manifest.get("run"), "model": other_model},
@@ -342,7 +358,13 @@ def compare(
         "method": method,
         "games": {"base": a.height, "other": b.height, "paired": paired.height},
         "difference": reports._estimates(paired, "difference") if paired.height else None,
-        "inputs_differ": [t for t in tables if base.inputs.get(t) != other.inputs.get(t)],
+        "inputs_differ": [t for t in tables if base.inputs.get(t) != other.inputs.get(t)]
+        if comparable
+        else None,
+        "inputs_note": None
+        if comparable
+        else f"the runs' input digests come from polars {versions[0]} and {versions[1]}, which "
+        "may encode the same rows differently",
     }
 
 

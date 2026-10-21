@@ -9,7 +9,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from nhl_edge.backtest import b3_report, blend, reports, research
+from nhl_edge.backtest import b2_report, b3_report, blend, reports, research
 from nhl_edge.backtest.walk_forward import PREDICTION_SCHEMA
 from nhl_edge.live import bundle as lb
 from nhl_edge.market.recalibration import Recalibration
@@ -93,6 +93,8 @@ def development_report(rows: pl.DataFrame) -> dict[str, Any]:
         models[blend.BLEND][f"paired_against_{reference}"] = blend._estimates(
             blend.paired(tested, blend.BLEND, reference), "difference"
         )
+    for model in ("B2", "B3", blend.BLEND):
+        models[model]["calibration"] = b2_report.calibrated(tested.filter(pl.col("model") == model))
     return report
 
 
@@ -115,7 +117,9 @@ def test_a_kept_run_reproduces_its_report_from_its_rows_alone(tmp_path: Path) ->
     store = lb.LocalStore(tmp_path)
     rows = predictions()
     run = research.run_id("backtest-20261021-abc1234", NOW)
-    assert run == "backtest-20261021-abc1234-180509"
+    # To the microsecond, so two runs started in one second never share a bundle.
+    assert run == "backtest-20261021-abc1234-180509-000000"
+    assert research.run_id("v", NOW.replace(microsecond=17)) == "v-180509-000017"
     problems = research.keep(
         store, run, development_files(rows, development_report(rows)), IDENTITY
     )
@@ -146,6 +150,14 @@ def test_a_report_the_rows_dont_give_is_never_sealed(tmp_path: Path) -> None:
     problems = research.keep(store, run, development_files(changed, report), IDENTITY)
     assert any("/experiments/E1/models/B3/log_loss" in p for p in problems)
     assert any("paired_against_B2" in p for p in problems)
+    # A calibration that doesn't follow from the rows is named too (Codex on #303).
+    stale = development_report(rows)
+    stale["experiments"]["E1"]["models"]["BLEND"]["calibration"]["pooled"]["slope"]["value"] += 1
+    other = "backtest-20261021-abc1234-180600"
+    problems = research.keep(store, other, development_files(rows, stale), IDENTITY)
+    assert [p.split(":")[0] for p in problems] == [
+        "/experiments/E1/models/BLEND/calibration/pooled/slope/value"
+    ]
     # Without its manifest the bundle never reads as complete, nor is it listed.
     with pytest.raises(ValueError, match="no manifest"):
         research.read(store, run)
@@ -250,7 +262,20 @@ def test_compare_pairs_two_runs_game_by_game_and_names_what_they_read_differentl
         .with_columns(difference=pl.col("other") - pl.col("base"))
     )
     assert compared["difference"] == reports._estimates(direct, "difference")
-    assert compared["inputs_differ"] == ["sbr_odds"]
+    assert compared["inputs_differ"] == ["sbr_odds"] and compared["inputs_note"] is None
+    # Digests from another polars version aren't compared (Codex on #303).
+    third = "backtest-20261021-abc1234-181300"
+    research.keep(
+        store,
+        third,
+        development_files(rows, development_report(rows)),
+        {**IDENTITY, "polars": "9.9"},
+    )
+    across = research.compare(
+        research.read(store, first), research.read(store, third), "B3", "B3", "E1"
+    )
+    assert across["inputs_differ"] is None and "polars None and 9.9" in across["inputs_note"]
+    assert research.manifest(store, third)["polars"] == "9.9"
     with pytest.raises(ValueError, match="has no E1 B9 none"):
         research.compare(
             research.read(store, first), research.read(store, second), "B3", "B9", "E1"
