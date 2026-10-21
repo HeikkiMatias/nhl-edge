@@ -4138,7 +4138,12 @@ def audit_corrections_replay(
         ),
     ] = False,
     rebuilt: Annotated[
-        bool, typer.Option("--rebuilt", help="Reuse the two lakes an earlier run built in --work.")
+        bool,
+        typer.Option(
+            "--rebuilt",
+            help="Reuse the two lakes an earlier run in --work rebuilt to the end, from the same "
+            "rechecks.",
+        ),
     ] = False,
 ) -> None:
     """Measure post-game corrections at the level of inputs and predictions (#173, ADR 0004), a
@@ -4191,23 +4196,34 @@ def audit_corrections_replay(
         typer.echo("the nhl command is not installed: uv sync", err=True)
         raise typer.Exit(code=1)
     versions = {"base": work / "base", "corrected": work / "corrected"}
+    records = {
+        "base": cr.build_record(season, []),
+        "corrected": cr.build_record(season, corrected.games),
+    }
     try:
         for name, where in versions.items():
             lake_dir = where / LAKE_DIR
             cr.scratch(lake_dir, LAKE_DIR)
             if rebuilt:
-                if not lake_dir.is_dir():
-                    raise ValueError(f"{where} has no lake to reuse")
+                # Only a rebuild that ran every step, from the same rechecks, is reused (Codex on
+                # #302): one cut short holds a mix of rebuilt and copied tables.
+                if not cr.finished(where, records[name]):
+                    raise ValueError(
+                        f"{where} holds no finished rebuild from these rechecks: remove it and "
+                        "run again without --rebuilt"
+                    )
                 continue
             if lake_dir.exists():
-                raise ValueError(f"{lake_dir} exists: pass --rebuilt to reuse it, or remove it")
+                raise ValueError(
+                    f"{lake_dir} exists: pass --rebuilt to reuse a finished rebuild, or remove it"
+                )
             for table in lf.LAKE_TABLES:
                 if (LAKE_DIR / table).is_dir():
                     shutil.copytree(LAKE_DIR / table, lake_dir / table)
             if name == "corrected":
                 cr.swap_in(Lake(lake_dir), corrected, LAKE_DIR)
             typer.echo(f"{name}: the live build's steps over {season} in {where}")
-            cr.run_steps(where, season, LAKE_DIR, [nhl], where / "steps.log")
+            cr.run_steps(where, season, LAKE_DIR, [nhl], where / "steps.log", records[name])
     except (ValueError, RuntimeError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None

@@ -29,6 +29,7 @@ scratch directory as theirs, and nothing touches the repository's lake, its repo
 swap_in and run_steps refuse a lake mirrored to R2 or the repository's own.
 """
 
+import json
 import subprocess
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -63,6 +64,9 @@ STEPS = (
     "power-plays",
     "finishing",
 )
+# Written in a work directory once every step has rebuilt its lake: the only mark a rebuild may be
+# reused by (--rebuilt).
+FINISHED = "rebuilt.json"
 # The tables they write, compared between the versions.
 FEATURE_TABLES = ("shot_xg", "stints", *TARGET_TABLES)
 # Columns that name the build that wrote a row, not what it says.
@@ -195,15 +199,39 @@ def swap_in(lake: Lake, corrected: Corrected, protected: Path) -> dict[str, int]
     return written
 
 
-def run_steps(work: Path, season: int, protected: Path, nhl: Sequence[str], log: Path) -> None:
+def build_record(season: int, swapped: Sequence[int]) -> dict[str, Any]:
+    """What a finished rebuild of a work directory records (FINISHED): the season, the steps, and
+    the games whose feed rows were swapped in before them (none for the base)."""
+    return {"season": season, "steps": list(STEPS), "swapped": sorted(swapped)}
+
+
+def finished(work: Path, record: Mapping[str, Any]) -> bool:
+    """Whether work holds a rebuild that ran every step to the end for record (build_record): a
+    run cut short, or one from other rechecks, has no such mark and is never reused."""
+    try:
+        return json.loads((work / FINISHED).read_text()) == dict(record)
+    except (OSError, ValueError):
+        return False
+
+
+def run_steps(
+    work: Path,
+    season: int,
+    protected: Path,
+    nhl: Sequence[str],
+    log: Path,
+    record: Mapping[str, Any],
+) -> None:
     """Run the live build's steps over the season with work as their working directory, so they
-    read and write work's lake (the lake's path is relative), their output appended to log. nhl
-    is the command that runs the CLI. Refused for the repository's own lake, or a work directory
+    read and write work's lake (the lake's path is relative), their output appended to log, and
+    once every step has succeeded mark the rebuild finished with record (build_record). nhl is
+    the command that runs the CLI. Refused for the repository's own lake, or a work directory
     without a lake to rebuild."""
     lake_dir = work / LAKE_DIR
     scratch(lake_dir, protected)
     if not lake_dir.is_dir():
         raise ValueError(f"{work} has no lake to rebuild ({LAKE_DIR})")
+    (work / FINISHED).unlink(missing_ok=True)
     with log.open("a") as out:
         for step in STEPS:
             out.write(f"$ nhl {step} --seasons {season}\n")
@@ -217,6 +245,7 @@ def run_steps(work: Path, season: int, protected: Path, nhl: Sequence[str], log:
             )
             if done.returncode:
                 raise RuntimeError(f"nhl {step} failed in {work} (exit {done.returncode}): {log}")
+    (work / FINISHED).write_text(json.dumps(dict(record), indent=1))
 
 
 def table_changes(base: pl.DataFrame, corrected: pl.DataFrame, table: str) -> pl.DataFrame:

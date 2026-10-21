@@ -157,22 +157,28 @@ def test_the_replay_never_writes_the_repositorys_lake_or_r2(tmp_path: Path) -> N
     work = tmp_path / "work"
     (work / "data" / "lake").mkdir(parents=True)
     log = tmp_path / "steps.log"
+    record = cr.build_record(20262027, [])
     with pytest.raises(ValueError, match="repository's lake"):
-        cr.run_steps(work, 20262027, work / "data" / "lake", ["true"], log)
+        cr.run_steps(work, 20262027, work / "data" / "lake", ["true"], log, record)
     with pytest.raises(ValueError, match="no lake"):
-        cr.run_steps(tmp_path / "empty", 20262027, tmp_path / "lake", ["true"], log)
+        cr.run_steps(tmp_path / "empty", 20262027, tmp_path / "lake", ["true"], log, record)
 
 
 def test_the_steps_run_in_the_live_builds_order_in_the_work_directory(tmp_path: Path) -> None:
     work = tmp_path / "work"
     (work / "data" / "lake").mkdir(parents=True)
     script = "import sys, pathlib; pathlib.Path('ran.txt').open('a').write(sys.argv[1] + '\\n')"
-    cr.run_steps(
-        work, 20262027, tmp_path / "lake", [sys.executable, "-c", script], tmp_path / "log"
-    )
+    record = cr.build_record(20262027, [2026020001])
+    assert not cr.finished(work, record)
+    nhl = [sys.executable, "-c", script]
+    cr.run_steps(work, 20262027, tmp_path / "lake", nhl, tmp_path / "log", record)
     assert (work / "ran.txt").read_text().split() == list(cr.STEPS)
+    # Only a rebuild that ran every step, from the same rechecks, is reused (Codex on #302).
+    assert cr.finished(work, record)
+    assert not cr.finished(work, cr.build_record(20262027, [2026020001, 2026020002]))
     with pytest.raises(RuntimeError, match="nhl xg failed"):
-        cr.run_steps(work, 20262027, tmp_path / "lake", ["false"], tmp_path / "log")
+        cr.run_steps(work, 20262027, tmp_path / "lake", ["false"], tmp_path / "log", record)
+    assert not cr.finished(work, record)
 
 
 def test_table_changes_count_values_beyond_the_tolerance_and_ignore_the_build() -> None:
