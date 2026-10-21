@@ -1,6 +1,6 @@
 # Corrections replay (#173)
 
-`corrections-replay-20261021-0372cd5`. A retrospective sensitivity check of ADR 0004: it never enters the ledger, the live counts or any fit, and no result in it is read to prefer either version.
+`corrections-replay-20261021-76e7bf2`. A retrospective sensitivity check of ADR 0004: it never enters the ledger, the live counts or any fit, and no result in it is read to prefer either version.
 
 ## The corrected version
 
@@ -104,7 +104,7 @@ Each complete run bundle's day, 13 days from 2026-10-08 to 2026-10-20, decided a
 - **Each day's own bundle:** it still replays the day's ledger, every column, so the official decisions stay reproducible from their own inputs, whatever the lake holds now.
 - **Base against the ledger:** the base rows reproduce every day's ledger, every column, floats within 1e-09.
 - **Not compared:** 2 slate games not yet played when the lakes were rebuilt, so their rows are the morning build's in both versions.
-- **Games:** 96 predicted in both versions.
+- **Games:** 96 compared, 96 predicted in both versions, and 0 whose status differs between them (a prediction in one, none in the other).
 
 | Measure | Games | Changed | Median absolute change | 90th percentile | Largest |
 | --- | ---: | ---: | ---: | ---: | ---: |

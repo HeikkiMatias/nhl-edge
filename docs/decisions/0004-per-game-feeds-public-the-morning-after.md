@@ -58,7 +58,7 @@ Each of the 89 games due by 2026-10-20 (2026020001 to 2026020089) was fetched ag
 
 ## Measured at the level of predictions (#173, 2026-10-21)
 
-`nhl audit corrections-replay` rebuilt the live season twice in scratch copies of the lake: as it is, and with the 105 rechecked games' feed rows (2026-09-29 to 10-13) parsed from their week-later copies by the ingest's own parser. Both ran the live build's ten steps. Then each decision day from 2026-10-08 to 10-20 was decided again with each version's rows, under the day's own fits, prices, bankroll and starters (`reports/audit/corrections-replay-20261021-0372cd5.md`).
+`nhl audit corrections-replay` rebuilt the live season twice in scratch copies of the lake: as it is, and with the 105 rechecked games' feed rows (2026-09-29 to 10-13) parsed from their week-later copies by the ingest's own parser. Both ran the live build's ten steps. Then each decision day from 2026-10-08 to 10-20 was decided again with each version's rows, under the day's own fits, prices, bankroll and starters (`reports/audit/corrections-replay-20261021-76e7bf2.md`).
 
 - **Inputs:** the corrections reach most later games' pre-game rows, but by little.
   - ΔS changes by at most 0.0026, a goalie's effect by at most 0.00005, and a player's rating by at most 0.0045.
