@@ -56,11 +56,29 @@ Each of the 89 games due by 2026-10-20 (2026020001 to 2026020089) was fetched ag
 - **The rule below is met:** corrections changed more than scorer credit in more than a few games.
 - **The owner's decision (2026-10-21):** this ADR stands. The corrections reach many games but few rows, and are accepted as small. #173 measures their effect on inputs and predictions later. Gate 1 went ahead (ADR 0014).
 
+## Measured at the level of predictions (#173, 2026-10-21)
+
+`nhl audit corrections-replay` rebuilt the live season twice in scratch copies of the lake: as it is, and with the 105 rechecked games' feed rows (2026-09-29 to 10-13) parsed from their week-later copies by the ingest's own parser. Both ran the live build's ten steps. Then each decision day from 2026-10-08 to 10-20 was decided again with each version's rows, under the day's own fits, prices, bankroll and starters (`reports/audit/corrections-replay-20261021-0372cd5.md`).
+
+- **Inputs:** the corrections reach most later games' pre-game rows, but by little.
+  - ΔS changes by at most 0.0026, a goalie's effect by at most 0.00005, and a player's rating by at most 0.0045.
+  - Goalie starts, lineup replacements and schedule terms don't change.
+- **Predictions:** over 96 predictions, the blend's probability moves by a median of 0.004 points, and by at most 0.027. B2 moves by at most 0.13 points, and B3 by at most 0.06.
+- **Bets, a diagnostic only:** both versions make the same 31 bets on the same sides. 26 stakes move, by at most 0.005 units of the 100-unit bankroll.
+- **Reproducibility:**
+  - each day's own bundle still replays its ledger (#171);
+  - the base rebuild reproduces production's feature tables row for row, and every ledger.
+- **Limits:**
+  - three calendar weeks give too few blocks for an interval (hard rule 7), so no statistical verdict is made;
+  - 64 of the 105 rechecked shift charts came back empty (#237), so shift corrections are seen in 41 games only;
+  - the sample is prospective, so it can't show how the 2010-26 backfill's late copies differed from first ones.
+- **Recommendation:** this ADR stands, with this measured limitation. At this size, corrections move predictions by hundredths of a point and change no bet, so nothing here calls for a revision. The replay can be run again as rechecks accumulate.
+
 ## Consequences
 
 - Every row of the four tables has `observed_utc = result_public_utc(game_date)`. So does `strength_time` (#72, added later), which `tests/leakage/test_strength_time.py` checks. A game's own shots, shifts and lineup never feed a prediction for it (hard rules 1 and 9). `tests/leakage/test_shots.py`, `test_shifts.py`, `test_actual_lineups.py` and `test_shift_coverage.py` check this.
 - A feature that wants assists, points or other scoring credits needs a new decision first. Adding the column also breaks a locked leakage test.
-- Live ratings use first versions for the latest games, and the backtest uses corrected ones. This makes the backtest slightly optimistic, by an amount #30 measures.
+- Live ratings use first versions for the latest games, and the backtest uses corrected ones. This makes the backtest slightly optimistic: #30 counted the corrections, and #173 measured their effect on predictions (above).
 
 ## Revisit when
 
