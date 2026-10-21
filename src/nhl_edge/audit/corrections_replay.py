@@ -121,6 +121,14 @@ class Corrected:
     unmatched: list[int] = field(default_factory=list)
     charts_kept: list[int] = field(default_factory=list)
 
+    @property
+    def sources(self) -> list[str]:
+        """The raw keys the corrected rows were parsed from. Raw responses are never
+        overwritten, so they fix the rows' content: a chart that is rechecked again names a new
+        key."""
+        keys = {key for frame in self.rows.values() for key in frame["raw_key"].to_list()}
+        return sorted(key for key in keys if key is not None)
+
 
 def _schema(table: str) -> dict[str, pl.DataType]:
     return dict(TABLES[table].empty().schema)
@@ -199,10 +207,16 @@ def swap_in(lake: Lake, corrected: Corrected, protected: Path) -> dict[str, int]
     return written
 
 
-def build_record(season: int, swapped: Sequence[int]) -> dict[str, Any]:
+def build_record(season: int, corrected: Corrected | None) -> dict[str, Any]:
     """What a finished rebuild of a work directory records (FINISHED): the season, the steps, and
-    the games whose feed rows were swapped in before them (none for the base)."""
-    return {"season": season, "steps": list(STEPS), "swapped": sorted(swapped)}
+    the games whose feed rows were swapped in before them with the raw keys they were parsed from
+    (Codex on #302), none for the base."""
+    return {
+        "season": season,
+        "steps": list(STEPS),
+        "swapped": sorted(corrected.games) if corrected else [],
+        "sources": corrected.sources if corrected else [],
+    }
 
 
 def finished(work: Path, record: Mapping[str, Any]) -> bool:
@@ -571,8 +585,11 @@ def markdown(
             f"- **Not compared:** {len(decisions.unplayed)} slate games not yet played when the "
             "lakes were rebuilt, so their rows are the morning build's in both versions."
         )
+    moved = games.filter(pl.col("status").ne_missing(pl.col("status_corrected")))
     lines += [
-        f"- **Games:** {both.height} predicted in both versions.",
+        f"- **Games:** {games.height} compared, {both.height} predicted in both versions, and "
+        f"{moved.height} whose status differs between them (a prediction in one, none in the "
+        "other).",
         "",
         "| Measure | Games | Changed | Median absolute change | 90th percentile | Largest |",
         "| --- | ---: | ---: | ---: | ---: | ---: |",
@@ -584,16 +601,18 @@ def markdown(
         lines.append(
             f"| {column}{unit} | {n} | {moved} | {show(median)} | {show(p90)} | {show(largest)} |"
         )
+    # Over every compared game, not only those predicted in both: a game that loses an input in
+    # one version can lose its bet with it (Codex on #302).
     bet, bet_corrected = pl.col("bet").fill_null(False), pl.col("bet_corrected").fill_null(False)
-    bets = both.filter(bet | bet_corrected)
+    bets = games.filter(bet | bet_corrected)
     flipped = bets.filter(bet != bet_corrected)
     sided = bets.filter(bet & bet_corrected, pl.col("side") != pl.col("side_corrected"))
     _, staked, _, _, largest = spread(bets, "stake")
     lines += [
         "",
         "**Bets, a diagnostic only:** at the day's own prices, "
-        f"{int(both['bet'].fill_null(False).sum())} bets in the base and "
-        f"{int(both['bet_corrected'].fill_null(False).sum())} in the corrected version. "
+        f"{int(games['bet'].fill_null(False).sum())} bets in the base and "
+        f"{int(games['bet_corrected'].fill_null(False).sum())} in the corrected version. "
         f"{flipped.height} games are bet in one version only, {sided.height} bet in both change "
         f"side, and "
         f"{staked} stakes change, the largest by {largest:.3f} units of the 100-unit bankroll.",

@@ -4197,8 +4197,8 @@ def audit_corrections_replay(
         raise typer.Exit(code=1)
     versions = {"base": work / "base", "corrected": work / "corrected"}
     records = {
-        "base": cr.build_record(season, []),
-        "corrected": cr.build_record(season, corrected.games),
+        "base": cr.build_record(season, None),
+        "corrected": cr.build_record(season, corrected),
     }
     try:
         for name, where in versions.items():

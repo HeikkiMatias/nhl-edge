@@ -157,7 +157,7 @@ def test_the_replay_never_writes_the_repositorys_lake_or_r2(tmp_path: Path) -> N
     work = tmp_path / "work"
     (work / "data" / "lake").mkdir(parents=True)
     log = tmp_path / "steps.log"
-    record = cr.build_record(20262027, [])
+    record = cr.build_record(20262027, None)
     with pytest.raises(ValueError, match="repository's lake"):
         cr.run_steps(work, 20262027, work / "data" / "lake", ["true"], log, record)
     with pytest.raises(ValueError, match="no lake"):
@@ -168,14 +168,20 @@ def test_the_steps_run_in_the_live_builds_order_in_the_work_directory(tmp_path: 
     work = tmp_path / "work"
     (work / "data" / "lake").mkdir(parents=True)
     script = "import sys, pathlib; pathlib.Path('ran.txt').open('a').write(sys.argv[1] + '\\n')"
-    record = cr.build_record(20262027, [2026020001])
+    rows = {t: pl.DataFrame({"raw_key": [f"nhl/{t}-recheck/1"]}) for t in FEED_TABLES}
+    swapped = cr.Corrected([2026020001], [20262027], [date(2026, 10, 1)], rows)
+    record = cr.build_record(20262027, swapped)
     assert not cr.finished(work, record)
     nhl = [sys.executable, "-c", script]
     cr.run_steps(work, 20262027, tmp_path / "lake", nhl, tmp_path / "log", record)
     assert (work / "ran.txt").read_text().split() == list(cr.STEPS)
-    # Only a rebuild that ran every step, from the same rechecks, is reused (Codex on #302).
+    # Only a rebuild that ran every step, from the same rechecks, is reused (Codex on #302): more
+    # games, or the same game with a chart rechecked again, is another build.
     assert cr.finished(work, record)
-    assert not cr.finished(work, cr.build_record(20262027, [2026020001, 2026020002]))
+    more = replace(swapped, games=[2026020001, 2026020002])
+    assert not cr.finished(work, cr.build_record(20262027, more))
+    chart = {**rows, "shifts": pl.DataFrame({"raw_key": ["nhl/shiftcharts-recheck/2"]})}
+    assert not cr.finished(work, cr.build_record(20262027, replace(swapped, rows=chart)))
     with pytest.raises(RuntimeError, match="nhl xg failed"):
         cr.run_steps(work, 20262027, tmp_path / "lake", ["false"], tmp_path / "log", record)
     assert not cr.finished(work, record)
@@ -411,5 +417,32 @@ def test_the_report_counts_changed_predictions_and_bets() -> None:
         in text
     )
     assert "the base rows reproduce every day's ledger" in text
+    assert "3 compared, 3 predicted in both versions, and 0 whose status differs" in text
     assert "it still replays the day's ledger" in text and "in 1 calendar weeks" in text
     assert "1 of them keep their first chart" in text
+
+
+def test_a_bet_lost_with_its_prediction_still_counts() -> None:
+    # Codex on #302: a game the corrected version can't predict leaves the probabilities, but its
+    # base bet disappearing is a changed decision.
+    day = date(2026, 10, 14)
+    base = ledger(day, [(1, 0.50, True, 2.0), (2, 0.60, False, 0.0)])
+    corrected = ledger(day, [(1, 0.50, False, 0.0), (2, 0.60, False, 0.0)]).with_columns(
+        status=pl.when(pl.col("game_id") == 1).then(pl.lit(lp.MISSING)).otherwise("status"),
+        p_blend=pl.when(pl.col("game_id") == 1).then(None).otherwise("p_blend"),
+        bet=pl.when(pl.col("game_id") == 1).then(None).otherwise("bet"),
+        stake=pl.when(pl.col("game_id") == 1).then(None).otherwise("stake"),
+    )
+    decisions = cr.Decisions(cr.decision_changes(base, corrected), {})
+    rows = {t: pl.DataFrame() for t in FEED_TABLES}
+    text = cr.markdown(
+        "corrections-replay-20261021-abcdef0",
+        cr.Corrected([1], [20262027], [date(2026, 10, 1)], rows),
+        {},
+        pl.DataFrame(schema=cr.CHANGE_SCHEMA),
+        {},
+        decisions,
+    )
+    assert "2 compared, 1 predicted in both versions, and 1 whose status differs" in text
+    assert "1 bets in the base and 0 in the corrected version" in text
+    assert "1 games are bet in one version only" in text
