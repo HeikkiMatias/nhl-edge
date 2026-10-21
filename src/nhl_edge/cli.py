@@ -1802,11 +1802,14 @@ def tune_b2(
 @app.command("gap-review")
 def gap_review(
     out: Annotated[Path, typer.Option(help="Backtest report directory.")] = DEFAULT_BACKTEST_OUT,
-    experiment: Annotated[str, typer.Option(help="The experiment whose gaps to screen.")] = "E1",
+    experiment: Annotated[
+        str, typer.Option(help="The experiment whose gaps to screen: E1, the only one supported.")
+    ] = "E1",
 ) -> None:
     """Screen B2's gaps above 8 points from <out>/gaps.csv for gate 1's review (#79, hard rule 8):
     write every gap game's input contributions and flags to <out>/gap-screen.csv, and the games
-    to review by hand to <out>/gap-review-set.csv. Reads no result."""
+    to review by hand to <out>/gap-review-set.csv. Reads no result. E1 only: E2's folds start at
+    the first opener, which the screen's refit doesn't read (leakage check of #93)."""
     import json
 
     import polars as pl
@@ -1815,6 +1818,8 @@ def gap_review(
     from nhl_edge.game import b2
     from nhl_edge.lake.tables import Lake
 
+    if experiment != "E1":
+        raise typer.BadParameter("only E1's gaps can be screened", param_hint="--experiment")
     path = out / "gaps.csv"
     if not path.exists():
         typer.echo(f"no {path}: run nhl backtest first", err=True)

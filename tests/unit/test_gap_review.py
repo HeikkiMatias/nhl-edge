@@ -2,6 +2,7 @@ from datetime import date
 
 import numpy as np
 import polars as pl
+import pytest
 from b2_fixtures import league
 
 from nhl_edge.backtest import gap_review as review
@@ -120,6 +121,9 @@ def test_flags_for_an_odd_arena_seats_a_missing_goalie_and_early_season() -> Non
     tables = b2.Tables(
         **{**TABLES.__dict__, "games": games, "schedule_terms": terms, "goalie_starts": starts}
     )
+    # The same games, with B2's probability on the changed tables, as the backtest would score.
+    rows = gaps(tables)
+    assert {moved, limited, alone} <= set(rows["game_id"].to_list())
     screened = review.screen(tables, rows)
 
     def flagged(flag: str) -> list[int]:
@@ -142,6 +146,13 @@ def test_flags_for_an_odd_arena_seats_a_missing_goalie_and_early_season() -> Non
     }
     assert early and set(flagged("early_season")) == early
     assert not screened.filter(pl.col("game_id") == moved)["history_gap"].item()
+
+
+def test_a_refit_that_doesnt_reproduce_the_scored_probability_is_refused() -> None:
+    # The leakage check of #93: the contributions must belong to the fit that was scored.
+    rows = gaps().with_columns(p_b2=pl.col("p_b2") * 0.9)
+    with pytest.raises(ValueError, match="the refit doesn't reproduce"):
+        review.contributions(TABLES, rows)
 
 
 def test_the_review_set_takes_flagged_big_and_a_seeded_sample() -> None:

@@ -8,13 +8,18 @@ flags for the signatures a bug would leave (plan §10, edge attribution):
 - **out_of_range:** an input more than OUT_OF_RANGE standard deviations from the fold's training
   games;
 - **away_from_home:** a non-neutral game outside the home team's primary home arena;
-- **no_candidates:** a team without goalie candidates, whose goalie counts as average;
+- **no_candidates:** a team without goalie candidates known before the start, whose goalie
+  counts as average;
 - **early_season:** a team with fewer than EARLY games this season, rated mostly on last season's;
 - **limited_seats:** an arena open to only part of its seats.
 
 The review set is every flagged game, every gap above BIG, and a seeded random SAMPLE of the
 rest, split evenly across seasons. Nothing here reads a game's result: the review checks inputs
 against public facts, never who won.
+
+The screen is for E1, whose fold starts at the season's first game. Each season's refit must
+reproduce gaps.csv's p_b2 to within its rounding (REPRODUCED), so the contributions, and the goalie
+mixture's left over from them, belong to the fit that was scored (leakage check of #93).
 """
 
 from typing import Any
@@ -32,6 +37,8 @@ EARLY = 5
 BIG = 0.20
 SAMPLE = 40
 SEED = 20261001
+# gaps.csv rounds p_b2 to 4 decimals.
+REPRODUCED = 1e-4
 FLAGS = (
     "history_gap",
     "out_of_range",
@@ -60,7 +67,14 @@ def contributions(tables: b2.Tables, gaps: pl.DataFrame) -> pl.DataFrame:
         moments = tables.games.filter(pl.col("game_id").is_in(rows["game_id"].implode())).select(
             "game_id", prediction_utc="start_utc"
         )
-        _, model = b2.predictions(tables, moments, int(season), start, b2.TUNED)  # type: ignore[arg-type]
+        predicted, model = b2.predictions(tables, moments, int(season), start, b2.TUNED)  # type: ignore[arg-type]
+        scored = rows.select("game_id", "p_b2").join(predicted, on="game_id", how="left")
+        off = (scored["p_home"] - scored["p_b2"]).abs().fill_null(1.0).max()
+        if not isinstance(off, float) or off > REPRODUCED:
+            raise ValueError(
+                f"{season}: the refit doesn't reproduce gaps.csv's p_b2 (off by {off}), so the "
+                "screen's fold or tables differ from the backtest's"
+            )
         index = [b2.INPUTS.index(name) for name in others]
         means, scales, weights = (
             np.asarray(v)[index] for v in (model.means, model.scales, model.weights)
@@ -139,9 +153,7 @@ def screen(tables: b2.Tables, gaps: pl.DataFrame) -> pl.DataFrame:
             tables.games.select("game_id", "season", "game_date", team=pl.col(s))
             for s in ("home", "away")
         ]
-    ).with_columns(
-        before=pl.col("game_date").rank("min").over("season", "team").cast(pl.Int32) - 1
-    )
+    ).with_columns(before=pl.col("game_date").rank("min").over("season", "team").cast(pl.Int32) - 1)
     early = (
         gaps.select("game_id", "home", "away")
         .join(
@@ -154,8 +166,16 @@ def screen(tables: b2.Tables, gaps: pl.DataFrame) -> pl.DataFrame:
         )
         .select("game_id", early_season=pl.min_horizontal("home_before", "away_before") < EARLY)
     )
+    # As B2 counts them: candidates known before the start, E1's prediction time.
+    known = (
+        b2.candidates(tables)
+        .join(tables.games.select("game_id", "start_utc"), on="game_id")
+        .filter(pl.col("observed_utc") < pl.col("start_utc"))
+        .select("game_id", "team")
+        .unique()
+    )
     teams = pl.concat([gaps.select("game_id", team=pl.col(s)) for s in ("home", "away")]).join(
-        tables.goalie_starts.select("game_id", "team").unique(), on=["game_id", "team"], how="anti"
+        known, on=["game_id", "team"], how="anti"
     )
     return (
         gaps.join(contributions(tables, gaps), on="game_id")
