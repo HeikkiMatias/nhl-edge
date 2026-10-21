@@ -783,6 +783,29 @@ def test_nhl_real_orders_warns_of_a_key_nothing_needs_and_tracks_the_other(
     assert "pasted-wrong" not in result.output
 
 
+def test_nhl_real_orders_tells_a_skipped_environments_queued_messages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Orders final, their messages never sent, and then the key can't be read (Codex on #301).
+    from nhl_edge import cli
+
+    record, exchange, client, clock, _ = placed(tmp_path)
+    for order_id in exchange.orders:
+        exchange.expire(order_id)
+    clock.at = pf.START + timedelta(hours=4)
+    pm.reconcile(record, client, clock, STARTS)
+    assert not pm.pending_dates(record, pm.LIVE) and pm.unnotified(record, pm.LIVE, "final")
+    _, _, sent, lake = commands(tmp_path / "cli", monkeypatch, "demo", real_rows())
+    monkeypatch.setattr(cli, "_real_record", lambda r2: (lake, record))
+    unreadable(monkeypatch, pm.LIVE)
+    result = runner.invoke(app, ["real", "orders", "--r2"])
+    assert result.exit_code == 0, result.output
+    assert "::warning::kalshi orders live:" in result.output
+    assert len(sent) == 2 and "fills" in sent[1]
+    assert not pm.unnotified(record, pm.LIVE, "placed")
+    assert not pm.unnotified(record, pm.LIVE, "final")
+
+
 @pytest.mark.parametrize("case", ["switch", "order", "cancel"])
 def test_nhl_real_orders_fails_on_a_key_the_switch_an_order_or_a_cancel_needs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str

@@ -4933,21 +4933,25 @@ def real_orders(
     # cancelled. Without the schedule, the earliest start already seen holds, and nothing is final.
     days = {day for env in trades for day in placement.pending_dates(store, env)}
     starts = _listed_starts(days, r2) if days else {}
-    for env, trade in trades.items():
-        try:
-            report = placement.reconcile(
-                store,
-                trade,
-                lambda: datetime.now(UTC),
-                cancel=cancel or env != setting,
-                starts=starts,
-            )
-        except kt.KalshiTradeError as exc:
-            typer.echo(f"kalshi orders {env}: failed ({exc})", err=True)
-            failed = True
-            continue
-        typer.echo(report.line(env))
-        # Orders found on Kalshi unrecorded, then the finals: each told once its message goes.
+    for env in kt.ENVS:
+        trade, report = trades.get(env), None
+        if trade is not None:
+            try:
+                report = placement.reconcile(
+                    store,
+                    trade,
+                    lambda: datetime.now(UTC),
+                    cancel=cancel or env != setting,
+                    starts=starts,
+                )
+            except kt.KalshiTradeError as exc:
+                typer.echo(f"kalshi orders {env}: failed ({exc})", err=True)
+                failed = True
+                continue
+            typer.echo(report.line(env))
+        # Orders found on Kalshi unrecorded, then the finals: each told once its message goes. The
+        # record alone holds them, so an environment skipped for its key is told too (Codex on
+        # #301).
         today = datetime.now(UTC).astimezone(ZoneInfo("America/New_York")).date()
         adopted = placement.unnotified(store, env, "placed")
         finals = placement.unnotified(store, env, "final")
@@ -4959,7 +4963,7 @@ def real_orders(
                 failed = True
             else:
                 placement.mark_notified(store, env, told, part, datetime.now(UTC))
-        if report.after_start:
+        if report is not None and report.after_start:
             typer.echo(f"::warning::kalshi orders {env}: a fill came at or after the start")
     orders = placement.table(store)
     lake.replace("real_orders", orders)
