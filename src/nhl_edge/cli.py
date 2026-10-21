@@ -13,9 +13,11 @@ if TYPE_CHECKING:
     import polars as pl
 
     from nhl_edge.backtest.one_time import Places
+    from nhl_edge.backtest.research import Recorded
     from nhl_edge.game import b2, b3
     from nhl_edge.lake.status import TableState
-    from nhl_edge.lake.tables import Lake
+    from nhl_edge.lake.tables import Lake, Reader
+    from nhl_edge.live.bundle import Store
 
 app = typer.Typer(
     help="NHL moneyline model that must add information beyond a recalibrated market.",
@@ -49,12 +51,20 @@ kalshi_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(kalshi_app, name="kalshi")
+research_app = typer.Typer(
+    help="Research run bundles (#186): every backtest run's per-game predictions, kept once, "
+    "and paired comparisons between kept runs.",
+    no_args_is_help=True,
+)
+app.add_typer(research_app, name="research")
 
 DEFAULT_BACKTEST_SEASONS = ",".join(str(season) for season in DEVELOPMENT_SEASONS)
 DEFAULT_BACKTEST_OUT = Path("reports/backtest")
 # The version component of 2022-23's one run, apart from the development runs' (#145).
 MARKET_VALIDATION_RUN = "market-validation"
 DEFAULT_AUDIT_OUT = Path("reports/audit")
+# A research bundle without --r2 goes under data/bundles/research/ (gitignored).
+LOCAL_BUNDLES = Path("data")
 DEFAULT_XG_OUT = Path("reports/xg")
 DEFAULT_TUNING_OUT = Path("reports/tuning")
 DEFAULT_GOALIE_START_OUT = Path("reports/goalie-start")
@@ -809,6 +819,13 @@ def backtest(
             ),
         ),
     ] = None,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="Keep the run's research bundle (#186) in R2, not under data/bundles/research/.",
+        ),
+    ] = False,
 ) -> None:
     """Run the walk-forward backtest on the SBR archive, for E1 (the close) and E2 (the opener):
     B0 under each de-vig method, B1 fitted per season on the earlier seasons' prices, B2, the
@@ -819,7 +836,8 @@ def backtest(
     market blend learns from (2018-19 up to the season before the latest tested one, #138) are
     predicted too; a fold not tested gets counts only, under training_folds. With
     --hockey-only, B2 and B3 alone, at the as-of time on outcomes, to
-    <out>/hockey-<version>.json, logged in <out>/runs.csv."""
+    <out>/hockey-<version>.json, logged in <out>/runs.csv. Every run keeps its per-game
+    predictions in a research bundle (#186), sealed once they reproduce the report."""
     from datetime import UTC
 
     import polars as pl
@@ -832,6 +850,7 @@ def backtest(
         e3,
         one_time,
         reports,
+        research,
         selected,
         sensitivity,
         subsets,
@@ -938,9 +957,11 @@ def backtest(
             f"{held_out} are held out: {scope} until their phase (docs/plan.md section 5, #10)",
             param_hint="--seasons",
         )
-    lake = Lake()
+    # Every table the run reads is recorded by the sha256 of its rows, for its research bundle.
+    lake = research.Recorded(Lake())
+    store = _research_store(r2)
     if hockey_only:
-        _hockey_backtest(lake, wanted, out, where, terms)
+        _hockey_backtest(lake, wanted, out, where, terms, store)
         return
     # B1 is fitted on every open SBR season before the test season, so those need prices too.
     history = [s for s in SEASON_PAGES if s in OPEN_SEASONS]
@@ -1115,6 +1136,8 @@ def backtest(
     report["e3"]["sensitivity_without_suspect_openers"] = e3.without_suspects(
         settled, load_suspect_openers()["game_id"], groups.drop("experiment")
     )
+    run = research.run_id(run_version, now)
+    report["bundle"] = run
     files = out
     if market_validation:
         # Its own report and files, so the development run's summary.json stays as it is.
@@ -1136,6 +1159,25 @@ def backtest(
     blend_backtest.write_gaps(predictions, games, files)
     bets.write_ledger(settled, games, files, report["version"])
     typer.echo(f"{path}: {report['version']}")
+    _keep_bundle(
+        store,
+        run,
+        research.files(
+            pl.concat([every_prediction, blend_predictions]),
+            wanted,
+            every_coverage,
+            report,
+            lake.reads,
+            b1_fits=every_fit,
+            b2_fits=every_b2_fit,
+            b3_fits=every_b3_fit,
+            blend_inputs=blend_input,
+            flags=flags,
+        ),
+        research.identity(
+            research.DEVELOPMENT, report, {"market_validation": market_validation}, _uv_lock()
+        ),
+    )
     for experiment, folds_by_season in report["training_folds"]["folds"].items():
         for season, counts in folds_by_season.items():
             typer.echo(
@@ -1217,7 +1259,7 @@ def _check_blend_gaps(
     b3_gaps.blend_check(rows, pl.concat(markets), pl.concat(doubts), fits)
 
 
-def _b3_tables(lake: "Lake", tables: "b2.Tables") -> "b3.Tables":
+def _b3_tables(lake: "Reader", tables: "b2.Tables") -> "b3.Tables":
     """B3's tables (ADR 0023), sharing B2's schedule terms, goalie starts and boxscores."""
     from nhl_edge.game.b3 import Tables
 
@@ -1237,19 +1279,58 @@ def _b3_tables(lake: "Lake", tables: "b2.Tables") -> "b3.Tables":
     )
 
 
+def _research_store(r2: bool) -> "Store":
+    """Where a run's research bundle is kept: R2 with --r2, else data/bundles/research/."""
+    from nhl_edge.lake.r2 import R2Config
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.settings import load_env
+
+    if not r2:
+        return lb.LocalStore(LOCAL_BUNDLES)
+    load_env()
+    config = R2Config.require("--r2")
+    return lb.R2Store(config.client(), config.bucket)
+
+
+def _uv_lock() -> bytes | None:
+    lock = Path("uv.lock")
+    return lock.read_bytes() if lock.exists() else None
+
+
+def _keep_bundle(
+    store: "Store", run: str, bodies: dict[str, bytes], identity: dict[str, Any]
+) -> None:
+    """Keep the run's research bundle (#186), sealed once its files reproduce the report; exits 1
+    when they don't, leaving the bundle without its manifest."""
+    from nhl_edge.backtest import research
+
+    problems = research.keep(store, run, bodies, identity)
+    for problem in problems[:10]:
+        typer.echo(f"  not reproduced: {problem}", err=True)
+    if problems:
+        typer.echo(
+            f"{research.where(run)}: {len(problems)} estimates don't follow from the kept rows, "
+            "so the bundle has no manifest",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.echo(f"research bundle {research.where(run)}: kept, its report reproduced")
+
+
 def _hockey_backtest(
-    lake: "Lake",
+    lake: "Recorded",
     wanted: list[int],
     out: Path,
     one_time_places: "Places | None" = None,
     terms: "b3.Terms | None" = None,
+    store: "Store | None" = None,
 ) -> None:
     """B2 and B3 at the as-of time on outcomes alone (ADR 0023), to <out>/hockey-<version>.json,
-    with every run logged in <out>/runs.csv."""
+    with every run logged in <out>/runs.csv and kept in a research bundle (#186)."""
     import json
     from datetime import UTC
 
-    from nhl_edge.backtest import b3_report, one_time, reports, subsets, walk_forward
+    from nhl_edge.backtest import b3_report, one_time, reports, research, subsets, walk_forward
     from nhl_edge.game import b2, b3
     from nhl_edge.ingest.games import EXPECTED_GAMES
 
@@ -1301,6 +1382,8 @@ def _hockey_backtest(
     report = b3_report.hockey(
         predictions, coverage, b3_fits, flags, wanted, run_version, now, b2_fits=b2_fits
     )
+    run = research.run_id(run_version, now)
+    report["bundle"] = run
     # One file per run, and every run logged: held-out seasons must not be rerun unseen.
     out.mkdir(parents=True, exist_ok=True)
     path = out / b3_report.hockey_file(report)
@@ -1318,6 +1401,127 @@ def _hockey_backtest(
         typer.echo(
             f"  {model}: log loss {pooled['mean']:.4f} {spread} over {pooled['games']:,} games"
         )
+    _keep_bundle(
+        store if store is not None else _research_store(False),
+        run,
+        research.files(
+            predictions,
+            wanted,
+            coverage,
+            report,
+            lake.reads,
+            b2_fits=b2_fits,
+            b3_fits=b3_fits,
+            flags=flags,
+        ),
+        research.identity(
+            research.HOCKEY,
+            report,
+            {"b3_terms": terms.label() if terms else None, "one_time": one_time_places is not None},
+            _uv_lock(),
+        ),
+    )
+
+
+R2Flag = Annotated[
+    bool, typer.Option("--r2", help="The research bundles in R2, not under data/bundles/.")
+]
+
+
+@research_app.command("list")
+def research_list(r2: R2Flag = False) -> None:
+    """Every kept research run, with its mode, seasons and options."""
+    from nhl_edge.backtest import research
+
+    store = _research_store(r2)
+    for run in research.runs(store):
+        manifest = research.manifest(store, run)
+        options = {k: v for k, v in manifest.get("options", {}).items() if v}
+        seasons = ",".join(map(str, manifest.get("seasons", [])))
+        typer.echo(f"{run}  {manifest.get('mode')}  {seasons}  {options or ''}".rstrip())
+
+
+@research_app.command("check")
+def research_check(
+    run: Annotated[str, typer.Option("--run", help="A kept run's id (nhl research list).")],
+    r2: R2Flag = False,
+) -> None:
+    """Recompute a kept run's estimates from its rows alone and compare them with its report.
+    Exits 1 on a difference, or for a bundle that is incomplete or altered."""
+    from nhl_edge.backtest import research
+
+    try:
+        problems = research.reproduce(research.read(_research_store(r2), run))
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    for problem in problems:
+        typer.echo(problem, err=True)
+    if problems:
+        raise typer.Exit(code=1)
+    typer.echo(f"{run}: its report's estimates follow from its kept rows")
+
+
+@research_app.command("compare")
+def research_compare(
+    base: Annotated[str, typer.Option(help="<run>:<model>, the reference.")],
+    other: Annotated[str, typer.Option(help="<run>:<model>, compared with it.")],
+    experiment: Annotated[
+        str, typer.Option(help="E1, E2 or hockey: the experiment both runs scored.")
+    ] = "E1",
+    method: Annotated[
+        str | None,
+        typer.Option(help="The de-vig method of B0's rows (default: none, as B1 to B3 have)."),
+    ] = None,
+    out: Annotated[
+        Path | None, typer.Option(help="Write the comparison to this JSON file.")
+    ] = None,
+    r2: R2Flag = False,
+) -> None:
+    """Pair two kept runs' models game by game (#186): other's log loss minus base's on the games
+    both scored, pooled and per season with weekly block bootstrap intervals, and the input
+    tables the two runs read differently. No pass or fail is read from it."""
+    import json
+
+    from nhl_edge.backtest import research, walk_forward
+
+    store = _research_store(r2)
+    try:
+        (base_run, base_model), (other_run, other_model) = (
+            value.rsplit(":", 1) for value in (base, other)
+        )
+        compared = research.compare(
+            research.read(store, base_run),
+            research.read(store, other_run),
+            base_model,
+            other_model,
+            experiment,
+            method or walk_forward.NO_METHOD,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    games = compared["games"]
+    typer.echo(
+        f"{other} minus {base}, {experiment}: {games['paired']:,} games both scored "
+        f"({games['base']:,} and {games['other']:,})"
+    )
+    difference = compared["difference"]
+    if difference is not None:
+        for name, estimate in [("pooled", difference["pooled"]), *difference["per_season"].items()]:
+            typer.echo(
+                f"  {name}: {estimate['mean']:+.4f} [{estimate['low']:+.4f}, "
+                f"{estimate['high']:+.4f}] over {estimate['games']:,} games"
+            )
+    if compared["inputs_differ"] is None:
+        typer.echo(f"  inputs not compared: {compared['inputs_note']}")
+    elif compared["inputs_differ"]:
+        typer.echo(f"  inputs read differently: {', '.join(compared['inputs_differ'])}")
+    else:
+        typer.echo("  both runs read the same inputs")
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(compared, indent=2) + "\n")
 
 
 @app.command()

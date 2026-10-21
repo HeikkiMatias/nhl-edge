@@ -388,10 +388,10 @@ def put_once(store: Store, key: str, body: bytes) -> None:
             raise Conflict(f"{key} is already written, with other bytes") from exc
 
 
-def read(store: Store, day: date) -> Bundle:
-    """The day's bundle, refused without its manifest (an unfinished write) or with any file
-    missing or not matching its hash."""
-    where = prefix(day)
+def verified(store: Store, where: str) -> tuple[dict[str, Any], dict[str, bytes]]:
+    """The manifest under where and each file it names, refused without the manifest (an
+    unfinished write) or with any file missing or not matching its hash. Research run bundles
+    (backtest/research.py) are read the same way."""
     try:
         manifest = json.loads(store.get(f"{where}/{MANIFEST}"))
     except Exception as exc:
@@ -405,7 +405,13 @@ def read(store: Store, day: date) -> Bundle:
         if sha256(body) != entry["sha256"]:
             raise ValueError(f"{where}/{name}: its bytes don't match the manifest")
         bodies[name] = body
-    return _bundle(manifest, bodies)
+    return manifest, bodies
+
+
+def read(store: Store, day: date) -> Bundle:
+    """The day's bundle, refused without its manifest (an unfinished write) or with any file
+    missing or not matching its hash."""
+    return _bundle(*verified(store, prefix(day)))
 
 
 def _bundle(manifest: Mapping[str, Any], bodies: Mapping[str, bytes]) -> Bundle:

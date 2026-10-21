@@ -391,6 +391,22 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
   - **`nhl live attribution-levels --write`** fixes them once, from a committed checkout, in `reports/live/attribution-levels-<version>.json` beside the live fit, with their own version and `train_cutoff`. It refuses unless the rebuilt games are the live fit's own: the same count per season, and the live fit refitted from them gives back its recorded blends and u scale (to 1e-9). The record keeps a sha256 of the games. Without `--write` it is a dry run.
   - Nothing in the policy reads them.
 
+## Research run bundles (#186)
+
+Every `nhl backtest` run, the development run and the hockey-only mode alike, keeps its per-game rows in a write-once bundle (`backtest/research.py`), as a decision day keeps its run bundle.
+- **Where:** `bundles/research/<run id>/`, in R2 with `--r2`, otherwise under `data/bundles/research/` (gitignored). The run id is the run's version and UTC start time to the microsecond, `<version>-<HHMMSS>-<microseconds>`, so no two runs share a bundle.
+- **What it keeps:**
+  - `predictions.parquet`: every model's per-game rows, B0 to B3 and the blends, for every game whether bet or not. Each row has its season (the fold), prediction time and `train_cutoff`, and its `role`: a tested season's, or a fold that only teaches the market blend.
+  - `blend_inputs.parquet` (the development run): each game's market probability, B2, B3 and u's parts with their cutoffs. `flags.parquet`: gate 2's subsets.
+  - `coverage.json` and `fits.json`: the coverage per experiment and season, B1's recalibrations, and B2's and B3's fits.
+  - `report.json`, the run's report; `inputs.json`, the sha256 of every lake table the run read.
+  - `manifest.json`, written last: the run's identity (mode, seasons, options, code and polars versions, `uv.lock`'s sha256) and each file's sha256 and rows.
+- **Sealed only when it reproduces:** the files are written, read back, and the report's estimates recomputed from them by the report's own code. Only then is the manifest written. Otherwise the run exits 1, and the bundle stays without a manifest, so it never reads as complete. The report itself is written first, as before, so a once-only run never loses it.
+- **`nhl research list`, `check --run <id>`, `compare --base <run>:<model> --other <run>:<model> [--experiment E1]`** (each with `--r2`):
+  - `check` recomputes a kept run's estimates;
+  - `compare` pairs two kept runs' models game by game, on the games both scored, with weekly block bootstrap intervals, and names the input tables the two runs read differently. Those digests are taken over parquet bytes, so they are compared only between runs kept with the same polars version. No pass or fail is read from it.
+- **Earlier runs have no bundle.** Spent tests are never run again to make one: 2025-26's one-time test, and 2022-23's market validation (#163's predict-only path aside).
+
 ## Real stakes
 
 ADR 0039 bets the frozen policy's paper bets with real money, beside the paper ledger, which goes on unchanged. The venue is Kalshi, where the bets are placed automatically through its API (the owner's decision, 2026-10-18, ADR 0040 proposed; "Kalshi orders" below). Placement by hand from the Telegram alert stays for a venue without an API. The code is `live/real.py` (the start rule, the stops and the venues) and `live/real_ledger.py` (#268).

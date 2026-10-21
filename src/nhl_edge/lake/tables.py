@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from typing import Protocol
 
 import pandera.polars as pa
 import polars as pl
@@ -170,6 +171,13 @@ def known_at(frame: pl.DataFrame, prediction_utc: datetime) -> pl.DataFrame:
 
 def _partition_value(value: object) -> str:
     return value.isoformat() if isinstance(value, date) else str(value)
+
+
+class Reader(Protocol):
+    """What a reader of the lake's tables needs: Lake, or a wrapper that records its reads
+    (backtest/research.Recorded)."""
+
+    def read(self, table: str, seasons: Collection[int] | None = None) -> pl.DataFrame: ...
 
 
 class Lake:
