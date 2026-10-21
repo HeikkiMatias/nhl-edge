@@ -149,6 +149,8 @@ def test_the_replay_never_writes_the_repositorys_lake_or_r2(tmp_path: Path) -> N
     corrected = cr.corrected_feeds(store, games(), before)
     with pytest.raises(ValueError, match="repository's lake"):
         cr.swap_in(lake, corrected, tmp_path / "lake")
+    with pytest.raises(ValueError, match="repository's lake"):
+        cr.swap_in(Lake(tmp_path / "lake" / "work" / "lake"), corrected, tmp_path / "lake")
     mirrored = Lake(tmp_path / "copy", bucket="bucket", objects=object())  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="mirrored to R2"):
         cr.swap_in(mirrored, corrected, tmp_path / "lake")

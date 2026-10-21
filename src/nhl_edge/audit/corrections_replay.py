@@ -168,8 +168,10 @@ def corrected_feeds(
 
 
 def scratch(lake_dir: Path, protected: Path) -> None:
-    """Refuse the protected lake (the repository's own) as a scratch lake."""
-    if lake_dir.resolve() == protected.resolve():
+    """Refuse the protected lake (the repository's own), or a folder inside it, as a scratch
+    lake."""
+    here, kept = lake_dir.resolve(), protected.resolve()
+    if here == kept or kept in here.parents:
         raise ValueError(f"{lake_dir} is the repository's lake: the replay writes only a copy")
 
 
