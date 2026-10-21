@@ -5,8 +5,9 @@ description: Run the walk-forward backtest for B0 to B3 and the blend, compare w
 allowed-tools: Bash(uv run nhl backtest *) Bash(uv run pytest *)
 ---
 1. Run `uv run pytest tests/leakage -q`. Stop if it fails.
-2. Run `uv run nhl backtest --seasons $ARGUMENTS --out reports/backtest/` (default: development
-   seasons). Never include 2025-26 or live games unless I say so explicitly.
+2. Run `uv run nhl backtest --seasons $ARGUMENTS --out reports/backtest/ --r2` (default: development
+   seasons). Never include 2025-26 or live games unless I say so explicitly. `--r2` keeps the run's
+   research bundle (#186) in R2; note its run id, printed last, with the results.
 3. From reports/backtest/summary.json, report with 95% weekly block bootstrap intervals: paired
    log-loss difference of B2 and B3 against B1 and of B3 against B2, pooled and per season;
    calibration intercept and slope; E3 CLV under the frozen policy; count of gaps above 8 points.

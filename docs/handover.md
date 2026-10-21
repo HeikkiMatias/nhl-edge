@@ -201,6 +201,8 @@ Every deliverable merged under its own task issue:
   - **Market-only selection:** the frozen rules on the market-only control made 0 bets.
   - **Best-price execution:** a better fresh bookmaker price existed for 7 of v1's 17 bets with a close, adding +0.56 points of CLV. Counting the exchanges (before commission), 16 of 17 had a better price, adding +1.8 points.
 
+**Research run bundles (#186).** Every `nhl backtest` run keeps its per-game rows in `bundles/research/<run id>/` (pass `--r2` so a session's run outlives its container). The bundle is sealed only once they reproduce the report. `nhl research compare` pairs two kept runs' models game by game, with intervals, and names the inputs they read differently (docs/data-sources.md). Runs before 2026-10-21 have no bundle, and spent tests are never run again to make one.
+
 **Challengers (#255, ADR 0038).** New models are judged only on decision days after their registration, never on history again.
 - **Where:**
   - each challenger is an entry in `live/challengers.py`;
@@ -350,7 +352,7 @@ Every deliverable merged under its own task issue:
 - **Open, [priority]:** #271, the real-money tracking issue; #266, the venue.
 - **Open, next:** #269 (real money, after the venue); #253 and #254 (diagnostics); #256 to #260 (challengers, each with its own ADR).
 - **Parked for the next model version:** #125 and #134 (P6, label `next-model-version`).
-- **Open, later:** phase 5's #14, #67 (in April 2027) and #121 (step 3 on 2026-11-05); #15, #186 and #250 (P6).
+- **Open, later:** phase 5's #14, #67 (in April 2027) and #121 (step 3 on 2026-11-05); #15 and #250 (P6).
 
 ## Keep an eye on
 

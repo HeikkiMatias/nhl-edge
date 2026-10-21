@@ -512,6 +512,12 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
     b3_model = summary["experiments"]["E2"]["models"]["B3"]
     assert set(b3_model) >= {"paired_against_B2", "gate_2_subsets", "lineup_quality"}
     assert (tmp_path / "out" / "gaps_b3.csv").exists()
+    # The run keeps its per-game rows in a research bundle (#186), sealed as it reproduced.
+    assert "kept, its report reproduced" in result.output
+    listed = runner.invoke(app, ["research", "list"])
+    assert listed.exit_code == 0 and listed.output.split()[0] == summary["bundle"]
+    checked = runner.invoke(app, ["research", "check", "--run", summary["bundle"]])
+    assert checked.exit_code == 0, checked.output
     # The hockey-only mode scores B2 and B3 on every game at the as-of time.
     hockey = runner.invoke(
         app, ["backtest", "--seasons", "20212022", "--hockey-only", "--out", "hockey"]
@@ -534,6 +540,25 @@ def test_backtest_writes_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyP
         ("hockey", "B3", "4"),
     ]
     assert all(r["version"] == written["version"] and r["train_cutoff"] for r in logged)
+    # Its bundle sits beside the development run's, which stays intact, and the two pair up.
+    hockey_run = written["bundle"]
+    assert runner.invoke(app, ["research", "check", "--run", summary["bundle"]]).exit_code == 0
+    compared = runner.invoke(
+        app,
+        [
+            "research",
+            "compare",
+            "--base",
+            f"{hockey_run}:B2",
+            "--other",
+            f"{hockey_run}:B3",
+            "--experiment",
+            "hockey",
+        ],
+    )
+    assert compared.exit_code == 0, compared.output
+    assert "4 games both scored" in compared.output
+    assert "both runs read the same inputs" in compared.output
 
 
 def test_a_market_below_100_percent_is_counted_and_left_out() -> None:

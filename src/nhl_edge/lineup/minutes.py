@@ -39,7 +39,7 @@ from nhl_edge.lineup.goalie_start import season_cutoff
 from nhl_edge.lineup.projection import SKATER_ROLES
 
 if TYPE_CHECKING:
-    from nhl_edge.lake.tables import Lake
+    from nhl_edge.lake.tables import Reader
 
 STATES = ("5v5", "pp", "pk")
 EXPECTED = {state: f"exp_{state}" for state in STATES}
@@ -383,7 +383,7 @@ def input_problems(coverage: pl.DataFrame, minutes: pl.DataFrame, last: int) -> 
     return problems
 
 
-def lake_minutes(lake: "Lake", boxscores: pl.DataFrame, last: int) -> pl.DataFrame:
+def lake_minutes(lake: "Reader", boxscores: pl.DataFrame, last: int) -> pl.DataFrame:
     """player_minutes of every season up to last, read a season at a time: the stints of every
     season at once would not fit in memory."""
     seasons = sorted(s for s in boxscores["season"].unique().to_list() if s <= last)
