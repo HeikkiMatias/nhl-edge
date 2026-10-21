@@ -783,17 +783,20 @@ def test_nhl_real_orders_warns_of_a_key_nothing_needs_and_tracks_the_other(
     assert "pasted-wrong" not in result.output
 
 
-@pytest.mark.parametrize("setting", ["demo", "off"])
-def test_nhl_real_orders_fails_on_a_key_the_switch_or_an_order_needs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setting: str
+@pytest.mark.parametrize("case", ["switch", "order", "cancel"])
+def test_nhl_real_orders_fails_on_a_key_the_switch_an_order_or_a_cancel_needs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
-    # The switch naming the environment, or an order of it waiting while the switch is off.
+    # The switch naming the environment, an order of it waiting while the switch is off, or the
+    # kill switch's --cancel with nothing recorded (Codex on #301).
     commands(tmp_path, monkeypatch, "demo", real_rows())
-    if setting == "off":
+    if case == "order":
         assert runner.invoke(app, ["real", "place", "--r2"]).exit_code == 0
+    if case != "switch":
         monkeypatch.setenv("KALSHI_TRADING", "off")
     unreadable(monkeypatch, pm.DEMO)
-    result = runner.invoke(app, ["real", "orders", "--r2"])
+    flags = ["--cancel"] if case == "cancel" else []
+    result = runner.invoke(app, ["real", "orders", "--r2", *flags])
     assert result.exit_code == 1, result.output
     assert "kalshi orders demo: failed (KALSHI_DEMO_PRIVATE_KEY is no unencrypted" in (
         result.output

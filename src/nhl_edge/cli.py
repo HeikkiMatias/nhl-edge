@@ -4896,9 +4896,9 @@ def real_orders(
     the bet's entry in the real record on the live exchange. An environment the switch
     KALSHI_TRADING doesn't name (all of them when it is off) has its resting orders cancelled
     first, as with --cancel. A key that can't be read fails the run when the switch names its
-    environment or an order of it waits; otherwise it is a warning, and the environment is
-    skipped (#300). The lake's real_orders is rebuilt from the record. The log prints counts
-    only; the fills go to the owner's Telegram."""
+    environment, an order of it waits or --cancel is given; otherwise it is a warning, and the
+    environment is skipped (#300). The lake's real_orders is rebuilt from the record. The log
+    prints counts only; the fills go to the owner's Telegram."""
     from datetime import UTC
     from zoneinfo import ZoneInfo
 
@@ -4921,9 +4921,10 @@ def real_orders(
         except MissingSettingError:
             typer.echo(f"kalshi orders {env}: no key set, skipped")
         except kt.KalshiTradeError as exc:
-            # A key nothing needs yet, with nothing placed and the switch elsewhere, warns: the
-            # owner's kalshi-check run is where a key is proven.
-            if env == setting or placement.pending_dates(store, env):
+            # A key nothing needs yet, with nothing placed, the switch elsewhere and no cancel
+            # asked, warns: the owner's kalshi-check run is where a key is proven. The kill
+            # switch never passes without sweeping (Codex on #301).
+            if cancel or env == setting or placement.pending_dates(store, env):
                 typer.echo(f"kalshi orders {env}: failed ({exc})", err=True)
                 failed = True
             else:
