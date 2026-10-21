@@ -4124,6 +4124,142 @@ def audit_gaps(
     typer.echo("  to review: " + ", ".join(f"{k} {v}" for k, v in facts["review"].items()))
 
 
+@audit_app.command("corrections-replay")
+def audit_corrections_replay(
+    work: Annotated[
+        Path,
+        typer.Option(help="A scratch directory for the two versions' lakes, never the lake's own."),
+    ],
+    out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_AUDIT_OUT,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2", help="Read the run bundles and ledgers from R2, only read, and replay the days."
+        ),
+    ] = False,
+    rebuilt: Annotated[
+        bool, typer.Option("--rebuilt", help="Reuse the two lakes an earlier run built in --work.")
+    ] = False,
+) -> None:
+    """Measure post-game corrections at the level of inputs and predictions (#173, ADR 0004), a
+    retrospective sensitivity check that never enters the ledger, the live counts or any fit. The
+    live build's tables are copied into <work>/base and <work>/corrected; in the corrected copy,
+    each rechecked game's feed rows are replaced by the recheck's; the live build's ten steps run
+    over the season in each; and every feature table's rows are compared. With --r2, each
+    complete run bundle's day is decided again with its models' rows from each version. The
+    report goes to <out>/<version>.md, with the changes in .csv files beside it."""
+    import io
+    import shutil
+    import sys
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.audit import corrections_replay as cr
+    from nhl_edge.backtest import reports
+    from nhl_edge.ingest.toi_reports import CachedReports
+    from nhl_edge.lake.r2 import R2Config
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import FEED_TABLES, LAKE_DIR, Lake
+    from nhl_edge.live import blend_fit, challengers
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import features as lf
+    from nhl_edge.live import predict as lp
+    from nhl_edge.settings import load_env
+
+    season = blend_fit.LIVE_SEASON
+    lake = Lake()
+    store = RawStore()
+    feeds = {table: lake.read(table, seasons=[season]) for table in FEED_TABLES}
+    found_reports = CachedReports(store, lambda problem: typer.echo(problem, err=True))
+    games = lake.read("games", seasons=[season])
+    corrected = cr.corrected_feeds(store, games, feeds, found_reports)
+    if not corrected.games:
+        typer.echo(
+            f"no game of {season} has both copies of its feeds: nhl recheck, or nhl lake "
+            "restore-raw on a fresh machine",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"{len(corrected.games)} rechecked games, {len(corrected.charts_kept)} keeping their "
+        f"first chart; {len(corrected.unmatched)} left out, their first copies not the lake's rows"
+    )
+    found = Path(sys.executable).with_name("nhl")
+    nhl = str(found) if found.exists() else shutil.which("nhl")
+    if nhl is None:
+        typer.echo("the nhl command is not installed: uv sync", err=True)
+        raise typer.Exit(code=1)
+    versions = {"base": work / "base", "corrected": work / "corrected"}
+    try:
+        for name, where in versions.items():
+            lake_dir = where / LAKE_DIR
+            cr.scratch(lake_dir, LAKE_DIR)
+            if rebuilt:
+                if not lake_dir.is_dir():
+                    raise ValueError(f"{where} has no lake to reuse")
+                continue
+            if lake_dir.exists():
+                raise ValueError(f"{lake_dir} exists: pass --rebuilt to reuse it, or remove it")
+            for table in lf.LAKE_TABLES:
+                if (LAKE_DIR / table).is_dir():
+                    shutil.copytree(LAKE_DIR / table, lake_dir / table)
+            if name == "corrected":
+                cr.swap_in(Lake(lake_dir), corrected, LAKE_DIR)
+            typer.echo(f"{name}: the live build's steps over {season} in {where}")
+            cr.run_steps(where, season, LAKE_DIR, [nhl], where / "steps.log")
+    except (ValueError, RuntimeError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    base_lake, corrected_lake = (Lake(where / LAKE_DIR) for where in versions.values())
+    first = corrected.dates[0]
+    frames, compared = [], {}
+    for table in cr.FEATURE_TABLES:
+        a, b = (
+            version.read(table, seasons=[season]).filter(pl.col("game_date") >= first)
+            for version in (base_lake, corrected_lake)
+        )
+        frames.append(cr.table_changes(a, b, table))
+        compared[table] = (a.height, a["game_id"].n_unique() if "game_id" in a.columns else None)
+    changes = pl.concat(frames)
+    ids = pl.Series(corrected.games, dtype=pl.Int64).implode()
+    feed_rows = {
+        table: (feeds[table].filter(pl.col("game_id").is_in(ids)).height, rows.height)
+        for table, rows in corrected.rows.items()
+    }
+    decisions = None
+    if r2:
+        load_env()
+        config = R2Config.require("--r2")
+        bundles = lb.R2Store(config.client(), config.bucket)
+        saved, fits = {}, {}
+        try:
+            for day in challengers.complete_days(bundles):
+                bundle = lb.read(bundles, day)
+                ledger = pl.read_parquet(io.BytesIO(bundles.get(lp.ledger_key(day))))
+                saved[day], fits[day] = (bundle, ledger), challengers.live_fit(bundle)
+            decisions = cr.replay_days(
+                saved,
+                fits,
+                cr.model_tables(base_lake, season),
+                cr.model_tables(corrected_lake, season),
+            )
+        except (OSError, ValueError) as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
+    version = reports.version("corrections-replay", datetime.now(UTC))
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{version}.md"
+    path.write_text(cr.markdown(version, corrected, feed_rows, changes, compared, decisions))
+    changes.write_csv(out / f"{version}-inputs.csv")
+    if decisions is not None:
+        decisions.games.write_csv(out / f"{version}-games.csv")
+        for day, problems in sorted(decisions.not_reproduced.items()):
+            typer.echo(f"{day}: the base rows don't reproduce the ledger: {'; '.join(problems)}")
+    changed = changes.filter(pl.col("column") == cr.CHANGED)["rows"].sum()
+    typer.echo(f"{path}: {changed:,} feature rows changed")
+
+
 @app.command()
 def status(
     brief: Annotated[bool, typer.Option(help="One line, for the SessionStart hook.")] = False,
