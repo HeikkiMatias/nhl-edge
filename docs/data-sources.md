@@ -401,7 +401,7 @@ Every `nhl backtest` run, the development run and the hockey-only mode alike, ke
   - `coverage.json` and `fits.json`: the coverage per experiment and season, B1's recalibrations, and B2's and B3's fits.
   - `report.json`, the run's report; `inputs.json`, the sha256 of every lake table the run read.
   - `manifest.json`, written last: the run's identity (mode, seasons, options, code and polars versions, `uv.lock`'s sha256) and each file's sha256 and rows.
-- **Sealed only when it reproduces:** the files are written, read back, and the report's estimates recomputed from them by the report's own code. Only then is the manifest written. Otherwise the run exits 1, and the bundle stays without a manifest, so it never reads as complete.
+- **Sealed only when it reproduces:** the files are written, read back, and the report's estimates recomputed from them by the report's own code. Only then is the manifest written. Otherwise the run exits 1, and the bundle stays without a manifest, so it never reads as complete. The report itself is written first, as before, so a once-only run never loses it.
 - **`nhl research list`, `check --run <id>`, `compare --base <run>:<model> --other <run>:<model> [--experiment E1]`** (each with `--r2`):
   - `check` recomputes a kept run's estimates;
   - `compare` pairs two kept runs' models game by game, on the games both scored, with weekly block bootstrap intervals, and names the input tables the two runs read differently. No pass or fail is read from it.
