@@ -756,6 +756,77 @@ def test_nhl_real_orders_skips_an_environment_without_its_key(
     assert "kalshi orders live: no key set, skipped" in result.output
 
 
+def unreadable(monkeypatch: pytest.MonkeyPatch, env: str) -> None:
+    """The environment's key can't be read (#300), and the other environment's still works."""
+    working = kt.KalshiTrade.from_env
+
+    def from_env(cls: Any, name: str, raw: Any) -> Any:
+        if name == env:
+            kt.load_key("pasted-wrong", kt.KEY_VARIABLES[name][1])
+        return working(name, raw)
+
+    monkeypatch.setattr(kt.KalshiTrade, "from_env", classmethod(from_env))
+
+
+def test_nhl_real_orders_warns_of_a_key_nothing_needs_and_tracks_the_other(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands(tmp_path, monkeypatch, "live", real_rows())
+    assert runner.invoke(app, ["real", "place", "--r2"]).exit_code == 0
+    unreadable(monkeypatch, pm.DEMO)
+    result = runner.invoke(app, ["real", "orders", "--r2"])
+    assert result.exit_code == 0, result.output
+    assert "::warning::kalshi orders demo: KALSHI_DEMO_PRIVATE_KEY is no unencrypted" in (
+        result.output
+    )
+    assert "kalshi orders live: 3 resting" in result.output
+    assert "pasted-wrong" not in result.output
+
+
+def test_nhl_real_orders_tells_a_skipped_environments_queued_messages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Orders final, their messages never sent, and then the key can't be read (Codex on #301).
+    from nhl_edge import cli
+
+    record, exchange, client, clock, _ = placed(tmp_path)
+    for order_id in exchange.orders:
+        exchange.expire(order_id)
+    clock.at = pf.START + timedelta(hours=4)
+    pm.reconcile(record, client, clock, STARTS)
+    assert not pm.pending_dates(record, pm.LIVE) and pm.unnotified(record, pm.LIVE, "final")
+    _, _, sent, lake = commands(tmp_path / "cli", monkeypatch, "demo", real_rows())
+    monkeypatch.setattr(cli, "_real_record", lambda r2: (lake, record))
+    unreadable(monkeypatch, pm.LIVE)
+    result = runner.invoke(app, ["real", "orders", "--r2"])
+    assert result.exit_code == 0, result.output
+    assert "::warning::kalshi orders live:" in result.output
+    assert len(sent) == 2 and "fills" in sent[1]
+    assert not pm.unnotified(record, pm.LIVE, "placed")
+    assert not pm.unnotified(record, pm.LIVE, "final")
+
+
+@pytest.mark.parametrize("case", ["switch", "order", "cancel"])
+def test_nhl_real_orders_fails_on_a_key_the_switch_an_order_or_a_cancel_needs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    # The switch naming the environment, an order of it waiting while the switch is off, or the
+    # kill switch's --cancel with nothing recorded (Codex on #301).
+    commands(tmp_path, monkeypatch, "demo", real_rows())
+    if case == "order":
+        assert runner.invoke(app, ["real", "place", "--r2"]).exit_code == 0
+    if case != "switch":
+        monkeypatch.setenv("KALSHI_TRADING", "off")
+    unreadable(monkeypatch, pm.DEMO)
+    flags = ["--cancel"] if case == "cancel" else []
+    result = runner.invoke(app, ["real", "orders", "--r2", *flags])
+    assert result.exit_code == 1, result.output
+    assert "kalshi orders demo: failed (KALSHI_DEMO_PRIVATE_KEY is no unencrypted" in (
+        result.output
+    )
+    assert "::warning::" not in result.output
+
+
 def test_nhl_real_place_without_the_schedule_places_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

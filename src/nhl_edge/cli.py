@@ -4895,8 +4895,10 @@ def real_orders(
     resting is counted, and one past its expiry is read with its fills and written once, with
     the bet's entry in the real record on the live exchange. An environment the switch
     KALSHI_TRADING doesn't name (all of them when it is off) has its resting orders cancelled
-    first, as with --cancel. The lake's real_orders is rebuilt from the record. The log prints
-    counts only; the fills go to the owner's Telegram."""
+    first, as with --cancel. A key that can't be read fails the run when the switch names its
+    environment, an order of it waits or --cancel is given; otherwise it is a warning, and the
+    environment is skipped (#300). The lake's real_orders is rebuilt from the record. The log
+    prints counts only; the fills go to the owner's Telegram."""
     from datetime import UTC
     from zoneinfo import ZoneInfo
 
@@ -4912,31 +4914,44 @@ def real_orders(
         raise typer.BadParameter(str(exc)) from None
     raw = RawStore.from_env(mirror=r2, flag="--r2")
     trades = {}
+    failed = False
     for env in kt.ENVS:
         try:
             trades[env] = kt.KalshiTrade.from_env(env, raw)
         except MissingSettingError:
             typer.echo(f"kalshi orders {env}: no key set, skipped")
+        except kt.KalshiTradeError as exc:
+            # A key nothing needs yet, with nothing placed, the switch elsewhere and no cancel
+            # asked, warns: the owner's kalshi-check run is where a key is proven. The kill
+            # switch never passes without sweeping (Codex on #301).
+            if cancel or env == setting or placement.pending_dates(store, env):
+                typer.echo(f"kalshi orders {env}: failed ({exc})", err=True)
+                failed = True
+            else:
+                typer.echo(f"::warning::kalshi orders {env}: {exc}; skipped")
     # Each pending order's game start now, so an order resting into a game moved earlier is
     # cancelled. Without the schedule, the earliest start already seen holds, and nothing is final.
     days = {day for env in trades for day in placement.pending_dates(store, env)}
     starts = _listed_starts(days, r2) if days else {}
-    failed = False
-    for env, trade in trades.items():
-        try:
-            report = placement.reconcile(
-                store,
-                trade,
-                lambda: datetime.now(UTC),
-                cancel=cancel or env != setting,
-                starts=starts,
-            )
-        except kt.KalshiTradeError as exc:
-            typer.echo(f"kalshi orders {env}: failed ({exc})", err=True)
-            failed = True
-            continue
-        typer.echo(report.line(env))
-        # Orders found on Kalshi unrecorded, then the finals: each told once its message goes.
+    for env in kt.ENVS:
+        trade, report = trades.get(env), None
+        if trade is not None:
+            try:
+                report = placement.reconcile(
+                    store,
+                    trade,
+                    lambda: datetime.now(UTC),
+                    cancel=cancel or env != setting,
+                    starts=starts,
+                )
+            except kt.KalshiTradeError as exc:
+                typer.echo(f"kalshi orders {env}: failed ({exc})", err=True)
+                failed = True
+                continue
+            typer.echo(report.line(env))
+        # Orders found on Kalshi unrecorded, then the finals: each told once its message goes. The
+        # record alone holds them, so an environment skipped for its key is told too (Codex on
+        # #301).
         today = datetime.now(UTC).astimezone(ZoneInfo("America/New_York")).date()
         adopted = placement.unnotified(store, env, "placed")
         finals = placement.unnotified(store, env, "final")
@@ -4948,7 +4963,7 @@ def real_orders(
                 failed = True
             else:
                 placement.mark_notified(store, env, told, part, datetime.now(UTC))
-        if report.after_start:
+        if report is not None and report.after_start:
             typer.echo(f"::warning::kalshi orders {env}: a fill came at or after the start")
     orders = placement.table(store)
     lake.replace("real_orders", orders)
@@ -4965,7 +4980,8 @@ def real_reconcile_kalshi(
     settle: each live order with fills of the last 30 days, its result, the contracts held and
     the payout. A difference, or a settlement missing on either side two days after the game was
     played (the lake's final games), goes to the owner's Telegram; the log prints counts only.
-    Without the live key there is nothing to check."""
+    Without the live key there is nothing to check, and nor is there with a key that can't be
+    read while no live order is recorded: a warning then (#300)."""
     from datetime import UTC
 
     from nhl_edge.ingest.odds import ET
@@ -4983,6 +4999,12 @@ def real_reconcile_kalshi(
         trade = kt.KalshiTrade.from_env(kt.LIVE, raw)
     except MissingSettingError:
         typer.echo("kalshi settlements: no live key set, nothing to check")
+        return
+    except kt.KalshiTradeError as exc:
+        if placement.stored_orders(store, kt.LIVE):
+            typer.echo(f"kalshi settlements: failed ({exc})", err=True)
+            raise typer.Exit(code=1) from None
+        typer.echo(f"::warning::kalshi settlements: {exc}; no live order to check")
         return
     # The final games, each at the start it was played: a postponed game's wait counts from it.
     if r2:

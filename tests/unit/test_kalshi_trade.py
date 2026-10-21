@@ -79,17 +79,65 @@ def test_a_key_loads_from_its_pem_text_or_from_one_line_with_escaped_newlines() 
     assert isinstance(load_key(pem(RSA)), rsa.RSAPrivateKey)
 
 
+@pytest.mark.parametrize("key", [ED25519, RSA], ids=["ed25519", "rsa"])
+@pytest.mark.parametrize("join", ["\n", "", " "], ids=["lines", "one line", "spaces"])
+def test_a_key_loads_from_its_base64_text_without_the_begin_and_end_lines(
+    key: Any, join: str
+) -> None:
+    # #300: the key's text pasted without its first and last lines, in Kalshi's own formats.
+    if isinstance(key, rsa.RSAPrivateKey):
+        text = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        ).decode()
+    else:
+        text = pem(key)
+    body = join.join(text.strip().splitlines()[1:-1])
+    loaded = load_key(body)
+    assert loaded.private_bytes(
+        serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    ) == key.private_bytes(
+        serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    )
+
+
 def test_a_key_that_is_no_pem_is_refused_without_echoing_it() -> None:
     with pytest.raises(KalshiTradeError, match="KALSHI_PRIVATE_KEY is no unencrypted") as raised:
         load_key("not-a-key-0123456789", "KALSHI_PRIVATE_KEY")
     assert "0123456789" not in str(raised.value)
+    assert "it doesn't parse (20 characters on 1 lines, no BEGIN line)" in str(raised.value)
     encrypted = ED25519.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
         serialization.BestAvailableEncryption(b"secret"),
     ).decode()
-    with pytest.raises(KalshiTradeError):
+    with pytest.raises(KalshiTradeError, match="it is encrypted"):
         load_key(encrypted)
+
+
+def test_a_key_that_cant_be_read_is_named_by_its_shape_never_its_text() -> None:
+    # #300: what was pasted in the private key's place, so the owner knows what to fix.
+    public = (
+        ED25519.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    lines = pem(RSA).strip().splitlines()
+    cut = "\n".join(lines[: len(lines) // 2])
+    shapes = {
+        public: "it is a public key, and the private key goes here",
+        "3f1c9a2e-5b7d-4e8f-9a01-23456789abcd": "it is shaped as a key id",
+        cut: "it has its BEGIN line but no END line, as if cut off",
+        pem(ED25519).replace("A", "*"): "it doesn't parse",
+    }
+    for text, shape in shapes.items():
+        with pytest.raises(KalshiTradeError, match=shape) as raised:
+            load_key(text, "KALSHI_DEMO_PRIVATE_KEY")
+        message = str(raised.value)
+        for line in text.splitlines():
+            if not line.startswith("-----"):
+                assert line[4:20] not in message
 
 
 def test_credentials_come_from_each_environments_variables_and_never_show(

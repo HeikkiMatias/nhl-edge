@@ -147,9 +147,10 @@ jobs:
         # live sends the real days' bets to the live exchange. Orders go at the midday slot, right
         # after the alert, each written to R2 before it is sent and expiring 5 minutes before its
         # game. Every slot then tracks them: once one has expired its fills are recorded, with
-        # the bet's entry on the live exchange. An environment without its key is skipped. The
-        # step prints counts only, since run logs are public; the orders and fills go to the
-        # owner's Telegram.
+        # the bet's entry on the live exchange. An environment without its key is skipped, and so
+        # is one whose key can't be read, with a warning, while the switch doesn't name it and no
+        # order of it waits (#300). The step prints counts only, since run logs are public; the
+        # orders and fills go to the owner's Telegram.
         if: always()
         env:
           KALSHI_TRADING: ${{ vars.KALSHI_TRADING || 'off' }}
