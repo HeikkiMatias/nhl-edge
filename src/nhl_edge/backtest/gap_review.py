@@ -6,10 +6,10 @@ flags for the signatures a bug would leave (plan §10, edge attribution):
 - **history_gap:** a team's strength read fewer of its earlier games than it played, so a
   game's xG or ice time is missing;
 - **out_of_range:** an input more than OUT_OF_RANGE standard deviations from the fold's training
-  games;
+  games, ΔG's included for any of the goalie pairs B2 mixes over;
 - **away_from_home:** a non-neutral game outside the home team's primary home arena;
-- **no_candidates:** a team without goalie candidates known before the start, whose goalie
-  counts as average;
+- **no_candidates:** a team without goalie candidates known before the prediction, whose
+  goalie counts as average;
 - **early_season:** a team with fewer than EARLY games this season, rated mostly on last season's;
 - **limited_seats:** an arena open to only part of its seats.
 
@@ -17,11 +17,15 @@ The review set is every flagged game, every gap above BIG, and a seeded random S
 rest, split evenly across seasons. Nothing here reads a game's result: the review checks inputs
 against public facts, never who won.
 
-The screen is for E1, whose fold starts at the season's first game. Each season's refit must
-reproduce gaps.csv's p_b2 to within its rounding (REPRODUCED), so the contributions, and the goalie
-mixture's left over from them, belong to the fit that was scored (leakage check of #93).
+Each experiment's games are refit at its own fold start and predicted at its own prediction times,
+as in the backtest: E1 at the start, E2 at the opener (Codex on #93). By default, E1's. Each
+season's refit must reproduce gaps.csv's p_b2 to within its rounding (REPRODUCED), so the
+contributions, and the goalie mixture's left over from them, belong to the fit that was scored
+(leakage check of #93).
 """
 
+from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 
 import numpy as np
@@ -53,21 +57,34 @@ def _logit(p: pl.Expr) -> pl.Expr:
     return (p / (1 - p)).log()
 
 
-def contributions(tables: b2.Tables, gaps: pl.DataFrame) -> pl.DataFrame:
+def _moments(tables: b2.Tables, moments: pl.DataFrame | None) -> pl.DataFrame:
+    """Each game's prediction time (game_id, prediction_utc): E1's, the start, by default."""
+    if moments is None:
+        return tables.games.select("game_id", prediction_utc="start_utc")
+    return moments.select("game_id", "prediction_utc")
+
+
+def contributions(
+    tables: b2.Tables,
+    gaps: pl.DataFrame,
+    starts: Mapping[int, datetime] | None = None,
+    moments: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     """Each gap game (game_id, season, p_b2) with its inputs' contributions to B2's log-odds
     from its fold's fit, relative to the training games' average input; the goalie mixture's
     contribution (the log-odds with it, less those with an average goalie on both sides); h_s;
-    and how many of its inputs sit beyond OUT_OF_RANGE standard deviations."""
+    and how many of its inputs sit beyond OUT_OF_RANGE standard deviations, ΔG counting once if
+    any goalie pair's does. starts holds each season's fold start and moments each game's
+    prediction time, by default E1's."""
     calendar = tables.games.select("season", "start_utc")
     inputs = b2.game_inputs(tables)
+    pool = b2.candidates(tables)
     others = [name for name in b2.INPUTS if name != "delta_g"]
     out = []
     for (season,), rows in gaps.group_by("season"):
-        start = fold_start(calendar, int(season))  # type: ignore[arg-type]
-        moments = tables.games.filter(pl.col("game_id").is_in(rows["game_id"].implode())).select(
-            "game_id", prediction_utc="start_utc"
-        )
-        predicted, model = b2.predictions(tables, moments, int(season), start, b2.TUNED)  # type: ignore[arg-type]
+        start = starts[int(season)] if starts else fold_start(calendar, int(season))  # type: ignore[arg-type]
+        when = _moments(tables, moments).filter(pl.col("game_id").is_in(rows["game_id"].implode()))
+        predicted, model = b2.predictions(tables, when, int(season), start, b2.TUNED)  # type: ignore[arg-type]
         scored = rows.select("game_id", "p_b2").join(predicted, on="game_id", how="left")
         off = (scored["p_home"] - scored["p_b2"]).abs().fill_null(1.0).max()
         if not isinstance(off, float) or off > REPRODUCED:
@@ -75,11 +92,27 @@ def contributions(tables: b2.Tables, gaps: pl.DataFrame) -> pl.DataFrame:
                 f"{season}: the refit doesn't reproduce gaps.csv's p_b2 (off by {off}), so the "
                 "screen's fold or tables differ from the backtest's"
             )
+        # ΔG over the goalie pairs B2 mixes, each standardized as the fit saw it (Codex on #93).
+        usable, ready = b2.known_before(
+            inputs.filter(pl.col("season") == season), pool, when, "observed_utc"
+        )
+        goalie_z = (
+            b2.scenarios(usable.select("game_id", "home", "away"), ready)
+            .group_by("game_id")
+            .agg(
+                goalie_out=(
+                    ((pl.col("delta_g") - model.means[b2.GOALIE]) / model.scales[b2.GOALIE]).abs()
+                    > OUT_OF_RANGE
+                ).any()
+            )
+        )
         index = [b2.INPUTS.index(name) for name in others]
         means, scales, weights = (
             np.asarray(v)[index] for v in (model.means, model.scales, model.weights)
         )
-        frame = inputs.join(rows.select("game_id", "p_b2"), on="game_id")
+        frame = inputs.join(rows.select("game_id", "p_b2"), on="game_id").join(
+            goalie_z, on="game_id", how="left"
+        )
         z = (frame.select(others).to_numpy() - means) / scales
         parts = z * weights
         average = model.intercept + frame["offset"].to_numpy() + parts.sum(axis=1)
@@ -92,7 +125,11 @@ def contributions(tables: b2.Tables, gaps: pl.DataFrame) -> pl.DataFrame:
                 *(pl.Series(f"c_{name}", parts[:, i]) for i, name in enumerate(others)),
                 c_goalie=pl.Series(goalie),
                 c_h_s=frame["offset"],
-                out_of_range=pl.Series((np.abs(z) > OUT_OF_RANGE).sum(axis=1), dtype=pl.Int32),
+                out_of_range=pl.Series(
+                    (np.abs(z) > OUT_OF_RANGE).sum(axis=1)
+                    + frame["goalie_out"].fill_null(False).to_numpy(),
+                    dtype=pl.Int32,
+                ),
             )
         )
     return pl.concat(out)
@@ -129,8 +166,14 @@ def history_shortfall(tables: b2.Tables, gaps: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def screen(tables: b2.Tables, gaps: pl.DataFrame) -> pl.DataFrame:
-    """Every gap game (gaps.csv's rows for one experiment) with its contributions and flags."""
+def screen(
+    tables: b2.Tables,
+    gaps: pl.DataFrame,
+    starts: Mapping[int, datetime] | None = None,
+    moments: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """Every gap game (gaps.csv's rows for one experiment) with its contributions and flags, at
+    the experiment's fold starts and prediction times (contributions)."""
     ref = Reference.load()
     homes = ref.home_arenas.filter("primary").select(
         "team", "arena_id", "first_season", "last_season"
@@ -166,11 +209,11 @@ def screen(tables: b2.Tables, gaps: pl.DataFrame) -> pl.DataFrame:
         )
         .select("game_id", early_season=pl.min_horizontal("home_before", "away_before") < EARLY)
     )
-    # As B2 counts them: candidates known before the start, E1's prediction time.
+    # As B2 counts them: candidates known before the prediction.
     known = (
         b2.candidates(tables)
-        .join(tables.games.select("game_id", "start_utc"), on="game_id")
-        .filter(pl.col("observed_utc") < pl.col("start_utc"))
+        .join(_moments(tables, moments), on="game_id")
+        .filter(pl.col("observed_utc") < pl.col("prediction_utc"))
         .select("game_id", "team")
         .unique()
     )
@@ -178,7 +221,7 @@ def screen(tables: b2.Tables, gaps: pl.DataFrame) -> pl.DataFrame:
         known, on=["game_id", "team"], how="anti"
     )
     return (
-        gaps.join(contributions(tables, gaps), on="game_id")
+        gaps.join(contributions(tables, gaps, starts, moments), on="game_id")
         .join(history_shortfall(tables, gaps), on="game_id")
         .join(terms, on="game_id")
         .join(arena, on="game_id", how="left")
@@ -197,9 +240,11 @@ def screen(tables: b2.Tables, gaps: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def review_set(screened: pl.DataFrame) -> pl.DataFrame:
+def review_set(screened: pl.DataFrame, reviewed: pl.DataFrame | None = None) -> pl.DataFrame:
     """The games to review by hand: every flagged one, every gap above BIG, and a seeded random
-    SAMPLE of the rest split evenly across seasons, with why each was chosen."""
+    SAMPLE of the rest split evenly across seasons, with why each was chosen. A set already
+    reviewed (reviewed, with game_id and reason) is kept as it was: a later screen adds only the
+    flagged games and gaps above BIG it lacks, and never draws its sample again."""
     chosen = screened.with_columns(
         reason=pl.when(pl.col("flagged"))
         .then(pl.lit("flagged"))
@@ -207,6 +252,10 @@ def review_set(screened: pl.DataFrame) -> pl.DataFrame:
         .then(pl.lit("over 20 points"))
         .otherwise(None)
     )
+    if reviewed is not None:
+        kept = screened.join(reviewed.select("game_id", "reason"), on="game_id")
+        added = chosen.filter(pl.col("reason").is_not_null()).join(kept, on="game_id", how="anti")
+        return pl.concat([kept, added.select(kept.columns)]).sort("game_date", "game_id")
     rest = chosen.filter(pl.col("reason").is_null())
     seasons = sorted(rest["season"].unique().to_list())
     rng = np.random.default_rng(SEED)

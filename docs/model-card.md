@@ -154,7 +154,7 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - Its own log loss per season is 0.6804 and 0.6558 on E1.
 - **It is under-confident.** The calibration slope is 1.35 [1.09, 1.62] on E1, driven by 2021-22 (1.55 [1.25, 1.86]; 2018-19 1.06 [0.59, 1.59]). Its probabilities spread less than the market's (standard deviation 0.082 against 0.122 on E1), though the two agree in direction (correlation 0.78). Expected-goals team strength with an 80-game memory misses talent that shows in goals, and the goalie mixture flattens further.
 - **Gaps above 8 points against B1** (hard rule 8): 822 of 2,583 games on E1 (382 in 2018-19, 440 in 2021-22) and 775 of 2,573 on E2. They are listed in `reports/backtest/gaps.csv` without results, and counted in `summary.json`. The largest are games where team strength rates the teams even and the market does not, such as NJD against WSH in March 2019. That many cannot all get a manual review, so gate 1 screened them all and reviewed a set by hand (below). None led to a change of model.
-- **Gate 1's gap review** (`reports/backtest/gap-review.md`, #79) screened all 822 E1 gaps and reviewed 153 by hand, reading no result. It found no bug. The gaps come from:
+- **Gate 1's gap review** (`reports/backtest/gap-review.md`, #79) screened all 822 E1 gaps and all 775 E2 gaps, and reviewed 220 by hand, reading no result. It found no bug. The gaps come from:
   - B2's timidity;
   - public news the market prices and B2 cannot see: injuries (Hall in 2019), trades (Ottawa's 2019 deadline), COVID absences (Montreal on 2022-01-01);
   - teams whose results ran far from their expected goals (Carolina in 2018-19);
@@ -168,7 +168,7 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - **Verdict:** B2 does not add information beyond the market on its own. It goes forward unchanged as the player layer's reference (hard rule 3), and its under-confidence is left to the blend.
   - **The figures:** the frozen run `backtest-20261005-b7639f5` gives the same figures as above.
   - **Post-game corrections (#30):** 89 games of 2026-27 were fetched again a week later. In 39 of them, more than event order changed. That is about 1% of shot rows and 1.7% of lineup rows, and no goal's scorer. Shift charts were compared in 41 games.
-  - **ADR 0004 stands:** the backtest's corrected feeds stay a small, measured optimism. #173 measures what they do to predictions.
+  - **ADR 0004 stands:** the backtest reads corrected feeds, which favours it. How often corrections happen is now measured. What they do to predictions is not, and #173 measures it.
 
 **B3 (ADR 0023), from `backtest-20261003-b1a7b04`:**
 - **It beats B2.** B3 minus B2 is -0.0079 [-0.0130, -0.0028] on E1 and -0.0078 [-0.0130, -0.0028] on E2.

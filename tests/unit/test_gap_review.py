@@ -148,6 +148,40 @@ def test_flags_for_an_odd_arena_seats_a_missing_goalie_and_early_season() -> Non
     assert not screened.filter(pl.col("game_id") == moved)["history_gap"].item()
 
 
+def test_an_extreme_goalie_pairing_is_out_of_range() -> None:
+    # Codex on #93: ΔG counts too, for any goalie pair B2 mixes over.
+    rows = gaps()
+    odd = rows["game_id"][20]
+    home = rows.filter(pl.col("game_id") == odd)["home"].item()
+    # One side's goalies only: ΔG is the home goalie's less the away one's.
+    effects = TABLES.goalie_effects.with_columns(
+        goals_saved=pl.when((pl.col("game_id") == odd) & (pl.col("team") == home))
+        .then(pl.col("goals_saved") + 5.0)
+        .otherwise("goals_saved")
+    )
+    tables = b2.Tables(**{**TABLES.__dict__, "goalie_effects": effects})
+    rows = gaps(tables)
+    screened = review.screen(tables, rows)
+    assert odd in screened.filter("out_of_range")["game_id"].to_list()
+    plain = review.screen(TABLES, gaps())
+    assert odd not in plain.filter("out_of_range")["game_id"].to_list()
+
+
+def test_a_set_already_reviewed_keeps_its_sample_and_gains_new_flags() -> None:
+    # A later screen that flags more games never draws the reviewed sample again (#93).
+    screened = review.screen(TABLES, gaps(n=200))
+    first = review.review_set(screened)
+    newly = screened.join(first, on="game_id", how="anti")["game_id"][0]
+    again = screened.with_columns(
+        flagged=pl.col("flagged") | (pl.col("game_id") == newly),
+    )
+    kept = review.review_set(again, first.select("game_id", "reason"))
+    assert set(kept["game_id"]) == set(first["game_id"]) | {newly}
+    assert kept.filter(pl.col("game_id") == newly)["reason"].item() == "flagged"
+    sampled = first.filter(pl.col("reason") == "random sample")["game_id"]
+    assert set(sampled) <= set(kept.filter(pl.col("reason") == "random sample")["game_id"])
+
+
 def test_a_refit_that_doesnt_reproduce_the_scored_probability_is_refused() -> None:
     # The leakage check of #93: the contributions must belong to the fit that was scored.
     rows = gaps().with_columns(p_b2=pl.col("p_b2") * 0.9)

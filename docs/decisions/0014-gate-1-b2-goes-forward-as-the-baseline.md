@@ -1,6 +1,6 @@
 # 0014. Gate 1: B2 does not beat the market on its own, and goes forward as the baseline
 
-- Status: Proposed
+- Status: Accepted (the owner, 2026-10-21)
 - Date: 2026-10-21
 
 ## Context
@@ -17,7 +17,7 @@ The verdict waited for #30, because ADR 0004 left post-game corrections unmeasur
 
 ## Decision
 
-Option 1, after the owner's call on 2026-10-21 to keep ADR 0004 and run gate 1.
+Option 1, accepted by the owner on 2026-10-21, after their call that day to keep ADR 0004 and run gate 1.
 - **The result:** B2 is worse than B1, and its pooled intervals lie above zero on both E1 and E2. That is expected of a model that reads no price, and no pass or fail is read from point estimates (hard rule 7).
 - **No bug:** the hand review of its gaps found none.
 - **Calibration:** B2's under-confidence is left to the blend, never fixed by retuning B2 on these seasons.
@@ -38,7 +38,8 @@ B2 minus B1, paired log loss, 95% weekly block bootstrap, run `backtest-20261005
 - **Goalie starts:** Brier 0.415 [0.404, 0.426]. 0.9% of the actual starters were not candidates.
 - **Gaps above 8 points (hard rule 8):**
   - 822 of 2,583 games on E1 and 775 of 2,573 on E2;
-  - an automated screen of every gap, then a hand review of 153 games (the flagged ones, every gap above 20 points, and a seeded sample of 40);
+  - an automated screen of every gap in both, each at its own fold starts and prediction times;
+  - then a hand review of 220 games, by the method the owner approved: every flagged game, every gap above 20 points, and a seeded sample of 40 per experiment;
   - no bug was found (reports/backtest/gap-review.md).
 - **Post-game corrections (#30):**
   - 89 games of 2026-27 were fetched again a week after their first copy;
