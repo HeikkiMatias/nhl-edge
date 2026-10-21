@@ -182,6 +182,14 @@ def test_a_set_already_reviewed_keeps_its_sample_and_gains_new_flags() -> None:
     assert set(sampled) <= set(kept.filter(pl.col("reason") == "random sample")["game_id"])
 
 
+def test_a_short_seasons_unused_sample_slots_go_to_the_others() -> None:
+    # Codex on #93: the sample stays SAMPLE while the seasons together hold that many.
+    assert review._shares([500, 500]) == [20, 20]
+    assert review._shares([5, 500]) == [5, 35]
+    assert review._shares([5, 500, 3]) == [5, 32, 3]
+    assert review._shares([10, 12]) == [10, 12]
+
+
 def test_a_refit_that_doesnt_reproduce_the_scored_probability_is_refused() -> None:
     # The leakage check of #93: the contributions must belong to the fit that was scored.
     rows = gaps().with_columns(p_b2=pl.col("p_b2") * 0.9)

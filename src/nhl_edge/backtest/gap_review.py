@@ -258,16 +258,30 @@ def review_set(screened: pl.DataFrame, reviewed: pl.DataFrame | None = None) -> 
         return pl.concat([kept, added.select(kept.columns)]).sort("game_date", "game_id")
     rest = chosen.filter(pl.col("reason").is_null())
     seasons = sorted(rest["season"].unique().to_list())
+    pools = [rest.filter(pl.col("season") == season).sort("game_id") for season in seasons]
     rng = np.random.default_rng(SEED)
     picks = []
-    for k, season in enumerate(seasons):
-        pool = rest.filter(pl.col("season") == season).sort("game_id")
-        size = SAMPLE // len(seasons) + (1 if k < SAMPLE % len(seasons) else 0)
-        index = rng.choice(pool.height, size=min(size, pool.height), replace=False)
+    for pool, size in zip(pools, _shares([pool.height for pool in pools]), strict=True):
+        index = rng.choice(pool.height, size=size, replace=False)
         picks.append(pool[sorted(index.tolist())].with_columns(reason=pl.lit("random sample")))
     return pl.concat([chosen.filter(pl.col("reason").is_not_null()), *picks]).sort(
         "game_date", "game_id"
     )
+
+
+def _shares(sizes: list[int]) -> list[int]:
+    """SAMPLE split evenly across seasons of these pool sizes, the earlier seasons taking the
+    remainder. A season with fewer games gives its unused slots to the others in turn, so the
+    sample stays SAMPLE while the seasons together hold that many (Codex on #93)."""
+    n = len(sizes)
+    shares = [min(SAMPLE // n + (1 if k < SAMPLE % n else 0), size) for k, size in enumerate(sizes)]
+    spare = SAMPLE - sum(shares)
+    while spare > 0 and any(share < size for share, size in zip(shares, sizes, strict=True)):
+        for k, size in enumerate(sizes):
+            if spare > 0 and shares[k] < size:
+                shares[k] += 1
+                spare -= 1
+    return shares
 
 
 def summary(screened: pl.DataFrame, reviewed: pl.DataFrame) -> dict[str, Any]:
