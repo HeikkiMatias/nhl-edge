@@ -354,16 +354,20 @@ def test_each_day_is_checked_against_its_ledger_and_compared(
     base = replayed(cr.with_rows(saved, TABLES), None)
     effects = B2_TABLES.goalie_effects.with_columns(goals_saved=pl.col("goals_saved").abs() + 1)
     corrected = (replace(B2_TABLES, goalie_effects=effects), B3_TABLES, U_TABLES)
-    found = cr.replay_days({day: (saved, base)}, {day: None}, TABLES, corrected)  # type: ignore[dict-item]
+    played = [game]
+    found = cr.replay_days({day: (saved, base)}, {day: None}, TABLES, corrected, played)  # type: ignore[dict-item]
     assert found.not_reproduced == found.unreplayable == {}
     games = cr.predicted(found.games)
     assert games.height == 1 and games["bet_corrected"].item()
     assert games["p_blend_corrected"].item() != games["p_blend"].item()
     stale = base.with_columns(p_blend=pl.col("p_blend") + 0.01)
-    found = cr.replay_days({day: (saved, stale)}, {day: None}, TABLES, corrected)  # type: ignore[dict-item]
+    found = cr.replay_days({day: (saved, stale)}, {day: None}, TABLES, corrected, played)  # type: ignore[dict-item]
     # A ledger neither the base nor the day's own bundle reproduces is reported both ways.
     differs = {day: [f"p_blend differs for [{game}]"]}
     assert found.not_reproduced == found.unreplayable == differs
+    # A game not played when the lakes were rebuilt has the morning's rows in both: not compared.
+    found = cr.replay_days({day: (saved, base)}, {day: None}, TABLES, corrected, [])  # type: ignore[dict-item]
+    assert found.games.is_empty() and found.unplayed == [game]
 
 
 def test_the_report_counts_changed_predictions_and_bets() -> None:

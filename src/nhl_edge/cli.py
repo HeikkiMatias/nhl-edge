@@ -4243,6 +4243,8 @@ def audit_corrections_replay(
                 fits,
                 cr.model_tables(base_lake, season),
                 cr.model_tables(corrected_lake, season),
+                # The games the rebuilds rated: those played when the lakes were copied.
+                base_lake.read("games", seasons=[season])["game_id"].to_list(),
             )
         except (OSError, ValueError) as exc:
             typer.echo(str(exc), err=True)

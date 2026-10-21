@@ -356,6 +356,9 @@ class Decisions:
     games: pl.DataFrame
     not_reproduced: dict[date, list[str]]
     unreplayable: dict[date, list[str]] = field(default_factory=dict)
+    # Slate games not played when the lakes were rebuilt: their rows are the morning build's in
+    # both versions, so they aren't compared.
+    unplayed: list[int] = field(default_factory=list)
 
 
 def replay_days(
@@ -363,10 +366,13 @@ def replay_days(
     live: Mapping[date, blend_fit.LiveFit],
     base: ModelTables,
     corrected: ModelTables,
+    played: Collection[int],
 ) -> Decisions:
     """Each day's bundle (with its ledger) decided again with the rows from both versions and the
     live fit it names (live, by day), and from its own rows, which a correction arriving later
-    never changes."""
+    never changes. Only the games of played (the rebuilt lakes' games) are compared: the steps
+    rate every played game again, and leave an unplayed one's rows as the morning build wrote
+    them, in both versions."""
     frames, not_reproduced, unreplayable = [], {}, {}
     for day, (bundle, ledger) in sorted(bundles.items()):
         fit = live[day]
@@ -379,8 +385,10 @@ def replay_days(
             not_reproduced[day] = problems
         again = lb.replay(with_rows(bundle, corrected), fit)
         frames.append(decision_changes(replayed, again))
-    games = pl.concat(frames) if frames else pl.DataFrame()
-    return Decisions(games, not_reproduced, unreplayable)
+    every = pl.concat(frames) if frames else pl.DataFrame(schema={"game_id": pl.Int64})
+    rated = pl.col("game_id").is_in(pl.Series(list(played), dtype=pl.Int64).implode())
+    unplayed = every.filter(~rated)["game_id"].to_list()
+    return Decisions(every.filter(rated), not_reproduced, unreplayable, unplayed)
 
 
 def predicted(games: pl.DataFrame) -> pl.DataFrame:
@@ -490,6 +498,9 @@ def markdown(
         lines.append("Not replayed: the run bundles are read from R2 (--r2).")
         return "\n".join(lines) + "\n"
     games = decisions.games
+    if games.is_empty():
+        lines.append("No decision day's games had been played when the lakes were rebuilt.")
+        return "\n".join(lines) + "\n"
     days = games["game_date"].unique().sort().to_list()
     both = predicted(games)
     lines += [
@@ -523,6 +534,11 @@ def markdown(
         lines.append(
             f"- **Base against the ledger:** the base rows reproduce every day's ledger, every "
             f"column, floats within {TOLERANCE:g}."
+        )
+    if decisions.unplayed:
+        lines.append(
+            f"- **Not compared:** {len(decisions.unplayed)} slate games not yet played when the "
+            "lakes were rebuilt, so their rows are the morning build's in both versions."
         )
     lines += [
         f"- **Games:** {both.height} predicted in both versions.",
