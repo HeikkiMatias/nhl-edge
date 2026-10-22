@@ -204,6 +204,7 @@ def test_every_registered_challenger_is_reported_from_the_day_after_its_registra
             bundle_sha256=pl.lit("0" * 64),
             input_cutoff_utc=pl.col("decision_snapshot_utc"),
             reads=pl.lit("{}"),
+            fit=pl.lit(None, pl.String),
             code_version=pl.lit("challengers-20261016-abc1234"),
             computed_utc=pl.col("published_utc") + timedelta(hours=12),
         )
@@ -268,6 +269,68 @@ def test_every_registered_challenger_is_reported_from_the_day_after_its_registra
     both = season.report(challenger_outputs=outputs)["challengers"]["challengers"]
     assert sorted(both) == ["shifted/1", "shifted/2"]
     assert both["shifted/1"]["games"] == counted.height and both["shifted/2"]["games"] == 0
+
+
+def test_a_fitting_challenger_shows_its_latest_fit_unfitted_weeks_included(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADR 0041: conservative_blend's weeks without 200 training games are reported, as unfitted.
+    import json
+    from dataclasses import replace
+
+    from nhl_edge.lake.schemas import ChallengerPredictions
+    from nhl_edge.live import challengers as lc
+
+    season = Season(n_weeks=6)
+    registered = FIRST + timedelta(days=6)
+    fitting = replace(lc.REGISTRY[1], registered_on=registered)
+    monkeypatch.setattr(lc, "REGISTRY", (fitting,))
+    unfitted = json.dumps({"week": "2026-10-19", "games": 46, "minimum": 200})
+    outputs = ChallengerPredictions.validate(
+        season.ledger.select(
+            "game_date",
+            "season",
+            "game_id",
+            challenger=pl.lit(fitting.name),
+            challenger_version=pl.lit("1"),
+            adr=pl.lit("0041"),
+            p_home=pl.lit(None, pl.Float64),
+            status=pl.lit(lc.UNFITTED),
+            bundle_sha256=pl.lit("0" * 64),
+            input_cutoff_utc=pl.col("decision_snapshot_utc"),
+            reads=pl.lit("{}"),
+            fit=pl.lit(unfitted),
+            code_version=pl.lit("challengers-20261022-abc1234"),
+            computed_utc=pl.col("published_utc") + timedelta(hours=12),
+        )
+    )
+    report = season.report(challenger_outputs=outputs)
+    entry = report["challengers"]["challengers"]["conservative_blend/1"]
+    counted = season.ledger.filter(pl.col("game_date") > registered).height
+    assert entry["predicted"] == 0 and entry["not_predicted"] == {lc.UNFITTED: counted}
+    assert entry["latest_fit"] == json.loads(unfitted)
+    assert entry["comparisons"]["BLEND"]["difference"]["games"] == 0
+    text = lr.markdown(report)
+    assert f"not predicted: unfitted {counted}." in text
+    assert "  - Week of 2026-10-19: unfitted, on 46 training games of the 200 it needs." in text
+    # Once fitted, the latest day's weights and standard errors.
+    last = season.ledger["game_date"].max()
+    fitted = {
+        "week": "2026-11-16",
+        "games": 230,
+        "minimum": 200,
+        "weights": {"a": -0.01, "b_m": 1.04, "b_d": 0.21},
+        "standard_errors": {"a": 0.04, "b_m": 0.1, "b_d": 0.3},
+        "train_cutoff": "2026-11-16T10:00:00+00:00",
+    }
+    later = outputs.with_columns(
+        fit=pl.when(pl.col("game_date") == last).then(pl.lit(json.dumps(fitted))).otherwise("fit")
+    )
+    text = lr.markdown(season.report(challenger_outputs=later))
+    assert (
+        "  - Latest fit, week of 2026-11-16, on 230 games: a -0.010 (SE 0.040), "
+        "b_m +1.040 (SE 0.100), b_d +0.210 (SE 0.300)." in text
+    )
 
 
 def test_the_real_stakes_section_states_adr_0039s_start_rule(

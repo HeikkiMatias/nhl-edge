@@ -3027,10 +3027,11 @@ def live_challengers(
     import polars as pl
 
     from nhl_edge.backtest import reports
-    from nhl_edge.lake.tables import Lake
+    from nhl_edge.lake.tables import TABLES, Lake
     from nhl_edge.live import bundle as lb
     from nhl_edge.live import challengers as lc
     from nhl_edge.live import predict as lp
+    from nhl_edge.live.blend_fit import LIVE_SEASON
     from nhl_edge.settings import load_env
 
     if r2 == (source is not None):
@@ -3043,6 +3044,8 @@ def live_challengers(
     if source is not None:
         store: lb.Store = lb.LocalStore(source)
         lake = Lake.from_env(mirror=False)
+        files = [pl.read_parquet(path) for path in sorted(source.glob("*.parquet"))]
+        ledgers = pl.concat([TABLES["paper_ledger"].empty(), *files], how="diagonal_relaxed")
 
         def ledger_of(day: date) -> pl.DataFrame:
             return pl.read_parquet(source / f"{day.isoformat()}.parquet")
@@ -3050,11 +3053,15 @@ def live_challengers(
         lake = Lake.from_env(mirror=True)
         assert lake.objects is not None and lake.bucket is not None
         store = lb.R2Store(lake.objects, lake.bucket)
-        for table in sorted({table for c in lc.REGISTRY for table in c.reads}):
+        for table in sorted({table for c in lc.REGISTRY for table in c.reads} - {"paper_ledger"}):
             lake.pull(table)
+        ledgers = lp.sync_ledgers(lake.objects, lake.bucket, LIVE_SEASON)
 
         def ledger_of(day: date) -> pl.DataFrame:
             return pl.read_parquet(io.BytesIO(store.get(lp.ledger_key(day))))
+
+    # The ledgers are the record: a challenger reads them, never the lake's copy (ADR 0041).
+    reader = lc.WithLedgers(lake, ledgers)
 
     # --check reads every stored output, its bundle complete or not: load() names one gone missing.
     pairs = lc.stored(store, lc.REGISTRY) if check else lc.due(store, lc.REGISTRY)
@@ -3065,14 +3072,16 @@ def live_challengers(
             bundle, sha = lc.load(store, day)
             live = lc.live_fit(bundle)
             if check:
-                problems = lc.check(store, challenger, day, live, lake, now, ledger_of(day))
+                problems = lc.check(store, challenger, day, live, reader, now, ledger_of(day))
                 for problem in problems:
                     typer.echo(f"{label}: {problem}", err=True)
                 failed += bool(problems)
                 if not problems:
                     typer.echo(f"{label}: recomputed from its bundle, identical")
                 continue
-            output = lc.run(challenger, bundle, sha, live, lake, code_version, now, ledger_of(day))
+            output = lc.run(
+                challenger, bundle, sha, live, reader, code_version, now, ledger_of(day)
+            )
             key = lc.write(store, challenger, day, output)
         except Exception as exc:
             # One broken challenger or day never stops the others (Codex on #265); the run

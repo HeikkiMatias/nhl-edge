@@ -730,6 +730,10 @@ def challengers(
             "missing_days": missing,
             "pending_days": [day.isoformat() for day in without if pending(day)],
         }
+        # A challenger that fits (ADR 0041) shows its latest day's fit, unfitted or not.
+        fits = own.filter(pl.col("fit").is_not_null()).sort("game_date")
+        if fits.height:
+            entry["latest_fit"] = json.loads(fits["fit"][-1])
         if not missing:
             entry |= _challenger_figures(own, started, scored, moves)
         result[f"{challenger.name}/{challenger.version}"] = entry
@@ -1383,6 +1387,8 @@ def _challenger_lines(section: dict[str, Any]) -> list[str]:
             + (f"; not predicted: {not_predicted}" if not_predicted else "")
             + f".{pending}",
         ]
+        if c.get("latest_fit"):
+            lines.append(_fit_line(c["latest_fit"]))
         if c["missing_days"]:
             lines.append(
                 f"  - **Withheld:** {len(c['missing_days'])} decision days after its "
@@ -1402,6 +1408,21 @@ def _challenger_lines(section: dict[str, Any]) -> list[str]:
             f"{_fmt(c['toward_close']['slope'])}",
         ]
     return lines
+
+
+def _fit_line(fit: dict[str, Any]) -> str:
+    """A challenger's latest fit: its weights with their standard errors, or the games it still
+    lacks."""
+    if "weights" not in fit:
+        return (
+            f"  - Week of {fit['week']}: unfitted, on {fit['games']} training games of the "
+            f"{fit['minimum']} it needs."
+        )
+    terms = ", ".join(
+        f"{term} {weight:+.3f} (SE {fit['standard_errors'][term]:.3f})"
+        for term, weight in fit["weights"].items()
+    )
+    return f"  - Latest fit, week of {fit['week']}, on {fit['games']} games: {terms}."
 
 
 def record(result: dict[str, Any], code_version: str) -> dict[str, Any]:
