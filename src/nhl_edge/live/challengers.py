@@ -211,26 +211,34 @@ def conservative_design(p_mkt: ArrayLike, p_b3: ArrayLike) -> NDArray[np.float64
 
 
 def map_fit(
-    x: NDArray[np.float64], home_win: ArrayLike, mean: NDArray[np.float64], sd: NDArray[np.float64]
+    x: NDArray[np.float64],
+    home_win: ArrayLike,
+    mean: NDArray[np.float64],
+    sd: NDArray[np.float64],
+    offset: ArrayLike | None = None,
+    weights: ArrayLike | None = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """A logistic regression's weights on the columns of x at the posterior mode under
     independent normal priors (mean, sd), by Newton-Raphson from the prior mean, and their
-    standard errors from the posterior's curvature there. The priors keep the fit finite on any
-    games, all home wins included."""
+    standard errors from the posterior's curvature there: with each game's log-odds offset and
+    its weight in the likelihood when given. The priors keep the fit finite on any games, all
+    home wins included."""
     y = np.asarray(home_win, dtype=np.float64)
+    base = 0.0 if offset is None else np.asarray(offset, dtype=np.float64)
+    w = 1.0 if weights is None else np.asarray(weights, dtype=np.float64)
     precision = np.diag(1 / sd**2)
     beta = mean.copy()
     for _ in range(ITERATIONS):
-        p = sigmoid(x @ beta)
-        hessian = x.T @ (x * (p * (1 - p))[:, None]) + precision
-        step = np.linalg.solve(hessian, x.T @ (y - p) - precision @ (beta - mean))
+        p = sigmoid(x @ beta + base)
+        hessian = x.T @ (x * (w * p * (1 - p))[:, None]) + precision
+        step = np.linalg.solve(hessian, x.T @ (w * (y - p)) - precision @ (beta - mean))
         beta = beta + step
         if np.max(np.abs(step)) < CONVERGED:
             break
     else:
         raise ValueError(f"the fit did not converge in {ITERATIONS} iterations")
-    p = sigmoid(x @ beta)
-    hessian = x.T @ (x * (p * (1 - p))[:, None]) + precision
+    p = sigmoid(x @ beta + base)
+    hessian = x.T @ (x * (w * p * (1 - p))[:, None]) + precision
     return beta, np.sqrt(np.diag(np.linalg.inv(hessian)))
 
 
@@ -259,8 +267,13 @@ def conservative_training(day: date, seasons: list[int], lake: PointInTime) -> p
     result that turned public during the week. A decision whose game was played more than
     POSTPONED from the start it was decided for is void, as the evaluation counts it
     (live/report.scoreable); its game counts once, from its new date's decision."""
+    return training_rows(lake.read("paper_ledger", seasons), lake.read("games", seasons), day)
+
+
+def training_rows(ledger: pl.DataFrame, games: pl.DataFrame, day: date) -> pl.DataFrame:
+    """conservative_training's rows for the day's week from the ledgers and results as read."""
     start = fold_start(day)
-    ledger = lake.read("paper_ledger", seasons).filter(
+    decided = ledger.filter(
         pl.col("policy_version") == TRAINS_ON,
         pl.col("status") == PREDICTED,
         pl.col("game_date") < week_of(day),
@@ -268,14 +281,13 @@ def conservative_training(day: date, seasons: list[int], lake: PointInTime) -> p
         pl.col("p_b0").is_not_null(),
         pl.col("p_b3").is_not_null(),
     )
-    games = lake.read("games", seasons)
     results = (
         outcomes(games)
         .join(games.select("game_id", played_utc="start_utc"), on="game_id")
         .filter(pl.col("result_utc") < start)
     )
     return (
-        ledger.select("game_date", "game_id", "start_utc", "p_b0", "p_b3")
+        decided.select("game_date", "game_id", "start_utc", "home", "away", "p_b0", "p_b3")
         .join(results, on="game_id")
         .filter((pl.col("played_utc") - pl.col("start_utc")).abs() <= POSTPONED)
         .sort("game_date", "game_id")
@@ -513,6 +525,93 @@ def _goalie_spread_blend(
     return _fitted(replayed, priced, p, fit)
 
 
+# team_residual_blend (ADR 0043): conservative_blend on B3 corrected by each team's effect on
+# what B3 leaves unexplained, fitted each week on the earlier weeks' v2 residuals.
+TEAM_PRIOR_SD = 0.2
+HALF_LIFE_DAYS = 42
+
+
+def team_effects(rows: pl.DataFrame, day: date) -> dict[str, float]:
+    """Each team's effect θ on B3's log-odds at the day's week's fold start (ADR 0043): the
+    posterior mode of logit P(home win) = logit p_B3 + θ_home - θ_away on the week's training
+    rows (training_rows), each game weighted 0.5^(age / HALF_LIFE_DAYS), its age in days from
+    its date to the week's Monday, under independent priors N(0, TEAM_PRIOR_SD²). A team without
+    games keeps 0."""
+    if rows.is_empty():
+        return {}
+    teams = sorted(set(rows["home"].to_list()) | set(rows["away"].to_list()))
+    index = {team: i for i, team in enumerate(teams)}
+    x = np.zeros((rows.height, len(teams)))
+    x[np.arange(rows.height), [index[t] for t in rows["home"]]] = 1.0
+    x[np.arange(rows.height), [index[t] for t in rows["away"]]] = -1.0
+    age = rows.select((pl.lit(week_of(day)) - pl.col("game_date")).dt.total_days())
+    weights = 0.5 ** (age.to_series().to_numpy() / HALF_LIFE_DAYS)
+    theta, _ = map_fit(
+        x,
+        rows["home_win"],
+        np.zeros(len(teams)),
+        np.full(len(teams), TEAM_PRIOR_SD),
+        offset=logit(rows["p_b3"]),
+        weights=weights,
+    )
+    return dict(zip(teams, theta.tolist(), strict=True))
+
+
+def corrected(frame: pl.DataFrame, effects: dict[str, float]) -> pl.Series:
+    """Each row's p_b3 corrected by the effects: logit p_B3 + θ_home - θ_away."""
+    home = frame["home"].replace_strict(effects, default=0.0, return_dtype=pl.Float64)
+    away = frame["away"].replace_strict(effects, default=0.0, return_dtype=pl.Float64)
+    shift = (home - away).to_numpy()
+    return pl.Series("p_b3", sigmoid(logit(frame["p_b3"]) + shift), dtype=pl.Float64)
+
+
+def corrected_training(
+    ledger: pl.DataFrame, games: pl.DataFrame, day: date
+) -> tuple[pl.DataFrame, dict[str, float]]:
+    """The day's week's training rows (training_rows), each row's p_b3 corrected by the team
+    effects of its own week's fold start, from the games before that week only; and the day's
+    week's effects, from every training row."""
+    rows = training_rows(ledger, games, day)
+    if rows.is_empty():
+        return rows, {}
+    weeks = [
+        group.with_columns(corrected(group, team_effects(training_rows(ledger, games, w), w)))
+        for (w,), group in rows.with_columns(week=pl.col("game_date").dt.truncate("1w")).group_by(
+            "week", maintain_order=True
+        )
+    ]
+    return pl.concat(weeks).drop("week").sort("game_date", "game_id"), team_effects(rows, day)
+
+
+def _team_residual_blend(
+    bundle: lb.Bundle, replayed: pl.DataFrame, live: blend_fit.LiveFit, lake: PointInTime
+) -> pl.DataFrame:
+    """The day's probabilities from the week's fit on conservative_blend's training rows with
+    their B3 corrected (corrected_training), and the slate's B3 by the day's week's team effects
+    (ADR 0043); or none, as unfitted, while fewer than MINIMUM_GAMES train it. The fit and the
+    day's week's effects ride on every row."""
+    day = date.fromisoformat(bundle.manifest["day"])
+    seasons = sorted(set(replayed["season"].to_list()))
+    rows, effects = corrected_training(
+        lake.read("paper_ledger", seasons), lake.read("games", seasons), day
+    )
+    fit: dict[str, Any] = {
+        "week": week_of(day).isoformat(),
+        "games": rows.height,
+        "minimum": MINIMUM_GAMES,
+        "team_effects": effects,
+    }
+    if rows.height < MINIMUM_GAMES:
+        return _unfitted(replayed, fit)
+    weights, errors = conservative_fit(rows["home_win"], rows["p_b0"], rows["p_b3"])
+    fit |= _weights(CONSERVATIVE_TERMS, weights, errors) | {
+        "train_cutoff": rows["result_utc"].max().isoformat(),  # type: ignore[union-attr]
+    }
+    priced = _priced(replayed)
+    p = sigmoid(conservative_design(priced["p_b0"], corrected(priced, effects)) @ weights)
+    return _fitted(replayed, priced, p, fit)
+
+
 REGISTRY: tuple[Challenger, ...] = (
     Challenger(
         name="market_only",
@@ -537,6 +636,15 @@ REGISTRY: tuple[Challenger, ...] = (
         registered_on=date(2026, 10, 22),
         reads=("paper_ledger", "games", "goalie_spreads"),
         predict=_goalie_spread_blend,
+        baseline="conservative_blend/1",
+    ),
+    Challenger(
+        name="team_residual_blend",
+        version="1",
+        adr="0043",
+        registered_on=date(2026, 10, 22),
+        reads=("paper_ledger", "games"),
+        predict=_team_residual_blend,
         baseline="conservative_blend/1",
     ),
 )

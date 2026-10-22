@@ -733,9 +733,9 @@ def challengers(
     output withholds the figures (Codex on #265): a challenger that fails on some days would
     otherwise choose its own sample. A day is pending rather than missing only until the end of
     the next UTC day by the report's clock now, since the nightly scores it the night after its
-    decision. A challenger with a baseline is also paired with it (_against_baseline), on the
-    goalie spreads (goalie_spreads) when they are given, unless the baseline's own outputs are
-    missing for some of those days."""
+    decision. A challenger with a baseline is also paired with it (_against_baseline), and on the
+    goalie spreads (goalie_spreads) when they are given and it reads them, unless the baseline's
+    own outputs are missing for some of those days."""
     keys = ["game_date", "game_id"]
 
     def pending(day: date) -> bool:
@@ -784,8 +784,10 @@ def challengers(
                     day.isoformat() for day in lacking if not pending(day)
                 ]
                 if not entry["baseline_missing_days"]:
+                    # The goalie-spread subset is the measure of a challenger that reads them.
+                    subset = spreads if "goalie_spreads" in challenger.reads else None
                     entry["comparisons"] |= _against_baseline(
-                        own, baseline, challenger.baseline, scored, spreads
+                        own, baseline, challenger.baseline, scored, subset
                     )
         result[f"{challenger.name}/{challenger.version}"] = entry
     return {"registered": len(registry), "challengers": result}

@@ -28,8 +28,10 @@ NOW = datetime(2026, 10, 8, 9, tzinfo=UTC)
 MARKET_ONLY = replace(lc.REGISTRY[0], registered_on=pf.DAY - timedelta(days=1))
 CONSERVATIVE = replace(lc.REGISTRY[1], registered_on=pf.DAY - timedelta(days=1))
 SPREAD = replace(lc.REGISTRY[2], registered_on=pf.DAY - timedelta(days=1))
+RESIDUAL = replace(lc.REGISTRY[3], registered_on=pf.DAY - timedelta(days=1))
 # The fixture day's ET week starts on Monday 2026-10-05.
 WEEK = date(2026, 10, 5)
+TEAMS = ("BOS", "TOR", "MTL", "OTT", "DET", "BUF", "FLA", "TBL", "NYR")
 
 
 class NoLake:
@@ -68,6 +70,8 @@ def history(
             "season": [20262027] * n,
             "game_id": ids,
             "start_utc": starts,
+            "home": [TEAMS[i % len(TEAMS)] for i in range(n)],
+            "away": [TEAMS[(i + 1 + i // len(TEAMS)) % len(TEAMS)] for i in range(n)],
             "published_utc": [datetime.combine(day, time(16, 50), UTC) for day in days],
             "status": [lp.PREDICTED] * n,
             "policy_version": [policy] * n,
@@ -679,3 +683,111 @@ def test_nhl_live_challengers_keeps_the_spreads_before_scoring(
     check = runner.invoke(app, ["live", "challengers", "--check", "--from", str(out)])
     assert check.exit_code == 1
     assert "goalie spreads, 2026-10-07: goalie_spread differs" in check.output
+
+
+def test_team_effects_are_the_weighted_posterior_mode_on_b3s_log_odds() -> None:
+    rows, _ = history(3000, seed=6)
+    truth = {"BOS": 0.4, "TOR": -0.4}
+    rng = np.random.default_rng(7)
+    shift = np.array(
+        [
+            truth.get(h, 0.0) - truth.get(a, 0.0)
+            for h, a in zip(rows["home"], rows["away"], strict=True)
+        ]
+    )
+    y = rng.random(rows.height) < sigmoid(logit(rows["p_b3"].to_numpy()) + shift)
+    trained = rows.with_columns(home_win=pl.Series(y.astype(np.int8)))
+    effects = lc.team_effects(trained, WEEK)
+    assert effects["BOS"] > 0.1 > -0.1 > effects["TOR"]
+    assert all(abs(effects[t]) < 0.1 for t in effects if t not in truth)
+    # The gradient of the weighted log posterior is zero at the effects.
+    teams = sorted(effects)
+    x = np.zeros((rows.height, len(teams)))
+    x[np.arange(rows.height), [teams.index(t) for t in rows["home"]]] = 1
+    x[np.arange(rows.height), [teams.index(t) for t in rows["away"]]] = -1
+    age = np.array([(WEEK - d).days for d in rows["game_date"]])
+    w = 0.5 ** (age / lc.HALF_LIFE_DAYS)
+    theta = np.array([effects[t] for t in teams])
+    p = sigmoid(logit(rows["p_b3"].to_numpy()) + x @ theta)
+    assert np.abs(x.T @ (w * (y - p)) - theta / lc.TEAM_PRIOR_SD**2).max() < 1e-8
+    assert lc.team_effects(trained.head(0), WEEK) == {}
+
+
+def test_a_games_weight_halves_every_half_life() -> None:
+    # One home win of BOS over TOR moves BOS's effect less the older it is.
+    def effect(age: int) -> float:
+        one = pl.DataFrame(
+            {
+                "game_date": [WEEK - timedelta(days=age)],
+                "home": ["BOS"],
+                "away": ["TOR"],
+                "p_b3": [0.5],
+                "home_win": [1],
+            }
+        )
+        return lc.team_effects(one, WEEK)["BOS"]
+
+    assert effect(0) > effect(42) > effect(84) > 0
+    # With one game the mode is nearly linear in its weight: halved per half-life.
+    assert effect(42) / effect(0) == pytest.approx(0.5, rel=0.02)
+
+
+def test_b3_is_corrected_by_the_home_teams_effect_less_the_away_teams() -> None:
+    frame = pl.DataFrame({"home": ["BOS", "NJD"], "away": ["TOR", "BOS"], "p_b3": [0.5, 0.6]})
+    corrected = lc.corrected(frame, {"BOS": 0.1, "TOR": -0.05})
+    # A team without an effect keeps 0.
+    assert np.allclose(
+        corrected.to_numpy(), sigmoid(logit(np.array([0.5, 0.6])) + np.array([0.15, -0.1]))
+    )
+
+
+def two_weeks() -> tuple[pl.DataFrame, pl.DataFrame]:
+    """history()'s decisions over the two weeks before the fixture's."""
+    first = history(150, first=WEEK - timedelta(days=14), seed=8)
+    second = history(150, first=WEEK - timedelta(days=7), seed=9)
+    return pl.concat([first[0], second[0]]), pl.concat([first[1], second[1]])
+
+
+def test_team_residual_blend_is_unfitted_below_its_minimum_with_the_weeks_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = lb.LocalStore(tmp_path)
+    ledger = decided(store, monkeypatch)
+    rows, games = history(120)
+    output = computed(store, ledger, RESIDUAL, Lake(paper_ledger=rows, games=games))
+    assert output["status"].to_list() == [lc.UNFITTED] * 3
+    fit = json.loads(output["fit"][0])
+    assert (fit["games"], fit["minimum"]) == (120, 200)
+    assert sorted(fit["team_effects"]) == sorted(set(rows["home"]) | set(rows["away"]))
+
+
+def test_team_residual_blend_predicts_on_b3_corrected_by_each_weeks_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = lb.LocalStore(tmp_path)
+    ledger = decided(store, monkeypatch)
+    rows, games = two_weeks()
+    output = computed(store, ledger, RESIDUAL, Lake(paper_ledger=rows, games=games))
+    ChallengerPredictions.validate(output)
+    assert output["status"].to_list() == [lc.PREDICTED] * 3
+    trained, effects = lc.corrected_training(rows, games, pf.DAY)
+    # The first week's rows have no earlier games to correct them; the second's are corrected
+    # by the first's.
+    first = trained.filter(pl.col("game_date") < WEEK - timedelta(days=7))
+    raw = rows.join(first.select("game_id"), on="game_id").sort("game_date", "game_id")
+    assert np.allclose(first["p_b3"].to_numpy(), raw["p_b3"].to_numpy(), rtol=0, atol=1e-15)
+    second = trained.filter(pl.col("game_date") >= WEEK - timedelta(days=7))
+    early = lc.team_effects(lc.training_rows(rows, games, WEEK - timedelta(days=7)), WEEK)
+    assert (
+        early
+        and second["p_b3"].to_list()
+        != rows.filter(pl.col("game_date") >= WEEK - timedelta(days=7))
+        .sort("game_date", "game_id")["p_b3"]
+        .to_list()
+    )
+    weights, _ = lc.conservative_fit(trained["home_win"], trained["p_b0"], trained["p_b3"])
+    day = ledger.sort("game_id")
+    expected = sigmoid(lc.conservative_design(day["p_b0"], lc.corrected(day, effects)) @ weights)
+    assert np.allclose(output.sort("game_id")["p_home"].to_numpy(), expected, rtol=0, atol=1e-12)
+    fit = json.loads(output["fit"][0])
+    assert fit["games"] == 300 and fit["team_effects"] == pytest.approx(effects)
