@@ -41,10 +41,7 @@ Option 1, as challenger `team_residual_blend`, version 1, registered on the day 
   - **Reported beside it:** what every challenger gets: the differences from the frozen blend and B1, the shadow bets' CLV and the disagreement's slope.
   - Each gets a weekly block bootstrap interval (hard rule 7), with counts only under 4 weeks, and no verdict before 2027-04-12.
 
-**The cost of caution:** the term moves slowly by design.
-- **Signal:** take a team that is truly 0.2 log-odds better than B3 rates it, about 5 points of probability near 50%. With about 3.5 games a week, it would show θ of about +0.03 by mid-December, and at most about +0.05 later in the season.
-- **Noise:** game-to-game luck moves each team's θ by more than that, about ±0.07 (one SD) by mid-December. A read-only run on 2026-10-21's 29 training games already gave effects from −0.04 to +0.04, after about two games a team.
-- So the effects are mostly luck until teams have played many games. That is what the shrinkage is for: the effects are the posterior mean if team effects of about this size exist. Whether they help is for the paired comparison to judge.
+**The cost of caution:** the term moves slowly by design. Take a team that is truly 0.2 log-odds better than B3 rates it, about 5 points of probability near 50%. With about 3.5 games a week, it would show θ of about +0.03 by mid-December, and at most about +0.05 later in the season.
 
 ## Backtest evidence
 
@@ -64,6 +61,5 @@ None, by design (ADR 0038). **For context only:** ADR 0036's team strength term,
 
 ## Revisit when
 
-- **Too few games:** fewer than 200 v2 training games by 2026-11-30, as for `conservative_blend` (ADR 0041).
-- Amended on 2026-10-22, before registration: the draft's "no team's effect exceeds 0.02 by 2026-12-31" could never trigger, since luck alone moves effects past it (above).
+- **The term is inert:** by 2026-12-31, no team's effect exceeds 0.02. The prior would then be too tight to test anything, which would take a new version.
 - **A mistaken specification:** that makes a new version with a new registration, never a change to this one.
