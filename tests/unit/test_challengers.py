@@ -637,11 +637,12 @@ def test_the_spread_fit_is_the_posterior_mode_and_finds_the_spreads_weight() -> 
     assert abs(weights[3] + 0.5) < 3 * errors[3] and errors[3] < 0.5
 
 
-def test_a_baseline_names_a_registered_challenger() -> None:
-    keys = {f"{c.name}/{c.version}" for c in lc.REGISTRY}
+def test_a_baseline_names_a_registered_challenger_or_a_ledger_model() -> None:
+    keys = {f"{c.name}/{c.version}" for c in lc.REGISTRY} | set(lc.LEDGER_BASELINES)
     for challenger in lc.REGISTRY:
         assert challenger.baseline is None or challenger.baseline in keys
     assert lc.REGISTRY[2].baseline == "conservative_blend/1"
+    assert lc.REGISTRY[4].baseline == "B3" and lc.LEDGER_BASELINES["B3"] == "p_b3"
 
 
 def test_nhl_live_challengers_keeps_the_spreads_before_scoring(
@@ -791,3 +792,94 @@ def test_team_residual_blend_predicts_on_b3_corrected_by_each_weeks_effects(
     assert np.allclose(output.sort("game_id")["p_home"].to_numpy(), expected, rtol=0, atol=1e-12)
     fit = json.loads(output["fit"][0])
     assert fit["games"] == 300 and fit["team_effects"] == pytest.approx(effects)
+
+
+def test_b3_split_predicts_the_slate_from_its_bundle_beside_the_days_b3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from b3_fixtures import day_bundle, league
+
+    from nhl_edge.backtest.walk_forward import fold_start
+    from nhl_edge.game import b3
+
+    tables = league()
+    start = fold_start(tables.games.select("season", "start_utc"), 20182019)
+    plain = b3.fit_fold(tables, 20182019, start)
+    split = b3.fit_fold(tables, 20182019, start, terms=b3.Terms(split=True))
+    bundle = replace(day_bundle(tables), b3=plain)
+    monkeypatch.setattr(lc, "split_fit", lambda: (split, plain))
+    replayed = bundle.inputs["slate"].select("game_id", status=pl.lit(lp.PREDICTED))
+    output = lc.REGISTRY[4].predict(bundle, replayed, None, None)  # type: ignore[arg-type]
+    usable, pairs = lb.b3_scenarios(bundle)
+    expected = split.predict(b3.split_inputs(usable), pairs).sort("game_id")
+    assert output.sort("game_id")["p_home"].to_list() == expected["p_home"].to_list()
+    assert output.height == 4 and output["p_home"].null_count() == 0
+    # The split's probabilities are not B3's.
+    assert (
+        expected["p_home"].to_list()
+        != plain.predict(usable, pairs).sort("game_id")["p_home"].to_list()
+    )
+    # A day whose live B3 differs from the one the split was fitted beside is refused.
+    moved = replace(plain, intercept=plain.intercept + 0.01)
+    with pytest.raises(ValueError, match="not the split's: intercept differs"):
+        lc.REGISTRY[4].predict(replace(bundle, b3=moved), replayed, None, None)  # type: ignore[arg-type]
+    fewer = replace(plain, games=plain.games - 1)
+    with pytest.raises(ValueError, match="games"):
+        lc.REGISTRY[4].predict(replace(bundle, b3=fewer), replayed, None, None)  # type: ignore[arg-type]
+    # A day without its models keeps its statuses, with no probability (Codex on #307).
+    none = lc.REGISTRY[4].predict(replace(bundle, b3=None), replayed, None, None)  # type: ignore[arg-type]
+    assert none["p_home"].null_count() == none.height
+    assert none["status"].to_list() == replayed["status"].to_list()
+
+
+def test_the_split_fit_is_pinned_and_refused_when_altered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nhl_edge.live import b3_split
+
+    record = {
+        "version": "b3-split-x",
+        "split": {
+            "season": 20262027,
+            "settings": {"l2": 1.0},
+            "intercept": 0.1,
+            "weights": [0.3, 0.05, 0.15, 0.05],
+            "means": [0.0] * 4,
+            "scales": [1.0] * 4,
+            "games": 10,
+            "train_cutoff": "2026-10-01T00:00:00+00:00",
+            "inputs": list(b3_split.SPLIT.inputs())[:4],
+        },
+    }
+    path = tmp_path / "b3-split-x.json"
+    body = json.dumps(record).encode()
+    path.write_bytes(body)
+    monkeypatch.setattr(lc, "B3_SPLIT_FIT", path)
+    monkeypatch.setattr(lc, "B3_SPLIT_SHA256", lb.sha256(body + b" "))
+    with pytest.raises(ValueError, match="not the split fit"):
+        lc.split_fit()
+
+
+def test_the_registered_split_fit_is_the_committed_one_beside_the_live_b3() -> None:
+    from nhl_edge.game import b3
+
+    split, plain = lc.split_fit()
+    assert split.inputs == b3.Terms(split=True).inputs() and plain.inputs == b3.INPUTS
+    assert split.games == plain.games and split.train_cutoff == plain.train_cutoff
+    record = json.loads(lc.B3_SPLIT_FIT.read_text())
+    assert record["live_fit"] == blend_fit.load(json.loads(FIT.read_text())).version
+    assert record["season"] == blend_fit.LIVE_SEASON
+
+
+def test_b3_split_scores_a_day_without_models_as_its_ledger_says(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The fixture's bundle has no fits, as a day whose feature build was refused: run() keeps
+    # each game's replayed status rather than failing (Codex on #307).
+    store = lb.LocalStore(tmp_path)
+    ledger = decided(store, monkeypatch)
+    split = replace(lc.REGISTRY[4], registered_on=pf.DAY - timedelta(days=1))
+    output = computed(store, ledger, split)
+    ChallengerPredictions.validate(output)
+    assert output["p_home"].null_count() == output.height
+    assert output["status"].to_list() == [lc.NO_PROBABILITY] * output.height

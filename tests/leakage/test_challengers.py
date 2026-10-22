@@ -291,42 +291,16 @@ def test_goalie_spread_blend_trains_on_conservative_blends_rows_and_their_spread
 
 @pytest.fixture(scope="module")
 def league_bundle() -> lb.Bundle:
-    """A decision day's bundle from the synthetic B3 league (b3_fixtures): its first test date's
-    four games, each team with two candidate goalies, B3 fitted before the season, and the
-    decision at the games' start."""
-    from b3_fixtures import league
+    """A decision day's bundle from the synthetic B3 league (b3_fixtures.day_bundle): its first
+    test date's four games, each team with two candidate goalies, B3 fitted before the season."""
+    from b3_fixtures import day_bundle, league
 
     from nhl_edge.backtest.walk_forward import fold_start
     from nhl_edge.game import b3
-    from nhl_edge.lake.schemas import Slate, dtypes
 
     tables = league()
-    season = 20182019
-    games = tables.games.filter(pl.col("season") == season)
-    day = games["game_date"].min()
-    slate = games.filter(pl.col("game_date") == day)
-    cutoff = slate["start_utc"].min()
-    moments = games.select("game_id", prediction_utc="start_utc")
-    start = fold_start(tables.games.select("season", "start_utc"), season)
-    _, model = b3.predictions(tables, moments, season, start)
-    listed = slate.with_columns(
-        game_state=pl.lit("FUT"), observed_utc=pl.lit(cutoff - timedelta(days=1))
-    )
-    inputs = {"slate": Slate.validate(listed.select(list(dtypes(Slate))).cast(dtypes(Slate)))}
-    for name in (
-        "schedule_terms",
-        "goalie_starts",
-        "actual_lineups",
-        "lineups",
-        "lineup_replacements",
-        "player_ratings",
-        "rapm_terms",
-        "expected_power_plays",
-        "goal_multipliers",
-    ):
-        inputs[name] = getattr(tables, name)
-    manifest = {"day": day.isoformat(), "input_cutoff": cutoff.isoformat()}
-    return lb.Bundle(manifest, inputs, None, model)
+    start = fold_start(tables.games.select("season", "start_utc"), 20182019)
+    return replace(day_bundle(tables), b3=b3.fit_fold(tables, 20182019, start))
 
 
 def test_a_slate_games_spread_reads_its_goalie_rows_only_once_known(
@@ -409,3 +383,37 @@ def test_a_rows_team_correction_never_reads_its_own_weeks_results() -> None:
     assert rows_won.filter(~in_week)["p_b3"].to_list() == [0.5] * 5
     # The day's week's effects read every earlier week, so the flip moves them.
     assert effects_won["BOS"] > 0 > effects_lost["BOS"]
+
+
+def test_b3_split_reads_nothing_but_its_bundle(
+    league_bundle: lb.Bundle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ADR 0044: the split's fit is committed and its inputs are the bundle's own rows, known
+    # before the input cutoff; it registers no lake table, and a read would be refused.
+    from b3_fixtures import league
+
+    from nhl_edge.backtest.walk_forward import fold_start
+    from nhl_edge.game import b3
+
+    challenger = lc.REGISTRY[4]
+    assert challenger.reads == ()
+    tables = league()
+    start = fold_start(tables.games.select("season", "start_utc"), 20182019)
+    split = b3.fit_fold(tables, 20182019, start, terms=b3.Terms(split=True))
+    monkeypatch.setattr(lc, "split_fit", lambda: (split, league_bundle.b3))
+    replayed = league_bundle.inputs["slate"].select("game_id", status=pl.lit("predicted"))
+    lake = lc.PointInTime(Lake(), CUTOFF, challenger.reads)
+    output = challenger.predict(league_bundle, replayed, None, lake)  # type: ignore[arg-type]
+    assert output["p_home"].null_count() == 0 and lake.reads == {}
+    # A goalie row known only at the cutoff moves nothing.
+    starts = league_bundle.inputs["goalie_starts"]
+    cutoff = datetime.fromisoformat(league_bundle.manifest["input_cutoff"])
+    game = output["game_id"][0]
+    late = (
+        starts.filter(pl.col("game_id") == game)
+        .head(1)
+        .with_columns(p_start=pl.lit(1.0), observed_utc=pl.lit(cutoff, UTC_US))
+    )
+    inputs = {**league_bundle.inputs, "goalie_starts": pl.concat([starts, late])}
+    again = challenger.predict(replace(league_bundle, inputs=inputs), replayed, None, lake)  # type: ignore[arg-type]
+    assert again.equals(output)

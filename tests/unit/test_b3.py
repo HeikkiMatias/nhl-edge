@@ -875,3 +875,49 @@ def test_a_fit_with_input_terms_names_its_inputs_and_a_bundle_refuses_to_replay_
     )
     assert "inputs" not in bundle.fit_record(plain)
     assert bundle._fit(json_round_trip(bundle.fit_record(plain)), b3.B3Model).inputs == b3.INPUTS
+
+
+def test_the_split_parts_sum_to_delta_g_hat_in_every_scenario_and_with_the_starters() -> None:
+    # ADR 0044: Δĝ = 5v5 + special teams + finishing + goalie, exactly, so B3 is the split
+    # with equal weights per goal.
+    inputs = b3.split_inputs(b3.game_inputs(LEAGUE))
+    _, gammas = b3.multipliers(LEAGUE)
+    pool = LEAGUE.goalie_starts.select("game_id", "team", "goalie_id", "p_start")
+    fixed = inputs.select("game_id", "five_diff", "special_diff", "finishing_diff")
+    for pairs in (b3.scenarios(inputs, pool, gammas), b3.starters_delta(LEAGUE, inputs)):
+        joined = pairs.join(fixed, on="game_id")
+        total = (
+            joined["five_diff"]
+            + joined["special_diff"]
+            + joined["finishing_diff"]
+            + joined["goalie_diff"]
+        )
+        assert np.allclose(total.to_numpy(), joined["delta_g_hat"].to_numpy(), rtol=0, atol=1e-12)
+        # The goalies differ in gamma, so the goalie part is not 0.
+        assert (joined["goalie_diff"].abs() > 0).any()
+    assert b3.Terms(split=True).inputs() == (*b3.SPLIT, *b2.SCHEDULE_INPUTS)
+    assert b3.Terms().inputs() == b3.INPUTS
+    assert b3.Terms(split=True).label() == "B3+split"
+
+
+def test_the_split_fit_reads_each_part_and_mixes_over_the_goalie_part() -> None:
+    start = fold_start(LEAGUE.games.select("season", "start_utc"), 20182019)
+    split = b3.fit_fold(LEAGUE, 20182019, start, terms=b3.Terms(split=True))
+    plain = b3.fit_fold(LEAGUE, 20182019, start)
+    assert split.inputs[:4] == b3.SPLIT and split.games == plain.games
+    # The league's results follow Δĝ, so each part's weight per goal is positive.
+    per_goal = np.array(split.weights[:4]) / np.array(split.scales[:4])
+    assert (per_goal > 0).all()
+    # A scenario's log-odds move only with its goalie part.
+    inputs = b3.split_inputs(b3.game_inputs(LEAGUE)).filter(pl.col("season") == 20182019).head(3)
+    pairs = pl.DataFrame(
+        {
+            "game_id": [inputs["game_id"][0]] * 2,
+            "weight": [0.5, 0.5],
+            "delta_g_hat": [0.0, 0.0],
+            "goalie_diff": [0.0, 0.1],
+        }
+    )
+    eta = split.log_odds(inputs.head(1), pairs)["eta"].to_numpy()
+    k = split.inputs.index("goalie_diff")
+    assert eta[1] - eta[0] == pytest.approx(split.weights[k] * 0.1 / split.scales[k])

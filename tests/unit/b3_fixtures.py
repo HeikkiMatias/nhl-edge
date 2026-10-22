@@ -17,7 +17,8 @@ from b2_fixtures import TEAMS, feature_tables, goalie_id
 
 from nhl_edge.features import team_strength as ts
 from nhl_edge.game import b2, b3
-from nhl_edge.lake.schemas import Games, dtypes
+from nhl_edge.lake.schemas import Games, Slate, dtypes
+from nhl_edge.live import bundle as lb
 
 SKATERS = 6
 ROLES = ("F", "F", "F", "F", "D", "D")
@@ -209,3 +210,32 @@ def league(
             )
         ),
     )
+
+
+def day_bundle(tables: b3.Tables, season: int = 20182019) -> lb.Bundle:
+    """A decision day's run bundle from the league: the season's first date's games as the
+    slate, every row B3 reads, and the decision at the games' start; without fits, which the
+    test sets (b3=)."""
+    games = tables.games.filter(pl.col("season") == season)
+    day = games["game_date"].min()
+    slate = games.filter(pl.col("game_date") == day)
+    cutoff = slate["start_utc"].min()
+    assert isinstance(cutoff, datetime)
+    listed = slate.with_columns(
+        game_state=pl.lit("FUT"), observed_utc=pl.lit(cutoff - timedelta(days=1))
+    )
+    inputs = {"slate": Slate.validate(listed.select(list(dtypes(Slate))).cast(dtypes(Slate)))}
+    for name in (
+        "schedule_terms",
+        "goalie_starts",
+        "actual_lineups",
+        "lineups",
+        "lineup_replacements",
+        "player_ratings",
+        "rapm_terms",
+        "expected_power_plays",
+        "goal_multipliers",
+    ):
+        inputs[name] = getattr(tables, name)
+    manifest = {"day": day.isoformat(), "input_cutoff": cutoff.isoformat()}  # type: ignore[union-attr]
+    return lb.Bundle(manifest, inputs, None, None)

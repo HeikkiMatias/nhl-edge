@@ -349,6 +349,7 @@ def test_a_challenger_with_a_baseline_is_paired_with_it_and_on_its_goalie_spread
     base = replace(lc.REGISTRY[1], registered_on=registered)
     spread = replace(lc.REGISTRY[2], registered_on=registered)
     residual = replace(lc.REGISTRY[3], registered_on=registered)
+    split = replace(lc.REGISTRY[4], registered_on=registered)
     monkeypatch.setattr(lc, "REGISTRY", (base, spread))
 
     def outputs(name: str, adr: str, shift: float) -> pl.DataFrame:
@@ -437,6 +438,20 @@ def test_a_challenger_with_a_baseline_is_paired_with_it_and_on_its_goalie_spread
     assert compared["conservative_blend/1"]["difference"]["mean"] == pytest.approx(
         scored["difference"].mean()
     )
+    # A ledger model as the baseline (ADR 0044): B3's own p_b3, on every game, never withheld.
+    monkeypatch.setattr(lc, "REGISTRY", (split,))
+    outputs_b3 = ChallengerPredictions.validate(outputs("b3_split", "0044", 0.03))
+    entry = season.report(challenger_outputs=outputs_b3, goalie_spreads=spreads)["challengers"]
+    split_entry = entry["challengers"]["b3_split/1"]
+    assert sorted(split_entry["comparisons"]) == ["B1", "B3", "BLEND"]
+    assert split_entry["baseline_missing_days"] == []
+    against = scored.with_columns(
+        difference=log_loss((pl.col("p_blend") + 0.03).clip(upper_bound=0.99))
+        - log_loss(pl.col("p_b3"))
+    )
+    figure = split_entry["comparisons"]["B3"]["difference"]
+    assert figure["mean"] == pytest.approx(against["difference"].mean())
+    assert figure["games"] == against.height
 
 
 def log_loss(p: pl.Expr) -> pl.Expr:

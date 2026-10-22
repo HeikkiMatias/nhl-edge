@@ -47,6 +47,10 @@ from nhl_edge.ratings import rapm
 COMPONENT = "b3"
 FIRST_SEASON = b2.FIRST_SEASON
 INPUTS = ("delta_g_hat", *b2.SCHEDULE_INPUTS)
+# Δĝ's four additive parts (ADR 0044, #259): the 5v5 xG difference, the power-play and
+# shorthanded difference, finishing's goals beyond them, and the opposing goalies' beyond those.
+# They sum to Δĝ; only the goalie part changes with the goalie scenario.
+SPLIT = ("five_diff", "special_diff", "finishing_diff", "goalie_diff")
 SKILL = INPUTS.index("delta_g_hat")
 # B2's frozen L2 strength (ADR 0023).
 TUNED = b2.TUNED
@@ -69,15 +73,18 @@ class Terms:
     team: bool = False  # B2's team strength ΔS as an input (#224, ADR 0036)
     coach: bool = False  # a new mid-season coach's first games (#224, ADR 0036)
     pest: bool = False  # penalty drawing beyond the expected power plays (#224, ADR 0036)
+    split: bool = False  # Δĝ replaced by its four parts (#259, ADR 0044)
 
     def label(self) -> str:
         """The model's name in a backtest: B3, or B3 with its terms, such as B3+arena."""
         return "+".join(["B3", *(name for name, on in vars(self).items() if on)])
 
     def inputs(self) -> tuple[str, ...]:
-        """The regression's inputs: B3's, then each switched-on input term's (ADR 0036)."""
+        """The regression's inputs: B3's, Δĝ split into its parts with split (ADR 0044), then
+        each switched-on input term's (ADR 0036)."""
         extra = {"team": "delta_s", "coach": "new_coach", "pest": "drawn_diff"}
-        return (*INPUTS, *(column for name, column in extra.items() if getattr(self, name)))
+        base = (*SPLIT, *b2.SCHEDULE_INPUTS) if self.split else INPUTS
+        return (*base, *(column for name, column in extra.items() if getattr(self, name)))
 
 
 V1 = Terms()
@@ -258,6 +265,8 @@ def game_inputs(tables: Tables) -> pl.DataFrame:
         "game_id",
         home_raw="raw",
         home_base="base",
+        home_five="xg_5v5",
+        home_special=pl.col("xg_pp") + pl.col("xg_sh"),
         home_utc="observed_utc",
         home_m="multipliers_utc",
     )
@@ -265,6 +274,8 @@ def game_inputs(tables: Tables) -> pl.DataFrame:
         "game_id",
         away_raw="raw",
         away_base="base",
+        away_five="xg_5v5",
+        away_special=pl.col("xg_pp") + pl.col("xg_sh"),
         away_utc="observed_utc",
         away_m="multipliers_utc",
     )
@@ -299,6 +310,26 @@ def delta() -> pl.Expr:
     return home - away
 
 
+def goalie_part() -> pl.Expr:
+    """Δĝ's goalie part (ADR 0044): each side's goals beyond its finishing from the opposing
+    goalie's gamma, raw·κ·φ·(gamma - 1), the home side's less the away side's."""
+    home = pl.col("home_raw") * pl.col("home_base") * (pl.col("home_gamma") - 1)
+    away = pl.col("away_raw") * pl.col("away_base") * (pl.col("away_gamma") - 1)
+    return home - away
+
+
+def split_inputs(inputs: pl.DataFrame) -> pl.DataFrame:
+    """inputs (game_inputs) with Δĝ's three parts that no goalie changes (ADR 0044): the 5v5 xG
+    difference, the power-play and shorthanded difference, and finishing's goals beyond them,
+    raw·(κ·φ - 1). The goalie part comes with each goalie pair (scenarios, starters_delta)."""
+    return inputs.with_columns(
+        five_diff=pl.col("home_five") - pl.col("away_five"),
+        special_diff=pl.col("home_special") - pl.col("away_special"),
+        finishing_diff=pl.col("home_raw") * (pl.col("home_base") - 1)
+        - pl.col("away_raw") * (pl.col("away_base") - 1),
+    )
+
+
 def starters_delta(tables: Tables, inputs: pl.DataFrame) -> pl.DataFrame:
     """Each game's Δĝ with the goalies who started it, for training only, and when its boxscore
     became public (lineup_utc). A starter who was not a candidate faces each side at gamma 1."""
@@ -323,6 +354,7 @@ def starters_delta(tables: Tables, inputs: pl.DataFrame) -> pl.DataFrame:
     return pairs.select(
         "game_id",
         delta_g_hat=delta(),
+        goalie_diff=goalie_part(),
         lineup_utc=b2_later(pl.col("home_utc"), pl.col("away_utc")),
     )
 
@@ -347,6 +379,7 @@ def scenarios(usable: pl.DataFrame, candidates: pl.DataFrame, gammas: pl.DataFra
         "game_id",
         weight=pl.col("home_p") * pl.col("away_p"),
         delta_g_hat=delta(),
+        goalie_diff=goalie_part(),
     ).sort("game_id")
 
 
@@ -372,7 +405,9 @@ class B3Model:
         inputs but Δĝ, offset, and arena_id when the fit has arenas), with its weight and B3's
         log-odds in it (eta)."""
         means, scales, weights = (np.asarray(v) for v in (self.means, self.scales, self.weights))
-        others = [name for name in self.inputs if name != "delta_g_hat"]
+        # The input that changes with the goalie pair: Δĝ, or with Δĝ split its goalie part.
+        paired = "goalie_diff" if "goalie_diff" in self.inputs else "delta_g_hat"
+        others = [name for name in self.inputs if name != paired]
         index = [self.inputs.index(name) for name in others]
         z = (inputs.select(others).to_numpy() - means[index]) / scales[index]
         base = self.intercept + inputs["offset"].to_numpy() + z @ weights[index]
@@ -380,8 +415,8 @@ class B3Model:
             base = base + arena_offsets(inputs, self.arenas)
         frame = inputs.select("game_id").with_columns(base=pl.Series(base))
         joined = pairs.join(frame, on="game_id")
-        skill_at = self.inputs.index("delta_g_hat")
-        skill = (joined["delta_g_hat"].to_numpy() - means[skill_at]) / scales[skill_at]
+        skill_at = self.inputs.index(paired)
+        skill = (joined[paired].to_numpy() - means[skill_at]) / scales[skill_at]
         eta = joined["base"].to_numpy() + weights[skill_at] * skill
         return joined.select("game_id", "weight", eta=pl.Series(eta, dtype=pl.Float64))
 
@@ -566,8 +601,11 @@ def with_terms(tables: Tables, inputs: pl.DataFrame, terms: Terms) -> pl.DataFra
     """inputs with the columns of terms' input terms (ADR 0036), each game's observed_utc the
     later of its own and those rows': team adds delta_s from B2's team strength, coach adds
     new_coach (home - away coach_flags, each side's stint public by then), pest adds drawn_diff
-    (home - away drawn_index of the expected power plays). A game without a term's row drops out
-    of that model only."""
+    (home - away drawn_index of the expected power plays). split adds Δĝ's parts that no goalie
+    changes (split_inputs, ADR 0044), from inputs' own columns. A game without a term's row drops
+    out of that model only."""
+    if terms.split:
+        inputs = split_inputs(inputs)
     if terms.team:
         if tables.team_strength is None:
             raise ValueError("Terms(team=True) needs team_strength in B3's tables")
@@ -687,19 +725,11 @@ def tuning_cutoff(tables: Tables, season: int, terms: Terms = V1) -> datetime:
     return max(cutoffs)
 
 
-def predictions(
-    tables: Tables,
-    moments: pl.DataFrame,
-    season: int,
-    start: datetime,
-    settings: b2.Settings = TUNED,
-    terms: Terms = V1,
-) -> tuple[pl.DataFrame, B3Model]:
-    """B3's p_home for the season's games in moments (game_id, prediction_utc), from a fit on the
-    games before start, with its train_cutoff, and the fit. Only rows of seasons up to the
-    season are read. A fold starting before the tuning cutoff is refused: its inputs were tuned on
-    its own season's results (ADR 0011). Every row is read only once known (observed_utc), and
-    train_cutoff covers the fit and every table's cutoff."""
+def _fold(
+    tables: Tables, season: int, start: datetime, settings: b2.Settings, terms: Terms
+) -> tuple[Tables, pl.DataFrame, B3Model]:
+    """The season's tables, its games' inputs with terms', and the fold's fit on the games
+    before start, as predictions() reads them."""
     tables = through(tables, season)
     cutoff = tuning_cutoff(tables, season, terms)
     if start <= cutoff:
@@ -714,7 +744,30 @@ def predictions(
     model = fit(train, settings, season, terms.inputs())
     if terms.arena:
         model = replace(model, arenas=arena_shifts(train, model))
-    model = replace(model, train_cutoff=max(model.train_cutoff, cutoff))
+    return tables, inputs, replace(model, train_cutoff=max(model.train_cutoff, cutoff))
+
+
+def fit_fold(
+    tables: Tables, season: int, start: datetime, settings: b2.Settings = TUNED, terms: Terms = V1
+) -> B3Model:
+    """The season's fold's fit on the games before start, as predictions() fits it."""
+    return _fold(tables, season, start, settings, terms)[2]
+
+
+def predictions(
+    tables: Tables,
+    moments: pl.DataFrame,
+    season: int,
+    start: datetime,
+    settings: b2.Settings = TUNED,
+    terms: Terms = V1,
+) -> tuple[pl.DataFrame, B3Model]:
+    """B3's p_home for the season's games in moments (game_id, prediction_utc), from a fit on the
+    games before start, with its train_cutoff, and the fit. Only rows of seasons up to the
+    season are read. A fold starting before the tuning cutoff is refused: its inputs were tuned on
+    its own season's results (ADR 0011). Every row is read only once known (observed_utc), and
+    train_cutoff covers the fit and every table's cutoff."""
+    tables, inputs, model = _fold(tables, season, start, settings, terms)
     pool = tables.goalie_starts.select("game_id", "team", "goalie_id", "p_start", "observed_utc")
     usable, ready = b2.known_before(
         inputs.filter(pl.col("season") == season), pool, moments, "observed_utc"

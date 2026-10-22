@@ -772,7 +772,13 @@ def challengers(
             entry["latest_fit"] = json.loads(fits["fit"][-1])
         if not missing:
             entry |= _challenger_figures(own, started, scored, moves)
-            if challenger.baseline is not None:
+            baseline = lc.empty()
+            if challenger.baseline in lc.LEDGER_BASELINES:
+                # A ledger model (ADR 0044): the day's own column, never missing a day.
+                column = lc.LEDGER_BASELINES[challenger.baseline]
+                baseline = scored.select(*keys, p_home=column)
+                entry["baseline_missing_days"] = []
+            elif challenger.baseline is not None:
                 name, version = challenger.baseline.split("/")
                 baseline = outputs.filter(
                     pl.col("challenger") == name, pl.col("challenger_version") == version
@@ -783,12 +789,12 @@ def challengers(
                 entry["baseline_missing_days"] = [
                     day.isoformat() for day in lacking if not pending(day)
                 ]
-                if not entry["baseline_missing_days"]:
-                    # The goalie-spread subset is the measure of a challenger that reads them.
-                    subset = spreads if "goalie_spreads" in challenger.reads else None
-                    entry["comparisons"] |= _against_baseline(
-                        own, baseline, challenger.baseline, scored, subset
-                    )
+            if challenger.baseline is not None and not entry["baseline_missing_days"]:
+                # The goalie-spread subset is the measure of a challenger that reads them.
+                subset = spreads if "goalie_spreads" in challenger.reads else None
+                entry["comparisons"] |= _against_baseline(
+                    own, baseline, challenger.baseline, scored, subset
+                )
         result[f"{challenger.name}/{challenger.version}"] = entry
     return {"registered": len(registry), "challengers": result}
 
