@@ -131,16 +131,22 @@ def test_a_goalie_start_row_known_only_at_the_prediction_time_is_not_read() -> N
     assert not same(predict(replaced(goalie_starts=dropped)), BEFORE)
 
 
-def coefficients(tables: b3.Tables) -> np.ndarray:
-    _, model = b3.predictions(tables, MOMENTS, TEST, START)
+def coefficients(tables: b3.Tables, terms: b3.Terms = b3.V1) -> np.ndarray:
+    _, model = b3.predictions(tables, MOMENTS, TEST, START, terms=terms)
     return np.array([model.intercept, *model.weights])
+
+
+# B3, and B3 with Δĝ split into its parts (ADR 0044), whose goalie part reads the boxscores'
+# starters and whose special teams read the expected power plays.
+TERMS = pytest.mark.parametrize("terms", [b3.V1, b3.Terms(split=True)], ids=["B3", "split"])
 
 
 LAST = LEAGUE.games.filter(pl.col("season") == TEST - 10001)["game_id"].max()
 IS_LAST = pl.col("game_id") == LAST
 
 
-def test_an_earlier_result_published_after_the_fold_start_is_not_fitted_on() -> None:
+@TERMS
+def test_an_earlier_result_published_after_the_fold_start_is_not_fitted_on(terms: b3.Terms) -> None:
     published_late = LEAGUE.games.with_columns(
         observed_utc=pl.when(IS_LAST)
         .then(pl.lit(START + timedelta(hours=1)))
@@ -148,27 +154,33 @@ def test_an_earlier_result_published_after_the_fold_start_is_not_fitted_on() -> 
         home_score=pl.when(IS_LAST).then(pl.lit(9, pl.Int16)).otherwise(pl.col("home_score")),
     )
     np.testing.assert_allclose(
-        coefficients(replaced(games=published_late)),
-        coefficients(replaced(games=LEAGUE.games.filter(~IS_LAST))),
+        coefficients(replaced(games=published_late), terms),
+        coefficients(replaced(games=LEAGUE.games.filter(~IS_LAST)), terms),
         atol=1e-9,
     )
 
 
-def test_an_earlier_boxscore_published_after_the_fold_start_is_not_fitted_on() -> None:
+@TERMS
+def test_an_earlier_boxscore_published_after_the_fold_start_is_not_fitted_on(
+    terms: b3.Terms,
+) -> None:
     lineups = retimed(LEAGUE.actual_lineups, IS_LAST, START + timedelta(hours=1))
     np.testing.assert_allclose(
-        coefficients(replaced(actual_lineups=lineups)),
-        coefficients(replaced(games=LEAGUE.games.filter(~IS_LAST))),
+        coefficients(replaced(actual_lineups=lineups), terms),
+        coefficients(replaced(games=LEAGUE.games.filter(~IS_LAST)), terms),
         atol=1e-9,
     )
 
 
+@TERMS
 @pytest.mark.parametrize("name", PER_GAME)
-def test_an_earlier_row_published_after_the_fold_start_leaves_its_game_out(name: str) -> None:
+def test_an_earlier_row_published_after_the_fold_start_leaves_its_game_out(
+    name: str, terms: b3.Terms
+) -> None:
     late = retimed(getattr(LEAGUE, name), IS_LAST, START + timedelta(days=30))
     np.testing.assert_allclose(
-        coefficients(replaced(**{name: late})),
-        coefficients(replaced(games=LEAGUE.games.filter(~IS_LAST))),
+        coefficients(replaced(**{name: late}), terms),
+        coefficients(replaced(games=LEAGUE.games.filter(~IS_LAST)), terms),
         atol=1e-9,
     )
 
@@ -531,24 +543,3 @@ def test_a_game_reading_a_new_coach_is_known_no_earlier_than_the_morning_after_h
     # Before his first game, and for the other teams, the stints are long public.
     before = inputs.filter(~(involved & (pl.col("game_date") > takeover)))
     assert (before["observed_utc"] == early).all()
-
-
-def test_the_split_fit_reads_no_result_published_after_the_fold_start() -> None:
-    # ADR 0044: the split is fitted on exactly B3's training games, so the same rule holds.
-    split = b3.Terms(split=True)
-    published_late = LEAGUE.games.with_columns(
-        observed_utc=pl.when(IS_LAST)
-        .then(pl.lit(START + timedelta(hours=1)))
-        .otherwise(pl.col("observed_utc")),
-        home_score=pl.when(IS_LAST).then(pl.lit(9, pl.Int16)).otherwise(pl.col("home_score")),
-    )
-
-    def weights(tables: b3.Tables) -> np.ndarray:
-        model = b3.fit_fold(tables, TEST, START, terms=split)
-        return np.array([model.intercept, *model.weights])
-
-    np.testing.assert_allclose(
-        weights(replaced(games=published_late)),
-        weights(replaced(games=LEAGUE.games.filter(~IS_LAST))),
-        atol=1e-9,
-    )
