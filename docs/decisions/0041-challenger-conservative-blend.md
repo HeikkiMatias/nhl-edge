@@ -32,7 +32,8 @@ Option 2, as challenger `conservative_blend`, version 1, registered on the day i
   - a ~ N(0, 0.05²). B1's intercepts at SBR were −0.03.
   - b_m ~ N(1, 0.15²). B1's slopes were 1.08 to 1.12.
   - b_d ~ N(0, 0.5²): shrunk toward the market. The history's B3 weight, 0.49 to 0.71, lies one prior SD away: allowed, not assumed.
-- **Training rows (point in time, hard rule 1):** every earlier v2 ledger row with a prediction (`paper_ledger`, `policy_version` v2) whose result was public before the day's input cutoff. A row comes from a decision day in an earlier ET week (Monday to Sunday), so the fit changes once a week and never sees its own week.
+- **Training rows (point in time, hard rule 1):** every earlier v2 ledger row with a prediction (`paper_ledger`, `policy_version` v2). A row comes from a decision day in an earlier ET week (Monday to Sunday), and both the row and its result were public before the week's fold start: its Monday at 12:45 ET, when the decision window opens (ADR 0033), so at or before every decision of the week. The fit so changes once a week and never sees its own week.
+  - Amended on 2026-10-22, before registration (Codex on #304). The draft read the results at each day's own cutoff, which would let a result that turned public during the week change that week's fit. Results count as public at 10:00 UTC the morning after (ADR 0003), so Sunday's are public by 06:00 ET on Monday: the fold start leaves out only a result that turned public later than that, which no earlier week's game gets under that rule.
   - The result is the full game, with overtime and the shootout (hard rule 2).
   - v1's days are left out, because their B3 read no confirmed starters.
 - **Unfitted:** with fewer than 200 training games, the output carries no probability, under the status `unfitted`. At about 46 predicted v2 games a week (2026-10-14 to 10-20), the first fitted week should be the one from 2026-11-16.

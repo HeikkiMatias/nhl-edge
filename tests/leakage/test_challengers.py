@@ -127,9 +127,12 @@ def test_the_ledgers_are_read_only_as_published_before_the_cutoff() -> None:
 
 
 def test_conservative_blend_trains_only_on_earlier_weeks_published_v2_decisions() -> None:
-    # The cutoff is Friday 2026-10-16's; its ET week starts on Monday 10-12.
+    # The cutoff is Friday 2026-10-16's; its ET week starts on Monday 10-12, and its fold at
+    # 12:45 ET that day, when the decision window opens: at or before every cutoff of the week.
     day, monday = CUTOFF.date(), date(2026, 10, 12)
     assert lc.week_of(day) == monday
+    fold = datetime(2026, 10, 12, 16, 45, tzinfo=UTC)
+    assert lc.fold_start(day) == fold < CUTOFF
 
     def start(on: date) -> datetime:
         return datetime(on.year, on.month, on.day, 23, tzinfo=UTC)
@@ -145,6 +148,7 @@ def test_conservative_blend_trains_only_on_earlier_weeks_published_v2_decisions(
         6: (earlier - timedelta(days=1), POLICY_V2, "predicted", None),  # postponed...
         7: (earlier, POLICY_V2, "predicted", None),  # its result public only later
         8: (earlier, POLICY_V2, "predicted", None),  # no result yet
+        9: (earlier, POLICY_V2, "predicted", None),  # its result public during the week
     }
     rows = [
         {
@@ -165,10 +169,11 @@ def test_conservative_blend_trains_only_on_earlier_weeks_published_v2_decisions(
     rows[-1]["start_utc"] = start(earlier + timedelta(days=1))
     ledger = pl.DataFrame(rows, schema_overrides={"season": pl.Int32})
     # Every game but 8 has been played, 6 on its new date; 7's result is public only after the
-    # cutoff.
+    # cutoff, and 9's after the fold start but before the cutoff (Codex on #304).
     played = {row["game_id"]: row["start_utc"] for row in rows if row["game_id"] != 8}
     public = {game_id: at + timedelta(hours=11) for game_id, at in played.items()}
     public[7] = CUTOFF + SECOND
+    public[9] = fold + SECOND
     games = pl.DataFrame(
         {
             "game_id": list(played),
@@ -187,3 +192,7 @@ def test_conservative_blend_trains_only_on_earlier_weeks_published_v2_decisions(
         (6, earlier + timedelta(days=1)),
     ]
     assert trained["home_win"].to_list() == [1, 1]
+    # Monday's decision fits on the same games as Friday's: the fit is the week's.
+    on_monday = fold + timedelta(seconds=30)
+    lake = lc.PointInTime(Lake(paper_ledger=ledger, games=games), on_monday, lc.REGISTRY[1].reads)
+    assert lc.conservative_training(monday, [20262027], lake).equals(trained)

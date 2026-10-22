@@ -28,7 +28,7 @@ import io
 import json
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol
 
 import numpy as np
@@ -38,6 +38,7 @@ from numpy.typing import ArrayLike, NDArray
 from nhl_edge.backtest.walk_forward import outcomes
 from nhl_edge.betting.selection import POLICY_V2
 from nhl_edge.ingest.games import results_known_at, schedule_known_at
+from nhl_edge.ingest.odds import ET
 from nhl_edge.lake.schemas import ChallengerPredictions, dtypes
 from nhl_edge.live import blend_fit
 from nhl_edge.live import bundle as lb
@@ -217,21 +218,34 @@ def week_of(day: date) -> date:
     return day - timedelta(days=day.weekday())
 
 
+def fold_start(day: date) -> datetime:
+    """The day's week's fold start: its Monday at 12:45 ET, when the decision window opens
+    (live/predict.WINDOW), so at or before every input cutoff of the week."""
+    return datetime.combine(week_of(day), lp.WINDOW[0], ET).astimezone(UTC)
+
+
 def conservative_training(day: date, seasons: list[int], lake: PointInTime) -> pl.DataFrame:
     """The games the day's fit learns from (ADR 0041): TRAINS_ON's predicted decisions of the
-    ET weeks before the day's, published before its cutoff, whose full-game result was public
-    by then. A decision whose game was played more than POSTPONED from the start it was decided
-    for is void, as the evaluation counts it (live/report.scoreable); its game counts once, from
-    its new date's decision."""
+    ET weeks before the day's, published, and with their full-game result public, before the
+    week's fold start (Codex on #304). Every day of a week so fits on the same games, never a
+    result that turned public during the week. A decision whose game was played more than
+    POSTPONED from the start it was decided for is void, as the evaluation counts it
+    (live/report.scoreable); its game counts once, from its new date's decision."""
+    start = fold_start(day)
     ledger = lake.read("paper_ledger", seasons).filter(
         pl.col("policy_version") == TRAINS_ON,
         pl.col("status") == PREDICTED,
         pl.col("game_date") < week_of(day),
+        pl.col("published_utc") < start,
         pl.col("p_b0").is_not_null(),
         pl.col("p_b3").is_not_null(),
     )
     games = lake.read("games", seasons)
-    results = outcomes(games).join(games.select("game_id", played_utc="start_utc"), on="game_id")
+    results = (
+        outcomes(games)
+        .join(games.select("game_id", played_utc="start_utc"), on="game_id")
+        .filter(pl.col("result_utc") < start)
+    )
     return (
         ledger.select("game_date", "game_id", "start_utc", "p_b0", "p_b3")
         .join(results, on="game_id")
