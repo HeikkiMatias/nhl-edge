@@ -411,7 +411,7 @@ Every `nhl backtest` run, the development run and the hockey-only mode alike, ke
 
 ## Real stakes
 
-ADR 0039 bets the frozen policy's paper bets with real money, beside the paper ledger, which goes on unchanged. The venue is Kalshi, where the bets are placed automatically through its API (the owner's decision, 2026-10-18, ADR 0040 proposed; "Kalshi orders" below). Placement by hand from the Telegram alert stays for a venue without an API. The code is `live/real.py` (the start rule, the stops and the venues) and `live/real_ledger.py` (#268).
+ADR 0039 bets the frozen policy's paper bets with real money, beside the paper ledger, which goes on unchanged. The venue is Kalshi, where the bets are placed automatically through its API (the owner's decision, 2026-10-18, ADR 0040, accepted on 2026-10-22; "Kalshi orders" below). Placement by hand from the Telegram alert stays for a venue without an API. The code is `live/real.py` (the start rule, the stops and the venues) and `live/real_ledger.py` (#268).
 
 - **The alert.** `nhl real alert --r2` runs in the midday job after the paper ledger is written, whatever Predict's outcome, and only reads it. It sends one Telegram message to the owner (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, both secrets; the token and chat id never reach a log): each paper bet's game, side, minimum price and stakes, or why there are none. A day with games but no paper ledger gets a message saying so, and fails the step.
 - **The mode,** from committed evidence only:
@@ -500,7 +500,7 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
 
 ## Kalshi orders (#281)
 
-`live/placement.py` places each alerted bet on Kalshi, tracks its order and writes its entry (ADR 0040, proposed).
+`live/placement.py` places each alerted bet on Kalshi, tracks its order and writes its entry (ADR 0040).
 
 - **The switch:** the repository variable `KALSHI_TRADING`.
   - **`off`**, or unset: nothing is placed, and every run cancels our resting orders.
