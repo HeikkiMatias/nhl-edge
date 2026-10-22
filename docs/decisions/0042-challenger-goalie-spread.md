@@ -1,6 +1,6 @@
 # 0042. Challenger `goalie_spread_blend`: goalie doubt measured by its effect on B3
 
-- Status: Proposed
+- Status: Accepted (the owner, 2026-10-22)
 - Date: 2026-10-22
 - Part of: the review agenda (#250). The challenger is #257, scored under ADR 0038 against `conservative_blend` (ADR 0041).
 

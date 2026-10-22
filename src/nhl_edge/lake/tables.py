@@ -41,6 +41,7 @@ from nhl_edge.lake.schemas import (
     Finishing,
     Games,
     GoalieEffects,
+    GoalieSpreads,
     GoalieStarts,
     GoalMultipliers,
     KalshiBooks,
@@ -140,6 +141,8 @@ TABLES: dict[str, Table] = {
         ("game_date", "game_id", "challenger", "challenger_version"),
         BY_DATE,
     ),
+    # The goalie spreads one challenger reads (ADR 0042), from each v2 day's run bundle.
+    "goalie_spreads": Table(GoalieSpreads, ("game_date", "game_id"), BY_DATE),
     # Real stakes beside the paper ledger (#268, ADR 0039): each day's alert, what the owner did,
     # and the placed bets' settlements, rebuilt from their write-once objects in R2 (real/live/).
     "real_alerts": Table(RealAlerts, ("game_date", "game_id"), BY_DATE),

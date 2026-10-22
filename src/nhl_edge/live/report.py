@@ -38,8 +38,9 @@ It covers the frozen policy's regular-season paper decisions (ADR 0032):
   market-only control, and the policy's own bets at the best fresh price of the other books
   (live/shadow.py).
 - **Challengers (ADR 0038),** with no verdict: every registered challenger over the decision days
-  after its registration (live/challengers.py), against the blend and B1 by paired log loss, its
-  shadow bets under the frozen rules, and its disagreement against the move to the close.
+  after its registration (live/challengers.py), against the blend and B1 by paired log loss, and
+  against its baseline challenger when its ADR names one; its shadow bets under the frozen rules,
+  and its disagreement against the move to the close.
 - **Real stakes (ADR 0039, #267):** the start rule's conditions and verdict, with the paper
   bankroll that its owner's veto reads, and the weekly CLV stop (live/real.py). The frozen
   policy's report only.
@@ -686,6 +687,36 @@ def _challenger_figures(
     }
 
 
+def _against_baseline(
+    own: pl.DataFrame,
+    baseline: pl.DataFrame,
+    name: str,
+    scored: pl.DataFrame,
+    spreads: pl.DataFrame | None,
+) -> dict[str, Any]:
+    """A challenger's paired log loss against its baseline challenger's outputs (ADR 0042) on
+    the games both predicted with a result, and on those of them with a goalie spread above 0
+    when the spreads are given: the challenger's less the baseline's."""
+    keys = ["game_date", "game_id"]
+    mine = own.filter(pl.col("p_home").is_not_null()).select(*keys, p_challenger="p_home")
+    theirs = baseline.filter(pl.col("p_home").is_not_null()).select(*keys, p_baseline="p_home")
+    with_p = scored.join(mine, on=keys)
+    paired = with_p.join(theirs, on=keys).with_columns(
+        difference=log_loss(pl.col("p_challenger"), pl.col("home_win"))
+        - log_loss(pl.col("p_baseline"), pl.col("home_win"))
+    )
+    left_out = with_p.height - paired.height
+    result = {name: {"difference": estimate(paired, "difference"), "left_out": left_out}}
+    if spreads is not None:
+        spread = spreads.filter(pl.col("goalie_spread") > 0).select(keys)
+        within = paired.join(spread, on=keys, how="semi")
+        result[f"{name}, goalie spread above 0"] = {
+            "difference": estimate(within, "difference"),
+            "left_out": with_p.join(spread, on=keys, how="semi").height - within.height,
+        }
+    return result
+
+
 def challengers(
     rows: pl.DataFrame,
     started: pl.DataFrame,
@@ -694,6 +725,7 @@ def challengers(
     outputs: pl.DataFrame,
     registry: tuple[lc.Challenger, ...],
     now: datetime,
+    spreads: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Every registered challenger, by name and version, over the counted games of the decision
     days after its registration (ADR 0038), with no verdict, failures included: its days and
@@ -701,7 +733,9 @@ def challengers(
     output withholds the figures (Codex on #265): a challenger that fails on some days would
     otherwise choose its own sample. A day is pending rather than missing only until the end of
     the next UTC day by the report's clock now, since the nightly scores it the night after its
-    decision."""
+    decision. A challenger with a baseline is also paired with it (_against_baseline), on the
+    goalie spreads (goalie_spreads) when they are given, unless the baseline's own outputs are
+    missing for some of those days."""
     keys = ["game_date", "game_id"]
 
     def pending(day: date) -> bool:
@@ -730,12 +764,29 @@ def challengers(
             "missing_days": missing,
             "pending_days": [day.isoformat() for day in without if pending(day)],
         }
+        if challenger.baseline is not None:
+            entry["baseline"] = challenger.baseline
         # A challenger that fits (ADR 0041) shows its latest day's fit, unfitted or not.
         fits = own.filter(pl.col("fit").is_not_null()).sort("game_date")
         if fits.height:
             entry["latest_fit"] = json.loads(fits["fit"][-1])
         if not missing:
             entry |= _challenger_figures(own, started, scored, moves)
+            if challenger.baseline is not None:
+                name, version = challenger.baseline.split("/")
+                baseline = outputs.filter(
+                    pl.col("challenger") == name, pl.col("challenger_version") == version
+                )
+                # The baseline's own missing days withhold the pairing too (ADR 0038 rule 2):
+                # its failures would otherwise choose the primary measure's sample.
+                lacking = sorted(set(decided.to_list()) - set(baseline["game_date"].to_list()))
+                entry["baseline_missing_days"] = [
+                    day.isoformat() for day in lacking if not pending(day)
+                ]
+                if not entry["baseline_missing_days"]:
+                    entry["comparisons"] |= _against_baseline(
+                        own, baseline, challenger.baseline, scored, spreads
+                    )
         result[f"{challenger.name}/{challenger.version}"] = entry
     return {"registered": len(registry), "challengers": result}
 
@@ -837,6 +888,7 @@ def report(
     now: datetime | None = None,
     challenger_outputs: pl.DataFrame | None = None,
     unfinished_bundles: Sequence[date] | None = None,
+    goalie_spreads: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
     """The live report of one policy, the frozen one by default, as of as_of: ledger and
     settlements as written, games' results, the odds' Pinnacle quotes, SBR's history
@@ -905,6 +957,7 @@ def report(
             challenger_outputs if challenger_outputs is not None else lc.empty(),
             lc.REGISTRY,
             now,
+            goalie_spreads,
         ),
         "verdicts": {
             "closing_value": INTERIM
@@ -1407,6 +1460,13 @@ def _challenger_lines(section: dict[str, Any]) -> list[str]:
             "  - Slope of the move to the close on its disagreement: "
             f"{_fmt(c['toward_close']['slope'])}",
         ]
+        if c.get("baseline_missing_days"):
+            days = c["baseline_missing_days"]
+            lines.append(
+                f"  - **Against {c['baseline']}: withheld.** Its outputs are missing for "
+                f"{len(days)} decision days ({', '.join(days)}), so the pairing would be on games "
+                "its failures chose."
+            )
     return lines
 
 

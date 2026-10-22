@@ -3053,15 +3053,35 @@ def live_challengers(
         lake = Lake.from_env(mirror=True)
         assert lake.objects is not None and lake.bucket is not None
         store = lb.R2Store(lake.objects, lake.bucket)
-        for table in sorted({table for c in lc.REGISTRY for table in c.reads} - {"paper_ledger"}):
+        for table in sorted({table for c in lc.REGISTRY for table in c.reads} - set(lc.RECORDS)):
             lake.pull(table)
         ledgers = lp.sync_ledgers(lake.objects, lake.bucket, LIVE_SEASON)
 
         def ledger_of(day: date) -> pl.DataFrame:
             return pl.read_parquet(io.BytesIO(store.get(lp.ledger_key(day))))
 
-    # The ledgers are the record: a challenger reads them, never the lake's copy (ADR 0041).
-    reader = lc.WithLedgers(lake, ledgers)
+    # Each complete v2 day's goalie spreads, kept once from its bundle before a challenger reads
+    # them (ADR 0042); --check recomputes the kept ones instead.
+    spread_failures = 0
+    if check:
+        for day in lc.spreads_stored(store):
+            try:
+                problems = lc.check_spreads(store, day)
+            except Exception as exc:
+                problems = [str(exc)]
+            for problem in problems:
+                typer.echo(f"goalie spreads, {day}: {problem}", err=True)
+            spread_failures += bool(problems)
+    else:
+        written, problems = lc.write_spreads(store, code_version, now)
+        for problem in problems:
+            typer.echo(problem, err=True)
+        spread_failures = len(problems)
+        typer.echo(f"goalie spreads written for {len(written)} days")
+    spreads = lc.sync_spreads(store)
+    # The ledgers and the spreads are the record: a challenger reads them, never the lake's copy
+    # (ADRs 0041 and 0042).
+    reader = lc.WithRecords(lake, {"paper_ledger": ledgers, "goalie_spreads": spreads})
 
     # --check reads every stored output, its bundle complete or not: load() names one gone missing.
     pairs = lc.stored(store, lc.REGISTRY) if check else lc.due(store, lc.REGISTRY)
@@ -3097,11 +3117,13 @@ def live_challengers(
             lake.replace_dates(
                 "challenger_predictions", synced, synced["game_date"].unique().to_list()
             )
+        if spreads.height:
+            lake.replace_dates("goalie_spreads", spreads, spreads["game_date"].unique().to_list())
     typer.echo(
         f"{len(lc.REGISTRY)} challengers registered; {len(pairs) - failed} of {len(pairs)} "
         + ("stored outputs reproduced" if check else "due outputs written")
     )
-    if failed:
+    if failed or spread_failures:
         raise typer.Exit(code=1)
 
 
@@ -3276,11 +3298,13 @@ def live_report(
         ledger = lp.sync_ledgers(lake.objects, lake.bucket, blend_fit.LIVE_SEASON)
         store = lb.R2Store(lake.objects, lake.bucket)
         outputs = lc.sync(store)
+        spreads = lc.sync_spreads(store)
         # ADR 0039's start rule reads whether every decision day's run bundle is complete.
         unfinished = lb.unfinished(store, sorted(set(ledger["game_date"].to_list())))
     else:
         ledger = lake.read("paper_ledger", seasons=[blend_fit.LIVE_SEASON])
         outputs = lake.read("challenger_predictions")
+        spreads = lake.read("goalie_spreads")
         unfinished = None
     paths = sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
     if len(paths) != 1:
@@ -3300,6 +3324,7 @@ def live_report(
         now=datetime.now(UTC),
         challenger_outputs=outputs,
         unfinished_bundles=unfinished,
+        goalie_spreads=spreads,
     )
     json_path, md_path = lr.write(result, out)
     if supabase:

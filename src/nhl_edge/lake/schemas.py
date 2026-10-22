@@ -654,6 +654,37 @@ class ChallengerPredictions(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("computed_utc") > pl.col("input_cutoff_utc"))
 
 
+class GoalieSpreads(pa.DataFrameModel):
+    """A v2 decision day's goalie spread for each slate game B3 predicted (ADR 0042, #257): the
+    probability-weighted standard deviation of B3's log-odds over its goalie scenarios
+    (b3.scenarios, scenarios of them) at the decision, from the day's run bundle alone. It is 0
+    when both starters are confirmed. bundle_sha256 is the sha256 of the bundle's manifest and
+    input_cutoff_utc its input cutoff, by when every row it reads was known. Each day is written
+    once to R2 (challengers/inputs/goalie_spread/<date>.parquet), days before a challenger's
+    registration included, since a spread is an input, not evidence; the table is rebuilt from
+    them.
+    """
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    scenarios: pl.Int32 = pa.Field(ge=1)
+    goalie_spread: pl.Float64 = pa.Field(ge=0)
+    bundle_sha256: pl.String = pa.Field(str_matches=r"^[0-9a-f]{64}$")
+    input_cutoff_utc: UtcDatetime
+    code_version: pl.String
+    computed_utc: UtcDatetime
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def computed_after_the_cutoff(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("computed_utc") > pl.col("input_cutoff_utc"))
+
+
 REAL_MODES = ("practice", "real", "paused", "stopped", "closed")
 REAL_OUTCOMES = ("placed", "not placed", "skipped")
 REAL_REASONS = ("the price fell under the minimum", "not matched", "missed it")
