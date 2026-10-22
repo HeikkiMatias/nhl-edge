@@ -1,6 +1,6 @@
 # 0040. Real bets placed automatically on Kalshi through its API
 
-- Status: Proposed (2026-10-18). The owner chose the venue, the automation, the order type, the currency and the practice on the demo exchange; the rest is to be confirmed.
+- Status: Accepted (the owner, 2026-10-22). On 2026-10-18 the owner chose the venue, the automation, the order type, the currency and the practice on the demo exchange.
 - Date: 2026-10-18
 - Amends: ADR 0039 item 4 (the stake's currency and rounding on an exchange) and item 6 (the venue and placement). The start rule, the stops, the bankroll and what is bet are unchanged.
 
@@ -31,7 +31,7 @@
      - **The floor:** fewer than 4 weeks of resting fills decide nothing.
 4. **Post-only at the bid:** the maker fee only, but no fill while the price doesn't come down, and the most adverse selection.
 
-## Decision: option 3 (proposed)
+## Decision: option 3
 
 1. **The order:**
    - **Its terms:** a limit buy of Yes on the bet's team (`side: bid`), `good_till_canceled` with `expiration_time` 5 minutes before the listed start, and `cancel_order_on_pause` set.
@@ -90,7 +90,7 @@
     - **The nightly check:** the record is checked against Kalshi's own settlements each night.
 11. **Logs and data:**
     - Run logs are public, so a run prints counts only. Prices, sizes, order ids and the balance go to R2 and to the owner's Telegram.
-    - The API key lives only in repository secrets.
+    - The API keys live only in GitHub secrets: the demo key in repository secrets, the live key in the `kalshi-live` environment, restricted to `main` (#294).
     - Kalshi's data is used only for the owner's own orders, under its Developer Agreement (3.1).
 
 ## Backtest evidence
@@ -100,7 +100,7 @@ None, and none is possible: Kalshi's history isn't ours to use (#280, the Develo
 ## Consequences
 
 - **The owner's setup:**
-  - API keys for the demo and the live account, in repository secrets;
+  - API keys for the demo account, in repository secrets, and for the live account, in the `kalshi-live` environment (#294);
   - `KALSHI_TRADING=demo` for practice;
   - before the first real bet: the live key check, the deposit and its rate (the venue commit), then `KALSHI_TRADING=live`.
 - **Resting orders are adversely selected:** a resting order fills mostly when the price falls toward L, so the bets that fill late may be worse than the decision's. The record shows each bet's fill time and price.
