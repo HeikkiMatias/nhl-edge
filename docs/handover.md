@@ -227,7 +227,8 @@ Every deliverable merged under its own task issue:
   - `conservative_blend` (#256, ADR 0041), from 2026-10-22: the market plus B3's disagreement with it, fitted each ET week with fixed priors on the earlier weeks' v2 decisions. Below 200 training games its rows are `unfitted`, which should last until about the week of 2026-11-16. Each day's fit is saved in the output's `fit` column, and the report shows the latest.
   - `goalie_spread_blend` (#257, ADR 0042), from 2026-10-22: `conservative_blend` with B3's weight moving with the goalie spread, the SD of B3's log-odds over its goalie scenarios. It's paired with `conservative_blend`, its baseline, on all games and on those with a spread above 0. The inputs-only reading before registration is on #257.
   - `team_residual_blend` (#258, ADR 0043), from 2026-10-22: `conservative_blend` on B3 corrected by each team's effect on what B3 leaves unexplained, fitted each Monday on the earlier weeks' v2 residuals (prior N(0, 0.2²), half-life 6 weeks). It's paired with `conservative_blend`, its baseline, and saves the week's effects with each output.
-- **Next:** #259 and #260, each registered by its own ADR. Their evidence starts the day after registration, so the earlier they're registered, the more games they get.
+  - `b3_split` (#259, ADR 0044), from 2026-10-22: B3 with Δĝ split into its four parts (5v5, special teams, finishing, goalie), each with its own weight, fitted once on the live B3's training games (`reports/live/b3-split-20261022-5656908.json`) and judged against B3's own `p_b3`. It predicts from its first day. The stability check is on #259. Next season's B3 refit brings a refit of the split as a new version.
+- **Next:** #260 (the closing price), once #251's table has enough games, with its own ADR. Their evidence starts the day after registration, so the earlier they're registered, the more games they get.
 
 **Real money (ADR 0039, the owner, 2026-10-15 and 10-16).** Real stakes start from mid to late November 2026, beside the paper ledger, which continues. The tracking issue is #271.
 - **The start rule** (`live/real.py`; the report's "Real stakes (ADR 0039)" section, #267):
@@ -356,7 +357,7 @@ Every deliverable merged under its own task issue:
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
 - **Open, for the owner:** #169, the raw backup on the owner's own computer (P5); #266's venue steps, with the venue's minimum stake and stake increment; #270's migration, `20261016150000_real_record.sql`.
 - **Open, [priority]:** #271, the real-money tracking issue; #266, the venue.
-- **Open, next:** #269 (real money, after the venue); #253 and #254 (diagnostics); #259 and #260 (challengers, each with its own ADR).
+- **Open, next:** #269 (real money, after the venue); #253 and #254 (diagnostics); #260 (a challenger, with its own ADR).
 - **Parked for the next model version:** #125 and #134 (P6, label `next-model-version`).
 - **Open, later:** phase 5's #14, #67 (in April 2027) and #121 (step 3 on 2026-11-05); #15 and #250 (P6).
 

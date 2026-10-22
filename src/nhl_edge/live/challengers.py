@@ -618,8 +618,8 @@ def _team_residual_blend(
 
 # b3_split (ADR 0044): B3 with Δĝ split into its four parts, fitted once beside the live B3 on
 # its training games (live/b3_split.py, nhl live split-fit) and pinned here by its sha256.
-B3_SPLIT_FIT = blend_fit.REPORTS / "b3-split-PENDING.json"
-B3_SPLIT_SHA256 = "PENDING"
+B3_SPLIT_FIT = blend_fit.REPORTS / "b3-split-20261022-5656908.json"
+B3_SPLIT_SHA256 = "512309ce2cecbc56baae34d5bb1ddf37d7805aa538a7ab4fe0debf32e4f16b23"
 
 
 def split_fit() -> tuple[B3Model, B3Model]:

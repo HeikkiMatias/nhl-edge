@@ -857,3 +857,14 @@ def test_the_split_fit_is_pinned_and_refused_when_altered(
     monkeypatch.setattr(lc, "B3_SPLIT_SHA256", lb.sha256(body + b" "))
     with pytest.raises(ValueError, match="not the split fit"):
         lc.split_fit()
+
+
+def test_the_registered_split_fit_is_the_committed_one_beside_the_live_b3() -> None:
+    from nhl_edge.game import b3
+
+    split, plain = lc.split_fit()
+    assert split.inputs == b3.Terms(split=True).inputs() and plain.inputs == b3.INPUTS
+    assert split.games == plain.games and split.train_cutoff == plain.train_cutoff
+    record = json.loads(lc.B3_SPLIT_FIT.read_text())
+    assert record["live_fit"] == blend_fit.load(json.loads(FIT.read_text())).version
+    assert record["season"] == blend_fit.LIVE_SEASON
