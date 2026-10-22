@@ -3549,6 +3549,112 @@ def live_attribution_levels(
         typer.echo(f"  {part}: {line['intercept']:+.4f} {line['slope']:+.4f}·logit p_mkt")
 
 
+@live_app.command("split-fit")
+def live_split_fit(
+    write: Annotated[
+        bool,
+        typer.Option(
+            "--write",
+            help="Fix the fit under reports/live/, once, from a clean commit (ADR 0044).",
+        ),
+    ] = False,
+    out: Annotated[Path, typer.Option(help="Where a dry run writes it, beside the lake.")] = Path(
+        "data/live/b3-split"
+    ),
+    folds: Annotated[
+        bool,
+        typer.Option(
+            "--folds",
+            help="ADR 0044's stability check instead: the split's weights at the fold starts "
+            "of 2018-19, 2021-22, 2023-24 and 2024-25, nothing scored.",
+        ),
+    ] = False,
+) -> None:
+    """b3_split's fit (#259, ADR 0044): B3 with Δĝ split into its four parts, fitted on exactly
+    the live B3's training games, beside B3's own fit on them. Fixed once with --write; without
+    it, a dry run to --out."""
+    import json
+    from datetime import UTC
+
+    from nhl_edge.backtest import reports, walk_forward
+    from nhl_edge.game import b2, b3
+    from nhl_edge.ingest.games import EXPECTED_GAMES
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import b3_split as bs
+    from nhl_edge.live import blend_fit as bf
+    from nhl_edge.settings import load_env
+
+    load_env()
+    now = datetime.now(UTC)
+    version = reports.version(bs.COMPONENT, now)
+    if write and version.endswith("-dirty"):
+        raise typer.BadParameter(
+            "commit first: the split's fit is fixed once, reproducible from its commit",
+            param_hint="--write",
+        )
+    fits = sorted(bf.REPORTS.glob(f"{bf.COMPONENT}-*.json"))
+    if len(fits) != 1:
+        raise typer.BadParameter(f"one live fit needed, found {len(fits)}")
+    live = bf.load(json.loads(fits[0].read_text()))
+    if write and sorted(bf.REPORTS.glob(f"{bs.COMPONENT}-*.json")):
+        typer.echo("the split's fit is fixed already: a new one is a new version", err=True)
+        raise typer.Exit(code=1)
+    lake = Lake()
+    games = lake.read("games")
+    tables = b2.Tables(
+        games,
+        *(
+            lake.read(name)
+            for name in (
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        ),
+    )
+    b3_tables = _b3_tables(lake, tables)
+    last = bf.LIVE_SEASON - 10001
+    problems = b2.input_problems(tables, last, EXPECTED_GAMES) + b3.input_problems(b3_tables, last)
+    if problems:
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo("run nhl ingest and the feature commands first", err=True)
+        raise typer.Exit(code=1)
+    if folds:
+        calendar = games.select("season", "start_utc")
+        seasons = (20182019, 20212022, 20232024, 20242025)
+        starts = {s: walk_forward.fold_start(calendar, s) for s in seasons}
+        for season, fold in bs.folds(b3_tables, starts).items():
+            parts = ", ".join(f"{name} {weight:+.3f}" for name, weight in fold["split"].items())
+            per_goal = ", ".join(f"{name} {w:+.3f}" for name, w in fold["per_goal"].items())
+            typer.echo(
+                f"{season} ({fold['games']:,} training games): {parts}; "
+                f"B3's Δĝ {fold['delta_g_hat']:+.3f}"
+            )
+            typer.echo(f"  per goal: {per_goal}; Δĝ {fold['delta_g_hat_per_goal']:+.3f}")
+        return
+    record = bs.artifact(b3_tables, live, version, now)
+    body = json.dumps(record, indent=2, sort_keys=True) + "\n"
+    if write:
+        path = bf.REPORTS / f"{version}.json"
+        with path.open("x") as handle:
+            handle.write(body)
+    else:
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"{version}.json"
+        path.write_text(body)
+    split, plain = bs.load(record)
+    typer.echo(
+        f"{path}: {split.games:,} training games of {live.version}, train_cutoff "
+        f"{record['train_cutoff']}"
+    )
+    weights = zip(split.inputs, split.weights, strict=True)
+    typer.echo("  split: " + ", ".join(f"{name} {weight:+.3f}" for name, weight in weights))
+    typer.echo(f"  B3 beside it: Δĝ {plain.weights[b3.SKILL]:+.3f}, {plain.games:,} games")
+
+
 @live_app.command("blend-fit")
 def live_blend_fit(
     out: Annotated[

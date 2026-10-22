@@ -531,3 +531,24 @@ def test_a_game_reading_a_new_coach_is_known_no_earlier_than_the_morning_after_h
     # Before his first game, and for the other teams, the stints are long public.
     before = inputs.filter(~(involved & (pl.col("game_date") > takeover)))
     assert (before["observed_utc"] == early).all()
+
+
+def test_the_split_fit_reads_no_result_published_after_the_fold_start() -> None:
+    # ADR 0044: the split is fitted on exactly B3's training games, so the same rule holds.
+    split = b3.Terms(split=True)
+    published_late = LEAGUE.games.with_columns(
+        observed_utc=pl.when(IS_LAST)
+        .then(pl.lit(START + timedelta(hours=1)))
+        .otherwise(pl.col("observed_utc")),
+        home_score=pl.when(IS_LAST).then(pl.lit(9, pl.Int16)).otherwise(pl.col("home_score")),
+    )
+
+    def weights(tables: b3.Tables) -> np.ndarray:
+        model = b3.fit_fold(tables, TEST, START, terms=split)
+        return np.array([model.intercept, *model.weights])
+
+    np.testing.assert_allclose(
+        weights(replaced(games=published_late)),
+        weights(replaced(games=LEAGUE.games.filter(~IS_LAST))),
+        atol=1e-9,
+    )

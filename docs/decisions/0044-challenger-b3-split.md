@@ -1,6 +1,6 @@
 # 0044. Challenger `b3_split`: B3 with its expected-goal difference split into its four parts
 
-- Status: Proposed
+- Status: Accepted (the owner, 2026-10-22)
 - Date: 2026-10-22
 - Part of: the review agenda (#250). The challenger is #259, scored under ADR 0038 against B3 itself.
 

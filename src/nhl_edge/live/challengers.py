@@ -37,16 +37,20 @@ from numpy.typing import ArrayLike, NDArray
 
 from nhl_edge.backtest.walk_forward import outcomes
 from nhl_edge.betting.selection import POLICY_V2
+from nhl_edge.game import b3
+from nhl_edge.game.b3 import B3Model
 from nhl_edge.ingest.games import results_known_at, schedule_known_at
 from nhl_edge.ingest.odds import ET
 from nhl_edge.lake.schemas import ChallengerPredictions, GoalieSpreads, dtypes
-from nhl_edge.live import blend_fit
+from nhl_edge.live import b3_split, blend_fit
 from nhl_edge.live import bundle as lb
 from nhl_edge.live import predict as lp
 from nhl_edge.live.settle import POSTPONED
 from nhl_edge.market.recalibration import logit, sigmoid
 
 PREFIX = "challengers/live"
+# A ledger model a challenger may be paired with, by its column (ADR 0044).
+LEDGER_BASELINES = {"B3": "p_b3"}
 PREDICTED = lp.PREDICTED
 # A null probability the challenger gave no reason for, and a slate game it left out.
 NO_PROBABILITY = "no probability"
@@ -163,8 +167,8 @@ class Challenger:
     registered_on: date
     reads: tuple[str, ...]
     predict: Predict
-    # The registered challenger its primary measure is paired with (name/version), beside the
-    # frozen blend and B1, when its ADR names one.
+    # What its primary measure is paired with, beside the frozen blend and B1, when its ADR
+    # names one: a registered challenger (name/version) or a ledger model (LEDGER_BASELINES).
     baseline: str | None = None
 
     def __post_init__(self) -> None:
@@ -612,6 +616,40 @@ def _team_residual_blend(
     return _fitted(replayed, priced, p, fit)
 
 
+# b3_split (ADR 0044): B3 with Δĝ split into its four parts, fitted once beside the live B3 on
+# its training games (live/b3_split.py, nhl live split-fit) and pinned here by its sha256.
+B3_SPLIT_FIT = blend_fit.REPORTS / "b3-split-PENDING.json"
+B3_SPLIT_SHA256 = "PENDING"
+
+
+def split_fit() -> tuple[B3Model, B3Model]:
+    """The committed split fit and B3's own beside it, refused unless its bytes are the pinned
+    ones."""
+    body = B3_SPLIT_FIT.read_bytes()
+    if lb.sha256(body) != B3_SPLIT_SHA256:
+        raise ValueError(f"{B3_SPLIT_FIT} is not the split fit b3_split was registered with")
+    return b3_split.load(json.loads(body))
+
+
+def _b3_split(
+    bundle: lb.Bundle, replayed: pl.DataFrame, live: blend_fit.LiveFit, lake: PointInTime
+) -> pl.DataFrame:
+    """Each slate game B3 predicted, by the split fit on the day's bundle alone: its B3 rows,
+    with v2's starters, mixed over the goalie scenarios as B3 is (ADR 0044). Refused for a day
+    whose live B3 is not the one the split was fitted beside."""
+    if bundle.b3 is None:
+        return replayed.select("game_id", "status")
+    split, plain = split_fit()
+    problems = b3_split.differences(bundle.b3, plain)
+    if problems:
+        raise ValueError(f"the day's B3 is not the split's: {'; '.join(problems)}")
+    usable, pairs = lb.b3_scenarios(bundle)
+    predicted = split.predict(b3.split_inputs(usable), pairs)
+    return replayed.select("game_id", "status").join(
+        predicted.select("game_id", "p_home"), on="game_id", how="left"
+    )
+
+
 REGISTRY: tuple[Challenger, ...] = (
     Challenger(
         name="market_only",
@@ -646,6 +684,15 @@ REGISTRY: tuple[Challenger, ...] = (
         reads=("paper_ledger", "games"),
         predict=_team_residual_blend,
         baseline="conservative_blend/1",
+    ),
+    Challenger(
+        name="b3_split",
+        version="1",
+        adr="0044",
+        registered_on=date(2026, 10, 22),
+        reads=(),
+        predict=_b3_split,
+        baseline="B3",
     ),
 )
 
