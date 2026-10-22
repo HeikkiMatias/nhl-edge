@@ -1,6 +1,6 @@
 # 0041. Challenger `conservative_blend`: the market plus B3's shrunk disagreement, fitted at the decision horizon
 
-- Status: Proposed
+- Status: Accepted (the owner, 2026-10-22)
 - Date: 2026-10-22
 - Part of: the review agenda (#250); the challenger is #256, scored under ADR 0038
 

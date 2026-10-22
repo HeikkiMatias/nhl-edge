@@ -611,10 +611,11 @@ class ChallengerPredictions(pa.DataFrameModel):
     decision. p_home is its full-game home probability (OT and shootout included, hard rule 2),
     with status "predicted", or null with the reason in status. bundle_sha256 is the sha256 of
     the day's bundle manifest and input_cutoff_utc its input cutoff. reads maps each lake table
-    read beyond the bundle, point in time, to the sha256 of the rows read, as JSON. Each
-    challenger, version and day is written once to R2
-    (challengers/live/<name>/<version>/<date>.parquet), and the table is rebuilt from them, only
-    for days after the challenger's registration.
+    read beyond the bundle, point in time, to the sha256 of the rows read, as JSON. fit is the
+    day's fit, as JSON, for a challenger that fits one (conservative_blend, ADR 0041: its week,
+    training games and weights), and null otherwise. Each challenger, version and day is written
+    once to R2 (challengers/live/<name>/<version>/<date>.parquet), and the table is rebuilt from
+    them, only for days after the challenger's registration.
     """
 
     game_date: pl.Date
@@ -628,6 +629,7 @@ class ChallengerPredictions(pa.DataFrameModel):
     bundle_sha256: pl.String = pa.Field(str_matches=r"^[0-9a-f]{64}$")
     input_cutoff_utc: UtcDatetime
     reads: pl.String
+    fit: pl.String = pa.Field(nullable=True)
     code_version: pl.String
     computed_utc: UtcDatetime
 

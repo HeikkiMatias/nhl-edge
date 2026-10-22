@@ -14,9 +14,10 @@ evidence on this season's decision days alongside the frozen policy, without tou
   reader, and each read recorded by the sha256 of its rows. The lake is mutable: the nightly
   rewrites a date's rows once its games are final, so the slate's own inputs come from the
   bundle, and the lake gives only rows of earlier games.
-- **Output:** one row per slate game (ChallengerPredictions), written once per challenger,
-  version and day under PREFIX in R2 and rebuilt into the lake's challenger_predictions. check()
-  recomputes a stored day and names what differs.
+- **Output:** one row per slate game (ChallengerPredictions), with the day's fit for a
+  challenger that fits one, written once per challenger, version and day under PREFIX in R2 and
+  rebuilt into the lake's challenger_predictions. check() recomputes a stored day and names what
+  differs.
 
 The live report (live/report.py) scores each against the frozen blend and B1, with its shadow
 bets under the frozen rules (live/shadow.py) and its disagreement against the move to the close
@@ -27,16 +28,22 @@ import io
 import json
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
-from datetime import date, datetime
-from typing import Protocol
+from datetime import date, datetime, timedelta
+from typing import Any, Protocol
 
+import numpy as np
 import polars as pl
+from numpy.typing import ArrayLike, NDArray
 
+from nhl_edge.backtest.walk_forward import outcomes
+from nhl_edge.betting.selection import POLICY_V2
 from nhl_edge.ingest.games import results_known_at, schedule_known_at
 from nhl_edge.lake.schemas import ChallengerPredictions, dtypes
 from nhl_edge.live import blend_fit
 from nhl_edge.live import bundle as lb
 from nhl_edge.live import predict as lp
+from nhl_edge.live.settle import POSTPONED
+from nhl_edge.market.recalibration import logit, sigmoid
 
 PREFIX = "challengers/live"
 PREDICTED = lp.PREDICTED
@@ -61,6 +68,13 @@ def _odds(frame: pl.DataFrame, cutoff: datetime, predicting: tuple[int, ...]) ->
     return frame.filter(pl.col("snapshot_utc") < cutoff).drop(ODDS_AFTERWARDS)
 
 
+def _ledger(frame: pl.DataFrame, cutoff: datetime, predicting: tuple[int, ...]) -> pl.DataFrame:
+    """The paper decisions published before the cutoff (ADR 0041). A ledger is written once
+    (ADR 0033) and has no column set after its publication: settlements are their own table.
+    Sorted, so its sha256 doesn't depend on where the ledgers were read from."""
+    return frame.filter(pl.col("published_utc") < cutoff).sort("game_date", "game_id")
+
+
 # The lake tables a challenger may read, each through a reader that returns only what was known
 # before the cutoff, given the slate's games (predicting). Not every table is safe by its
 # observed_utc alone (Codex on #265): the schedule holds only games that went on to be played,
@@ -72,6 +86,7 @@ READERS: dict[str, Callable[[pl.DataFrame, datetime, tuple[int, ...]], pl.DataFr
     # Games already played, and the slate's own once their schedule is public.
     "schedule": lambda frame, cutoff, predicting: schedule_known_at(frame, cutoff, predicting),
     "odds_snapshots": _odds,
+    "paper_ledger": _ledger,
 }
 
 
@@ -99,9 +114,25 @@ class PointInTime:
         return rows
 
 
+@dataclass
+class WithLedgers:
+    """The lake with paper_ledger read from the ledgers themselves, the record (ledger/live/ in
+    R2, or a dry run's files), rather than from the lake's copy of them."""
+
+    lake: Reader
+    ledgers: pl.DataFrame
+
+    def read(self, table: str, seasons: Collection[int] | None = None) -> pl.DataFrame:
+        if table != "paper_ledger":
+            return self.lake.read(table, seasons)
+        if seasons is None:
+            return self.ledgers
+        return self.ledgers.filter(pl.col("season").is_in(list(seasons)))
+
+
 # A challenger's probabilities for the day: from its bundle, the day replayed (the ledger's
 # columns), the live fit and the lake point in time, one row per game it predicted (game_id,
-# p_home, and status when p_home is null).
+# p_home, status when p_home is null, and fit, the day's fit as JSON, when it fits one).
 Predict = Callable[[lb.Bundle, pl.DataFrame, blend_fit.LiveFit, PointInTime], pl.DataFrame]
 
 
@@ -135,6 +166,122 @@ def _market_only(
     return replayed.select("game_id", "status", p_home="p_blend_market")
 
 
+# conservative_blend (ADR 0041): logit p = a + b_m·logit p_mkt + b_d·(logit p_B3 - logit p_mkt),
+# fitted by maximum a posteriori under fixed normal priors on the earlier ET weeks' v2 decisions.
+CONSERVATIVE_TERMS = ("a", "b_m", "b_d")
+PRIOR_MEAN = np.array([0.0, 1.0, 0.0])
+PRIOR_SD = np.array([0.05, 0.15, 0.5])
+# Fewer training games leave the week unfitted, with no probability.
+MINIMUM_GAMES = 200
+UNFITTED = "unfitted"
+# The policy whose decisions it trains on, named: v1's B3 read no confirmed starters, and a later
+# policy's decisions join only as a new version.
+TRAINS_ON = POLICY_V2
+ITERATIONS = 50
+CONVERGED = 1e-10
+
+
+def conservative_design(p_mkt: ArrayLike, p_b3: ArrayLike) -> NDArray[np.float64]:
+    """The fit's columns: 1, logit p_mkt and B3's disagreement with it, logit p_B3 - logit
+    p_mkt."""
+    market = logit(p_mkt)
+    return np.column_stack([np.ones_like(market), market, logit(p_b3) - market])
+
+
+def conservative_fit(
+    home_win: ArrayLike, p_mkt: ArrayLike, p_b3: ArrayLike
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """The weights a, b_m and b_d at the posterior mode, by Newton-Raphson from the prior mean,
+    and their standard errors from the posterior's curvature there. The priors keep the fit
+    finite on any games, all home wins included."""
+    x = conservative_design(p_mkt, p_b3)
+    y = np.asarray(home_win, dtype=np.float64)
+    precision = np.diag(1 / PRIOR_SD**2)
+    beta = PRIOR_MEAN.copy()
+    for _ in range(ITERATIONS):
+        p = sigmoid(x @ beta)
+        hessian = x.T @ (x * (p * (1 - p))[:, None]) + precision
+        step = np.linalg.solve(hessian, x.T @ (y - p) - precision @ (beta - PRIOR_MEAN))
+        beta = beta + step
+        if np.max(np.abs(step)) < CONVERGED:
+            break
+    else:
+        raise ValueError(f"conservative_blend did not converge in {ITERATIONS} iterations")
+    p = sigmoid(x @ beta)
+    hessian = x.T @ (x * (p * (1 - p))[:, None]) + precision
+    return beta, np.sqrt(np.diag(np.linalg.inv(hessian)))
+
+
+def week_of(day: date) -> date:
+    """The Monday of the day's ET week: the slate's date is its ET date."""
+    return day - timedelta(days=day.weekday())
+
+
+def conservative_training(day: date, seasons: list[int], lake: PointInTime) -> pl.DataFrame:
+    """The games the day's fit learns from (ADR 0041): TRAINS_ON's predicted decisions of the
+    ET weeks before the day's, published before its cutoff, whose full-game result was public
+    by then. A decision whose game was played more than POSTPONED from the start it was decided
+    for is void, as the evaluation counts it (live/report.scoreable); its game counts once, from
+    its new date's decision."""
+    ledger = lake.read("paper_ledger", seasons).filter(
+        pl.col("policy_version") == TRAINS_ON,
+        pl.col("status") == PREDICTED,
+        pl.col("game_date") < week_of(day),
+        pl.col("p_b0").is_not_null(),
+        pl.col("p_b3").is_not_null(),
+    )
+    games = lake.read("games", seasons)
+    results = outcomes(games).join(games.select("game_id", played_utc="start_utc"), on="game_id")
+    return (
+        ledger.select("game_date", "game_id", "start_utc", "p_b0", "p_b3")
+        .join(results, on="game_id")
+        .filter((pl.col("played_utc") - pl.col("start_utc")).abs() <= POSTPONED)
+        .sort("game_date", "game_id")
+    )
+
+
+def _conservative_blend(
+    bundle: lb.Bundle, replayed: pl.DataFrame, live: blend_fit.LiveFit, lake: PointInTime
+) -> pl.DataFrame:
+    """The day's probabilities from the week's fit, or none, as unfitted, while fewer than
+    MINIMUM_GAMES games train it. The fit, its games and its week ride on every row (fit)."""
+    day = date.fromisoformat(bundle.manifest["day"])
+    rows = conservative_training(day, sorted(set(replayed["season"].to_list())), lake)
+    fit: dict[str, Any] = {
+        "week": week_of(day).isoformat(),
+        "games": rows.height,
+        "minimum": MINIMUM_GAMES,
+    }
+    if rows.height < MINIMUM_GAMES:
+        return replayed.select(
+            "game_id",
+            p_home=pl.lit(None, pl.Float64),
+            status=pl.when(pl.col("status") == PREDICTED)
+            .then(pl.lit(UNFITTED))
+            .otherwise(pl.col("status")),
+            fit=pl.lit(json.dumps(fit)),
+        )
+    weights, errors = conservative_fit(rows["home_win"], rows["p_b0"], rows["p_b3"])
+    fit |= {
+        "weights": dict(zip(CONSERVATIVE_TERMS, weights.tolist(), strict=True)),
+        "standard_errors": dict(zip(CONSERVATIVE_TERMS, errors.tolist(), strict=True)),
+        "train_cutoff": rows["result_utc"].max().isoformat(),  # type: ignore[union-attr]
+    }
+    priced = replayed.filter(
+        pl.col("status") == PREDICTED, pl.col("p_b0").is_not_null(), pl.col("p_b3").is_not_null()
+    )
+    p = sigmoid(conservative_design(priced["p_b0"], priced["p_b3"]) @ weights)
+    return (
+        replayed.select("game_id", "status")
+        .join(
+            priced.select("game_id", p_home=pl.Series(p, dtype=pl.Float64)),
+            on="game_id",
+            how="left",
+        )
+        .with_columns(fit=pl.lit(json.dumps(fit)))
+    )
+
+
 REGISTRY: tuple[Challenger, ...] = (
     Challenger(
         name="market_only",
@@ -143,6 +290,14 @@ REGISTRY: tuple[Challenger, ...] = (
         registered_on=date(2026, 10, 15),
         reads=(),
         predict=_market_only,
+    ),
+    Challenger(
+        name="conservative_blend",
+        version="1",
+        adr="0041",
+        registered_on=date(2026, 10, 22),
+        reads=("paper_ledger", "games"),
+        predict=_conservative_blend,
     ),
 )
 
@@ -224,12 +379,13 @@ def run(
     slate = bundle.inputs["slate"]
     reader = PointInTime(lake, cutoff, challenger.reads, tuple(slate["game_id"].to_list()))
     predicted = challenger.predict(bundle, replayed, live, reader)
-    if "status" not in predicted.columns:
-        predicted = predicted.with_columns(status=pl.lit(None, pl.String))
+    for column in ("status", "fit"):
+        if column not in predicted.columns:
+            predicted = predicted.with_columns(pl.lit(None, pl.String).alias(column))
     p = pl.col("p_home")
     rows = (
         slate.select("game_date", "season", "game_id")
-        .join(predicted.select("game_id", "p_home", "status"), on="game_id", how="left")
+        .join(predicted.select("game_id", "p_home", "status", "fit"), on="game_id", how="left")
         .with_columns(
             status=pl.when(p.is_not_null())
             .then(pl.lit(PREDICTED))
@@ -267,7 +423,8 @@ def empty() -> pl.DataFrame:
 
 
 def sync(store: lb.Store) -> pl.DataFrame:
-    """Every stored output, as the lake's challenger_predictions."""
+    """Every stored output, as the lake's challenger_predictions. An output written before fit
+    joined the schema reads it as null."""
     frames = [
         pl.read_parquet(io.BytesIO(store.get(key)))
         for key in store.keys(PREFIX)
@@ -276,7 +433,18 @@ def sync(store: lb.Store) -> pl.DataFrame:
     if not frames:
         return empty()
     columns = dtypes(ChallengerPredictions)
-    return ChallengerPredictions.validate(pl.concat(frames).cast(columns))  # type: ignore[arg-type]
+    every = pl.concat([empty(), *frames], how="diagonal_relaxed").select(list(columns))
+    return ChallengerPredictions.validate(every.cast(columns))  # type: ignore[arg-type]
+
+
+def _apart(a: Any, b: Any) -> bool:
+    """Whether two fits read from JSON differ: a number by more than lb.TOLERANCE, anything
+    else at all."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() != b.keys() or any(_apart(a[k], b[k]) for k in a)
+    if isinstance(a, int | float) and isinstance(b, int | float):
+        return abs(a - b) > lb.TOLERANCE
+    return a != b
 
 
 def check(
@@ -289,8 +457,8 @@ def check(
     ledger: pl.DataFrame | None = None,
 ) -> list[str]:
     """Where the stored output of the day and the one recomputed from its bundle disagree: other
-    games, a probability beyond lb.TOLERANCE, a status, another bundle or cutoff, or lake rows
-    read that have changed since."""
+    games, a probability beyond lb.TOLERANCE, a status, another bundle, cutoff or fit, or lake
+    rows read that have changed since."""
     stored = pl.read_parquet(io.BytesIO(store.get(challenger.key(day)))).sort("game_id")
     bundle, sha = load(store, day)
     code = stored["code_version"][0] if stored.height else ""
@@ -309,6 +477,11 @@ def check(
     ):
         if differs.any():
             problems.append(f"{column} differs for {again.filter(differs)['game_id'].to_list()}")
+    # An output written before fit joined the schema has none.
+    before = stored["fit"] if "fit" in stored.columns else [None] * stored.height
+    pairs = zip(again["fit"], before, strict=True)
+    if any(_apart(*(json.loads(f) if f else None for f in pair)) for pair in pairs):
+        problems.append("the fit differs")
     if again.height and again["reads"][0] != stored["reads"][0]:
         changed = json.loads(again["reads"][0])
         before = json.loads(stored["reads"][0])
