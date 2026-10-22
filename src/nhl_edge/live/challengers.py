@@ -638,7 +638,7 @@ def _b3_split(
     with v2's starters, mixed over the goalie scenarios as B3 is (ADR 0044). Refused for a day
     whose live B3 is not the one the split was fitted beside."""
     if bundle.b3 is None:
-        return replayed.select("game_id", "status")
+        return replayed.select("game_id", "status", p_home=pl.lit(None, pl.Float64))
     split, plain = split_fit()
     problems = b3_split.differences(bundle.b3, plain)
     if problems:

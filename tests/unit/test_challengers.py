@@ -826,9 +826,10 @@ def test_b3_split_predicts_the_slate_from_its_bundle_beside_the_days_b3(
     fewer = replace(plain, games=plain.games - 1)
     with pytest.raises(ValueError, match="games"):
         lc.REGISTRY[4].predict(replace(bundle, b3=fewer), replayed, None, None)  # type: ignore[arg-type]
-    # A day without its models keeps its statuses.
+    # A day without its models keeps its statuses, with no probability (Codex on #307).
     none = lc.REGISTRY[4].predict(replace(bundle, b3=None), replayed, None, None)  # type: ignore[arg-type]
-    assert "p_home" not in none.columns
+    assert none["p_home"].null_count() == none.height
+    assert none["status"].to_list() == replayed["status"].to_list()
 
 
 def test_the_split_fit_is_pinned_and_refused_when_altered(
@@ -868,3 +869,17 @@ def test_the_registered_split_fit_is_the_committed_one_beside_the_live_b3() -> N
     record = json.loads(lc.B3_SPLIT_FIT.read_text())
     assert record["live_fit"] == blend_fit.load(json.loads(FIT.read_text())).version
     assert record["season"] == blend_fit.LIVE_SEASON
+
+
+def test_b3_split_scores_a_day_without_models_as_its_ledger_says(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The fixture's bundle has no fits, as a day whose feature build was refused: run() keeps
+    # each game's replayed status rather than failing (Codex on #307).
+    store = lb.LocalStore(tmp_path)
+    ledger = decided(store, monkeypatch)
+    split = replace(lc.REGISTRY[4], registered_on=pf.DAY - timedelta(days=1))
+    output = computed(store, ledger, split)
+    ChallengerPredictions.validate(output)
+    assert output["p_home"].null_count() == output.height
+    assert output["status"].to_list() == [lc.NO_PROBABILITY] * output.height
