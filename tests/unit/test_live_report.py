@@ -348,6 +348,7 @@ def test_a_challenger_with_a_baseline_is_paired_with_it_and_on_its_goalie_spread
     registered = FIRST + timedelta(days=6)
     base = replace(lc.REGISTRY[1], registered_on=registered)
     spread = replace(lc.REGISTRY[2], registered_on=registered)
+    residual = replace(lc.REGISTRY[3], registered_on=registered)
     monkeypatch.setattr(lc, "REGISTRY", (base, spread))
 
     def outputs(name: str, adr: str, shift: float) -> pl.DataFrame:
@@ -424,6 +425,17 @@ def test_a_challenger_with_a_baseline_is_paired_with_it_and_on_its_goalie_spread
     assert (
         f"  - **Against conservative_blend/1: withheld.** Its outputs are missing for 1 decision "
         f"days ({day.isoformat()})" in lr.markdown(held)
+    )
+    # A challenger that reads no spreads is paired with its baseline on every game only.
+    monkeypatch.setattr(lc, "REGISTRY", (base, residual))
+    team = ChallengerPredictions.validate(
+        pl.concat([conservative, outputs("team_residual_blend", "0043", 0.03)])
+    )
+    entry = season.report(challenger_outputs=team, goalie_spreads=spreads)["challengers"]
+    compared = entry["challengers"]["team_residual_blend/1"]["comparisons"]
+    assert sorted(compared) == ["B1", "BLEND", "conservative_blend/1"]
+    assert compared["conservative_blend/1"]["difference"]["mean"] == pytest.approx(
+        scored["difference"].mean()
     )
 
 

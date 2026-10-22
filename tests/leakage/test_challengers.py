@@ -2,7 +2,8 @@
 time, through a reviewed reader for each table it registered, at its bundle's input cutoff; and
 no decision day on or before its registration is ever computed. conservative_blend (ADR 0041)
 trains only on earlier weeks' v2 decisions published, and results public, before the cutoff;
-goalie_spread_blend (ADR 0042) adds only those decisions' spreads, each from its day's bundle."""
+goalie_spread_blend (ADR 0042) adds only those decisions' spreads, each from its day's bundle;
+team_residual_blend (ADR 0043) corrects each row's B3 by team effects from earlier weeks only."""
 
 import json
 from dataclasses import replace
@@ -158,6 +159,8 @@ def test_conservative_blend_trains_only_on_earlier_weeks_published_v2_decisions(
             "season": 20262027,
             "game_id": game_id,
             "start_utc": start(on),
+            "home": "BOS",
+            "away": "TOR",
             "published_utc": published or start(on) - timedelta(hours=6),
             "status": status,
             "policy_version": policy,
@@ -237,6 +240,8 @@ def test_goalie_spread_blend_trains_on_conservative_blends_rows_and_their_spread
             "season": [20262027] * 5,
             "game_id": list(decided),
             "start_utc": [start(on) for on in decided.values()],
+            "home": ["BOS"] * 5,
+            "away": ["TOR"] * 5,
             "published_utc": [
                 fold + SECOND if game_id == 5 else start(on) - timedelta(hours=6)
                 for game_id, on in decided.items()
@@ -352,3 +357,55 @@ def test_a_slate_games_spread_reads_its_goalie_rows_only_once_known(
     assert spreads(late).equals(spreads(dropped))
     # Without candidates, both goalies count as average: one scenario, no spread.
     assert spreads(dropped).filter(pl.col("game_id") == game)["goalie_spread"].item() == 0
+
+
+def test_a_rows_team_correction_never_reads_its_own_weeks_results() -> None:
+    # Decisions over three weeks before Friday 10-16's week, each BOS at TOR. A training row is
+    # corrected by the effects of its own week's fold start, so flipping the results of the week
+    # of 10-05 changes no correction of that week's rows, only those of later rows and the day's.
+    weeks = (date(2026, 9, 28), date(2026, 10, 5))
+    days = [week + timedelta(days=k) for week in weeks for k in range(5)]
+    starts = [datetime(d.year, d.month, d.day, 23, tzinfo=UTC) for d in days]
+    ledger = pl.DataFrame(
+        {
+            "game_date": days,
+            "season": [20262027] * len(days),
+            "game_id": list(range(1, len(days) + 1)),
+            "start_utc": starts,
+            "home": ["BOS"] * len(days),
+            "away": ["TOR"] * len(days),
+            "published_utc": [at - timedelta(hours=6) for at in starts],
+            "status": ["predicted"] * len(days),
+            "policy_version": [POLICY_V2] * len(days),
+            "p_b0": [0.5] * len(days),
+            "p_b3": [0.5] * len(days),
+        },
+        schema_overrides={"season": pl.Int32},
+    )
+
+    def games(home_score: list[int]) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "game_id": list(range(1, len(days) + 1)),
+                "season": [20262027] * len(days),
+                "start_utc": starts,
+                "home_score": home_score,
+                "away_score": [2] * len(days),
+                "observed_utc": [at + timedelta(hours=11) for at in starts],
+            },
+            schema_overrides={"season": pl.Int32, "home_score": pl.Int16, "away_score": pl.Int16},
+        )
+
+    day = CUTOFF.date()
+    won = games([3] * len(days))
+    lost = games([3] * 5 + [1] * 5)  # the week of 10-05 lost instead
+    rows_won, effects_won = lc.corrected_training(ledger, won, day)
+    rows_lost, effects_lost = lc.corrected_training(ledger, lost, day)
+    in_week = pl.col("game_date") >= weeks[1]
+    # The week of 10-05's own corrections come from the week before only.
+    assert rows_won.filter(in_week)["p_b3"].equals(rows_lost.filter(in_week)["p_b3"])
+    assert (rows_won.filter(in_week)["p_b3"] > 0.5).all()
+    # The first week has no earlier games: uncorrected.
+    assert rows_won.filter(~in_week)["p_b3"].to_list() == [0.5] * 5
+    # The day's week's effects read every earlier week, so the flip moves them.
+    assert effects_won["BOS"] > 0 > effects_lost["BOS"]
