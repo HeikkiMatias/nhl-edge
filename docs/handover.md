@@ -218,13 +218,15 @@ Every deliverable merged under its own task issue:
   - `games`, through `results_known_at`;
   - `schedule`, through `schedule_known_at`;
   - `odds_snapshots`, without its after-the-fact columns;
-  - `paper_ledger`, the decisions published before the cutoff, read from the ledgers in R2 rather than the lake's copy.
+  - `paper_ledger`, the decisions published before the cutoff, read from the ledgers in R2 rather than the lake's copy;
+  - `goalie_spreads`, each v2 day's spreads, kept once from its bundle (`challengers/inputs/goalie_spread/`) and read from there.
 
   Any other table needs its reader and a leakage test first.
 - **Registered:**
   - `market_only`, from 2026-10-15, as a check of the mechanism. On R2's 2026-10-15 bundle its 11 games equalled the ledger's `p_blend_market`, and `--check` reproduced them.
   - `conservative_blend` (#256, ADR 0041), from 2026-10-22: the market plus B3's disagreement with it, fitted each ET week with fixed priors on the earlier weeks' v2 decisions. Below 200 training games its rows are `unfitted`, which should last until about the week of 2026-11-16. Each day's fit is saved in the output's `fit` column, and the report shows the latest.
-- **Next:** #257 to #260, each registered by its own ADR. Their evidence starts the day after registration, so the earlier they're registered, the more games they get.
+  - `goalie_spread_blend` (#257, ADR 0042), from 2026-10-22: `conservative_blend` with B3's weight moving with the goalie spread, the SD of B3's log-odds over its goalie scenarios. It's paired with `conservative_blend`, its baseline, on all games and on those with a spread above 0. The inputs-only reading before registration is on #257.
+- **Next:** #258 to #260, each registered by its own ADR. Their evidence starts the day after registration, so the earlier they're registered, the more games they get.
 
 **Real money (ADR 0039, the owner, 2026-10-15 and 10-16).** Real stakes start from mid to late November 2026, beside the paper ledger, which continues. The tracking issue is #271.
 - **The start rule** (`live/real.py`; the report's "Real stakes (ADR 0039)" section, #267):
@@ -353,7 +355,7 @@ Every deliverable merged under its own task issue:
     - Start the goalie polls by hand meanwhile, but never an odds slot: it spends Odds API credits.
 - **Open, for the owner:** #169, the raw backup on the owner's own computer (P5); #266's venue steps, with the venue's minimum stake and stake increment; #270's migration, `20261016150000_real_record.sql`.
 - **Open, [priority]:** #271, the real-money tracking issue; #266, the venue.
-- **Open, next:** #269 (real money, after the venue); #253 and #254 (diagnostics); #257 to #260 (challengers, each with its own ADR).
+- **Open, next:** #269 (real money, after the venue); #253 and #254 (diagnostics); #258 to #260 (challengers, each with its own ADR).
 - **Parked for the next model version:** #125 and #134 (P6, label `next-model-version`).
 - **Open, later:** phase 5's #14, #67 (in April 2027) and #121 (step 3 on 2026-11-05); #15 and #250 (P6).
 

@@ -1,8 +1,10 @@
 """Leakage guard for the challengers (#255, ADR 0038): a challenger reads the lake only point in
 time, through a reviewed reader for each table it registered, at its bundle's input cutoff; and
 no decision day on or before its registration is ever computed. conservative_blend (ADR 0041)
-trains only on earlier weeks' v2 decisions published, and results public, before the cutoff."""
+trains only on earlier weeks' v2 decisions published, and results public, before the cutoff;
+goalie_spread_blend (ADR 0042) adds only those decisions' spreads, each from its day's bundle."""
 
+import json
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -196,3 +198,157 @@ def test_conservative_blend_trains_only_on_earlier_weeks_published_v2_decisions(
     on_monday = fold + timedelta(seconds=30)
     lake = lc.PointInTime(Lake(paper_ledger=ledger, games=games), on_monday, lc.REGISTRY[1].reads)
     assert lc.conservative_training(monday, [20262027], lake).equals(trained)
+
+
+def test_the_goalie_spreads_are_read_only_from_decisions_before_the_cutoff() -> None:
+    # A spread is a function of its day's bundle, known at that day's input cutoff; when it was
+    # computed, and by which code, is not part of what a challenger reads.
+    spreads = pl.DataFrame(
+        {
+            "game_date": [CUTOFF.date()] * 3,
+            "game_id": [2, 1, 3],
+            "goalie_spread": [0.1, 0.2, 0.3],
+            "input_cutoff_utc": [CUTOFF - SECOND, CUTOFF - 2 * SECOND, CUTOFF],
+            "code_version": ["x"] * 3,
+            "computed_utc": [CUTOFF + timedelta(hours=16)] * 3,
+        },
+        schema_overrides={"input_cutoff_utc": UTC_US, "computed_utc": UTC_US},
+    )
+    reader = lc.PointInTime(Lake(goalie_spreads=spreads), CUTOFF, ("goalie_spreads",))
+    read = reader.read("goalie_spreads")
+    assert read["game_id"].to_list() == [1, 2]
+    assert not {"code_version", "computed_utc"} & set(read.columns)
+
+
+def test_goalie_spread_blend_trains_on_conservative_blends_rows_and_their_spreads_only() -> None:
+    # Two earlier-week v2 decisions with public results, and three that conservative_blend leaves
+    # out: one of the day's own week, one with its result public only after the cutoff, and one
+    # published after the fold start. Every one has a kept spread.
+    day, fold = CUTOFF.date(), datetime(2026, 10, 12, 16, 45, tzinfo=UTC)
+    earlier = date(2026, 10, 9)
+
+    def start(on: date) -> datetime:
+        return datetime(on.year, on.month, on.day, 23, tzinfo=UTC)
+
+    decided = {1: earlier, 2: earlier, 3: date(2026, 10, 13), 4: earlier, 5: earlier}
+    ledger = pl.DataFrame(
+        {
+            "game_date": list(decided.values()),
+            "season": [20262027] * 5,
+            "game_id": list(decided),
+            "start_utc": [start(on) for on in decided.values()],
+            "published_utc": [
+                fold + SECOND if game_id == 5 else start(on) - timedelta(hours=6)
+                for game_id, on in decided.items()
+            ],
+            "status": ["predicted"] * 5,
+            "policy_version": [POLICY_V2] * 5,
+            "p_b0": [0.5] * 5,
+            "p_b3": [0.55] * 5,
+        },
+        schema_overrides={"season": pl.Int32},
+    )
+    games = pl.DataFrame(
+        {
+            "game_id": list(decided),
+            "season": [20262027] * 5,
+            "start_utc": [start(on) for on in decided.values()],
+            "home_score": [3] * 5,
+            "away_score": [2] * 5,
+            "observed_utc": [
+                CUTOFF + SECOND if game_id == 4 else start(on) + timedelta(hours=11)
+                for game_id, on in decided.items()
+            ],
+        },
+        schema_overrides={"season": pl.Int32, "home_score": pl.Int16, "away_score": pl.Int16},
+    )
+    spreads = ledger.select(
+        "game_date",
+        "season",
+        "game_id",
+        goalie_spread=pl.lit(0.1),
+        input_cutoff_utc=pl.col("start_utc") - timedelta(hours=6, minutes=5),
+        code_version=pl.lit("x"),
+        computed_utc=pl.col("start_utc") + timedelta(hours=10),
+    )
+    challenger = lc.REGISTRY[2]
+    lake = lc.PointInTime(
+        Lake(paper_ledger=ledger, games=games, goalie_spreads=spreads), CUTOFF, challenger.reads
+    )
+    bundle = lb.Bundle({"day": day.isoformat()}, {}, None, None)
+    replayed = pl.DataFrame(
+        {"game_id": [9], "season": [20262027], "status": ["predicted"], "p_b0": 0.5, "p_b3": 0.6}
+    )
+    output = challenger.predict(bundle, replayed, None, lake)  # type: ignore[arg-type]
+    fit = json.loads(output["fit"][0])
+    assert (fit["games"], fit["without_spread"]) == (2, 0)
+
+
+@pytest.fixture(scope="module")
+def league_bundle() -> lb.Bundle:
+    """A decision day's bundle from the synthetic B3 league (b3_fixtures): its first test date's
+    four games, each team with two candidate goalies, B3 fitted before the season, and the
+    decision at the games' start."""
+    from b3_fixtures import league
+
+    from nhl_edge.backtest.walk_forward import fold_start
+    from nhl_edge.game import b3
+    from nhl_edge.lake.schemas import Slate, dtypes
+
+    tables = league()
+    season = 20182019
+    games = tables.games.filter(pl.col("season") == season)
+    day = games["game_date"].min()
+    slate = games.filter(pl.col("game_date") == day)
+    cutoff = slate["start_utc"].min()
+    moments = games.select("game_id", prediction_utc="start_utc")
+    start = fold_start(tables.games.select("season", "start_utc"), season)
+    _, model = b3.predictions(tables, moments, season, start)
+    listed = slate.with_columns(
+        game_state=pl.lit("FUT"), observed_utc=pl.lit(cutoff - timedelta(days=1))
+    )
+    inputs = {"slate": Slate.validate(listed.select(list(dtypes(Slate))).cast(dtypes(Slate)))}
+    for name in (
+        "schedule_terms",
+        "goalie_starts",
+        "actual_lineups",
+        "lineups",
+        "lineup_replacements",
+        "player_ratings",
+        "rapm_terms",
+        "expected_power_plays",
+        "goal_multipliers",
+    ):
+        inputs[name] = getattr(tables, name)
+    manifest = {"day": day.isoformat(), "input_cutoff": cutoff.isoformat()}
+    return lb.Bundle(manifest, inputs, None, model)
+
+
+def test_a_slate_games_spread_reads_its_goalie_rows_only_once_known(
+    league_bundle: lb.Bundle,
+) -> None:
+    # The slate's own spread comes from its bundle's goalie rows known before the input cutoff,
+    # through B3's scenarios (lb.b3_scenarios): a confirmation that arrives at the cutoff changes
+    # nothing, and a game whose rows all arrive then is as without them.
+    before = lc.goalie_spreads(league_bundle)
+    assert (before["goalie_spread"] > 0).all()
+    starts = league_bundle.inputs["goalie_starts"]
+    cutoff = datetime.fromisoformat(league_bundle.manifest["input_cutoff"])
+    game = before["game_id"][0]
+    first = starts.filter(pl.col("game_id") == game).sort("team", "goalie_id").head(1)
+    confirmed = first.with_columns(p_start=pl.lit(1.0), observed_utc=pl.lit(cutoff, UTC_US))
+
+    def spreads(rows: pl.DataFrame) -> pl.DataFrame:
+        inputs = {**league_bundle.inputs, "goalie_starts": rows}
+        return lc.goalie_spreads(replace(league_bundle, inputs=inputs))
+
+    assert spreads(pl.concat([starts, confirmed])).equals(before)
+    late = starts.with_columns(
+        observed_utc=pl.when(pl.col("game_id") == game)
+        .then(pl.lit(cutoff, UTC_US))
+        .otherwise(pl.col("observed_utc"))
+    )
+    dropped = starts.filter(pl.col("game_id") != game)
+    assert spreads(late).equals(spreads(dropped))
+    # Without candidates, both goalies count as average: one scenario, no spread.
+    assert spreads(dropped).filter(pl.col("game_id") == game)["goalie_spread"].item() == 0

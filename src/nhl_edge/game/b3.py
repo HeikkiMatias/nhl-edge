@@ -367,9 +367,10 @@ class B3Model:
     # The regression's inputs, in the order of weights: B3's own, or with v2's terms (ADR 0036).
     inputs: tuple[str, ...] = INPUTS
 
-    def predict(self, inputs: pl.DataFrame, pairs: pl.DataFrame) -> pl.DataFrame:
-        """Each game in inputs (game_id, the model's inputs but Δĝ, offset, and arena_id when the
-        fit has arenas) with p_home, averaged over its goalie pairs (scenarios())."""
+    def log_odds(self, inputs: pl.DataFrame, pairs: pl.DataFrame) -> pl.DataFrame:
+        """Each goalie pair of pairs (scenarios()) for the games in inputs (game_id, the model's
+        inputs but Δĝ, offset, and arena_id when the fit has arenas), with its weight and B3's
+        log-odds in it (eta)."""
         means, scales, weights = (np.asarray(v) for v in (self.means, self.scales, self.weights))
         others = [name for name in self.inputs if name != "delta_g_hat"]
         index = [self.inputs.index(name) for name in others]
@@ -381,9 +382,16 @@ class B3Model:
         joined = pairs.join(frame, on="game_id")
         skill_at = self.inputs.index("delta_g_hat")
         skill = (joined["delta_g_hat"].to_numpy() - means[skill_at]) / scales[skill_at]
-        p = expit(joined["base"].to_numpy() + weights[skill_at] * skill)
+        eta = joined["base"].to_numpy() + weights[skill_at] * skill
+        return joined.select("game_id", "weight", eta=pl.Series(eta, dtype=pl.Float64))
+
+    def predict(self, inputs: pl.DataFrame, pairs: pl.DataFrame) -> pl.DataFrame:
+        """Each game in inputs (as log_odds() reads it) with p_home, averaged over its goalie
+        pairs (scenarios())."""
+        scenarios = self.log_odds(inputs, pairs)
+        p = expit(scenarios["eta"].to_numpy())
         mixed = (
-            joined.with_columns(p=pl.Series(p) * pl.col("weight"))
+            scenarios.with_columns(p=pl.Series(p) * pl.col("weight"))
             .group_by("game_id")
             .agg(p_home=pl.col("p").sum() / pl.col("weight").sum())
         )

@@ -24,9 +24,10 @@ from nhl_edge.market.recalibration import logit, sigmoid
 FIT = blend_fit.REPORTS / "blend-live-20261007-89ec631.json"
 RECORD = pl.DataFrame({"table": ["slate"]})
 NOW = datetime(2026, 10, 8, 9, tzinfo=UTC)
-# market_only and conservative_blend as if registered the day before the fixture's decision day.
+# The challengers as if registered the day before the fixture's decision day.
 MARKET_ONLY = replace(lc.REGISTRY[0], registered_on=pf.DAY - timedelta(days=1))
 CONSERVATIVE = replace(lc.REGISTRY[1], registered_on=pf.DAY - timedelta(days=1))
+SPREAD = replace(lc.REGISTRY[2], registered_on=pf.DAY - timedelta(days=1))
 # The fixture day's ET week starts on Monday 2026-10-05.
 WEEK = date(2026, 10, 5)
 
@@ -447,3 +448,234 @@ def test_nhl_live_challengers_trains_conservative_blend_on_the_ledgers_themselve
     assert json.loads(written["fit"][0])["games"] == 250
     check = runner.invoke(app, ["live", "challengers", "--check", "--from", str(out)])
     assert check.exit_code == 0, check.output
+
+
+class Scenarios:
+    """A B3 fit whose goalie scenarios' log-odds are given (B3Model.log_odds)."""
+
+    def __init__(self, frame: pl.DataFrame) -> None:
+        self.frame = frame
+
+    def log_odds(self, inputs: Any, pairs: Any) -> pl.DataFrame:
+        return self.frame
+
+
+def with_scenarios(monkeypatch: pytest.MonkeyPatch, bundle: lb.Bundle) -> lb.Bundle:
+    """The bundle with B3's scenarios for the fixture's three games: one scenario; two of equal
+    weight, 0.2 apart; and weights 0.9 and 0.1 (unnormalized), 1 apart."""
+    first, second, third = sorted(pf.GAMES)
+    frame = pl.DataFrame(
+        {
+            "game_id": [first, second, second, third, third],
+            "weight": [1.0, 0.5, 0.5, 0.45, 0.05],
+            "eta": [0.3, 0.2, 0.4, 0.0, 1.0],
+        }
+    )
+    monkeypatch.setattr(lb, "b3_scenarios", lambda _: (None, None))
+    return replace(bundle, b3=Scenarios(frame))  # type: ignore[arg-type]
+
+
+def test_a_goalie_spread_is_the_weighted_sd_of_b3s_log_odds_over_its_scenarios(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = lb.LocalStore(tmp_path)
+    decided(store, monkeypatch)
+    bundle, _ = lc.load(store, pf.DAY)
+    # Without the day's models, no spread.
+    assert lc.goalie_spreads(bundle).is_empty()
+    spreads = lc.goalie_spreads(with_scenarios(monkeypatch, bundle))
+    assert spreads["scenarios"].to_list() == [1, 2, 2]
+    # 0 for one scenario; sd 0.1 about 0.3; and about 0.9·0 + 0.1·1 = 0.1, √(0.9·0.01 + 0.1·0.81).
+    assert np.allclose(spreads["goalie_spread"].to_numpy(), [0.0, 0.1, 0.3], rtol=0, atol=1e-12)
+
+
+def test_b3s_mix_is_its_scenarios_log_odds_weighted() -> None:
+    from nhl_edge.game import b3
+
+    model = b3.B3Model(
+        season=20262027,
+        settings=None,  # type: ignore[arg-type]
+        intercept=0.1,
+        weights=(0.5, 0.2),
+        means=(0.0, 1.0),
+        scales=(1.0, 2.0),
+        games=10,
+        train_cutoff=NOW,
+        inputs=("delta_g_hat", "rest"),
+    )
+    inputs = pl.DataFrame({"game_id": [1, 2], "rest": [1.0, 3.0], "offset": [0.0, 0.05]})
+    pairs = pl.DataFrame(
+        {"game_id": [1, 1, 2], "weight": [0.7, 0.3, 1.0], "delta_g_hat": [0.4, -0.2, 0.1]}
+    )
+    scenarios = model.log_odds(inputs, pairs)
+    # Each scenario: intercept + offset + the weights on the standardized inputs.
+    assert np.allclose(
+        scenarios["eta"].to_numpy(),
+        [0.1 + 0.5 * 0.4, 0.1 + 0.5 * -0.2, 0.1 + 0.05 + 0.5 * 0.1 + 0.2 * 1.0],
+    )
+    mixed = model.predict(inputs, pairs).sort("game_id")["p_home"].to_numpy()
+    p = sigmoid(scenarios["eta"].to_numpy())
+    assert np.allclose(mixed, [0.7 * p[0] + 0.3 * p[1], p[2]])
+
+
+def test_each_v2_days_spreads_are_written_once_and_checked_against_its_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = lb.LocalStore(tmp_path)
+    decided(store, monkeypatch)
+    real = lc.goalie_spreads
+    monkeypatch.setattr(
+        lc, "goalie_spreads", lambda bundle: real(with_scenarios(monkeypatch, bundle))
+    )
+    written, problems = lc.write_spreads(store, "challengers-x", NOW)
+    assert written == ["challengers/inputs/goalie_spread/2026-10-07.parquet"] and problems == []
+    assert lc.write_spreads(store, "challengers-x", NOW) == ([], [])
+    kept = lc.sync_spreads(store)
+    assert kept.height == 3 and set(kept["game_date"]) == {pf.DAY}
+    assert lc.check_spreads(store, pf.DAY) == []
+    # An altered spread is named.
+    key = tmp_path / lc.spread_key(pf.DAY)
+    pl.read_parquet(key).with_columns(goalie_spread=pl.col("goalie_spread") + 0.01).write_parquet(
+        key
+    )
+    assert lc.check_spreads(store, pf.DAY)[0].startswith("goalie_spread differs")
+
+
+def test_a_v1_day_keeps_no_spreads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nhl_edge.betting.selection import POLICY_V1
+
+    store = lb.LocalStore(tmp_path)
+    live = blend_fit.load(json.loads(FIT.read_text()))
+    inputs = pf.day(live=live, versions={**pf.day().versions, "blend_version": live.version})
+    rows = lb.inputs(inputs.slate, RECORD, inputs.quotes, None)
+    lb.write_once(store, pf.DAY, rows, {}, identity(inputs) | {"policy_version": POLICY_V1}, {})
+    assert lc.spread_days(store) == []
+    assert lc.write_spreads(store, "challengers-x", NOW) == ([], [])
+
+
+def spreads_of(rows: pl.DataFrame, spread: np.ndarray) -> pl.DataFrame:
+    """The kept spreads of history()'s decisions."""
+    return rows.select(
+        "game_date",
+        "season",
+        "game_id",
+        scenarios=pl.lit(2, pl.Int32),
+        goalie_spread=pl.Series(spread),
+        bundle_sha256=pl.lit("0" * 64),
+        input_cutoff_utc=pl.col("published_utc") - timedelta(minutes=5),
+        code_version=pl.lit("challengers-x"),
+        computed_utc=pl.col("published_utc") + timedelta(hours=16),
+    )
+
+
+def test_goalie_spread_blend_trains_only_on_games_with_a_spread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = lb.LocalStore(tmp_path)
+    ledger = decided(store, monkeypatch)
+    rows, games = history(250)
+    # 60 of the 250 training games lack a spread: 190 are too few.
+    spreads = spreads_of(rows, np.full(250, 0.05)).head(190)
+    output = computed(
+        store, ledger, SPREAD, Lake(paper_ledger=rows, games=games, goalie_spreads=spreads)
+    )
+    assert output["status"].to_list() == [lc.UNFITTED] * 3
+    assert json.loads(output["fit"][0]) == {
+        "week": "2026-10-05",
+        "games": 190,
+        "without_spread": 60,
+        "minimum": 200,
+    }
+    reads = set(json.loads(output["reads"][0]))
+    assert reads == {"paper_ledger:20262027", "games:20262027", "goalie_spreads:20262027"}
+
+
+def test_goalie_spread_blend_predicts_from_the_weeks_fit_with_the_days_own_spreads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = lb.LocalStore(tmp_path)
+    ledger = decided(store, monkeypatch)
+    rows, games = history(400)
+    spread = np.random.default_rng(3).uniform(0, 0.3, 400)
+    lake = Lake(paper_ledger=rows, games=games, goalie_spreads=spreads_of(rows, spread))
+    real = lc.goalie_spreads
+    monkeypatch.setattr(
+        lc, "goalie_spreads", lambda bundle: real(with_scenarios(monkeypatch, bundle))
+    )
+    output = computed(store, ledger, SPREAD, lake)
+    ChallengerPredictions.validate(output)
+    assert output["status"].to_list() == [lc.PREDICTED] * 3
+    y = games["home_score"] > games["away_score"]
+    x = lc.spread_design(rows["p_b0"], rows["p_b3"], spread)
+    weights, errors = lc.map_fit(x, y, lc.SPREAD_PRIOR_MEAN, lc.SPREAD_PRIOR_SD)
+    fit = json.loads(output["fit"][0])
+    assert list(fit["weights"]) == ["a", "b_m", "b_d", "b_s"] and fit["without_spread"] == 0
+    assert np.allclose(list(fit["weights"].values()), weights, rtol=0, atol=1e-12)
+    assert np.allclose(list(fit["standard_errors"].values()), errors, rtol=0, atol=1e-12)
+    # Each slate game's probability from the fit on its replayed prices and its own spread.
+    day = ledger.sort("game_id")
+    expected = sigmoid(lc.spread_design(day["p_b0"], day["p_b3"], [0.0, 0.1, 0.3]) @ weights)
+    assert np.allclose(output.sort("game_id")["p_home"].to_numpy(), expected, rtol=0, atol=1e-12)
+
+
+def test_the_spread_fit_is_the_posterior_mode_and_finds_the_spreads_weight() -> None:
+    ledger, _ = history(4000, seed=4)
+    rng = np.random.default_rng(5)
+    spread = rng.uniform(0, 0.3, 4000)
+    # Results drawn with b_s = -0.5: B3's weight falls by 0.5 per 0.1 of spread.
+    truth = sigmoid(lc.spread_design(ledger["p_b0"], ledger["p_b3"], spread) @ [0, 1, 0.3, -0.5])
+    y = rng.random(4000) < truth
+    x = lc.spread_design(ledger["p_b0"], ledger["p_b3"], spread)
+    weights, errors = lc.map_fit(x, y, lc.SPREAD_PRIOR_MEAN, lc.SPREAD_PRIOR_SD)
+    p = sigmoid(x @ weights)
+    prior = (weights - lc.SPREAD_PRIOR_MEAN) / lc.SPREAD_PRIOR_SD**2
+    assert np.abs(x.T @ (y - p) - prior).max() < 1e-8
+    assert abs(weights[3] + 0.5) < 3 * errors[3] and errors[3] < 0.5
+
+
+def test_a_baseline_names_a_registered_challenger() -> None:
+    keys = {f"{c.name}/{c.version}" for c in lc.REGISTRY}
+    for challenger in lc.REGISTRY:
+        assert challenger.baseline is None or challenger.baseline in keys
+    assert lc.REGISTRY[2].baseline == "conservative_blend/1"
+
+
+def test_nhl_live_challengers_keeps_the_spreads_before_scoring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+    from nhl_edge.lake import tables
+
+    out = tmp_path / "dry"
+    store = lb.LocalStore(out)
+    ledger = decided(store, monkeypatch)
+    ledger.write_parquet(out / f"{pf.DAY.isoformat()}.parquet")
+    rows, games = history(250)
+    for day, frame in rows.group_by("game_date"):
+        frame.write_parquet(out / f"{day[0]}.parquet")
+    real = lc.goalie_spreads
+    monkeypatch.setattr(
+        lc, "goalie_spreads", lambda bundle: real(with_scenarios(monkeypatch, bundle))
+    )
+    lake = Lake(games=games, paper_ledger=pl.DataFrame(), goalie_spreads=pl.DataFrame())
+    monkeypatch.setattr(tables.Lake, "from_env", lambda *args, **kwargs: lake)
+    monkeypatch.setattr(lc, "REGISTRY", (CONSERVATIVE, SPREAD))
+    runner = CliRunner()
+    result = runner.invoke(app, ["live", "challengers", "--from", str(out)])
+    assert result.exit_code == 0, result.output
+    assert "goalie spreads written for 1 days" in result.output
+    # The earlier week's days have no bundle, so no spreads: the challenger can't fit yet.
+    assert "goalie_spread_blend 1, 2026-10-07: 3 games, 0 predicted" in result.output
+    written = pl.read_parquet(out / SPREAD.key(pf.DAY))
+    assert json.loads(written["fit"][0])["without_spread"] == 250
+    assert (out / lc.spread_key(pf.DAY)).exists()
+    check = runner.invoke(app, ["live", "challengers", "--check", "--from", str(out)])
+    assert check.exit_code == 0, check.output
+    # An altered spread fails the check.
+    key = out / lc.spread_key(pf.DAY)
+    pl.read_parquet(key).with_columns(goalie_spread=pl.col("goalie_spread") + 1).write_parquet(key)
+    check = runner.invoke(app, ["live", "challengers", "--check", "--from", str(out)])
+    assert check.exit_code == 1
+    assert "goalie spreads, 2026-10-07: goalie_spread differs" in check.output

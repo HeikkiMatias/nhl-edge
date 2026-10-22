@@ -470,6 +470,20 @@ def b3_parts(bundle: Bundle) -> pl.DataFrame | None:
     return e3.b3_parts(moments, _b3_tables(bundle, games, season), bundle.b3, season)
 
 
+def b3_scenarios(bundle: Bundle) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """B3's inputs for each slate game it can predict and their goalie pairs (b3.scenarios), as
+    b3.predictions reads them after its fit: from the bundle alone, at the decision's input
+    cutoff."""
+    games, moments, season = _slate(bundle)
+    b3_tables = _b3_tables(bundle, games, season)
+    pool = b3_tables.goalie_starts.select("game_id", "team", "goalie_id", "p_start", "observed_utc")
+    usable, ready = b2.known_before(
+        b3.game_inputs(b3_tables).filter(pl.col("season") == season), pool, moments, "observed_utc"
+    )
+    _, gammas = b3.multipliers(b3_tables)
+    return usable, b3.scenarios(usable, ready, gammas)
+
+
 def models(bundle: Bundle) -> lp.Models | None:
     """B2, B3 and u's parts for each slate game that has them, from the bundle alone: the frozen
     code's predict path after the fit, with the saved fits, at the decision's input cutoff. None
@@ -495,13 +509,7 @@ def models(bundle: Bundle) -> lp.Models | None:
     )
     p_b2 = bundle.b2.predict(usable, b2.scenarios(usable.select("game_id", "home", "away"), ready))
     # B3: b3.predictions after its fit.
-    b3_tables = _b3_tables(bundle, games, season)
-    pool = b3_tables.goalie_starts.select("game_id", "team", "goalie_id", "p_start", "observed_utc")
-    usable, ready = b2.known_before(
-        b3.game_inputs(b3_tables).filter(pl.col("season") == season), pool, moments, "observed_utc"
-    )
-    _, gammas = b3.multipliers(b3_tables)
-    p_b3 = bundle.b3.predict(usable, b3.scenarios(usable, ready, gammas))
+    p_b3 = bundle.b3.predict(*b3_scenarios(bundle))
     # u: its parts for the games B3 predicted, as nhl predict reads them.
     parts = uncertainty.parts(
         uncertainty.Tables(

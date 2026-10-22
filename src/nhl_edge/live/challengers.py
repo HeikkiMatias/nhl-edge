@@ -26,7 +26,7 @@ bets under the frozen rules (live/shadow.py) and its disagreement against the mo
 
 import io
 import json
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol
@@ -39,7 +39,7 @@ from nhl_edge.backtest.walk_forward import outcomes
 from nhl_edge.betting.selection import POLICY_V2
 from nhl_edge.ingest.games import results_known_at, schedule_known_at
 from nhl_edge.ingest.odds import ET
-from nhl_edge.lake.schemas import ChallengerPredictions, dtypes
+from nhl_edge.lake.schemas import ChallengerPredictions, GoalieSpreads, dtypes
 from nhl_edge.live import blend_fit
 from nhl_edge.live import bundle as lb
 from nhl_edge.live import predict as lp
@@ -76,6 +76,18 @@ def _ledger(frame: pl.DataFrame, cutoff: datetime, predicting: tuple[int, ...]) 
     return frame.filter(pl.col("published_utc") < cutoff).sort("game_date", "game_id")
 
 
+def _spreads(frame: pl.DataFrame, cutoff: datetime, predicting: tuple[int, ...]) -> pl.DataFrame:
+    """The goalie spreads of the decisions before the cutoff (ADR 0042): a spread is a function of
+    its day's run bundle alone, so it was known at that day's input cutoff, whenever it was
+    computed. Without the columns of its computation, and sorted, so its sha256 is that of the
+    spreads alone."""
+    return (
+        frame.filter(pl.col("input_cutoff_utc") < cutoff)
+        .drop("code_version", "computed_utc")
+        .sort("game_date", "game_id")
+    )
+
+
 # The lake tables a challenger may read, each through a reader that returns only what was known
 # before the cutoff, given the slate's games (predicting). Not every table is safe by its
 # observed_utc alone (Codex on #265): the schedule holds only games that went on to be played,
@@ -88,6 +100,7 @@ READERS: dict[str, Callable[[pl.DataFrame, datetime, tuple[int, ...]], pl.DataFr
     "schedule": lambda frame, cutoff, predicting: schedule_known_at(frame, cutoff, predicting),
     "odds_snapshots": _odds,
     "paper_ledger": _ledger,
+    "goalie_spreads": _spreads,
 }
 
 
@@ -115,20 +128,25 @@ class PointInTime:
         return rows
 
 
+# The tables a challenger reads from their records, never from the lake's copy (WithRecords).
+RECORDS = ("paper_ledger", "goalie_spreads")
+
+
 @dataclass
-class WithLedgers:
-    """The lake with paper_ledger read from the ledgers themselves, the record (ledger/live/ in
-    R2, or a dry run's files), rather than from the lake's copy of them."""
+class WithRecords:
+    """The lake with some tables read from their records instead of the lake's copy of them: the
+    ledgers themselves (ledger/live/ in R2, or a dry run's files) for paper_ledger, and the
+    write-once spreads for goalie_spreads."""
 
     lake: Reader
-    ledgers: pl.DataFrame
+    records: Mapping[str, pl.DataFrame]
 
     def read(self, table: str, seasons: Collection[int] | None = None) -> pl.DataFrame:
-        if table != "paper_ledger":
+        if table not in self.records:
             return self.lake.read(table, seasons)
         if seasons is None:
-            return self.ledgers
-        return self.ledgers.filter(pl.col("season").is_in(list(seasons)))
+            return self.records[table]
+        return self.records[table].filter(pl.col("season").is_in(list(seasons)))
 
 
 # A challenger's probabilities for the day: from its bundle, the day replayed (the ledger's
@@ -145,6 +163,9 @@ class Challenger:
     registered_on: date
     reads: tuple[str, ...]
     predict: Predict
+    # The registered challenger its primary measure is paired with (name/version), beside the
+    # frozen blend and B1, when its ADR names one.
+    baseline: str | None = None
 
     def __post_init__(self) -> None:
         unread = sorted(set(self.reads) - set(READERS))
@@ -189,28 +210,35 @@ def conservative_design(p_mkt: ArrayLike, p_b3: ArrayLike) -> NDArray[np.float64
     return np.column_stack([np.ones_like(market), market, logit(p_b3) - market])
 
 
-def conservative_fit(
-    home_win: ArrayLike, p_mkt: ArrayLike, p_b3: ArrayLike
+def map_fit(
+    x: NDArray[np.float64], home_win: ArrayLike, mean: NDArray[np.float64], sd: NDArray[np.float64]
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """The weights a, b_m and b_d at the posterior mode, by Newton-Raphson from the prior mean,
-    and their standard errors from the posterior's curvature there. The priors keep the fit
-    finite on any games, all home wins included."""
-    x = conservative_design(p_mkt, p_b3)
+    """A logistic regression's weights on the columns of x at the posterior mode under
+    independent normal priors (mean, sd), by Newton-Raphson from the prior mean, and their
+    standard errors from the posterior's curvature there. The priors keep the fit finite on any
+    games, all home wins included."""
     y = np.asarray(home_win, dtype=np.float64)
-    precision = np.diag(1 / PRIOR_SD**2)
-    beta = PRIOR_MEAN.copy()
+    precision = np.diag(1 / sd**2)
+    beta = mean.copy()
     for _ in range(ITERATIONS):
         p = sigmoid(x @ beta)
         hessian = x.T @ (x * (p * (1 - p))[:, None]) + precision
-        step = np.linalg.solve(hessian, x.T @ (y - p) - precision @ (beta - PRIOR_MEAN))
+        step = np.linalg.solve(hessian, x.T @ (y - p) - precision @ (beta - mean))
         beta = beta + step
         if np.max(np.abs(step)) < CONVERGED:
             break
     else:
-        raise ValueError(f"conservative_blend did not converge in {ITERATIONS} iterations")
+        raise ValueError(f"the fit did not converge in {ITERATIONS} iterations")
     p = sigmoid(x @ beta)
     hessian = x.T @ (x * (p * (1 - p))[:, None]) + precision
     return beta, np.sqrt(np.diag(np.linalg.inv(hessian)))
+
+
+def conservative_fit(
+    home_win: ArrayLike, p_mkt: ArrayLike, p_b3: ArrayLike
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """The weights a, b_m and b_d at the posterior mode (map_fit) under ADR 0041's priors."""
+    return map_fit(conservative_design(p_mkt, p_b3), home_win, PRIOR_MEAN, PRIOR_SD)
 
 
 def week_of(day: date) -> date:
@@ -254,6 +282,49 @@ def conservative_training(day: date, seasons: list[int], lake: PointInTime) -> p
     )
 
 
+def _unfitted(replayed: pl.DataFrame, fit: dict[str, Any]) -> pl.DataFrame:
+    """The day's games without a probability, the predicted ones as unfitted, with the fit."""
+    return replayed.select(
+        "game_id",
+        p_home=pl.lit(None, pl.Float64),
+        status=pl.when(pl.col("status") == PREDICTED)
+        .then(pl.lit(UNFITTED))
+        .otherwise(pl.col("status")),
+        fit=pl.lit(json.dumps(fit)),
+    )
+
+
+def _fitted(
+    replayed: pl.DataFrame, priced: pl.DataFrame, p: NDArray[np.float64], fit: dict[str, Any]
+) -> pl.DataFrame:
+    """The day's games with the probability p of each priced one, and the fit."""
+    return (
+        replayed.select("game_id", "status")
+        .join(
+            priced.select("game_id", p_home=pl.Series(p, dtype=pl.Float64)),
+            on="game_id",
+            how="left",
+        )
+        .with_columns(fit=pl.lit(json.dumps(fit)))
+    )
+
+
+def _weights(
+    terms: tuple[str, ...], weights: NDArray[np.float64], errors: NDArray[np.float64]
+) -> dict[str, Any]:
+    return {
+        "weights": dict(zip(terms, weights.tolist(), strict=True)),
+        "standard_errors": dict(zip(terms, errors.tolist(), strict=True)),
+    }
+
+
+def _priced(replayed: pl.DataFrame) -> pl.DataFrame:
+    """The day's predicted games with the market's and B3's probabilities."""
+    return replayed.filter(
+        pl.col("status") == PREDICTED, pl.col("p_b0").is_not_null(), pl.col("p_b3").is_not_null()
+    )
+
+
 def _conservative_blend(
     bundle: lb.Bundle, replayed: pl.DataFrame, live: blend_fit.LiveFit, lake: PointInTime
 ) -> pl.DataFrame:
@@ -267,33 +338,179 @@ def _conservative_blend(
         "minimum": MINIMUM_GAMES,
     }
     if rows.height < MINIMUM_GAMES:
-        return replayed.select(
-            "game_id",
-            p_home=pl.lit(None, pl.Float64),
-            status=pl.when(pl.col("status") == PREDICTED)
-            .then(pl.lit(UNFITTED))
-            .otherwise(pl.col("status")),
-            fit=pl.lit(json.dumps(fit)),
-        )
+        return _unfitted(replayed, fit)
     weights, errors = conservative_fit(rows["home_win"], rows["p_b0"], rows["p_b3"])
-    fit |= {
-        "weights": dict(zip(CONSERVATIVE_TERMS, weights.tolist(), strict=True)),
-        "standard_errors": dict(zip(CONSERVATIVE_TERMS, errors.tolist(), strict=True)),
+    fit |= _weights(CONSERVATIVE_TERMS, weights, errors) | {
         "train_cutoff": rows["result_utc"].max().isoformat(),  # type: ignore[union-attr]
     }
-    priced = replayed.filter(
-        pl.col("status") == PREDICTED, pl.col("p_b0").is_not_null(), pl.col("p_b3").is_not_null()
-    )
+    priced = _priced(replayed)
     p = sigmoid(conservative_design(priced["p_b0"], priced["p_b3"]) @ weights)
-    return (
-        replayed.select("game_id", "status")
-        .join(
-            priced.select("game_id", p_home=pl.Series(p, dtype=pl.Float64)),
-            on="game_id",
-            how="left",
+    return _fitted(replayed, priced, p, fit)
+
+
+# goalie_spread_blend (ADR 0042): conservative_blend with B3's weight on its disagreement moving
+# with the goalie spread s, per SPREAD_UNIT of it: (b_d + b_s·s/SPREAD_UNIT).
+SPREAD_TERMS = (*CONSERVATIVE_TERMS, "b_s")
+SPREAD_UNIT = 0.1
+SPREAD_PRIOR_MEAN = np.append(PRIOR_MEAN, 0.0)
+SPREAD_PRIOR_SD = np.append(PRIOR_SD, 0.5)
+# Each decision day's spreads, written once from its complete run bundle.
+SPREADS = "challengers/inputs/goalie_spread"
+
+
+def goalie_spreads(bundle: lb.Bundle) -> pl.DataFrame:
+    """Each slate game B3 predicted with its goalie scenarios' count and the probability-weighted
+    standard deviation of B3's log-odds over them (game_id, scenarios, goalie_spread), from the
+    bundle alone. None of them without the day's models (#193)."""
+    if bundle.b3 is None:
+        return pl.DataFrame(
+            schema={"game_id": pl.Int64, "scenarios": pl.Int32, "goalie_spread": pl.Float64}
         )
-        .with_columns(fit=pl.lit(json.dumps(fit)))
+    scenarios = bundle.b3.log_odds(*lb.b3_scenarios(bundle)).with_columns(
+        w=pl.col("weight") / pl.col("weight").sum().over("game_id")
     )
+    centred = scenarios.with_columns(
+        centred=pl.col("eta") - (pl.col("w") * pl.col("eta")).sum().over("game_id")
+    )
+    return (
+        centred.group_by("game_id")
+        .agg(
+            scenarios=pl.len().cast(pl.Int32),
+            goalie_spread=(pl.col("w") * pl.col("centred") ** 2).sum().sqrt(),
+        )
+        .sort("game_id")
+    )
+
+
+def spread_key(day: date) -> str:
+    return f"{SPREADS}/{day.isoformat()}.parquet"
+
+
+def spread_rows(
+    bundle: lb.Bundle, bundle_sha256: str, code_version: str, now: datetime
+) -> pl.DataFrame:
+    """The day's spreads as GoalieSpreads rows."""
+    rows = (
+        bundle.inputs["slate"]
+        .select("game_date", "season", "game_id")
+        .join(goalie_spreads(bundle), on="game_id")
+        .with_columns(
+            bundle_sha256=pl.lit(bundle_sha256),
+            input_cutoff_utc=pl.lit(datetime.fromisoformat(bundle.manifest["input_cutoff"])),
+            code_version=pl.lit(code_version),
+            computed_utc=pl.lit(now),
+        )
+    )
+    columns = dtypes(GoalieSpreads)
+    return GoalieSpreads.validate(
+        rows.select(list(columns)).cast(columns).sort("game_id")  # type: ignore[arg-type]
+    )
+
+
+def spreads_stored(store: lb.Store) -> list[date]:
+    """The days whose spreads are kept."""
+    return sorted(
+        date.fromisoformat(key.rsplit("/", 1)[1].removesuffix(".parquet"))
+        for key in store.keys(SPREADS)
+        if key.endswith(".parquet")
+    )
+
+
+def spread_days(store: lb.Store) -> list[date]:
+    """The complete decision days of TRAINS_ON's policy, each with a spread to keep."""
+    return [
+        day
+        for day in complete_days(store)
+        if json.loads(store.get(f"{lb.prefix(day)}/{lb.MANIFEST}"))["policy_version"] == TRAINS_ON
+    ]
+
+
+def write_spreads(store: lb.Store, code_version: str, now: datetime) -> tuple[list[str], list[str]]:
+    """Each spread day's spreads not yet written, written once: the keys written, and a problem
+    for each day that failed."""
+    stored = set(store.keys(SPREADS))
+    written, problems = [], []
+    for day in spread_days(store):
+        if spread_key(day) in stored:
+            continue
+        try:
+            bundle, sha = load(store, day)
+            lb.put_once(
+                store, spread_key(day), lb.parquet(spread_rows(bundle, sha, code_version, now))
+            )
+        except Exception as exc:
+            problems.append(f"goalie spreads, {day}: {exc}")
+            continue
+        written.append(spread_key(day))
+    return written, problems
+
+
+def sync_spreads(store: lb.Store) -> pl.DataFrame:
+    """Every stored day's spreads, as the lake's goalie_spreads."""
+    columns = dtypes(GoalieSpreads)
+    frames = [
+        pl.read_parquet(io.BytesIO(store.get(key)))
+        for key in store.keys(SPREADS)
+        if key.endswith(".parquet")
+    ]
+    every = pl.concat([pl.DataFrame(schema=columns), *frames])
+    return GoalieSpreads.validate(every.cast(columns))  # type: ignore[arg-type]
+
+
+def check_spreads(store: lb.Store, day: date) -> list[str]:
+    """Where a stored day's spreads and those recomputed from its bundle disagree: other games,
+    scenarios or bundle, or a spread beyond lb.TOLERANCE."""
+    stored = pl.read_parquet(io.BytesIO(store.get(spread_key(day)))).sort("game_id")
+    bundle, sha = load(store, day)
+    again = spread_rows(bundle, sha, "", datetime.now(UTC))
+    if not again["game_id"].equals(stored["game_id"]):
+        return [f"games differ: {again['game_id'].to_list()} against {stored['game_id'].to_list()}"]
+    problems = []
+    apart = (again["goalie_spread"] - stored["goalie_spread"]).abs() > lb.TOLERANCE
+    for column, differs in (
+        ("goalie_spread", apart),
+        ("scenarios", again["scenarios"].ne_missing(stored["scenarios"])),
+        ("bundle_sha256", again["bundle_sha256"].ne_missing(stored["bundle_sha256"])),
+    ):
+        if differs.any():
+            problems.append(f"{column} differs for {again.filter(differs)['game_id'].to_list()}")
+    return problems
+
+
+def spread_design(p_mkt: ArrayLike, p_b3: ArrayLike, spread: ArrayLike) -> NDArray[np.float64]:
+    """conservative_design's columns and B3's disagreement times s per SPREAD_UNIT."""
+    x = conservative_design(p_mkt, p_b3)
+    return np.column_stack([x, np.asarray(spread, dtype=np.float64) / SPREAD_UNIT * x[:, 2]])
+
+
+def _goalie_spread_blend(
+    bundle: lb.Bundle, replayed: pl.DataFrame, live: blend_fit.LiveFit, lake: PointInTime
+) -> pl.DataFrame:
+    """The day's probabilities from the week's fit on conservative_blend's training games that
+    have a stored spread (ADR 0042), or none, as unfitted, while fewer than MINIMUM_GAMES do. A
+    slate game's own spread comes from its bundle. The fit, with the training games left out
+    for want of a spread, rides on every row."""
+    day = date.fromisoformat(bundle.manifest["day"])
+    seasons = sorted(set(replayed["season"].to_list()))
+    rows = conservative_training(day, seasons, lake)
+    spreads = lake.read("goalie_spreads", seasons).select("game_date", "game_id", "goalie_spread")
+    trained = rows.join(spreads, on=["game_date", "game_id"])
+    fit: dict[str, Any] = {
+        "week": week_of(day).isoformat(),
+        "games": trained.height,
+        "without_spread": rows.height - trained.height,
+        "minimum": MINIMUM_GAMES,
+    }
+    if trained.height < MINIMUM_GAMES:
+        return _unfitted(replayed, fit)
+    x = spread_design(trained["p_b0"], trained["p_b3"], trained["goalie_spread"])
+    weights, errors = map_fit(x, trained["home_win"], SPREAD_PRIOR_MEAN, SPREAD_PRIOR_SD)
+    fit |= _weights(SPREAD_TERMS, weights, errors) | {
+        "train_cutoff": trained["result_utc"].max().isoformat(),  # type: ignore[union-attr]
+    }
+    priced = _priced(replayed).join(goalie_spreads(bundle), on="game_id")
+    p = sigmoid(spread_design(priced["p_b0"], priced["p_b3"], priced["goalie_spread"]) @ weights)
+    return _fitted(replayed, priced, p, fit)
 
 
 REGISTRY: tuple[Challenger, ...] = (
@@ -312,6 +529,15 @@ REGISTRY: tuple[Challenger, ...] = (
         registered_on=date(2026, 10, 22),
         reads=("paper_ledger", "games"),
         predict=_conservative_blend,
+    ),
+    Challenger(
+        name="goalie_spread_blend",
+        version="1",
+        adr="0042",
+        registered_on=date(2026, 10, 22),
+        reads=("paper_ledger", "games", "goalie_spreads"),
+        predict=_goalie_spread_blend,
+        baseline="conservative_blend/1",
     ),
 )
 

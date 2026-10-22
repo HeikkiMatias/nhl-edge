@@ -158,6 +158,7 @@ class Season:
             now=changes.pop("now", None),
             challenger_outputs=changes.pop("challenger_outputs", None),
             unfinished_bundles=changes.pop("unfinished_bundles", None),
+            goalie_spreads=changes.pop("goalie_spreads", None),
         )
 
 
@@ -331,6 +332,104 @@ def test_a_fitting_challenger_shows_its_latest_fit_unfitted_weeks_included(
         "  - Latest fit, week of 2026-11-16, on 230 games: a -0.010 (SE 0.040), "
         "b_m +1.040 (SE 0.100), b_d +0.210 (SE 0.300)." in text
     )
+
+
+def test_a_challenger_with_a_baseline_is_paired_with_it_and_on_its_goalie_spreads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADR 0042: goalie_spread_blend's primary measure is against conservative_blend, on every
+    # game both predicted and on those with a goalie spread above 0.
+    from dataclasses import replace
+
+    from nhl_edge.lake.schemas import ChallengerPredictions
+    from nhl_edge.live import challengers as lc
+
+    season = Season(n_weeks=6)
+    registered = FIRST + timedelta(days=6)
+    base = replace(lc.REGISTRY[1], registered_on=registered)
+    spread = replace(lc.REGISTRY[2], registered_on=registered)
+    monkeypatch.setattr(lc, "REGISTRY", (base, spread))
+
+    def outputs(name: str, adr: str, shift: float) -> pl.DataFrame:
+        return season.ledger.select(
+            "game_date",
+            "season",
+            "game_id",
+            challenger=pl.lit(name),
+            challenger_version=pl.lit("1"),
+            adr=pl.lit(adr),
+            p_home=(pl.col("p_blend") + shift).clip(upper_bound=0.99),
+            status=pl.lit(lp.PREDICTED),
+            bundle_sha256=pl.lit("0" * 64),
+            input_cutoff_utc=pl.col("decision_snapshot_utc"),
+            reads=pl.lit("{}"),
+            fit=pl.lit(None, pl.String),
+            code_version=pl.lit("challengers-20261022-abc1234"),
+            computed_utc=pl.col("published_utc") + timedelta(hours=12),
+        )
+
+    conservative = outputs("conservative_blend", "0041", 0.05)
+    both = ChallengerPredictions.validate(
+        pl.concat([conservative, outputs("goalie_spread_blend", "0042", 0.03)])
+    )
+    # Every other game has a goalie spread above 0.
+    spreads = season.ledger.select(
+        "game_date", "game_id", goalie_spread=(pl.col("game_id") % 2).cast(pl.Float64) * 0.1
+    )
+    entry = season.report(challenger_outputs=both, goalie_spreads=spreads)["challengers"]
+    compared = entry["challengers"]["goalie_spread_blend/1"]["comparisons"]
+    assert sorted(compared) == [
+        "B1",
+        "BLEND",
+        "conservative_blend/1",
+        "conservative_blend/1, goalie spread above 0",
+    ]
+    scored = (
+        season.ledger.filter(pl.col("game_date") > registered)
+        .join(
+            season.games.select(
+                "game_id", home_win=(pl.col("home_score") > pl.col("away_score")).cast(pl.Int8)
+            ),
+            on="game_id",
+        )
+        .with_columns(
+            difference=log_loss((pl.col("p_blend") + 0.03).clip(upper_bound=0.99))
+            - log_loss((pl.col("p_blend") + 0.05).clip(upper_bound=0.99))
+        )
+    )
+    figure = compared["conservative_blend/1"]["difference"]
+    assert figure["mean"] == pytest.approx(scored["difference"].mean())
+    assert figure["games"] == scored.height
+    odd = scored.filter(pl.col("game_id") % 2 == 1)
+    within = compared["conservative_blend/1, goalie spread above 0"]["difference"]
+    assert within["mean"] == pytest.approx(odd["difference"].mean())
+    assert within["games"] == odd.height
+    # Without the spreads, only the comparison on every game; the baseline itself has none.
+    plain = season.report(challenger_outputs=both)["challengers"]["challengers"]
+    assert (
+        "conservative_blend/1, goalie spread above 0"
+        not in plain["goalie_spread_blend/1"]["comparisons"]
+    )
+    assert sorted(plain["conservative_blend/1"]["comparisons"]) == ["B1", "BLEND"]
+    text = lr.markdown(season.report(challenger_outputs=both, goalie_spreads=spreads))
+    assert "  - Against conservative_blend/1, goalie spread above 0: " in text
+    # A day without the baseline's output withholds the pairing (ADR 0038 rule 2), not the rest.
+    day = sorted(scored["game_date"].unique().to_list())[2]
+    gone = (pl.col("challenger") == "conservative_blend") & (pl.col("game_date") == day)
+    holed = both.filter(~gone)
+    held = season.report(challenger_outputs=holed, goalie_spreads=spreads)
+    entry = held["challengers"]["challengers"]["goalie_spread_blend/1"]
+    assert entry["baseline_missing_days"] == [day.isoformat()]
+    assert sorted(entry["comparisons"]) == ["B1", "BLEND"]
+    assert (
+        f"  - **Against conservative_blend/1: withheld.** Its outputs are missing for 1 decision "
+        f"days ({day.isoformat()})" in lr.markdown(held)
+    )
+
+
+def log_loss(p: pl.Expr) -> pl.Expr:
+    y = pl.col("home_win")
+    return -(y * p.log() + (1 - y) * (1 - p).log())
 
 
 def test_the_real_stakes_section_states_adr_0039s_start_rule(
@@ -687,6 +786,7 @@ def test_nhl_live_report_and_slate(tmp_path: Any, monkeypatch: pytest.MonkeyPatc
         "sbr_odds": TABLES["sbr_odds"].empty(),
         "lineup_replacements": pl.DataFrame(schema=dtypes(LineupReplacements)),
         "challenger_predictions": TABLES["challenger_predictions"].empty(),
+        "goalie_spreads": TABLES["goalie_spreads"].empty(),
     }
 
     def read(self: Lake, table: str, seasons: Any = None) -> pl.DataFrame:
@@ -728,6 +828,7 @@ def test_nhl_live_report_upserts_the_report_into_supabase(
         "odds_snapshots": TABLES["odds_snapshots"].empty(),
         "sbr_odds": TABLES["sbr_odds"].empty(),
         "challenger_predictions": TABLES["challenger_predictions"].empty(),
+        "goalie_spreads": TABLES["goalie_spreads"].empty(),
     }
     monkeypatch.setattr(Lake, "read", lambda self, table, seasons=None: tables[table])
     monkeypatch.setattr(lr, "sbr_history", lambda sbr, games: pl.DataFrame(schema=HISTORY))
