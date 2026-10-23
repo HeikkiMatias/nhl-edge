@@ -33,6 +33,14 @@ def test_timer_starts_the_kalshi_watch_at_its_windows() -> None:
     assert timer == [start.strftime("%H:%M") for start in WINDOWS_ET]
 
 
+def test_the_kalshi_watch_fallback_lines_are_the_ones_its_cli_knows() -> None:
+    from nhl_edge.ingest.kalshi_watch import FALLBACK_CRONS
+
+    text = (WORKFLOWS / "kalshi-watch.yml").read_text()
+    assert re.findall(r'- cron: "([^"]+)"', text) == list(FALLBACK_CRONS)
+    assert '--cron "$CRON"' in text
+
+
 # Scheduled workflows the timer leaves to GitHub's own schedule: once a year, hours of delay don't
 # matter, and adding one to the timer would need the deployed Worker redeployed before it is due.
 GITHUB_ONLY = ["player-seasons.yml"]

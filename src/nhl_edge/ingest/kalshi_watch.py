@@ -65,6 +65,27 @@ WINDOWS_ET = (time(7, 5), time(11, 5), time(15, 5), time(19, 5))
 LONGEST = timedelta(hours=5, minutes=45)
 
 
+# GitHub's fallback cron lines (kalshi-watch.yml), one per UTC offset of US Eastern time: a line
+# fires all year, so a run checks that its line is the one of today's offset.
+FALLBACK_CRONS = {
+    "5 11,15,19,23 * * *": timedelta(hours=-4),  # EDT
+    "5 12,16,20,0 * * *": timedelta(hours=-5),  # EST
+}
+
+
+def watch_hours(now: datetime) -> bool:
+    """Whether a run started at now may watch: from the first window's start to midnight, US
+    Eastern. A run started after midnight is a late fallback whose day is over, and the next one
+    starts at the first window (Codex on #325)."""
+    return now.astimezone(ET).time() >= WINDOWS_ET[0]
+
+
+def cron_due(cron: str, now: datetime) -> bool:
+    """Whether a fallback cron line is the one of now's US Eastern offset; an unknown line never
+    is."""
+    return FALLBACK_CRONS.get(cron) == now.astimezone(ET).utcoffset()
+
+
 def window_end(now: datetime) -> datetime:
     """When a run started at now stops: a minute before the next window of now's US Eastern
     day, and never more than LONGEST after now."""
@@ -227,16 +248,22 @@ def poll_books(client: kalshi.Kalshi, live: Sequence[Market], report: WatchRepor
 
 
 def poll_trades(
-    client: kalshi.Kalshi, live: Sequence[Market], since: datetime, report: WatchReport
-) -> None:
-    """Each market's trades since `since`, every page of them, stored together as one poll."""
-    polled, found, asked = client.now(), [], []
+    client: kalshi.Kalshi,
+    live: Sequence[Market],
+    since: Mapping[str, datetime],
+    report: WatchReport,
+) -> set[str]:
+    """Each market's trades since its own watermark less OVERLAP, every page of them, stored
+    together as one poll. Returns the markets whose every page came back: only their watermarks
+    may advance, so a failed or cut-short market is asked again from the same point (Codex on
+    #325)."""
+    polled, found, asked, done = client.now(), [], [], set()
     for market in live:
         cursor: str | None = None
         for _ in range(MAX_PAGES):
             params: dict[str, str | int] = {
                 "ticker": market.ticker,
-                "min_ts": int(since.timestamp()),
+                "min_ts": int((since[market.ticker] - OVERLAP).timestamp()),
                 "limit": PAGE,
             }
             if cursor:
@@ -263,11 +290,13 @@ def poll_trades(
             except (ValueError, AttributeError):
                 cursor = None
             if response.status_code != kalshi.OK or not cursor:
+                done.add(market.ticker)
                 break
     _count(report, found)
     if store_poll(client.store, TRADES, asked, found, polled) is not None:
         report.polls[TRADES] += 1
         report.dates.add(asked[0].game_date)
+    return done
 
 
 def _next(due: datetime, every: timedelta, now: datetime) -> datetime:
@@ -294,7 +323,9 @@ def watch(
     report = WatchReport()
     start = client.now()
     games, refreshed = slate(), start
-    since = start - book_every
+    # Each market's trades watermark: the start of its last trades poll whose every page came
+    # back; a market's first poll reaches back one book interval.
+    since: dict[str, datetime] = {}
     next_top = next_book = start
     while True:
         now = client.now()
@@ -314,8 +345,9 @@ def watch(
         if now >= next_book:
             began = client.now()
             poll_books(client, live, report)
-            poll_trades(client, live, since - OVERLAP, report)
-            since = began
+            marks = {m.ticker: since.get(m.ticker, start - book_every) for m in live}
+            for ticker in poll_trades(client, live, marks, report):
+                since[ticker] = began
             next_book = _next(next_book, book_every, client.now())
         wait = min(next_top, next_book, until) - client.now()
         if wait > timedelta(0):
@@ -495,11 +527,23 @@ def stored_watch(
     return tables, report
 
 
+class ReplayError(RuntimeError):
+    """A replay that met stored polls it couldn't read: the lake keeps its last partitions. Its
+    message gives counts only."""
+
+
 def replay(store: RawStore, lake: Lake, dates: Collection[date] | None = None) -> ReplayReport:
     """Rebuild kalshi_tops, kalshi_depth and kalshi_trades for the given game dates (every stored
     date when None) from the raw polls; each requested date's partition is replaced, and deleted
-    when it has no rows. Never calls Kalshi."""
+    when it has no rows. Never calls Kalshi. A poll that is unparsed or incomplete stops it before
+    any partition is replaced (ReplayError), so a changed response shape never drops rows from
+    the lake unnoticed (Codex on #325)."""
     tables, report = stored_watch(store, dates)
+    if report.unparsed or report.incomplete:
+        raise ReplayError(
+            f"{len(report.unparsed)} unparsed and {len(report.incomplete)} incomplete stored "
+            "polls: no partition replaced"
+        )
     requested = sorted(dates) if dates is not None else report.dates
     for kind in KINDS:
         lake.replace_dates(TABLES[kind], tables[kind], requested)

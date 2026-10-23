@@ -5741,11 +5741,19 @@ def kalshi_watch(
             help="Stop at this UTC time, by default a minute before the next window (#319).",
         ),
     ] = None,
+    cron: Annotated[
+        str | None,
+        typer.Option(
+            help="Cron line that fired the run; nothing is watched when it is the other UTC "
+            "offset's line."
+        ),
+    ] = None,
 ) -> None:
     """Watch every game of today's slate on Kalshi (#319), for choosing the owner's own orders:
     each market's top of book every minute, its full book and its trades every 5 minutes, until
     the next window or every game's start, never a game at or after its start. Then rebuild the
-    day's kalshi_tops, kalshi_depth and kalshi_trades from the stored polls. Only counts are
+    day's kalshi_tops, kalshi_depth and kalshi_trades from the stored polls. A run started before
+    the first window (US Eastern) watches nothing, unless --until is given. Only counts are
     printed: Kalshi's data stays private (its Developer Agreement, 3.1), and run logs are
     public."""
     from datetime import UTC
@@ -5761,6 +5769,12 @@ def kalshi_watch(
 
     load_env()
     now = utc_now()
+    if cron is not None and not kw.cron_due(cron, now):
+        typer.echo(f"kalshi watch: cron {cron!r} is not this time of year's line, skipped")
+        return
+    if until is None and not kw.watch_hours(now):
+        typer.echo("kalshi watch: started before the first window (07:05 ET), nothing watched")
+        return
     day = now.astimezone(ET).date()
     store = RawStore.from_env(mirror=mirror_raw)
     api = NhlApi(store)
@@ -5776,10 +5790,13 @@ def kalshi_watch(
             # The day's earlier windows' polls, so the rebuilt partitions keep all of them.
             for kind in kw.KINDS:
                 store.restore_from_r2(f"{kalshi.SOURCE}/{kw.WATCH}/{kind}/{day.isoformat()}/")
-        replayed = kw.replay(store, lake, [day])
+        try:
+            replayed = kw.replay(store, lake, [day])
+        except kw.ReplayError as exc:
+            typer.echo(f"kalshi watch {day}: {exc}", err=True)
+            raise typer.Exit(code=1) from None
         typer.echo(
-            f"kalshi watch {day}: rebuilt from {sum(replayed.objects.values())} stored polls, "
-            f"{len(replayed.unparsed)} unparsed"
+            f"kalshi watch {day}: rebuilt from {sum(replayed.objects.values())} stored polls"
         )
     if report.failed:
         raise typer.Exit(code=1)
@@ -5836,7 +5853,11 @@ def kalshi_replay(
         f"fetched after the start, {len(report.unparsed)} unparsed, "
         f"{len(report.incomplete)} incomplete"
     )
-    watched = kw.replay(store, lake, dates)
+    try:
+        watched = kw.replay(store, lake, dates)
+    except kw.ReplayError as exc:
+        typer.echo(f"kalshi watch replay: {exc}", err=True)
+        raise typer.Exit(code=1) from None
     window = f"{watched.dates[0]}..{watched.dates[-1]}" if watched.dates else "no stored polls"
     typer.echo(
         f"kalshi watch replay {window}: "

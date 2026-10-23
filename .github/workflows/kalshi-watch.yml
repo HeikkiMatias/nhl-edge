@@ -10,8 +10,9 @@ name: kalshi-watch
 # run logs are public. Public REST only: no Kalshi key is read.
 on:
   schedule:
-    # The fallback while the timer is off, one line per window and UTC offset: a late run only
-    # watches until the next window.
+    # The fallback while the timer is off, one line per UTC offset: the CLI skips the other half
+    # of the year's line (ingest/kalshi_watch.FALLBACK_CRONS), a late run only watches until the
+    # next window, and one started after midnight US Eastern watches nothing.
     - cron: "5 11,15,19,23 * * *"   # EDT
     - cron: "5 12,16,20,0 * * *"    # EST
   workflow_dispatch:
@@ -37,4 +38,7 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: uv run nhl kalshi watch --mirror-raw
+          CRON: ${{ github.event.schedule }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
+          uv run nhl kalshi watch --mirror-raw "${pick[@]}"

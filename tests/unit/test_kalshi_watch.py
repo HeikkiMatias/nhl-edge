@@ -212,7 +212,7 @@ def test_nhl_kalshi_watch_polls_and_builds_the_days_tables(
     result = CliRunner().invoke(app, ["kalshi", "watch", "--until", "2026-10-07T17:01"])
     assert result.exit_code == 0, result.output
     assert "kalshi watch: 6 top, 2 book and 2 trade polls stored" in result.output
-    assert "kalshi watch 2026-10-07: rebuilt from 10 stored polls, 0 unparsed" in result.output
+    assert "kalshi watch 2026-10-07: rebuilt from 10 stored polls" in result.output
     # Run logs are public: no market or figure from Kalshi is printed.
     assert "KXNHL" not in result.output and "0.44" not in result.output
     lake = Lake()
@@ -225,3 +225,121 @@ def test_nhl_kalshi_watch_polls_and_builds_the_days_tables(
     assert replayed.exit_code == 0, replayed.output
     assert "kalshi watch replay 2026-10-07..2026-10-07: 6 tops polls, 36 rows" in replayed.output
     assert lake.read("kalshi_tops").height == 36
+
+
+def test_a_failed_trades_request_keeps_that_markets_watermark(tmp_path: Path) -> None:
+    # WSH's trades fail in the first poll: its next poll reaches back to where the first began,
+    # while the others reach back only over the overlap (Codex on #325).
+    wsh = "KXNHLGAME-26OCT07PITWSH-WSH"
+
+    def flaky(clock: kf.Clock) -> Fake:
+        class Flaky(Fake):
+            def __call__(self, request: httpx.Request) -> httpx.Response:
+                first = self.clock.now() < START + timedelta(minutes=1)
+                trades = request.url.path.endswith("/markets/trades")
+                if first and trades and request.url.params["ticker"] == wsh:
+                    self.requests.append((self.clock.now(), request))
+                    return httpx.Response(400, json={"code": "bad_request"})
+                return super().__call__(request)
+
+        return Flaky(clock)
+
+    report, served, _, _ = run(tmp_path, 7, fake=flaky)
+    assert report.failed == 1
+    second = [r for at, r in served.of(kw.TRADES) if at >= START + kw.BOOK_EVERY]
+    marks = {r.url.params["ticker"]: int(r.url.params["min_ts"]) for r in second}
+    first_start = START - kw.BOOK_EVERY - kw.OVERLAP
+    assert marks[wsh] == int(first_start.timestamp())
+    others = {t: m for t, m in marks.items() if t != wsh}
+    assert set(others.values()) == {int((START - kw.OVERLAP).timestamp())}
+
+
+def test_a_cut_short_page_run_keeps_the_watermark(tmp_path: Path) -> None:
+    # More pages than MAX_PAGES: the market isn't done, so its watermark stays.
+    pages = kw.MAX_PAGES + 1
+    _, served, _, _ = run(tmp_path, 7, fake=lambda clock: Fake(clock, pages=pages))
+    second = [r for at, r in served.of(kw.TRADES) if at >= START + kw.BOOK_EVERY]
+    assert {int(r.url.params["min_ts"]) for r in second} == {
+        int((START - kw.BOOK_EVERY - kw.OVERLAP).timestamp())
+    }
+
+
+def test_a_replay_with_an_unreadable_poll_replaces_nothing(tmp_path: Path) -> None:
+    _, _, store, _ = run(tmp_path, 2)
+    lake = Lake(tmp_path / "lake")
+    kw.replay(store, lake, [pf.DAY])
+    before = lake.read("kalshi_tops").height
+    assert before == 2 * 6
+    # A stored 200 whose body is no listing: the replay stops before any partition changes.
+    bad = {
+        "responses": [
+            {
+                "ticker": None,
+                "status": 200,
+                "fetched_utc": START.isoformat(),
+                "attempts": 1,
+                "body": "{}",
+            }
+        ]
+    }
+    markets = [
+        {
+            "ticker": m.ticker,
+            "season": m.season,
+            "game_date": m.game_date.isoformat(),
+            "game_id": m.game_id,
+            "start_utc": m.start_utc.isoformat(),
+            "team": m.team,
+        }
+        for m in kw.markets_of(pf.slate())
+    ]
+    store.put(
+        "kalshi",
+        f"watch/tops/{pf.DAY.isoformat()}/20261007T170500Z",
+        json.dumps(bad).encode(),
+        {"kind": "tops", "markets": markets},
+    )
+    with pytest.raises(kw.ReplayError, match="1 unparsed and 0 incomplete"):
+        kw.replay(store, lake, [pf.DAY])
+    assert lake.read("kalshi_tops").height == before
+
+
+def test_a_run_started_before_the_first_window_or_on_the_other_offsets_line_watches_nothing() -> (
+    None
+):
+    assert not kw.watch_hours(datetime(2026, 10, 23, 10, 59, tzinfo=UTC))  # 06:59 EDT
+    assert kw.watch_hours(datetime(2026, 10, 23, 11, 5, tzinfo=UTC))  # 07:05 EDT
+    assert kw.watch_hours(datetime(2026, 10, 24, 3, 59, tzinfo=UTC))  # 23:59 EDT
+    assert not kw.watch_hours(datetime(2026, 10, 24, 6, 5, tzinfo=UTC))  # 02:05 EDT
+    october, december = (
+        datetime(2026, 10, 23, 15, 5, tzinfo=UTC),
+        datetime(2026, 12, 1, 16, 5, tzinfo=UTC),
+    )
+    edt, est = list(kw.FALLBACK_CRONS)
+    assert kw.cron_due(edt, october) and not kw.cron_due(est, october)
+    assert kw.cron_due(est, december) and not kw.cron_due(edt, december)
+    assert not kw.cron_due("0 3 * * *", october)
+
+
+def test_nhl_kalshi_watch_skips_the_other_offsets_line_and_an_early_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+    from nhl_edge.ingest import nhl_api
+
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(kalshi, "Kalshi", lambda store: kf.make(store, kf.fail))
+    est = list(kw.FALLBACK_CRONS)[1]
+    clock = kf.Clock(datetime(2026, 10, 23, 15, 5, tzinfo=UTC))  # 11:05 EDT
+    monkeypatch.setattr(nhl_api, "utc_now", clock.now)
+    skipped = CliRunner().invoke(app, ["kalshi", "watch", "--cron", est])
+    assert skipped.exit_code == 0, skipped.output
+    assert "is not this time of year's line, skipped" in skipped.output
+    early = kf.Clock(datetime(2026, 10, 24, 6, 5, tzinfo=UTC))  # 02:05 EDT, a late fallback
+    monkeypatch.setattr(nhl_api, "utc_now", early.now)
+    nothing = CliRunner().invoke(app, ["kalshi", "watch"])
+    assert nothing.exit_code == 0, nothing.output
+    assert "started before the first window (07:05 ET), nothing watched" in nothing.output
