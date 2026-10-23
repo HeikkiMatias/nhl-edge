@@ -171,6 +171,9 @@ LIVE_MODEL = (
 )
 PRIVATE_MODULES = ("placement", "exchange", "real_ledger", "kalshi_trade", "real")
 PRIVATE_TABLES = ("real_orders", "real_bets", "real_settlements", "real_alerts", "kalshi_books")
+# The record's own R2 prefixes, read directly rather than through a module or a lake table: its
+# settlements, Kalshi's settlements kept for its payouts (#290) and the demo orders.
+PRIVATE_PREFIXES = ("real/live", "real/demo")
 
 
 def imported(tree: ast.AST) -> set[str]:
@@ -196,6 +199,7 @@ def test_no_model_code_reads_the_real_record_or_the_orders() -> None:
         text = path.read_text()
         assert not imported(ast.parse(text)) & forbidden, path
         assert not any(f'"{table}"' in text for table in PRIVATE_TABLES), path
+        assert not any(prefix in text for prefix in PRIVATE_PREFIXES), path
 
 
 def test_a_fill_at_or_after_the_start_never_becomes_a_bet(tmp_path: Path) -> None:
