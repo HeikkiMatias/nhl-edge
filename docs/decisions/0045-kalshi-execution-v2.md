@@ -1,6 +1,6 @@
 # 0045. Kalshi execution v2: a taker part, a post-only maker part, and re-valuation
 
-- Status: Accepted (the owner, 2026-10-23, #321)
+- Status: Accepted (the owner, 2026-10-23, #321). Amended by the owner on 2026-10-23 (#326): item 1's bid that would cross the book.
 - Date: 2026-10-23
 - Amends: ADR 0040 items 1, 2 and 9 (the order, its limit and the record). What is bet, its p, its hurdle, its stake rule, the limits in the code, the kill switch and the 11-09 rule are unchanged.
 
@@ -34,7 +34,8 @@ Option 3.
    - **Taker part:** an immediate-or-cancel buy at L_t, today's L, sized at L_t's effective price from the alert's stake table. Whatever doesn't fill at once is cancelled by Kalshi.
    - **Maker part:** then a post-only bid at L_m, resting until 5 minutes before the start, with ADR 0040's expiry, pause and moved-start rules. L_m is the highest cent at which p × C ÷ cost − 1 clears the hurdle with the maker fee (rounded up, as ADR 0040 rounds the taker fee). Post-only can't take, so the maker fee is the only one it pays.
    - **Size:** the maker part's contracts keep the two parts together within the stake the alert's table allows at L_m's effective price.
-   - **Never twice:** each part has its own client order id, derived as ADR 0040 item 5 derives one, with the part's name.
+   - **A bid that would cross the book** (the owner, 2026-10-23, #326): a post-only bid can't rest at or above the best ask, so when Kalshi refuses it or cancels it at once, the maker part is sent a cent lower, down to L_t. No Kalshi price is read to place it, and every cent tried clears the hurdle at the maker fee.
+   - **Never twice:** each part has its own client order id, derived as ADR 0040 item 5 derives one, with the part's name, and for the maker part with each cent it is sent at.
 2. **Re-valuation of a resting maker part:**
    - **When:** at each odds slot. Also, from the decision to the start, on either of these, checked every 15 minutes:
      - a move of 3¢ or more in the market's best Yes bid or ask since its last valuation, from #319's `kalshi_tops`;
