@@ -1277,7 +1277,9 @@ def test_the_edge_bids_shadow_counts_its_bids_and_waits_for_fills() -> None:
     assert f"- Bids: {edge['bids']}; filled: 0 of {edge['bids']} (0.0%); with a close: 0." in text
     assert "- Filled after a named starter changed: not read." in text
     polled = season.report(dailyfaceoff=pl.DataFrame(schema=dtypes(DailyFaceoffGoalies)))
-    assert polled["shadows"]["edge_bids"]["starter_changed"] == {"known": 0, "changed": 0}
+    assert polled["shadows"]["edge_bids"]["starter_changed"] == {"games": 0, "weeks": 0}
+    polled_text = lr.markdown(polled)
+    assert "- Filled after a named starter changed: 0 fills over 0 weeks" in polled_text
 
 
 def test_the_edge_bids_shadow_values_its_fills_by_week() -> None:

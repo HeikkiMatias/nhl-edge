@@ -18,12 +18,12 @@ part constant, and each is valued against the same Pinnacle closing proxy as the
 - **Edge bids on every game (#308):** would a resting bid at the edge price on every side the
   policy didn't bet earn its keep? Each such side's bid is the lowest price, to the cent, at which
   the ledger's blend for it clears its hurdle (p·o - 1 at least the hurdle, hard rule 4). It fills
-  at the first later Pinnacle snapshot, after the decision's and before the start, whose fresh
-  quote for the side is at or above it, at the bid, as a limit order fills. The worry is adverse
-  selection: such a bid fills only when the price moves away from the side, often on news the
-  decision didn't have, so the share of fills after Daily Faceoff's named starter of either team
-  changed is reported beside it. Five slots a day see only part of the price path, so fills are
-  undercounted, and a logged quote shows no stake, so the result is an upper bound.
+  at the first later Pinnacle snapshot, after the decision's publication and before the start,
+  whose fresh quote for the side is at or above it, at the bid, as a limit order fills. The worry
+  is adverse selection: such a bid fills only when the price moves away from the side, often on
+  news the decision didn't have, so the share of fills after Daily Faceoff's named starter of
+  either team changed is reported beside it. Five slots a day see only part of the price path,
+  so fills are undercounted, and a logged quote shows no stake, so the result is an upper bound.
 
 The same rules value a registered challenger's shadow bets (live/challengers.py, ADR 0038).
 
@@ -176,6 +176,7 @@ def edge_bids(rows: pl.DataFrame) -> pl.DataFrame:
         "away",
         "start_utc",
         "prediction_utc",
+        "published_utc",
         "decision_snapshot_utc",
         "p_blend",
         hurdle=hurdle,
@@ -198,23 +199,24 @@ def edge_bids(rows: pl.DataFrame) -> pl.DataFrame:
 
 def edge_fills(bids: pl.DataFrame, odds: pl.DataFrame) -> pl.DataFrame:
     """Each bid (edge_bids) with its fill: the first Pinnacle h2h snapshot after the decision's
-    and before the start whose quote for the side is fresh at it, by ADR 0033's age (MAX_QUOTE_AGE),
-    and at or above the bid (fill_utc, fill_slot, fill_quote). A bid that never fills keeps them
-    null. Only snapshots after the decision's are read, so nothing known at the decision fills
-    a bid by itself. The start is the earlier of the ledger's and the event's latest commence
-    time (closing.starts), since the Odds API moves a start and a game under way fills nothing."""
+    publication, when the bid would rest from, and before the start whose quote for the side is
+    fresh at it, by ADR 0033's age (MAX_QUOTE_AGE), and at or above the bid (fill_utc, fill_slot,
+    fill_quote). A bid that never fills keeps them null. Publication follows the decision's
+    snapshot, so nothing known at the decision fills a bid by itself (Codex on #313). The start
+    is the earlier of the ledger's and the event's latest commence time (closing.starts), since
+    the Odds API moves a start and a game under way fills nothing."""
     keys = ["game_date", "game_id", "side"]
     later = odds.filter(pl.col("market") == "h2h", pl.col("book") == BOOK).select(
         "event_id", "side", "snapshot_utc", "last_update_utc", "price_decimal", "slot"
     )
     latest = closing.starts(odds).select("event_id", event_start="start_utc")
     hits = (
-        bids.select(*keys, "event_id", "bid", "decision_snapshot_utc", "start_utc")
+        bids.select(*keys, "event_id", "bid", "published_utc", "start_utc")
         .join(latest, on="event_id", how="left")
         .with_columns(before=pl.min_horizontal("start_utc", "event_start"))
         .join(later, on=["event_id", "side"])
         .filter(
-            pl.col("snapshot_utc") > pl.col("decision_snapshot_utc"),
+            pl.col("snapshot_utc") > pl.col("published_utc"),
             pl.col("snapshot_utc") < pl.col("before"),
             pl.col("snapshot_utc") - pl.col("last_update_utc") <= MAX_QUOTE_AGE,
             pl.col("price_decimal") >= pl.col("bid"),

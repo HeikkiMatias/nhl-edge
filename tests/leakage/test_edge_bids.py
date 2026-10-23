@@ -1,7 +1,8 @@
 """Point-in-time rules for #308's edge bids (live/shadow.py): a bid fills only from a Pinnacle quote
-taken after the decision's snapshot and before the start, never one known at the decision itself
-or once the game is under way, and the starter it compares reads only the polls observed before
-each moment: the decision's input cutoff, its snapshot (predict.input_cutoff), and the fill's."""
+taken after the decision's publication, when it would rest from, and before the start, never one
+known at the decision itself or once the game is under way, and the starter it compares reads only
+the polls observed before each moment: the decision's input cutoff, its snapshot
+(predict.input_cutoff), and the fill's."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -29,13 +30,18 @@ def fill_of(*snapshots: tuple[datetime, float]) -> datetime | None:
     return fills.filter(pl.col("game_id") == WSH)["fill_utc"].item()
 
 
-def test_a_quote_known_at_the_decision_or_once_the_game_started_fills_nothing() -> None:
-    decision = bids().filter(pl.col("game_id") == WSH)["decision_snapshot_utc"].item()
+def test_a_quote_before_the_bid_rests_or_once_the_game_started_fills_nothing() -> None:
+    wsh = bids().filter(pl.col("game_id") == WSH)
+    decision, published = wsh["decision_snapshot_utc"].item(), wsh["published_utc"].item()
+    assert decision < published
     assert fill_of((decision, 9.0)) is None
     assert fill_of((decision - timedelta(minutes=1), 9.0)) is None
+    # Between the snapshot and the publication the bid doesn't rest yet (Codex on #313).
+    assert fill_of((decision + (published - decision) / 2, 9.0)) is None
+    assert fill_of((published, 9.0)) is None
     assert fill_of((pf.START, 9.0), (pf.START + timedelta(minutes=5), 9.0)) is None
-    later = decision + timedelta(seconds=1)
-    assert fill_of((decision, 9.0), (later, 9.0)) == later
+    later = published + timedelta(seconds=1)
+    assert fill_of((published, 9.0), (later, 9.0)) == later
 
 
 def poll(observed: datetime, name: str) -> dict[str, object]:

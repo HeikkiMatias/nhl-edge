@@ -626,14 +626,20 @@ def edge_bids(
     """#308's shadow, with no verdict: a bid at the edge price on every side of the started games
     the policy didn't bet (live/shadow.py), its fills from Pinnacle's later snapshots valued at
     the bid against the same close as the policy's own bets (own, valued), and the share of fills
-    after Daily Faceoff's named starter changed. The fills' CLV waits for MIN_WEEKS weeks."""
+    after Daily Faceoff's named starter changed. Each waits for MIN_WEEKS weeks of fills."""
     bids = shadow.edge_bids(started)
     filled = shadow.edge_fills(bids, odds).filter(pl.col("fill_utc").is_not_null())
     valued = shadow.valued(filled.with_columns(price=pl.col("bid")), moves)
     changed = None
     if dailyfaceoff is not None:
-        flagged = shadow.starter_changes(filled, dailyfaceoff)["starter_changed"]
-        changed = {"known": int(flagged.is_not_null().sum()), "changed": int(flagged.sum())}
+        # Over the fills with both teams' starters named at both moments, as a share with its
+        # weekly block bootstrap interval, counts only under MIN_WEEKS (Codex on #313).
+        known = (
+            shadow.starter_changes(filled, dailyfaceoff)
+            .filter(pl.col("starter_changed").is_not_null())
+            .with_columns(changed=pl.col("starter_changed").cast(pl.Float64))
+        )
+        changed = estimate(known, "changed")
     return {
         "bids": bids.height,
         "filled": filled.height,
@@ -1351,8 +1357,7 @@ def _edge_bid_lines(edge: dict[str, Any]) -> list[str]:
     slots = ", ".join(f"{slot} {n}" for slot, n in edge["slots"].items())
     changed = edge["starter_changed"]
     named = (
-        f"{_share(changed['changed'], changed['known'])} of the fills with Daily Faceoff's "
-        "starters named at both"
+        f"{_fmt(changed, 'fills', 3)}, over the fills with Daily Faceoff's starters named at both"
         if changed is not None
         else "not read"
     )
