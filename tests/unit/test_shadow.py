@@ -200,6 +200,18 @@ def test_a_bid_fills_at_the_first_later_fresh_quote_at_or_above_it_before_the_st
     assert fills.filter(pl.col("game_id") == WPG)["fill_utc"].item() is None
 
 
+def test_a_quote_after_the_events_moved_start_fills_nothing() -> None:
+    # The Odds API moved WSH's start 20 minutes earlier than the ledger's (Codex on #313): a quote
+    # after that start is in play, even before the ledger's start.
+    quote = pf.quote(pf.START - timedelta(minutes=10), WSH, "pinnacle", 1.5, 9.0, slot="late")
+    moved = [row | {"commence_time_utc": pf.START - timedelta(minutes=20)} for row in quote]
+    bids = shadow.edge_bids(ledger())
+    on_time = shadow.edge_fills(bids, odds(quote)).filter(pl.col("game_id") == WSH)
+    assert on_time["fill_slot"].item() == "late"
+    early = shadow.edge_fills(bids, odds(moved)).filter(pl.col("game_id") == WSH)
+    assert early["fill_utc"].item() is None
+
+
 def test_a_fill_is_valued_at_its_bid_against_the_same_close() -> None:
     decided, quotes = ledger(), edge_odds()
     filled = shadow.edge_fills(shadow.edge_bids(decided), quotes).filter(

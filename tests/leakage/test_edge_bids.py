@@ -1,7 +1,7 @@
 """Point-in-time rules for #308's edge bids (live/shadow.py): a bid fills only from a Pinnacle quote
 taken after the decision's snapshot and before the start, never one known at the decision itself
 or once the game is under way, and the starter it compares reads only the polls observed before
-each moment, the decision's and the fill's."""
+each moment: the decision's input cutoff, its snapshot (predict.input_cutoff), and the fill's."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -62,7 +62,7 @@ def test_the_starter_compared_is_the_one_polled_before_each_moment() -> None:
     quotes = pf.quotes(pf.quote(fill, WSH, "pinnacle", 1.5, 9.0, slot="pre7"))
     odds = quotes.with_columns(game_id=pl.col("event_id").str.strip_prefix("e").cast(pl.Int64))
     fills = shadow.edge_fills(bids(), odds).filter(pl.col("fill_utc").is_not_null())
-    decision = fills["prediction_utc"].item()
+    decision = fills["decision_snapshot_utc"].item()
     before = poll(decision - timedelta(hours=1), "Tristan Jarry")
     schema = dtypes(DailyFaceoffGoalies)
     for changed_at, expected in ((fill, False), (fill - timedelta(seconds=1), True)):
@@ -71,3 +71,8 @@ def test_the_starter_compared_is_the_one_polled_before_each_moment() -> None:
     # A poll observed exactly at the decision is not the decision's.
     at_decision = pl.DataFrame([poll(decision, "Tristan Jarry")], schema=schema)
     assert shadow.starter_changes(fills, at_decision)["starter_changed"].item() is None
+    # Nor is one between the snapshot and the decision's own clock (Codex on #313): the inputs
+    # all precede the snapshot, so a change then is news the decision didn't have.
+    between = decision + (fills["prediction_utc"].item() - decision) / 2
+    late = pl.DataFrame([before, poll(between, "Alex Nedeljkovic")], schema=schema)
+    assert shadow.starter_changes(fills, late)["starter_changed"].item() is True

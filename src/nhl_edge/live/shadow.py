@@ -36,6 +36,7 @@ from nhl_edge.betting import guard, selection, staking
 from nhl_edge.betting.selection import AWAY, HOME, POLICY
 from nhl_edge.lineup import confirmed
 from nhl_edge.live.predict import BOOK, MAX_PUBLISHED_AGE, MAX_QUOTE_AGE
+from nhl_edge.market import closing
 
 # Betting exchanges among the Odds API's books: their prices are quoted before commission.
 EXCHANGES = frozenset({"matchbook", "betfair_ex_eu", "betfair_ex_uk", "smarkets"})
@@ -200,17 +201,21 @@ def edge_fills(bids: pl.DataFrame, odds: pl.DataFrame) -> pl.DataFrame:
     and before the start whose quote for the side is fresh at it, by ADR 0033's age (MAX_QUOTE_AGE),
     and at or above the bid (fill_utc, fill_slot, fill_quote). A bid that never fills keeps them
     null. Only snapshots after the decision's are read, so nothing known at the decision fills
-    a bid by itself."""
+    a bid by itself. The start is the earlier of the ledger's and the event's latest commence
+    time (closing.starts), since the Odds API moves a start and a game under way fills nothing."""
     keys = ["game_date", "game_id", "side"]
     later = odds.filter(pl.col("market") == "h2h", pl.col("book") == BOOK).select(
         "event_id", "side", "snapshot_utc", "last_update_utc", "price_decimal", "slot"
     )
+    latest = closing.starts(odds).select("event_id", event_start="start_utc")
     hits = (
         bids.select(*keys, "event_id", "bid", "decision_snapshot_utc", "start_utc")
+        .join(latest, on="event_id", how="left")
+        .with_columns(before=pl.min_horizontal("start_utc", "event_start"))
         .join(later, on=["event_id", "side"])
         .filter(
             pl.col("snapshot_utc") > pl.col("decision_snapshot_utc"),
-            pl.col("snapshot_utc") < pl.col("start_utc"),
+            pl.col("snapshot_utc") < pl.col("before"),
             pl.col("snapshot_utc") - pl.col("last_update_utc") <= MAX_QUOTE_AGE,
             pl.col("price_decimal") >= pl.col("bid"),
         )
@@ -247,17 +252,20 @@ def _named(at: pl.DataFrame, dailyfaceoff: pl.DataFrame, keys: list[str]) -> pl.
 def starter_changes(fills: pl.DataFrame, dailyfaceoff: pl.DataFrame) -> pl.DataFrame:
     """Each fill (edge_fills, filled) with starter_changed: whether Daily Faceoff's named goalie
     of either team at its latest poll before the fill differs from its latest poll before the
-    decision, by name. Null when no team is named at both, as when Daily Faceoff wasn't polled."""
+    decision's input cutoff, its snapshot (predict.input_cutoff), which every input it read
+    precedes. By name; null when no team is named at both, as when Daily Faceoff wasn't polled."""
     keys = ["game_date", "game_id", "side"]
     teams = pl.concat(
         [
-            fills.select(*keys, "start_utc", "prediction_utc", "fill_utc", team=team)
+            fills.select(*keys, "start_utc", "decision_snapshot_utc", "fill_utc", team=team)
             for team in ("home", "away")
         ]
     )
-    before = _named(teams.rename({"prediction_utc": "moment_utc"}), dailyfaceoff, keys)
+    before = _named(
+        teams.drop("fill_utc").rename({"decision_snapshot_utc": "moment_utc"}), dailyfaceoff, keys
+    )
     after = _named(
-        teams.drop("prediction_utc").rename({"fill_utc": "moment_utc"}), dailyfaceoff, keys
+        teams.drop("decision_snapshot_utc").rename({"fill_utc": "moment_utc"}), dailyfaceoff, keys
     )
     paired = before.join(after, on=[*keys, "team"], suffix="_at_fill")
     known = paired.filter(pl.col("name").is_not_null(), pl.col("name_at_fill").is_not_null())
