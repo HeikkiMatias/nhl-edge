@@ -5569,6 +5569,50 @@ def real_orders(
         raise typer.Exit(code=1)
 
 
+@real_app.command("fills")
+def real_fills(
+    r2: Annotated[
+        bool,
+        typer.Option("--r2", help="The orders' record in R2, and the odds pulled from it first."),
+    ] = False,
+) -> None:
+    """Value each environment's Kalshi fills against the close (#318, ADR 0040): a taker or maker
+    part of an order gets CLV only from its fills observed before its game's Pinnacle proxy; a
+    fill at or after the proxy, or of a game without one, is counted apart, never valued against
+    an earlier quote. The figures, with their weekly block bootstrap intervals, go privately to
+    the record's store beside the orders (#280); the log prints counts only."""
+    import json
+    from datetime import UTC
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.live import fills as lf
+    from nhl_edge.live import kalshi_trade as kt
+    from nhl_edge.live import real_ledger as rl
+
+    now = datetime.now(UTC)
+    version = reports.version("real-fills", now)
+    if r2 and version.endswith("-dirty"):
+        raise typer.BadParameter("commit first: the figures name their commit")
+    lake, store = _real_record(r2)
+    if r2:
+        lake.pull("odds_snapshots")
+    odds = lake.read("odds_snapshots")
+    refs = lf.references(odds, now) if odds.height else None
+    teams = rl.alerts(store).select("game_id", "home", "away").unique("game_id")
+    for env in kt.ENVS:
+        found = lf.fills(store, env)
+        if found.is_empty():
+            typer.echo(f"real fills {env}: no fills")
+            continue
+        if refs is None:
+            raise typer.BadParameter("no odds snapshots in the lake: pass --r2 to pull them")
+        rows = lf.referenced(found, refs, teams, now)
+        figures = {"env": env, "as_of_utc": now.isoformat(), "code_version": version}
+        figures |= lf.summary(rows)
+        store.put(lf.report_key(env, now), json.dumps(figures, sort_keys=True).encode())
+        typer.echo(lf.count_line(env, rows))
+
+
 @real_app.command("reconcile-kalshi")
 def real_reconcile_kalshi(
     r2: Annotated[bool, typer.Option("--r2", help="The real record in R2.")] = False,
