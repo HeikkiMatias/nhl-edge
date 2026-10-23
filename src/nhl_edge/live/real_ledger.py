@@ -22,6 +22,11 @@
   and the stake placed, appended once per placed bet (real/live/settlements/); a correction to a
   settled bet appends its next revision. The bankroll at a decision counts only results public
   before it.
+- **The exchange's own payout** (ADR 0040, #290): on an exchange venue a game played over
+  EXCHANGE_POSTPONED from its listed start, or one never played that the exchange resolved at its
+  own price (scalar), is settled at the exchange's payout, as its settlement of the market says
+  (real/live/exchange-settlements/, kept raw with the time it was first read). It is a payout,
+  never a win or a loss on the full game, and it counts from the time it was read.
 """
 
 import json
@@ -61,7 +66,10 @@ SKIP_MODE = {
     CLOSED: "skipped: the start window closed without a start",
 }
 PLACED, NOT_PLACED, SKIPPED = "placed", "not placed", "skipped"
-SETTLED, VOID, CANCELLED = "settled", "void", "cancelled"
+SETTLED, VOID, CANCELLED, PAYOUT = "settled", "void", "cancelled", "payout"
+# An exchange market resolved at the exchange's own price per contract (Kalshi's "last fair
+# price"), as for a game cancelled or played over two weeks late (ADR 0040).
+SCALAR = "scalar"
 # An entry as the dashboard's form records it (Supabase real_entries) and R2 keeps it.
 ENTRY_FIELDS = (
     "game_date",
@@ -458,15 +466,17 @@ def prepare(
     url: str | None = None,
     stopped: Sequence[date] = (),
     placing: bool = True,
+    resolved: pl.DataFrame | None = None,
 ) -> Alert:
     """The day's alert from its written paper ledger, the committed weekly reports, the real
-    record so far (bets), the games' results and the earlier days alerted as stopped, at the
-    clock now. placing is whether an exchange venue's orders go (KALSHI_TRADING is live)."""
+    record so far (bets), the games' results, the exchange's settlements kept (resolved) and the
+    earlier days alerted as stopped, at the clock now. placing is whether an exchange venue's
+    orders go (KALSHI_TRADING is live)."""
     decision = ledger["prediction_utc"][0]
-    real_bankroll = bankroll(bets, games, decision, REAL)
+    real_bankroll = bankroll(bets, games, decision, REAL, resolved)
     today = mode(reports, day, real_bankroll, stopped)
     if today.name in (PRACTICE, CLOSED):
-        venue, staked = real.PRACTICE_VENUE, bankroll(bets, games, decision, PRACTICE)
+        venue, staked = real.PRACTICE_VENUE, bankroll(bets, games, decision, PRACTICE, resolved)
     else:
         venue, staked = real.venue(), real_bankroll
     rows = alert_rows(ledger, today, staked, venue, now, code_version)
@@ -547,6 +557,66 @@ def correction_key(game_date: date, game_id: int, n: int) -> str:
 
 def settlement_key(game_date: date, game_id: int, revision: int) -> str:
     return f"{PREFIX}/settlements/{game_date.isoformat()}/{game_id}-{revision}.parquet"
+
+
+def exchange_settlement_key(game_date: date, game_id: int) -> str:
+    return f"{PREFIX}/exchange-settlements/{game_date.isoformat()}/{game_id}.json"
+
+
+def write_exchange_settlement(
+    store: lb.Store,
+    game_date: date,
+    game_id: int,
+    ticker: str,
+    settlement: Mapping[str, Any],
+    observed: datetime,
+) -> bool:
+    """Keep the exchange's settlement of a bet's market once, raw, with the time it was first
+    read (#290). Returns whether it was new: a later read leaves the first one as it is."""
+    key = exchange_settlement_key(game_date, game_id)
+    if key in store.keys(f"{PREFIX}/exchange-settlements/{game_date.isoformat()}"):
+        return False
+    body = {"ticker": ticker, "observed_utc": observed.isoformat(), "settlement": settlement}
+    store.put(key, json.dumps(body, sort_keys=True).encode())
+    return True
+
+
+RESOLVED = {
+    "game_date": pl.Date,
+    "game_id": pl.Int64,
+    "market_result": pl.String,
+    "contracts": pl.Float64,
+    "revenue": pl.Int64,
+    "observed_utc": pl.Datetime("us", "UTC"),
+}
+
+
+def exchange_settlements(store: lb.Store) -> pl.DataFrame:
+    """The exchange's settlements kept (write_exchange_settlement), one row per bet: its market's
+    result, the contracts held, the revenue in cents and when it was first read."""
+    rows = []
+    for key in store.keys(f"{PREFIX}/exchange-settlements"):
+        day, name = key.removeprefix(f"{PREFIX}/exchange-settlements/").split("/")
+        kept = json.loads(store.get(key))
+        theirs = kept["settlement"]
+        rows.append(
+            {
+                "game_date": date.fromisoformat(day),
+                "game_id": int(name.removesuffix(".json")),
+                "market_result": theirs.get("market_result"),
+                "contracts": float(theirs.get("yes_count_fp") or 0),
+                "revenue": int(theirs.get("revenue") or 0),
+                "observed_utc": _instant(kept["observed_utc"]),
+            }
+        )
+    return pl.DataFrame(rows, schema=RESOLVED)
+
+
+def payout_profit(stake: float, matched_price: float, revenue: int, contracts: float) -> float:
+    """A bet's profit at the exchange's payout: the stake times the revenue per dollar it cost,
+    less the stake. A contract cost 1 / matched_price of a dollar, fees included, and pays revenue
+    / contracts cents, so a win pays the stake times matched_price, as on its result."""
+    return stake * (revenue / CENT / contracts * matched_price - 1)
 
 
 def alerted(store: lb.Store, day: date) -> dict[str, Any] | None:
@@ -843,16 +913,23 @@ def held(placed: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
     return _final(placed, games).filter(_held())
 
 
-def results(placed: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
+def results(
+    placed: pl.DataFrame, games: pl.DataFrame, resolved: pl.DataFrame | None = None
+) -> pl.DataFrame:
     """The placed bets whose game is final, with its result on the full game (OT and shootout
     included), when it became public (result_utc), and the profit at the matched price and stake.
     At a sportsbook a game played more than POSTPONED from its listed start voids its bet. On an
     exchange venue (real.EXCHANGE_VENUES) it doesn't: a game played within EXCHANGE_POSTPONED
-    settles on its result, and a later one is held (held), never settled here (ADR 0040)."""
-    final = _final(placed, games).filter(~_held())
+    settles on its result, and a later one is held (held), never settled on it (ADR 0040).
+
+    resolved is the exchange's settlements kept (exchange_settlements). A held bet, or one whose
+    game was never played and which the exchange resolved at its own price (scalar), settles at
+    the exchange's payout once read: status payout, no result, and result_utc the time it was
+    first read (#290)."""
+    final = _final(placed, games)
     void = ~pl.col("venue").is_in(list(real.EXCHANGE_VENUES)) & (_moved() > POSTPONED)
     won = staking.won(pl.col("side"), pl.col("home_win"))
-    return final.with_columns(
+    settled = final.filter(~_held()).with_columns(
         status=pl.when(void).then(pl.lit(VOID)).otherwise(pl.lit(SETTLED)),
         home_win=pl.when(void).then(None).otherwise(pl.col("home_win")),
         won=pl.when(void).then(None).otherwise(won),
@@ -862,13 +939,44 @@ def results(placed: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
         .then(pl.col("stake") * (pl.col("matched_price") - 1))
         .otherwise(-pl.col("stake")),
     )
+    if resolved is None or resolved.is_empty():
+        return settled
+    key = ["game_date", "game_id"]
+    paid = (
+        placed.filter(pl.col("venue").is_in(list(real.EXCHANGE_VENUES)))
+        .join(resolved, on=key)
+        .join(final.select(*key, "played_utc"), on=key, how="left")
+        .filter(
+            pl.col("contracts") > 0,
+            pl.when(pl.col("played_utc").is_null())
+            .then(pl.col("market_result") == SCALAR)
+            .otherwise(_held()),
+        )
+    )
+    payouts = paid.with_columns(
+        status=pl.lit(PAYOUT),
+        home_win=pl.lit(None, pl.Int8),
+        won=pl.lit(None, pl.Boolean),
+        profit=pl.col("stake")
+        * (pl.col("revenue") / CENT / pl.col("contracts") * pl.col("matched_price") - 1),
+        result_utc=pl.col("observed_utc"),
+    )
+    return pl.concat(
+        [settled, payouts.select(settled.columns).cast(dict(settled.schema))]  # type: ignore[arg-type]
+    )
 
 
-def bankroll(record: pl.DataFrame, games: pl.DataFrame, decision_utc: datetime, of: str) -> float:
+def bankroll(
+    record: pl.DataFrame,
+    games: pl.DataFrame,
+    decision_utc: datetime,
+    of: str,
+    resolved: pl.DataFrame | None = None,
+) -> float:
     """A mode's bankroll at a decision: 100 € plus the profit of its placed bets whose results
-    were public before it."""
+    were public before it, and of its bets paid out at the exchange's price read before it."""
     placed = record.filter(pl.col("outcome") == PLACED, pl.col("mode") == of)
-    known = results(placed, games).filter(pl.col("result_utc") < decision_utc)
+    known = results(placed, games, resolved).filter(pl.col("result_utc") < decision_utc)
     return real.BANKROLL + (float(known["profit"].sum()) if known.height else 0.0)
 
 
@@ -878,14 +986,16 @@ def settle(
     stored: pl.DataFrame,
     now: datetime,
     code_version: str,
+    resolved: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """The settlements to append: each placed bet whose result is public by now and has none
     yet, or whose latest one no longer matches its corrected entry (its next revision); a bet a
-    correction left unplaced after its settlement gets a cancelled revision. bankroll_after
+    correction left unplaced after its settlement gets a cancelled revision. With the exchange's
+    settlements kept (resolved), a held bet settles at its payout (results). bankroll_after
     counts every bet's latest revision of its mode, in result order."""
     columns = dtypes(RealSettlements)
     placed = record.filter(pl.col("outcome") == PLACED)
-    current = results(placed, games).filter(pl.col("result_utc") <= now)
+    current = results(placed, games, resolved).filter(pl.col("result_utc") <= now)
     latest: dict[tuple[date, int], dict[str, Any]] = {}
     for row in stored.sort("revision").iter_rows(named=True):
         latest[(row["game_date"], row["game_id"])] = row
@@ -998,10 +1108,10 @@ def statement(
     for row in joined.iter_rows(named=True):
         team = row["home"] if row["side"] == "home" else row["away"]
         if row["settlement"] is not None:
-            result = (
-                f"{row['settlement']}, {row['profit']:+.2f} €, bankroll "
-                f"{row['bankroll_after']:.2f} €"
-            )
+            status = row["settlement"]
+            if status == PAYOUT:
+                status = "paid out at the exchange's own price"
+            result = f"{status}, {row['profit']:+.2f} €, bankroll {row['bankroll_after']:.2f} €"
         elif (row["game_date"], row["game_id"]) in waiting:
             result = "awaiting Kalshi's resolution: played over two weeks from its listed start"
         else:

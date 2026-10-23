@@ -226,7 +226,8 @@ export type RealEntry = {
 };
 
 /** A settlement revision of a placed real or practice bet (public.real_settlements, #270): on the
- * full game at the matched price and stake placed. The latest revision of each bet counts. */
+ * full game at the matched price and stake placed, or, for a Kalshi bet held for Kalshi's own
+ * resolution, a payout at its price with no result (#290). The latest revision of each bet counts. */
 export type RealSettlement = {
   game_date: string;
   game_id: number;
@@ -235,7 +236,7 @@ export type RealSettlement = {
   side: "home" | "away";
   matched_price: number;
   stake: number;
-  status: "settled" | "void" | "cancelled";
+  status: "settled" | "void" | "cancelled" | "payout";
   won: boolean | null;
   profit: number;
   result_utc: string;

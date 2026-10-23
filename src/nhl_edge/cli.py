@@ -4839,6 +4839,9 @@ def _real_record(r2: bool, flag: str = "--r2") -> "tuple[Lake, Any]":
 
 # The dashboard's Kalshi columns: the alert's order and the automatic entries (#287).
 KALSHI_MIGRATION = "20261018180000_kalshi_orders.sql"
+PAYOUT_MIGRATION = "20261023120000_real_payouts.sql"
+# The checks a payout fails before its migration widens them (#290).
+PAYOUT_CHECKS = ("real_settlements_status_check", "real_settlements_profit_follows_the_result")
 
 
 def _insert_if_set_up(
@@ -4847,16 +4850,18 @@ def _insert_if_set_up(
     rows: list[Any],
     key: Any,
     migration: str = "20261016150000_real_record.sql",
+    refused: tuple[str, ...] = (),
 ) -> bool:
     """Insert rows once into one of the real record's dashboard tables; before its migration is
-    applied (the table, or a column it adds, missing), say so and return False, R2 staying the
-    record."""
+    applied (the table, or a column it adds, missing, or a check it changes, named in refused,
+    refusing the rows), say so and return False, R2 staying the record."""
     from nhl_edge.lake.supabase import SupabaseError
 
     try:
         sent = client.insert_new_records(table, rows, key)
     except SupabaseError as exc:
-        if "PGRST205" not in str(exc) and "PGRST204" not in str(exc):
+        missing = ("PGRST205", "PGRST204", *refused)
+        if not any(code in str(exc) for code in missing):
             raise
         typer.echo(
             f"the dashboard's {table} isn't set up yet: apply supabase/migrations/{migration}"
@@ -5040,10 +5045,22 @@ def real_alert(
         placing = placement.switch_of(optional("KALSHI_TRADING")) == placement.LIVE
     except ValueError:
         placing = False
+    # Kalshi's own payouts of held bets, each counting from the time it was first read (#290).
+    resolved = rl.exchange_settlements(store)
     # Built at the clock after the reads, and built again while a game starts before the write.
     alert = rl.publishable(
         lambda at: rl.prepare(
-            game_date, ledger, reports_, record, games, at, code_version, url, stopped, placing
+            game_date,
+            ledger,
+            reports_,
+            record,
+            games,
+            at,
+            code_version,
+            url,
+            stopped,
+            placing,
+            resolved,
         ),
         clock,
     )
@@ -5173,7 +5190,9 @@ def real_settle(
 ) -> None:
     """Append a settlement for each placed bet whose game is final and result public (#268, ADR
     0039): the result on the full game, OT and shootout included, and the profit at the matched
-    price and stake placed, or the next revision of one a correction changed. Never rewrites one."""
+    price and stake placed, or the next revision of one a correction changed. A Kalshi bet held for
+    Kalshi's own resolution is paid out at its price once nhl real reconcile-kalshi has read it
+    (#290). Never rewrites one."""
     from datetime import UTC
 
     import polars as pl
@@ -5194,7 +5213,8 @@ def real_settle(
         lake.pull("games", seasons=[LIVE_SEASON])
     games = lake.read("games", seasons=[LIVE_SEASON])
     record = rl.bets(rl.alerts(store), rl.entries(store), rl.corrections(store))
-    new = rl.settle(record, games, rl.settlements(store), now, version)
+    resolved = rl.exchange_settlements(store)
+    new = rl.settle(record, games, rl.settlements(store), now, version, resolved)
     rl.write_settlements(store, new)
     every = rl.settlements(store)
     lake.replace("real_settlements", every)
@@ -5203,13 +5223,21 @@ def real_settle(
         from nhl_edge.lake.supabase import Supabase
 
         # Every revision, each inserted once: a rerun sends nothing twice, the first backfills.
-        # Their alerts reach the dashboard first, through nhl real sync, which runs before.
-        _insert_if_set_up(
-            Supabase.from_env(),
-            "real_settlements",
-            rl.supabase_settlements(every),
-            rl.SETTLEMENT_KEY,
-        )
+        # Their alerts reach the dashboard first, through nhl real sync, which runs before. A
+        # payout at Kalshi's price needs its own migration (#290), so the others go before it.
+        client = Supabase.from_env()
+        copies = rl.supabase_settlements(every)
+        paid = [row for row in copies if row["status"] == rl.PAYOUT]
+        others = [row for row in copies if row["status"] != rl.PAYOUT]
+        if _insert_if_set_up(client, "real_settlements", others, rl.SETTLEMENT_KEY) and paid:
+            _insert_if_set_up(
+                client,
+                "real_settlements",
+                paid,
+                rl.SETTLEMENT_KEY,
+                PAYOUT_MIGRATION,
+                refused=PAYOUT_CHECKS,
+            )
     for (mode,), rows in every.sort("settled_utc", "revision").group_by(
         "mode", maintain_order=True
     ):

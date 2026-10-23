@@ -848,7 +848,13 @@ def check_settlements(
     order filled, or another payout; and either side missing SETTLE_DAYS after the game was
     played. games is the lake's final games, each at the start it was played: a postponed game
     counts from that start, and one neither side has settled waits while it isn't final (Codex
-    on #291). The record's latest revision of each bet is the one compared."""
+    on #291). The record's latest revision of each bet is the one compared.
+
+    Kalshi's settlement is kept raw the first time it is read, at the client's clock
+    (rl.write_exchange_settlement). A bet the record holds for it, one whose game was played over
+    EXCHANGE_POSTPONED from its listed start or never played and resolved at a fair price, is
+    then settled at Kalshi's payout by the next nhl real settle, so it waits on that first night,
+    and its payout is compared after (#290)."""
     latest = {
         (row["game_date"], row["game_id"]): row
         for row in settled.sort("revision").iter_rows(named=True)
@@ -868,8 +874,18 @@ def check_settlements(
         listed = trade.settlements(order["ticker"])
         theirs = next((s for s in listed if s.get("ticker") == order["ticker"]), None)
         name = f"{day} {order['team']}"
+        new = theirs is not None and rl.write_exchange_settlement(
+            store, game_date, game_id, order["ticker"], theirs, trade.now()
+        )
+        start = played.get(game_id)
+        if start is None:
+            held_for_kalshi = theirs is not None and theirs.get("market_result") == rl.SCALAR
+        else:
+            held_for_kalshi = abs(start - _instant(order["start_utc"])) > real.EXCHANGE_POSTPONED
+        if ours is None and new and held_for_kalshi:
+            report.waiting += 1  # nhl real settle pays it out at its next run
+            continue
         if ours is None or theirs is None:
-            start = played.get(game_id)
             if start is None and theirs is None:
                 report.waiting += 1  # not played yet, as a postponed game
                 continue
@@ -883,18 +899,31 @@ def check_settlements(
             continue
         found = []
         result = theirs.get("market_result")
-        if result not in ("yes", "no"):
+        count = _decimal(theirs.get("yes_count_fp"))
+        if ours["status"] == rl.PAYOUT:
+            revenue = int(theirs.get("revenue") or 0)
+            paid = (
+                rl.payout_profit(ours["stake"], ours["matched_price"], revenue, float(count))
+                if count > 0
+                else None
+            )
+            if paid is None or abs(paid - ours["profit"]) > 1e-6:
+                found.append(
+                    f"Kalshi paid {revenue}¢ for {count} contracts; the record's payout is "
+                    f"{ours['profit']:+.2f} €"
+                )
+        elif result not in ("yes", "no"):
             found.append(f"Kalshi resolved it as {result}, {theirs.get('value')}¢ a contract")
         elif ours["status"] != rl.SETTLED or ours["won"] != (result == "yes"):
             found.append(
                 f"Kalshi: {'won' if result == 'yes' else 'lost'}; the record: "
                 f"{ours['status']}, won {ours['won']}"
             )
-        count = _decimal(theirs.get("yes_count_fp"))
         if count != held:
             found.append(f"Kalshi held {count} contracts, the order filled {held}")
         expected = held * 100 if result == "yes" else Decimal(0)
-        if result in ("yes", "no") and _decimal(theirs.get("revenue")) != expected:
+        paid_out = ours["status"] == rl.PAYOUT
+        if not paid_out and result in ("yes", "no") and _decimal(theirs.get("revenue")) != expected:
             found.append(f"Kalshi paid {theirs.get('revenue')}¢, {expected:.0f}¢ expected")
         if found:
             report.differences.append(f"{name}: " + "; ".join(found))
@@ -911,6 +940,7 @@ def check_message(report: SettlementCheck) -> str | None:
     lines += [f"- {difference}" for difference in report.differences]
     lines.append(
         "Check Kalshi's statement: the record's result, price or stake is corrected with nhl "
-        "real correct and its reason; a game Kalshi resolved at its own price waits for #290."
+        "real correct and its reason. A game played over two weeks late, or never, is paid out "
+        "at Kalshi's own price once Kalshi settles it (#290)."
     )
     return "\n".join(lines)
