@@ -118,3 +118,136 @@ def test_the_best_fresh_price_beats_pinnacles_and_exchanges_stay_apart() -> None
     assert wpg["gain_any"] == pytest.approx((2.00 - 1.90) * wpg["p_close_side"])
     # ANA has no close and isn't valued.
     assert ANA not in rows
+
+
+# Edge bids on every game (#308)
+
+DFO = {
+    "season": pl.Int32,
+    "game_date": pl.Date,
+    "start_utc": pl.Datetime("us", "UTC"),
+    "team": pl.String,
+    "is_home": pl.Boolean,
+    "goalie_name": pl.String,
+    "dfo_goalie_id": pl.Int64,
+    "status": pl.String,
+    "reported_utc": pl.Datetime("us", "UTC"),
+    "source_url": pl.String,
+    "observed_utc": pl.Datetime("us", "UTC"),
+    "raw_key": pl.String,
+}
+
+
+def poll(team: str, observed: datetime, name: str, start: datetime = pf.START) -> dict[str, object]:
+    """One Daily Faceoff row: a team's goalie at a poll, for the listing starting at start."""
+    return {
+        "season": 20262027,
+        "game_date": pf.DAY,
+        "start_utc": start,
+        "team": team,
+        "is_home": False,
+        "goalie_name": name,
+        "dfo_goalie_id": None,
+        "status": "Likely",
+        "reported_utc": None,
+        "source_url": None,
+        "observed_utc": observed,
+        "raw_key": "k",
+    }
+
+
+def at(hour: int, minute: int = 0, day: int = 7) -> datetime:
+    return datetime(2026, 10, day, hour, minute, tzinfo=UTC)
+
+
+def test_every_side_the_policy_didnt_bet_gets_the_lowest_bid_clearing_its_hurdle() -> None:
+    decided = ledger()
+    bids = shadow.edge_bids(decided)
+    # The policy bet every home side, so the away sides are bid, each at its hurdle's cent.
+    assert bids.select("game_id", "side").rows() == [(WSH, "away"), (WPG, "away"), (ANA, "away")]
+    for row in bids.iter_rows(named=True):
+        assert row["p_side"] * row["bid"] - 1 >= row["hurdle"]
+        assert row["p_side"] * (row["bid"] - 0.01) - 1 < row["hurdle"]
+    assert bids.filter(pl.col("game_id") == WSH)["bid"].item() == 2.12
+    # A game the policy didn't bet is bid on both sides.
+    unbet = shadow.edge_bids(decided.with_columns(bet=pl.col("game_id") != WSH))
+    assert unbet.filter(pl.col("game_id") == WSH)["side"].to_list() == ["away", "home"]
+
+
+def edge_odds() -> pl.DataFrame:
+    """Later Pinnacle snapshots: WSH's away side at its bid only at pre7, after a lower quote,
+    and around it quotes that fill nothing (at the decision's own snapshot, stale, at the start);
+    WPG's below its bid; ANA's at its bid at pre10."""
+    return odds(
+        pf.quote(pf.MIDDAY, WSH, "pinnacle", 1.7, 2.5),  # the decision's own snapshot
+        pf.quote(at(20), WSH, "pinnacle", 1.85, 2.11, slot="x"),  # below the bid
+        pf.quote(at(21), WSH, "pinnacle", 1.7, 2.5, updated=at(20, 50), slot="y"),  # stale
+        pf.quote(PRE7 + timedelta(minutes=1), WSH, "pinnacle", 1.8, 2.12, slot="pre7b"),
+        pf.quote(at(23, 15), WSH, "pinnacle", 1.7, 2.3, slot="pre8"),
+        pf.quote(pf.START, WSH, "pinnacle", 1.6, 2.6, slot="late"),  # at the start
+        pf.quote(at(1, 45, day=8), ANA, "pinnacle", 1.95, 1.95, slot="pre10"),
+    )
+
+
+def test_a_bid_fills_at_the_first_later_fresh_quote_at_or_above_it_before_the_start() -> None:
+    fills = shadow.edge_fills(shadow.edge_bids(ledger()), edge_odds())
+    filled = {row["game_id"]: row for row in fills.iter_rows(named=True) if row["fill_utc"]}
+    assert sorted(filled) == [WSH, ANA]
+    assert filled[WSH]["fill_utc"] == PRE7 + timedelta(minutes=1)
+    assert (filled[WSH]["fill_slot"], filled[WSH]["fill_quote"]) == ("pre7b", 2.12)
+    assert filled[ANA]["fill_slot"] == "pre10"
+    # WPG's quotes never reach its bid.
+    assert fills.filter(pl.col("game_id") == WPG)["fill_utc"].item() is None
+
+
+def test_a_quote_after_the_events_moved_start_fills_nothing() -> None:
+    # The Odds API moved WSH's start 20 minutes earlier than the ledger's (Codex on #313): a quote
+    # after that start is in play, even before the ledger's start.
+    quote = pf.quote(pf.START - timedelta(minutes=10), WSH, "pinnacle", 1.5, 9.0, slot="late")
+    moved = [dict(row, commence_time_utc=pf.START - timedelta(minutes=20)) for row in quote]
+    bids = shadow.edge_bids(ledger())
+    on_time = shadow.edge_fills(bids, odds(quote)).filter(pl.col("game_id") == WSH)
+    assert on_time["fill_slot"].item() == "late"
+    early = shadow.edge_fills(bids, odds(moved)).filter(pl.col("game_id") == WSH)
+    assert early["fill_utc"].item() is None
+
+
+def test_a_fill_is_valued_at_its_bid_against_the_same_close() -> None:
+    decided, quotes = ledger(), edge_odds()
+    filled = shadow.edge_fills(shadow.edge_bids(decided), quotes).filter(
+        pl.col("fill_utc").is_not_null()
+    )
+    valued = shadow.valued(filled.with_columns(price=pl.col("bid")), moves(decided, quotes))
+    for row in valued.iter_rows(named=True):
+        assert row["clv"] == pytest.approx(row["bid"] * row["p_close_side"] - 1)
+        assert row["p_close_side"] == pytest.approx(1 - row["fair_close"])
+
+
+def test_a_fill_after_a_named_starter_changed_is_flagged() -> None:
+    fills = shadow.edge_fills(shadow.edge_bids(ledger()), edge_odds()).filter(
+        pl.col("fill_utc").is_not_null()
+    )
+    polls = pl.DataFrame(
+        [
+            poll("PIT", at(16), "Tristan Jarry"),
+            poll("PIT", at(21), "Alex Nedeljkovic"),
+            # A stale listing of another start is not the game's.
+            poll("PIT", at(22), "Someone Else", start=pf.START + timedelta(days=2)),
+            poll("WSH", at(16), "Charlie Lindgren"),
+            poll("WSH", at(21), "Charlie Lindgren"),
+            # After the fill, so not read.
+            poll("WSH", at(23), "Logan Thompson"),
+        ],
+        schema=DFO,
+    )
+    flagged = shadow.starter_changes(fills, polls)
+    changed = dict(flagged.select("game_id", "starter_changed").iter_rows())
+    # PIT's goalie changed before WSH's fill; ANA's game has no polls, so it is unknown.
+    assert changed == {WSH: True, ANA: None}
+    same = polls.filter(pl.col("team") == "WSH")
+    assert (
+        dict(shadow.starter_changes(fills, same).select("game_id", "starter_changed").iter_rows())[
+            WSH
+        ]
+        is False
+    )
