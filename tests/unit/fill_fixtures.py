@@ -47,8 +47,12 @@ def record(
     env: str = pm.DEMO,
     game_id: int = WSH,
     day: Any = pf.DAY,
+    placed_at: datetime = PLACED,
+    adopted: bool = False,
+    created: datetime | None = None,
 ) -> None:
-    """An order's record as placement writes it: the order, its placed part and its final one."""
+    """An order's record as placement writes it: the order, its placed part (adopted when a later
+    run found it on Kalshi) and its final one, with Kalshi's creation time when created is set."""
     order = {
         "game_date": day.isoformat(),
         "season": 20262027,
@@ -57,8 +61,13 @@ def record(
         "start_utc": pf.START.isoformat(),
         "written_utc": (PLACED - timedelta(seconds=30)).isoformat(),
     }
-    placed = {"order_id": f"order-{game_id}", "placed_utc": PLACED.isoformat()}
-    final = pm.final_record({"status": "executed"}, fills, pf.START, AFTER)
+    placed: dict[str, Any] = {"order_id": f"order-{game_id}", "placed_utc": placed_at.isoformat()}
+    if adopted:
+        placed |= {"existed": True, "adopted": True}
+    kalshi: dict[str, Any] = {"status": "executed"}
+    if created is not None:
+        kalshi["created_time"] = created.isoformat().replace("+00:00", "Z")
+    final = pm.final_record(kalshi, fills, pf.START, AFTER)
     for part, body in (("", order), ("placed", placed), ("final", final)):
         lb.put_once(store, pm.order_key(env, day, game_id, part), json.dumps(body).encode())
 

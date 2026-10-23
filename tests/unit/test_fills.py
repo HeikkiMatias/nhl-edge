@@ -47,6 +47,22 @@ def test_taker_and_maker_parts_are_valued_apart_at_their_cost_fees_included(
     assert maker["band"] == "1 to 4 hours"
 
 
+def test_the_delay_runs_from_the_send_never_from_a_later_adoption(tmp_path: Path) -> None:
+    # An adopted order's placed time is when a later run found it on Kalshi, hours after the
+    # send and the fill: the delay reads Kalshi's creation time, or the record written before the
+    # send, instead (Codex on #324).
+    found_later = ff.PROXY + timedelta(minutes=50)
+    for name, created, band in (
+        ("written", None, "1 to 4 hours"),
+        ("created", ff.PLACED - timedelta(hours=1), "4 hours or more"),
+    ):
+        store = lb.LocalStore(tmp_path / name)
+        ff.record(store, [MAKER], placed_at=found_later, adopted=True, created=created)
+        refs = lf.references(ff.odds(), ff.AFTER)
+        rows = lf.referenced(lf.fills(store, pm.DEMO), refs, ff.TEAMS, ff.AFTER)
+        assert lf.bids(rows)["band"].to_list() == [band]
+
+
 def test_the_away_team_takes_the_away_side_of_the_close(tmp_path: Path) -> None:
     bid = lf.bids(rows_of(tmp_path, [TAKER], team="PIT")).row(0, named=True)
     assert bid["p_close"] == pytest.approx(1 - ff.P_HOME)

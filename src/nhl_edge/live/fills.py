@@ -68,17 +68,31 @@ def _kind(fill: Mapping[str, Any]) -> str:
     return UNKNOWN if taker is None else TAKER if taker else MAKER
 
 
+def _sent(record: Mapping[str, Any]) -> str:
+    """When the order went to Kalshi, for its fills' delay: Kalshi's own creation time when its
+    order shows one; else the placed record's time, unless the order was adopted, whose placed
+    time is when a later run found it (Codex on #324), and then the order record's, written just
+    before the send."""
+    created = record["final"].get("order", {}).get("created_time")
+    if created:
+        return str(created).replace("Z", "+00:00")
+    placed = record.get("placed")
+    if placed and not placed.get("adopted"):
+        return placed["placed_utc"]
+    return record["order"]["written_utc"]
+
+
 def fills(store: lb.Store, env: str) -> pl.DataFrame:
     """One row per fill before the start of each order of an environment with its final record:
     its game, team, placement and fill times, kind, contracts and cost in USD with its fee. A fill
     at or after the start is never the bet's (hard rule 2, placement.final_record)."""
     rows = []
     for record in placement.stored_orders(store, env).values():
-        order, final, placed = record.get("order"), record.get("final"), record.get("placed")
+        order, final = record.get("order"), record.get("final")
         if order is None or final is None or "fills" not in final:
             continue
         start = datetime.fromisoformat(final["start_utc"]).astimezone(UTC)
-        sent = placed["placed_utc"] if placed else order["written_utc"]
+        sent = _sent(record)
         for fill in final["fills"]:
             at = datetime.fromisoformat(fill["created_time"].replace("Z", "+00:00"))
             if at >= start:
