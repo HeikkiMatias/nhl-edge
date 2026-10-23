@@ -23,6 +23,24 @@ def test_timer_dispatches_every_odds_slot_at_its_eastern_time() -> None:
     assert sorted(o.strip() for o in options[1].split(",")) == sorted(plan.values())
 
 
+def test_timer_starts_the_kalshi_watch_at_its_windows() -> None:
+    # A run ends a minute before the next window (ingest/kalshi_watch.window_end, #319).
+    from nhl_edge.ingest.kalshi_watch import WINDOWS_ET
+
+    block = re.search(r"KALSHI_WATCH_ET = \[(.*?)\];", TIMER, re.S)
+    assert block is not None
+    timer = re.findall(r'"(\d\d:\d\d)"', block[1])
+    assert timer == [start.strftime("%H:%M") for start in WINDOWS_ET]
+
+
+def test_the_kalshi_watch_fallback_lines_are_the_ones_its_cli_knows() -> None:
+    from nhl_edge.ingest.kalshi_watch import FALLBACK_CRONS
+
+    text = (WORKFLOWS / "kalshi-watch.yml").read_text()
+    assert re.findall(r'- cron: "([^"]+)"', text) == list(FALLBACK_CRONS)
+    assert '--cron "$CRON"' in text
+
+
 # Scheduled workflows the timer leaves to GitHub's own schedule: once a year, hours of delay don't
 # matter, and adding one to the timer would need the deployed Worker redeployed before it is due.
 GITHUB_ONLY = ["player-seasons.yml"]
@@ -35,7 +53,7 @@ def test_every_scheduled_workflow_is_dispatched_by_the_timer_and_skips_its_sched
     assert (
         sorted(set(scheduled) - set(GITHUB_ONLY))
         == dispatched
-        == ["ingest-nightly.yml", "odds-snapshots.yml", "pregame-goalies.yml"]
+        == ["ingest-nightly.yml", "kalshi-watch.yml", "odds-snapshots.yml", "pregame-goalies.yml"]
     )
     for name in dispatched:
         text = (WORKFLOWS / name).read_text()

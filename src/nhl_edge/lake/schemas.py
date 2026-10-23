@@ -2508,6 +2508,92 @@ class KalshiBooks(pa.DataFrameModel):
         )
 
 
+class KalshiDepth(KalshiBooks):
+    """One price level of Kalshi's order book for one team's market of every game of the day
+    (#319), polled every 5 minutes from the morning to the start, for choosing the owner's own
+    orders (the owner's decision of 2026-10-23). The levels as KalshiBooks, from the watch's
+    bundles (ingest/kalshi_watch.py); observed_utc is the book's own fetch time. Private under
+    Kalshi's Developer Agreement (3.1): never published and never a model input or a CLV
+    reference."""
+
+
+KALSHI_TOPS_KEY = ("observed_utc", "ticker")
+
+
+class KalshiTops(pa.DataFrameModel):
+    """The top of Kalshi's book for one team's market of every game of the day (#319), polled
+    every minute from the morning to the start: the best Yes bid and ask in dollars with the
+    contracts at each, the last trade's price and the contracts traded and open, as Kalshi's
+    market listing gives them. Any may be null when Kalshi gives none. observed_utc is the
+    listing's fetch time. Private, as KalshiDepth."""
+
+    observed_utc: UtcDatetime
+    season: pl.Int32
+    game_date: pl.Date
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    ticker: pl.String = pa.Field(str_matches=KALSHI_TICKER)
+    status: pl.String = pa.Field(nullable=True)
+    yes_bid: pl.Float64 = pa.Field(nullable=True, ge=0, le=1)
+    yes_bid_size: pl.Float64 = pa.Field(nullable=True, ge=0)
+    yes_ask: pl.Float64 = pa.Field(nullable=True, ge=0, le=1)
+    yes_ask_size: pl.Float64 = pa.Field(nullable=True, ge=0)
+    last_price: pl.Float64 = pa.Field(nullable=True, ge=0, le=1)
+    volume: pl.Float64 = pa.Field(nullable=True, ge=0)
+    open_interest: pl.Float64 = pa.Field(nullable=True, ge=0)
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(KALSHI_TOPS_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def observed_before_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("observed_utc") < pl.col("start_utc"))
+
+
+KALSHI_TRADES_KEY = ("trade_id",)
+
+
+class KalshiTrades(pa.DataFrameModel):
+    """One trade on one team's market of every game of the day (#319), before the start: its
+    time (created_utc, Kalshi's), its Yes price in dollars, its contracts, the side the taker
+    bought (taker_side, yes or no, null when Kalshi gives none) and whether it was a block trade
+    matched off the book. observed_utc is when it was first fetched: a trade is known only from
+    then (hard rule 1), never from its own time. Polled every 5 minutes with an overlap, and kept
+    once per trade_id at its first fetch. Private, as KalshiDepth."""
+
+    trade_id: pl.String
+    observed_utc: UtcDatetime
+    created_utc: UtcDatetime
+    season: pl.Int32
+    game_date: pl.Date
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    ticker: pl.String = pa.Field(str_matches=KALSHI_TICKER)
+    yes_price: pl.Float64 = pa.Field(gt=0, lt=1)
+    count: pl.Float64 = pa.Field(gt=0)
+    taker_side: pl.String = pa.Field(nullable=True, isin=KALSHI_SIDES)
+    is_block_trade: pl.Boolean = pa.Field(nullable=True)
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(KALSHI_TRADES_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def before_start_and_fetched_after(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("created_utc") < pl.col("start_utc"))
+            & (pl.col("observed_utc") < pl.col("start_utc"))
+            & (pl.col("created_utc") <= pl.col("observed_utc") + CLOCK_SKEW)
+        )
+
+
 KALSHI_ENVS = ("live", "demo")
 REAL_ORDER_STATES = ("planned", "skipped", "placed", "not sent", "canceled", "executed")
 

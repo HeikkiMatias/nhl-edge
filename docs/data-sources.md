@@ -16,6 +16,7 @@ The fixed list of sources and endpoints. Work from this file instead of guessing
 | [Daily Faceoff](https://www.dailyfaceoff.com/starting-goalies) | Projected lines, power play units, starting goalie status with report time and source | Web pages only; robots.txt allows them and disallows `/api/`; no terms of use found (2026-09-29) | Starting goalies logged at every goalie poll (#48), compared with the NHL's in the audit; other pages manual reference only |
 | [RotoWire](https://www.rotowire.com/hockey/starting-goalies.php) | Projected lines and starting goalies | Terms forbid scraping and any automated access without written consent | Manual reference only; never automated |
 | [Kalshi](https://docs.kalshi.com/api-reference/market/get-market-orderbook) order book | The resting Yes and No bids of an NHL moneyline market: price levels with their contracts, live only | Public API, no key; token-bucket rate limits, exponential backoff on 429. The [Developer Agreement](https://kalshi-public-docs.s3.amazonaws.com/Kalshi-Developer-Agreement.pdf) allows it only for a member's own trading, kept private (3.1) | The owner's own resting orders (#281): only the alerted bets' markets, kept in the lake and R2 only, never a model input and never published (#282) |
+| [Kalshi](https://docs.kalshi.com/api-reference/market/get-markets) market watch | Every game's two markets from the morning to the start: the top of book each minute, the full book and the trades every 5 minutes | Public API, no key; the same rate limits and Developer Agreement | Choosing the owner's own orders (the owner's decision, 2026-10-23, #319): the real-time source for re-valuing resting orders (#321) and the Kalshi-native shadow (#320). Private, in the lake and R2 only, never a model input, a CLV reference or published |
 | [Kalshi trading API](https://docs.kalshi.com/getting_started/api_keys) | The owner's own account: balance, orders, fills and settlements, on the demo exchange (mock funds) or the live one | Requests signed with the owner's API key, one per environment, held in repository secrets only; the same Developer Agreement | Placing and recording the owner's real bets (#281); for now only the key check (#286) |
 | Static files you create | Arena coordinates and time zones, team abbreviation history, coach tenures | One-off CSVs in the repo | Travel, rest and coach-change features |
 
@@ -55,7 +56,7 @@ SBR odds archive (www.sportsbookreviewsonline.com, browser User-Agent required)
 Telegram Bot API (api.telegram.org), outbound only: the owner's real-bets alert (#268)
   POST /bot{token}/sendMessage            # chat_id, text; never logged
 
-Kalshi (api.elections.kalshi.com/trade-api/v2), public, no key: the alerted bets' markets only (#282)
+Kalshi (api.elections.kalshi.com/trade-api/v2), public, no key: the alerted bets' markets at the slots (#282), and every game's markets through the day (#319)
   GET /markets/{ticker}/orderbook         # ticker KXNHLGAME-{YY}{MON}{DD}{AWAY}{HOME}-{TEAM}
 
 Kalshi trading API (external-api.kalshi.com/trade-api/v2; the demo exchange at
@@ -88,6 +89,7 @@ external-api.demo.kalshi.co/trade-api/v2), each request signed with the owner's 
 GitHub Actions runs every job, but GitHub's own `schedule` started this repo's runs 3 to 6 hours late in September 2026, while a `workflow_dispatch` starts within seconds (#50). So the Cloudflare Worker in `infra/timer` fires every five minutes and dispatches the workflows due at that minute (`infra/timer/src/schedule.js`):
 
 - `odds-snapshots.yml` at each odds slot in US Eastern time, DST included: 07:05 (morning), 12:45 (midday), 18:45 (pre7), 19:45 (pre8) and 21:45 (pre10), with the slot as input. After the midday snapshot, its Predict step runs `nhl predict --r2`, below, and then `nhl real alert --r2` sends the owner the day's real bets (#268, "Real stakes" below). At midday `nhl real place --r2` then places the alerted bets on Kalshi as `KALSHI_TRADING` says, and every slot runs `nhl real orders --r2`, which tracks them and records each one's fills once it expires (#281, "Kalshi orders" below). Every slot ends with `nhl kalshi books --mirror-raw`, which logs Kalshi's order book of the alerted bets' markets until each game's start (#282, "Kalshi order book" below).
+- `kalshi-watch.yml` at 07:05, 11:05, 15:05 and 19:05 US Eastern, DST included: `nhl kalshi watch --mirror-raw` watches every game's Kalshi markets until a minute before the next window, or for at most 5 hours 45 after the last, and ends at once on a day without games (#319, "Kalshi market watch" below).
 - `pregame-goalies.yml` at :50 of every hour from 12:50 to 02:50 UTC.
 - `ingest-nightly.yml` at 09:00 UTC. After the ingest, it runs `nhl recheck --recent 3 --r2` (#30, below), the odds and goalie replays, and `nhl live features` for today's slate (#162, below).
 
@@ -464,6 +466,31 @@ ADR 0039 bets the frozen policy's paper bets with real money, beside the paper l
   - `nhl kalshi replay [--recent N] [--r2]` rebuilds the table from the stored responses only, never calling Kalshi. Its counts come from Kalshi's data, so it is run by hand, never in a workflow.
   - `books_before(books, at)` gives what an order placed at `at` could have seen: the rows observed strictly before it (hard rule 1).
 - **Role:** the owner's own resting orders only (#281). It is never a model input, and no feature or model code reads it (`tests/leakage/test_kalshi_books.py` checks). Before #281 sets a Kalshi price beside a model's probability, it checks that the market settles on the full game, OT and shootout included (hard rule 2).
+
+## Kalshi market watch (#319)
+
+`nhl kalshi watch` watches both teams' markets of every game of the day's slate, from the morning to each start, for choosing the owner's own orders. The owner decided on 2026-10-23 to log every game, not only the alerted bets' markets ("Kalshi order book" above, which goes on unchanged). This is the real-time source for re-valuing resting orders (#321) and for the shadow that selects on Kalshi's own prices (#320). The code is `ingest/kalshi_watch.py`, through `ingest/kalshi.Kalshi`'s spacing and backoff.
+
+- **Polls,** each public and unauthenticated (the WebSocket would need a trading key):
+  - **every minute:** `GET /markets?tickers=…` for the markets still to start, in one request ([docs](https://docs.kalshi.com/api-reference/market/get-markets)). It gives each one's best Yes bid and ask with the contracts at each, the last price, the volume and the open interest;
+  - **every 5 minutes:** `GET /markets/{ticker}/orderbook` for each market;
+  - **every 5 minutes, with the books:** `GET /markets/trades?ticker=…&min_ts=…` for each market ([docs](https://docs.kalshi.com/api-reference/market/get-trades)), paged by its cursor. Each market reaches back from its own watermark less a minute, so no trade between two polls is missed. The watermark is the start of that market's last trades poll whose every page came back in the documented shape, so a failed, malformed or cut-short market is asked again from the same point. A run's first poll of a market reaches back to the day's first window (07:05 ET), so a poll that failed at the end of the run before leaves no gap; a trade seen twice is kept once. The endpoint has no series filter, hence a request per market.
+- **When:** `kalshi-watch.yml`, dispatched by the timer at 07:05, 11:05, 15:05 and 19:05 US Eastern (`infra/timer`). A run stops a minute before the next window, or after 5 hours 45 for the last, inside GitHub's 6-hour job limit. A concurrency group keeps two from overlapping, and a day without games ends at once. GitHub's fallback cron has one line per UTC offset: the CLI skips the other half of the year's line (`--cron`), and a run started after midnight US Eastern, before the first window, watches nothing. No request, try or retry starts after a run's window ends, so an outage can't push the last run past its job limit. The slate is fetched again every 30 minutes, so a moved or postponed game is followed, and no market is asked for at or after its game's start.
+- **Volume:** on a 16-market day, about 7,000 requests and 3 to 4 MB of raw data. That is about 1,300 objects a day, or 80,000 R2 writes a month, within the free tier's 1M (measured on 2026-10-23, #319).
+- **Raw:** each poll is one object, `kalshi/watch/<tops|books|trades>/<ET game date>/<poll stamp>`, mirrored to R2's `raw/kalshi/watch/`. Each response is kept untouched as text with its own fetch time, and the sidecar lists the markets asked for. A 200 whose body lacks its kind's documented list (`markets`, `orderbook_fp`, `trades`) is kept but marked invalid: the poll counts it failed, and the replay skips it.
+- **Tables,** each partitioned by season and game date and validated on every write:
+  - `kalshi_tops`, one row per poll and market (`KalshiTops`);
+  - `kalshi_depth`, one row per book, side and price level (`KalshiDepth`, as `KalshiBooks`);
+  - `kalshi_trades`, one row per trade made before the start, kept once by `trade_id` at its first fetch (`KalshiTrades`).
+
+  After a run, `nhl kalshi watch` restores the day's polls from R2 and rebuilds the day's partitions; `nhl kalshi replay` rebuilds them from the stored polls too, by hand only. A stored poll that can't be parsed, or one without its sidecar, stops the rebuild before any partition is replaced and fails the run, so a changed response shape never drops rows unnoticed.
+- **Point in time** (`tests/leakage/test_kalshi_watch.py`):
+  - every row's `observed_utc` is its own response's fetch time;
+  - a trade is known from its fetch, never from its own time;
+  - nothing fetched or traded at or after the start is kept.
+- **Terms and role:** as the order book above.
+  - Kalshi's Developer Agreement limits its data to a member's own trading (3.1). The responses stay in the lake and R2, nothing from Kalshi enters the repository, its issues, reports or fixtures (the tests use synthetic responses), and a run prints counts of requests only.
+  - The tables are never a model input or a CLV reference: no feature or model code reads them (`tests/leakage/test_kalshi_watch.py` checks).
 
 ## Kalshi trading API (#286)
 

@@ -7,8 +7,9 @@ const at = (iso) => Date.parse(iso);
 const names = (iso) => dueJobs(at(iso)).map((j) => `${j.workflow}${j.inputs.slot ? `:${j.inputs.slot}` : ""}`);
 
 test("odds slots follow US Eastern time in EDT and EST", () => {
-  assert.deepEqual(names("2026-09-29T11:05:00Z"), ["odds-snapshots.yml:morning"]);
-  assert.deepEqual(names("2026-12-01T12:05:00Z"), ["odds-snapshots.yml:morning"]);
+  // 07:05 ET also starts the Kalshi watch's first window (#319).
+  assert.deepEqual(names("2026-09-29T11:05:00Z"), ["odds-snapshots.yml:morning", "kalshi-watch.yml"]);
+  assert.deepEqual(names("2026-12-01T12:05:00Z"), ["odds-snapshots.yml:morning", "kalshi-watch.yml"]);
   assert.deepEqual(names("2026-09-29T22:45:00Z"), ["odds-snapshots.yml:pre7"]);
   assert.deepEqual(names("2026-12-01T23:45:00Z"), ["odds-snapshots.yml:pre7"]);
   assert.deepEqual(names("2026-09-30T01:45:00Z"), ["odds-snapshots.yml:pre10"]);
@@ -48,4 +49,15 @@ test("every five-minute fire of a year gives each job exactly once a day", () =>
 test("the Eastern clock uses 00 to 23", () => {
   assert.equal(easternClock(at("2026-09-30T04:05:00Z")), "00:05");
   assert.equal(easternClock(at("2026-09-29T23:45:00Z")), "19:45");
+});
+
+test("the Kalshi watch starts at its four US Eastern windows in EDT and EST (#319)", () => {
+  // 07:05 ET is also the morning odds slot.
+  assert.deepEqual(names("2026-10-23T11:05:00Z"), ["odds-snapshots.yml:morning", "kalshi-watch.yml"]);
+  assert.deepEqual(names("2026-12-01T12:05:00Z"), ["odds-snapshots.yml:morning", "kalshi-watch.yml"]);
+  assert.deepEqual(names("2026-10-23T15:05:00Z"), ["kalshi-watch.yml"]);
+  assert.deepEqual(names("2026-10-23T19:05:00Z"), ["kalshi-watch.yml"]);
+  assert.deepEqual(names("2026-10-23T23:05:00Z"), ["kalshi-watch.yml"]);
+  assert.deepEqual(names("2026-12-02T00:05:00Z"), ["kalshi-watch.yml"]);
+  assert.deepEqual(names("2026-10-23T15:10:00Z"), []);
 });

@@ -27,6 +27,8 @@ from nhl_edge.lake.schemas import (
     DAILYFACEOFF_GOALIES_KEY,
     DAILYFACEOFF_LINES_KEY,
     KALSHI_BOOKS_KEY,
+    KALSHI_TOPS_KEY,
+    KALSHI_TRADES_KEY,
     ODDS_KEY,
     PLAYER_LEAGUE_SEASONS_KEY,
     PREGAME_GOALIES_KEY,
@@ -45,6 +47,9 @@ from nhl_edge.lake.schemas import (
     GoalieStarts,
     GoalMultipliers,
     KalshiBooks,
+    KalshiDepth,
+    KalshiTops,
+    KalshiTrades,
     LakeOddsSnapshots,
     LineupReplacements,
     Lineups,
@@ -152,6 +157,12 @@ TABLES: dict[str, Table] = {
     # Kalshi's order book of the alerted bets' markets, for the owner's own resting orders
     # (#282, #281): private, replayed from raw/kalshi/ only, never a model input.
     "kalshi_books": Table(KalshiBooks, KALSHI_BOOKS_KEY, BY_DATE),
+    # Every game's Kalshi markets, watched from the morning to the start for choosing the owner's
+    # own orders (#319): the top of book each minute, the full books and the trades every 5
+    # minutes. Private, replayed from raw/kalshi/watch/ only, never a model input.
+    "kalshi_tops": Table(KalshiTops, KALSHI_TOPS_KEY, BY_DATE),
+    "kalshi_depth": Table(KalshiDepth, KALSHI_BOOKS_KEY, BY_DATE),
+    "kalshi_trades": Table(KalshiTrades, KALSHI_TRADES_KEY, BY_DATE),
 }
 # Partition columns replace_dates can replace a date at a time.
 DATE_PARTITIONS = ("game_date", "snapshot_date")

@@ -9,6 +9,7 @@ Worker's cron fires every five minutes, and `src/schedule.js` decides which work
 | `odds-snapshots.yml` | 07:05, 12:45, 18:45, 19:45 and 21:45 US Eastern (DST included) | `slot`: morning, midday, pre7, pre8, pre10 |
 | `pregame-goalies.yml` | :50 of every hour from 12:50 to 02:50 UTC | none |
 | `ingest-nightly.yml` | 09:00 UTC | none |
+| `kalshi-watch.yml` | 07:05, 11:05, 15:05 and 19:05 US Eastern (DST included); each run watches every game's Kalshi markets until a minute before the next (#319) | none |
 
 `player-seasons.yml` (#117) runs once a year on GitHub's own schedule alone, since hours of delay don't matter to it.
 
