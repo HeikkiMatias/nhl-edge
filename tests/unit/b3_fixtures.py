@@ -224,7 +224,8 @@ def day_bundle(tables: b3.Tables, season: int = 20182019) -> lb.Bundle:
     listed = slate.with_columns(
         game_state=pl.lit("FUT"), observed_utc=pl.lit(cutoff - timedelta(days=1))
     )
-    inputs = {"slate": Slate.validate(listed.select(list(dtypes(Slate))).cast(dtypes(Slate)))}
+    typed = listed.select(list(dtypes(Slate))).cast(dtypes(Slate))  # type: ignore[arg-type]
+    inputs = {"slate": Slate.validate(typed)}
     for name in (
         "schedule_terms",
         "goalie_starts",
