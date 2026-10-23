@@ -5481,7 +5481,7 @@ def real_place(
     if report.failed or report.unread:
         typer.echo(
             f"kalshi orders {setting}: {report.failed} orders failed, {report.unread} maker parts "
-            "waiting for their taker part",
+            "waiting for a read",
             err=True,
         )
         raise typer.Exit(code=1)

@@ -1339,32 +1339,87 @@ def test_a_maker_part_waits_while_its_taker_part_cant_be_read(tmp_path: Path) ->
     exchange._create = unseen_after  # type: ignore[method-assign]
     report = pm.place(record, client, planned, clock, rf.CODE, STARTS)
     assert report.unread == 1 and report.makers == 2 and not report.makers_skipped
-    assert "1 maker parts waiting for their taker part" in report.line("live")
+    assert "1 maker parts waiting for a read" in report.line("live")
     assert not record.keys(pm.order_key("live", pf.DAY, 2026020053, pm.MAKER_SKIPPED))
     text = pm.placed_message(pf.DAY, pm.LIVE, [], unread=report.unread)
-    assert text is not None and "Bids for the rest not sent yet: 1" in text
+    assert text is not None and "Bids for the rest not confirmed yet: 1" in text
     # the rerun sends it
     again = pm.place(record, client, planned, clock, rf.CODE, STARTS)
     assert again.makers == 1 and stored(record, pm.MAKER_PLACED)["order_id"] == "order-6"
 
 
-def test_a_maker_part_whose_read_back_fails_is_recorded_and_the_others_go_on(
-    tmp_path: Path,
-) -> None:
+def test_a_maker_part_whose_read_back_fails_waits_and_the_others_go_on(tmp_path: Path) -> None:
+    # Codex on #326: an unread bid is never recorded as resting, so a rerun can still go lower if
+    # Kalshi had cancelled it for crossing.
     record, exchange, clock = store(), Exchange(), Clock()
     client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
     create = exchange._create
+    failing = {"on": True}
 
     def failing_after(body: dict[str, Any]) -> Any:
         created = create(body)
-        if body["post_only"] and body["ticker"] == WSH:
+        if body["post_only"] and body["ticker"] == WSH and failing["on"]:
             exchange.fail = [500] * 5  # the read-back fails after its tries
         return created
 
     exchange._create = failing_after  # type: ignore[method-assign]
-    report = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
-    assert report.placed == 3 and report.makers == 3 and report.failed == 0
-    assert stored(record, pm.MAKER_PLACED)["order_id"] == WSH_MAKER
+    planned = pm.plans(real_rows(), pm.LIVE)
+    report = pm.place(record, client, planned, clock, rf.CODE, STARTS)
+    assert report.placed == 3 and report.makers == 2 and report.unread == 1
+    assert report.failed == 0
+    assert not record.keys(pm.order_key("live", pf.DAY, 2026020053, pm.MAKER_PLACED))
+    # not told as placed while its maker part is unresolved
+    told = {r["game_id"] for r in pm.unnotified(record, pm.LIVE, "placed")}
+    assert 2026020053 not in told and len(told) == 2
+    # the rerun sends the same cent again, Kalshi answers with the same order, which rests
+    failing["on"] = False
+    again = pm.place(record, client, planned, clock, rf.CODE, STARTS)
+    assert again.makers == 1 and len(exchange.orders) == 6
+    maker = stored(record, pm.MAKER_PLACED)
+    assert maker["order_id"] == WSH_MAKER and maker["existed"] is True
+    assert 2026020053 in {r["game_id"] for r in pm.unnotified(record, pm.LIVE, "placed")}
+
+
+def test_a_crossed_bid_read_late_goes_lower_on_the_rerun(tmp_path: Path) -> None:
+    # Kalshi cancelled the 49¢ bid at once for crossing, but its read-back failed: the rerun reads
+    # the same order (409), sees it cancelled unfilled and rests at 48¢.
+    exchange = Exchange()
+    exchange.asks[WSH] = [("0.4900", "3.00")]
+    record, clock = store(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    create = exchange._create
+    failing = {"on": True}
+
+    def failing_after(body: dict[str, Any]) -> Any:
+        created = create(body)
+        if body["post_only"] and body["ticker"] == WSH and failing["on"]:
+            exchange.fail = [500] * 5
+        return created
+
+    exchange._create = failing_after  # type: ignore[method-assign]
+    planned = pm.plans(real_rows(), pm.LIVE)[:1]
+    assert pm.place(record, client, planned, clock, rf.CODE, STARTS).unread == 1
+    failing["on"] = False
+    again = pm.place(record, client, planned, clock, rf.CODE, STARTS)
+    assert again.makers == 1
+    maker = stored(record, pm.MAKER_PLACED)
+    assert maker["limit"] == "0.48" and maker["crossed"] == [49]
+
+
+def test_a_two_part_order_is_told_once_its_maker_part_resolves(tmp_path: Path) -> None:
+    record, exchange, clock = store(), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    send = pm.send_maker
+    pm.send_maker = lambda *args, **kwargs: None  # type: ignore[assignment]
+    try:
+        pm.place(record, client, pm.plans(real_rows(), pm.LIVE)[:1], clock, rf.CODE, STARTS)
+    finally:
+        pm.send_maker = send  # type: ignore[assignment]
+    assert pm.unnotified(record, pm.LIVE, "placed") == []
+    pm.place(record, client, pm.plans(real_rows(), pm.LIVE)[:1], clock, rf.CODE, STARTS)
+    told = pm.unnotified(record, pm.LIVE, "placed")
+    text = pm.placed_message(pf.DAY, pm.LIVE, told)
+    assert text is not None and "then a bid at 49¢" in text
 
 
 def test_a_maker_part_lost_on_its_way_is_found_by_its_cents_id_and_never_a_crossed_one(

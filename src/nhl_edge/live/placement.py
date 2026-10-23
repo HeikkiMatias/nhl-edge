@@ -409,7 +409,7 @@ class PlaceReport:
             f"; {n} maker parts not sent: {reason}"
             for reason, n in sorted(self.makers_skipped.items())
         )
-        unread = f"; {self.unread} maker parts waiting for their taker part" if self.unread else ""
+        unread = f"; {self.unread} maker parts waiting for a read" if self.unread else ""
         failed = f"; {self.failed} failed" if self.failed else ""
         return (
             f"kalshi orders {env}: {self.planned} planned, {self.placed} placed "
@@ -654,7 +654,8 @@ def send_maker(
     once for crossing the book, down to L_t. The part's placed record holds the cent it rests at,
     its contracts and most cost, the cents refused, and the taker part's fills it was sized after.
     A maker part that can't go is recorded once with its reason (...-maker-skipped.json), except
-    while the taker part can't be read or the send fails, so a rerun sends it."""
+    while the taker part or the bid itself can't be read back, or the send fails, so a rerun
+    sends it."""
 
     def skip(reason: str) -> None:
         skip_maker(store, plan, reason, now, report)
@@ -706,13 +707,18 @@ def send_maker(
             # It may have reached Kalshi: the reconcile finds it by its client order id.
             report.failed += 1
             return
-        # A read that fails is one that lags: the part is recorded as resting, and the reconcile
-        # reads it, rather than stop the other orders.
+        # A read that fails or never shows the bid leaves it unresolved, never recorded as resting:
+        # a rerun sends its cent again, which Kalshi answers with the same order (409), and goes
+        # lower if that was cancelled for crossing (Codex on #326). Meanwhile the reconcile finds
+        # it by its client order id if it rests. The other orders go on.
         try:
             found = trade.read_order(sent.order_id, lambda _: True)
         except KalshiTradeError:
             found = None
-        if found is not None and found.get("status") != "resting" and not _filled(found)[0]:
+        if found is None:
+            report.unread += 1
+            return
+        if found.get("status") != "resting" and not _filled(found)[0]:
             crossed.append(cents)  # cancelled at once: it would have crossed the book
             continue
         with contextlib.suppress(lb.Conflict):
@@ -1179,6 +1185,17 @@ def table(store: lb.Store) -> pl.DataFrame:
 NOTIFIED = "notified"
 
 
+def told_placed(record: Mapping[str, Any]) -> bool:
+    """Whether an order is ready for its placed message: sent, and for ADR 0045's two parts with
+    its maker part resting or skipped, or the order final, so the message says where the bid
+    rests or why none does (Codex on #326)."""
+    if not is_placed(record):
+        return False
+    if not two_parts(record["order"]):
+        return True
+    return any(part in record for part in (MAKER_PLACED, MAKER_SKIPPED, "final"))
+
+
 def unnotified(store: lb.Store, env: str, part: str) -> list[dict[str, Any]]:
     """The order records with a part, placed or final, whose message hasn't gone yet, each with
     its game date and id."""
@@ -1187,7 +1204,7 @@ def unnotified(store: lb.Store, env: str, part: str) -> list[dict[str, Any]]:
         record | {"day": day, "game_id": game_id}
         for (day, game_id), record in sorted(stored_orders(store, env).items())
         if "order" in record
-        and (is_placed(record) if part == PLACED else part in record)
+        and (told_placed(record) if part == PLACED else part in record)
         and marker not in record
     ]
 
@@ -1221,7 +1238,7 @@ def placed_message(
     automatically, so a day whose orders all stay unsent says so too (Codex on #289). An order
     of another day than the run's says its date. An ADR 0045 order says what its taker part
     filled at once and where its maker part rests, or why it doesn't; unread counts the maker
-    parts still waiting for their taker part's read."""
+    parts still waiting for their taker part's or their own read."""
     if not placed and not skipped and not failed and not unread:
         return None
     lines = [f"NHL Edge · Kalshi {_header(env)} · {day:%a} {day.day} {day:%b}"]
@@ -1258,8 +1275,8 @@ def placed_message(
         lines.append(f"Failed to send: {failed} (the next run looks for them on Kalshi)")
     if unread:
         lines.append(
-            f"Bids for the rest not sent yet: {unread}, their taker part couldn't be read (a "
-            "rerun of the midday step sends them)"
+            f"Bids for the rest not confirmed yet: {unread}, Kalshi couldn't be read (a rerun "
+            "of the midday step sends or confirms them)"
         )
     return "\n".join(lines)
 
