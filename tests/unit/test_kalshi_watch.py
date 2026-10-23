@@ -18,6 +18,9 @@ from nhl_edge.ingest import kalshi_watch as kw
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import Lake
 
+# The fixture day's first window, 07:05 EDT: a run's first trades poll reaches back to it.
+MORNING = datetime(2026, 10, 7, 11, 5, tzinfo=UTC)
+
 
 def test_a_run_ends_a_minute_before_the_next_window_and_never_after_its_longest() -> None:
     assert kw.window_end(datetime(2026, 10, 23, 11, 5, tzinfo=UTC)) == datetime(
@@ -54,7 +57,7 @@ def test_tops_every_minute_and_books_and_trades_every_five(tmp_path: Path) -> No
 def test_trades_reach_back_over_the_last_poll_with_an_overlap(tmp_path: Path) -> None:
     _, served, _, _ = run(tmp_path, 7)
     asked = sorted({int(r.url.params["min_ts"]) for _, r in served.of(kw.TRADES)})
-    first = START - kw.BOOK_EVERY - kw.OVERLAP
+    first = MORNING - kw.OVERLAP
     second = START - kw.OVERLAP
     assert asked == [int(first.timestamp()), int(second.timestamp())]
 
@@ -248,7 +251,7 @@ def test_a_failed_trades_request_keeps_that_markets_watermark(tmp_path: Path) ->
     assert report.failed == 1
     second = [r for at, r in served.of(kw.TRADES) if at >= START + kw.BOOK_EVERY]
     marks = {r.url.params["ticker"]: int(r.url.params["min_ts"]) for r in second}
-    first_start = START - kw.BOOK_EVERY - kw.OVERLAP
+    first_start = MORNING - kw.OVERLAP
     assert marks[wsh] == int(first_start.timestamp())
     others = {t: m for t, m in marks.items() if t != wsh}
     assert set(others.values()) == {int((START - kw.OVERLAP).timestamp())}
@@ -260,7 +263,7 @@ def test_a_cut_short_page_run_keeps_the_watermark(tmp_path: Path) -> None:
     _, served, _, _ = run(tmp_path, 7, fake=lambda clock: Fake(clock, pages=pages))
     second = [r for at, r in served.of(kw.TRADES) if at >= START + kw.BOOK_EVERY]
     assert {int(r.url.params["min_ts"]) for r in second} == {
-        int((START - kw.BOOK_EVERY - kw.OVERLAP).timestamp())
+        int((MORNING - kw.OVERLAP).timestamp())
     }
 
 
@@ -343,3 +346,57 @@ def test_nhl_kalshi_watch_skips_the_other_offsets_line_and_an_early_start(
     nothing = CliRunner().invoke(app, ["kalshi", "watch"])
     assert nothing.exit_code == 0, nothing.output
     assert "started before the first window (07:05 ET), nothing watched" in nothing.output
+
+
+def test_a_runs_first_trades_poll_reaches_back_to_the_days_first_window(tmp_path: Path) -> None:
+    # A 15:05 EDT run: its first poll of each market asks from 07:04 EDT, so a trades poll that
+    # failed at the end of the 11:05 run leaves no gap (Codex on #325).
+    afternoon = datetime(2026, 10, 7, 19, 5, tzinfo=UTC)
+    _, served, _, _ = run(tmp_path, 1, start=afternoon)
+    asked = {int(r.url.params["min_ts"]) for _, r in served.of(kw.TRADES)}
+    assert asked == {int((MORNING - kw.OVERLAP).timestamp())}
+
+
+def test_a_trades_page_without_its_list_is_kept_raw_marked_invalid_and_counted(
+    tmp_path: Path,
+) -> None:
+    def hollow(clock: kf.Clock) -> Fake:
+        class Hollow(Fake):
+            def __call__(self, request: httpx.Request) -> httpx.Response:
+                if request.url.path.endswith("/markets/trades"):
+                    self.requests.append((self.clock.now(), request))
+                    return httpx.Response(200, json={"cursor": ""})
+                return super().__call__(request)
+
+        return Hollow(clock)
+
+    report, served, store, lines = run(tmp_path, 7, fake=hollow)
+    # Every market's trades failed in both polls, and none advanced its watermark.
+    assert report.failed == 2 * 6 and "12 failed" in lines[0]
+    second = [r for at, r in served.of(kw.TRADES) if at >= START + kw.BOOK_EVERY]
+    assert {int(r.url.params["min_ts"]) for r in second} == {
+        int((MORNING - kw.OVERLAP).timestamp())
+    }
+    # The replay skips them, as the poll marked them, and rebuilds the rest.
+    tables, replayed = kw.stored_watch(store)
+    assert replayed.invalid == 12 and replayed.unparsed == []
+    assert tables[kw.TRADES].is_empty() and tables[kw.TOPS].height == 7 * 6
+    kw.replay(store, Lake(tmp_path / "lake"), [pf.DAY])
+
+
+def test_a_trades_page_without_its_list_is_refused_by_the_parser() -> None:
+    with pytest.raises(kalshi.KalshiError):
+        kw.parse_trades(b'{"cursor": ""}', kf.MARKET, START, "k")
+
+
+def test_no_request_starts_after_the_window_ends(tmp_path: Path) -> None:
+    # Requests 30 seconds apart: a book poll at the start would take 6 minutes, but nothing is
+    # asked once the 2-minute window is over (Codex on #325).
+    clock = kf.Clock(START)
+    served = Fake(clock)
+    store = RawStore(tmp_path / "raw")
+    client = kf.make(store, served, clock, min_interval_s=30.0)
+    until = START + timedelta(minutes=2)
+    report = kw.watch(client=client, slate=pf.slate, until=until, echo=print)
+    assert served.requests and max(at for at, _ in served.requests) < until
+    assert report.failed == 0 and report.started == 0

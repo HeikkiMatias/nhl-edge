@@ -129,13 +129,40 @@ def _market_meta(market: Market) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class Response:
-    """One response of a poll, with its own fetch time: ticker is None for the tops listing."""
+    """One response of a poll, with its own fetch time: ticker is None for the tops listing. A
+    200 whose body lacks the kind's documented list is kept raw but marked invalid: the replay
+    skips it, and the poll counts it failed."""
 
     ticker: str | None
     status: int
     body: bytes
     fetched_utc: datetime
     attempts: int
+    valid: bool = True
+
+
+# Each kind's required field (Kalshi's documented schemas): a listing's markets, a book's
+# orderbook_fp, a trades page's trades (Codex on #325).
+REQUIRED = {TOPS: "markets", BOOKS: "orderbook_fp", TRADES: "trades"}
+
+
+def shaped(kind: str, body: bytes) -> bool:
+    """Whether a 200's body is the kind's documented object: an object holding its required
+    field, a list for the listing and the trades."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return False
+    if not isinstance(data, dict) or REQUIRED[kind] not in data:
+        return False
+    return kind == BOOKS or isinstance(data[REQUIRED[kind]], list)
+
+
+def _answer(
+    kind: str, ticker: str | None, response: Any, attempts: int, client: kalshi.Kalshi
+) -> Response:
+    ok = response.status_code != kalshi.OK or shaped(kind, response.content)
+    return Response(ticker, response.status_code, response.content, client.now(), attempts, ok)
 
 
 @dataclass
@@ -175,7 +202,8 @@ def store_poll(
                     "status": r.status,
                     "fetched_utc": r.fetched_utc.isoformat(),
                     "attempts": r.attempts,
-                    "body": r.body.decode(),
+                    "body": r.body.decode(errors="replace"),
+                    **({} if r.valid else {"invalid": True}),
                 }
                 for r in responses
             ]
@@ -193,11 +221,21 @@ def store_poll(
 
 def _count(report: WatchReport, responses: Sequence[Response]) -> None:
     report.not_found += sum(r.status == kalshi.NOT_FOUND for r in responses)
+    report.failed += sum(not r.valid for r in responses)
 
 
-def poll_tops(client: kalshi.Kalshi, live: Sequence[Market], report: WatchReport) -> None:
+def _deadline(market: Market, until: datetime) -> datetime:
+    """A request's deadline: its game's start, or the window's end if sooner, so no request,
+    try or retry starts after the window (Codex on #325)."""
+    return min(market.start_utc, until)
+
+
+def poll_tops(
+    client: kalshi.Kalshi, live: Sequence[Market], until: datetime, report: WatchReport
+) -> None:
     """The top of book of every market still to start, in one request; a market that starts
-    while it is asked for is dropped and the request made again without it."""
+    while it is asked for is dropped and the request made again without it. Nothing is asked at
+    or after until."""
     wanted = list(live)
     polled = client.now()
     while wanted:
@@ -206,16 +244,18 @@ def poll_tops(client: kalshi.Kalshi, live: Sequence[Market], report: WatchReport
             response, attempts = client.request(
                 "/markets",
                 {"tickers": tickers, "limit": PAGE},
-                deadline=min(m.start_utc for m in wanted),
+                deadline=min(_deadline(m, until) for m in wanted),
             )
         except Started:
+            if client.now() >= until:
+                return
             report.started += 1
             wanted = [m for m in wanted if m.start_utc > client.now()]
             continue
         except KalshiError:
             report.failed += 1
             return
-        found = Response(None, response.status_code, response.content, client.now(), attempts)
+        found = _answer(TOPS, None, response, attempts, client)
         _count(report, [found])
         store_poll(client.store, TOPS, wanted, [found], polled)
         report.polls[TOPS] += 1
@@ -223,23 +263,25 @@ def poll_tops(client: kalshi.Kalshi, live: Sequence[Market], report: WatchReport
         return
 
 
-def poll_books(client: kalshi.Kalshi, live: Sequence[Market], report: WatchReport) -> None:
-    """Each market's full book, stored together as one poll."""
+def poll_books(
+    client: kalshi.Kalshi, live: Sequence[Market], until: datetime, report: WatchReport
+) -> None:
+    """Each market's full book, stored together as one poll; none is asked at or after until."""
     polled, found, asked = client.now(), [], []
     for market in live:
         try:
             response, attempts = client.request(
-                f"/markets/{market.ticker}/{kalshi.BOOKS}", deadline=market.start_utc
+                f"/markets/{market.ticker}/{kalshi.BOOKS}", deadline=_deadline(market, until)
             )
         except Started:
+            if client.now() >= until:
+                break
             report.started += 1
             continue
         except KalshiError:
             report.failed += 1
             continue
-        found.append(
-            Response(market.ticker, response.status_code, response.content, client.now(), attempts)
-        )
+        found.append(_answer(BOOKS, market.ticker, response, attempts, client))
         asked.append(market)
     _count(report, found)
     if store_poll(client.store, BOOKS, asked, found, polled) is not None:
@@ -251,14 +293,17 @@ def poll_trades(
     client: kalshi.Kalshi,
     live: Sequence[Market],
     since: Mapping[str, datetime],
+    until: datetime,
     report: WatchReport,
 ) -> set[str]:
     """Each market's trades since its own watermark less OVERLAP, every page of them, stored
-    together as one poll. Returns the markets whose every page came back: only their watermarks
-    may advance, so a failed or cut-short market is asked again from the same point (Codex on
-    #325)."""
+    together as one poll; nothing is asked at or after until. Returns the markets whose every
+    page came back in the documented shape: only their watermarks may advance, so a failed,
+    malformed or cut-short market is asked again from the same point (Codex on #325)."""
     polled, found, asked, done = client.now(), [], [], set()
     for market in live:
+        if client.now() >= until:
+            break
         cursor: str | None = None
         for _ in range(MAX_PAGES):
             params: dict[str, str | int] = {
@@ -270,26 +315,26 @@ def poll_trades(
                 params["cursor"] = cursor
             try:
                 response, attempts = client.request(
-                    "/markets/trades", params, deadline=market.start_utc
+                    "/markets/trades", params, deadline=_deadline(market, until)
                 )
             except Started:
-                report.started += 1
+                if client.now() < until:
+                    report.started += 1
                 break
             except KalshiError:
                 report.failed += 1
                 break
-            found.append(
-                Response(
-                    market.ticker, response.status_code, response.content, client.now(), attempts
-                )
-            )
+            answer = _answer(TRADES, market.ticker, response, attempts, client)
+            found.append(answer)
             if market not in asked:
                 asked.append(market)
-            try:
-                cursor = json.loads(response.content).get("cursor") or None
-            except (ValueError, AttributeError):
-                cursor = None
-            if response.status_code != kalshi.OK or not cursor:
+            if not answer.valid:
+                break
+            if response.status_code != kalshi.OK:
+                done.add(market.ticker)
+                break
+            cursor = json.loads(response.content).get("cursor") or None
+            if not cursor:
                 done.add(market.ticker)
                 break
     _count(report, found)
@@ -324,8 +369,13 @@ def watch(
     start = client.now()
     games, refreshed = slate(), start
     # Each market's trades watermark: the start of its last trades poll whose every page came
-    # back; a market's first poll reaches back one book interval.
+    # back. A run's first poll of a market reaches back to the day's first window, so a trades
+    # poll that failed at the end of the run before leaves no gap (Codex on #325); the trades
+    # seen twice are kept once, by trade_id.
     since: dict[str, datetime] = {}
+    local = start.astimezone(ET)
+    morning = datetime.combine(local.date(), WINDOWS_ET[0], tzinfo=ET).astimezone(UTC)
+    first = min(start - book_every, morning)
     next_top = next_book = start
     while True:
         now = client.now()
@@ -340,13 +390,13 @@ def watch(
         if not live or now >= until:
             break
         if now >= next_top:
-            poll_tops(client, live, report)
+            poll_tops(client, live, until, report)
             next_top = _next(next_top, top_every, client.now())
         if now >= next_book:
             began = client.now()
-            poll_books(client, live, report)
-            marks = {m.ticker: since.get(m.ticker, start - book_every) for m in live}
-            for ticker in poll_trades(client, live, marks, report):
+            poll_books(client, live, until, report)
+            marks = {m.ticker: since.get(m.ticker, first) for m in live}
+            for ticker in poll_trades(client, live, marks, until, report):
                 since[ticker] = began
             next_book = _next(next_book, book_every, client.now())
         wait = min(next_top, next_book, until) - client.now()
@@ -408,8 +458,6 @@ def parse_trades(body: bytes, market: Market, observed_utc: datetime, raw_key: s
     start: a trade is known from its fetch, never from its own time (hard rule 1)."""
     data = json.loads(body)
     trades = data.get("trades") if isinstance(data, dict) else None
-    if trades is None:
-        trades = []
     if not isinstance(trades, list):
         raise KalshiError("no trades list in the response")
     columns = dtypes(KalshiTrades)
@@ -447,6 +495,7 @@ class ReplayReport:
     objects: dict[str, int] = field(default_factory=lambda: dict.fromkeys(KINDS, 0))
     rows: dict[str, int] = field(default_factory=lambda: dict.fromkeys(KINDS, 0))
     not_found: int = 0
+    invalid: int = 0
     unparsed: list[str] = field(default_factory=list)
     incomplete: list[str] = field(default_factory=list)
     dates: list[date] = field(default_factory=list)
@@ -499,6 +548,9 @@ def stored_watch(
                     markets = {m["ticker"]: kalshi.market_of(m) for m in meta["markets"]}
                     polled = json.loads(store.get(raw_key))["responses"]
                     for response in polled:
+                        if response.get("invalid"):
+                            report.invalid += 1
+                            continue
                         if response["status"] != kalshi.OK:
                             report.not_found += response["status"] == kalshi.NOT_FOUND
                             continue
