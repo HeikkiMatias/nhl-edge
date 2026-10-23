@@ -172,14 +172,14 @@ export function twins(
 export type RealDay = { date: string; bets: number; profit: number; balance: number };
 
 /** The view's bankroll after each game day with a settled bet, oldest first: 100 € plus the
- * latest revision's profit of each settled bet (void and cancelled ones count 0). */
+ * latest revision's profit of each settled or paid-out bet (void and cancelled ones count 0). */
 export function realBankroll(settlements: RealSettlement[], shown: View): RealDay[] {
   const mode = shown === "real" ? "real" : "practice";
   const byDay = new Map<string, { bets: number; profit: number }>();
   for (const s of latest(settlements).values()) {
     if (s.mode !== mode) continue;
     const day = byDay.get(s.game_date) ?? { bets: 0, profit: 0 };
-    day.bets += s.status === "settled" ? 1 : 0;
+    day.bets += s.status === "settled" || s.status === "payout" ? 1 : 0;
     day.profit += s.profit;
     byDay.set(s.game_date, day);
   }
@@ -192,17 +192,19 @@ export function realBankroll(settlements: RealSettlement[], shown: View): RealDa
     });
 }
 
-/** The view's record from the latest revisions: won, lost, void, the stakes settled and the
- * profit. */
+/** The view's record from the latest revisions: won, lost, void, paid out at Kalshi's own price
+ * (#290), the stakes settled or paid out and the profit. */
 export function realRecord(settlements: RealSettlement[], shown: View) {
   const mode = shown === "real" ? "real" : "practice";
   const rows = [...latest(settlements).values()].filter((s) => s.mode === mode);
   const settled = rows.filter((s) => s.status === "settled");
+  const paidOut = rows.filter((s) => s.status === "payout");
   return {
     won: settled.filter((s) => s.won === true).length,
     lost: settled.filter((s) => s.won === false).length,
     void: rows.filter((s) => s.status === "void").length,
-    staked: settled.reduce((sum, s) => sum + s.stake, 0),
+    payout: paidOut.length,
+    staked: [...settled, ...paidOut].reduce((sum, s) => sum + s.stake, 0),
     profit: rows.reduce((sum, s) => sum + s.profit, 0),
   };
 }

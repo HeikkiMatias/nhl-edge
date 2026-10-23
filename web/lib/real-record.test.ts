@@ -99,11 +99,26 @@ test("the bankroll counts each bet's latest revision, real apart from practice",
   ]);
   expect(days.map((d) => d.balance)).toEqual([101.2, expect.closeTo(99.7)]);
   const r = realRecord(rows, "real");
-  expect([r.won, r.lost, r.void, r.staked]).toEqual([1, 1, 0, 2.5]);
+  expect([r.won, r.lost, r.void, r.payout, r.staked]).toEqual([1, 1, 0, 0, 2.5]);
   expect(r.profit).toBeCloseTo(-0.3);
   expect(realBankroll(rows, "practice")).toEqual([
     { date: "2026-11-17", bets: 1, profit: 5, balance: 105 },
   ]);
+});
+
+test("a bet paid out at Kalshi's own price counts in the bankroll, apart from won and lost", () => {
+  // A Kalshi game played over two weeks late, or never, is paid out at Kalshi's price (#290).
+  const rows = [
+    settled(1),
+    settled(2, { status: "payout", won: null, profit: -0.69, game_date: "2026-11-18" }),
+  ];
+  expect(realBankroll(rows, "real").map((d) => [d.date, d.bets, d.profit])).toEqual([
+    ["2026-11-17", 1, 1.8],
+    ["2026-11-18", 1, -0.69],
+  ]);
+  const r = realRecord(rows, "real");
+  expect([r.won, r.lost, r.void, r.payout, r.staked]).toEqual([1, 0, 0, 1, 3]);
+  expect(r.profit).toBeCloseTo(1.11);
 });
 
 test("the price gap compares the matched price with the paper price", () => {

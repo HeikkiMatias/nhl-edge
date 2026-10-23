@@ -84,7 +84,9 @@ export function RealRecord({
         <>
           <p>
             {r.won + r.lost} settled bets: {r.won} won, {r.lost} lost
-            {r.void ? `, ${r.void} void` : ""}. Profit {signedEuros(r.profit)} on{" "}
+            {r.void ? `, ${r.void} void` : ""}
+            {r.payout ? `, ${r.payout} paid out at Kalshi's own price` : ""}. Profit{" "}
+            {signedEuros(r.profit)} on{" "}
             {euros(r.staked)} staked; bankroll {euros(days[days.length - 1].balance)}.
           </p>
           <LineChart
@@ -204,6 +206,8 @@ function settlementText(t: Twin): string {
   if (!s) return "Awaiting the result";
   if (s.status === "void") return "Void";
   if (s.status === "cancelled") return "Cancelled by a correction";
+  // Held for Kalshi's own resolution: played over two weeks late, or never (#290).
+  if (s.status === "payout") return "Paid out at Kalshi's own price";
   return s.won ? "Won" : "Lost";
 }
 

@@ -828,7 +828,10 @@ class RealSettlements(pa.DataFrameModel):
     final and its result public, never rewritten: the result on the full game, OT and shootout
     included (hard rule 2), and the profit at the matched price and stake placed; a game played
     more than 12 hours from its listed start voids the bet. A correction that changes a settled
-    bet appends its next revision, "cancelled" with no profit when it was not placed after all.
+    bet appends its next revision, "cancelled" with no profit when it was not placed after all. On
+    an exchange, a bet held for the exchange's own resolution is a "payout" at its price, with no
+    result, a profit from losing the stake to winning it, and result_utc the time the exchange's
+    settlement was first read (ADR 0040, #290).
     bankroll_after is the mode's bankroll counting every bet's latest revision up to this one.
     Each revision is written once to R2
     (real/live/settlements/<date>/<game_id>-<revision>.parquet)."""
@@ -843,7 +846,7 @@ class RealSettlements(pa.DataFrameModel):
     matched_price: pl.Float64 = pa.Field(gt=1)
     stake: pl.Float64 = pa.Field(gt=0)
     bet_id: pl.String
-    status: pl.String = pa.Field(isin=["settled", "void", "cancelled"])
+    status: pl.String = pa.Field(isin=["settled", "void", "cancelled", "payout"])
     home_win: pl.Int8 = pa.Field(isin=[0, 1], nullable=True)
     won: pl.Boolean = pa.Field(nullable=True)
     profit: pl.Float64
@@ -870,7 +873,18 @@ class RealSettlements(pa.DataFrameModel):
             .then(pl.col("stake") * (pl.col("matched_price") - 1))
             .otherwise(-pl.col("stake"))
         )
-        return data.lazyframe.select((pl.col("profit") - expected).abs() < 1e-9)
+        # A payout is no result: it pays from nothing to a contract's full dollar (#290).
+        payout = (
+            pl.col("won").is_null()
+            & pl.col("home_win").is_null()
+            & (pl.col("profit") >= -pl.col("stake") - 1e-9)
+            & (pl.col("profit") <= pl.col("stake") * (pl.col("matched_price") - 1) + 1e-9)
+        )
+        return data.lazyframe.select(
+            pl.when(pl.col("status") == "payout")
+            .then(payout)
+            .otherwise((pl.col("profit") - expected).abs() < 1e-9)
+        )
 
     @pa.dataframe_check
     def settled_after_the_result(cls, data: pa.PolarsData) -> pl.LazyFrame:

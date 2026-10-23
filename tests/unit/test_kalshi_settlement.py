@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pandera.errors
 import polars as pl
 import predict_fixtures as pf
 import pytest
@@ -17,6 +18,7 @@ from typer.testing import CliRunner
 
 from nhl_edge.cli import app
 from nhl_edge.lake.raw import RawStore
+from nhl_edge.lake.schemas import RealSettlements
 from nhl_edge.live import bundle as lb
 from nhl_edge.live import kalshi_trade as kt
 from nhl_edge.live import placement as pm
@@ -73,6 +75,213 @@ def test_a_kalshi_game_played_over_two_weeks_late_is_held_for_kalshis_resolution
     lines = rl.statement(record, settled, rl.REAL, games)
     assert any("awaiting Kalshi's resolution" in line for line in lines)
     assert not any("awaiting Kalshi" in line for line in rl.statement(record, settled, rl.REAL))
+
+
+# Kalshi's own payout of a held bet (#290)
+
+
+def resolved(
+    game_id: int = THIRD,
+    result: str = "scalar",
+    revenue: int = 37,
+    contracts: float = 1.0,
+    observed: datetime = NIGHT,
+) -> pl.DataFrame:
+    """Kalshi's settlement of a bet's market, as rl.exchange_settlements reads it back."""
+    row = {
+        "game_date": pf.DAY,
+        "game_id": game_id,
+        "market_result": result,
+        "contracts": contracts,
+        "revenue": revenue,
+        "observed_utc": observed,
+    }
+    return pl.DataFrame([row], schema=rl.RESOLVED)
+
+
+LATE = {THIRD: pf.GAMES[THIRD][2] + timedelta(days=15)}
+
+
+@pytest.mark.parametrize(("result", "revenue"), [("scalar", 37), ("yes", 100), ("no", 0)])
+def test_a_held_kalshi_bet_is_paid_out_at_kalshis_price(result: str, revenue: int) -> None:
+    games = rf.games(played=LATE)
+    paid = rl.results(record_on(KALSHI), games, resolved(result=result, revenue=revenue))
+    third = paid.filter(pl.col("game_id") == THIRD).row(0, named=True)
+    # Never a win or a loss on the full game: Kalshi's payout per dollar the bet cost.
+    assert third["status"] == rl.PAYOUT and third["won"] is None and third["home_win"] is None
+    assert third["profit"] == pytest.approx(1.5 * (revenue / 100 * 2.5 - 1))
+    assert third["result_utc"] == NIGHT
+    assert sorted(paid["game_id"].to_list()) == [FIRST, SECOND, THIRD]
+
+
+def test_a_payout_settles_once_validated_and_the_statement_names_it() -> None:
+    games = rf.games(played=LATE)
+    record = record_on(KALSHI)
+    settled = rl.settle(
+        record, games, rl.settlements(rf.alerted_store()), NIGHT, rf.CODE, resolved()
+    )
+    third = settled.filter(pl.col("game_id") == THIRD).row(0, named=True)
+    assert third["status"] == rl.PAYOUT and third["profit"] == pytest.approx(-0.1125)
+    lines = rl.statement(record, settled, rl.REAL, games)
+    assert any("paid out at the exchange's own price, -0.11 €" in line for line in lines)
+    assert not any("awaiting Kalshi" in line for line in lines)
+    # Read back the next night, it is settled already: nothing is appended twice.
+    again = rl.settle(record, games, settled, NIGHT + timedelta(days=1), rf.CODE, resolved())
+    assert again.is_empty()
+
+
+def test_a_game_never_played_is_paid_out_only_at_a_fair_price() -> None:
+    # A cancelled game, or one still to be played: a fair price (scalar) pays it out, and a yes
+    # or no waits for the lake's own result on the full game.
+    unplayed = rf.games().filter(pl.col("game_id") != THIRD)
+    record = record_on(KALSHI)
+    fair = rl.results(record, unplayed, resolved())
+    assert fair.filter(pl.col("game_id") == THIRD)["status"].to_list() == [rl.PAYOUT]
+    for result, revenue in (("yes", 100), ("no", 0)):
+        waits = rl.results(record, unplayed, resolved(result=result, revenue=revenue))
+        assert THIRD not in waits["game_id"].to_list()
+
+
+def test_a_game_played_on_time_settles_on_its_result_whatever_kalshi_paid() -> None:
+    on_time = rl.results(record_on(KALSHI), rf.games(), resolved())
+    third = on_time.filter(pl.col("game_id") == THIRD).row(0, named=True)
+    assert third["status"] == rl.SETTLED and third["won"] is True
+
+
+def test_no_payout_for_a_sportsbook_bet_or_without_contracts() -> None:
+    games = rf.games(played=LATE)
+    book = real.Venue("book", 0.0, 0.01)
+    at_book = rl.results(record_on(book), games, resolved())
+    assert at_book.filter(pl.col("game_id") == THIRD)["status"].to_list() == [rl.VOID]
+    none_held = rl.results(record_on(KALSHI), games, resolved(contracts=0.0, revenue=0))
+    assert THIRD not in none_held["game_id"].to_list()
+
+
+def test_a_payout_beyond_a_contracts_dollar_is_refused() -> None:
+    games = rf.games(played=LATE)
+    settled = rl.settle(
+        record_on(KALSHI), games, rl.settlements(rf.alerted_store()), NIGHT, rf.CODE, resolved()
+    )
+    beyond = settled.with_columns(
+        profit=pl.when(pl.col("game_id") == THIRD).then(3.0).otherwise(pl.col("profit"))
+    )
+    with pytest.raises(pandera.errors.SchemaError, match="the_profit_follows_the_result"):
+        RealSettlements.validate(beyond)
+
+
+def test_kalshis_settlement_is_kept_once_raw_with_its_first_read() -> None:
+    store = rf.alerted_store()
+    theirs = kalshi_settled("scalar", revenue=37)[0]
+    assert rl.write_exchange_settlement(store, pf.DAY, THIRD, WSH, theirs, NIGHT)
+    later = theirs | {"revenue": 40}
+    assert not rl.write_exchange_settlement(
+        store, pf.DAY, THIRD, WSH, later, NIGHT + timedelta(days=1)
+    )
+    kept = json.loads(store.get(rl.exchange_settlement_key(pf.DAY, THIRD)))
+    assert kept == {"ticker": WSH, "observed_utc": NIGHT.isoformat(), "settlement": theirs}
+    read = rl.exchange_settlements(store).row(0, named=True)
+    assert read == {
+        "game_date": pf.DAY,
+        "game_id": THIRD,
+        "market_result": "scalar",
+        "contracts": 1.0,
+        "revenue": 37,
+        "observed_utc": NIGHT,
+    }
+
+
+@pytest.mark.parametrize("how", ["never played", "played 15 days late"])
+def test_the_check_keeps_kalshis_payout_waits_a_night_then_agrees(tmp_path: Path, how: str) -> None:
+    record, exchange, client, clock = finished(tmp_path)
+    exchange.settled[WSH] = kalshi_settled("scalar", revenue=37)
+    if how == "never played":
+        games = rf.games().filter(pl.col("game_id") != FIRST)
+    else:
+        games = rf.games(played={FIRST: pf.GAMES[FIRST][2] + timedelta(days=15)})
+    none = rl.settlements(lb.R2Store(ConditionalBucket(), "bucket"))
+    first = pm.check_settlements(record, client, none, date(2026, 10, 23), games)
+    assert (first.waiting, first.differences) == (1, [])
+    kept = rl.exchange_settlements(record)
+    assert kept["game_id"].to_list() == [FIRST] and kept["observed_utc"][0] == clock.at
+    # The next nhl real settle pays it out, from that first read on.
+    bets = rl.bets(rl.alerts(record), rl.entries(record))
+    paid = rl.settle(bets, games, none, clock.at + timedelta(hours=1), rf.CODE, kept)
+    row = paid.filter(pl.col("game_id") == FIRST).row(0, named=True)
+    assert row["status"] == rl.PAYOUT and row["result_utc"] == clock.at
+    again = pm.check_settlements(record, client, paid, date(2026, 10, 24), games)
+    assert (again.agreed, again.differences) == (1, [])
+    # Kalshi paying other than the record's payout is a difference for the owner.
+    exchange.settled[WSH] = kalshi_settled("scalar", revenue=40)
+    changed = pm.check_settlements(record, client, paid, date(2026, 10, 24), games)
+    assert len(changed.differences) == 1
+    assert "Kalshi paid 40¢ for 1.00 contracts; the record's payout is" in changed.differences[0]
+
+
+def test_the_payout_migration_allows_the_schemas_statuses() -> None:
+    import re
+
+    from nhl_edge import cli
+
+    migration = Path("supabase/migrations", cli.PAYOUT_MIGRATION).read_text()
+    allowed = re.search(r"status in \(([^)]*)\)\s*\),", migration)
+    assert allowed is not None
+    statuses = {s.strip().strip("'") for s in allowed.group(1).split(",")}
+    assert statuses == {rl.SETTLED, rl.VOID, rl.CANCELLED, rl.PAYOUT}
+    first = Path("supabase/migrations/20261016150000_real_record.sql").read_text()
+    # It drops the checks it widens, by the names they have: the column's own and the profit's.
+    assert "status text not null check (" in first
+    assert "constraint real_settlements_profit_follows_the_result check" in first
+    for check in cli.PAYOUT_CHECKS:
+        assert f"drop constraint {check}" in migration
+
+
+def test_nhl_real_settle_sends_a_payout_apart_before_its_migration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nhl_edge import cli
+    from nhl_edge.backtest import reports
+    from nhl_edge.lake import supabase as sb
+
+    store = lb.R2Store(ConditionalBucket(), "bucket")
+    rows = rf.alert_rows(REAL_DAY, venue=KALSHI)
+    store.put(rl.alerts_key(pf.DAY), json.dumps({"rows": rl.jsonable(rows)}).encode())
+    entries = [rf.entry(FIRST), rf.entry(SECOND, price=1.9, stake=1.0), rf.entry(THIRD, price=2.5)]
+    rl.store_entries(store, entries)
+    theirs = kalshi_settled("scalar", revenue=37)[0]
+    rl.write_exchange_settlement(store, pf.DAY, THIRD, WSH, theirs, NIGHT)
+
+    class Lake:
+        def pull(self, table: str, seasons: Any = None) -> int:
+            return 0
+
+        def read(self, table: str, seasons: Any = None) -> pl.DataFrame:
+            return rf.games(played=LATE)
+
+        def replace(self, table: str, frame: pl.DataFrame) -> None:
+            pass
+
+    sent: list[dict[str, Any]] = []
+
+    class Dashboard:
+        def insert_new_records(self, table: str, records: list[Any], key: Any) -> int:
+            if any(row["status"] == rl.PAYOUT for row in records):
+                raise sb.SupabaseError(
+                    'insert into real_settlements returned 400: {"code":"23514","message":"new '
+                    'row violates check constraint \\"real_settlements_status_check\\""}'
+                )
+            sent.extend(records)
+            return len(records)
+
+    monkeypatch.setattr(cli, "_real_record", lambda r2: (Lake(), store))
+    monkeypatch.setattr(sb.Supabase, "from_env", classmethod(lambda cls: Dashboard()))
+    monkeypatch.setattr(reports, "version", lambda component, now: "real-settle-20261023-abc1234")
+    result = runner.invoke(app, ["real", "settle", "--r2", "--supabase"])
+    assert result.exit_code == 0, result.output
+    assert "real_settlements: 3 appended, 3 in all" in result.output
+    assert f"apply supabase/migrations/{cli.PAYOUT_MIGRATION}" in result.output
+    assert sorted(row["game_id"] for row in sent) == [FIRST, SECOND]
+    paid = rl.settlements(store).filter(pl.col("game_id") == THIRD)
+    assert paid["status"].to_list() == [rl.PAYOUT]
 
 
 # The dashboard's copies
@@ -216,9 +425,12 @@ def test_a_postponed_game_waits_from_the_day_it_is_played(tmp_path: Path) -> Non
     assert late.differences == ["2026-10-07 WSH: not settled by Kalshi yet"]
 
 
-def test_kalshi_resolving_a_game_the_lake_has_no_final_for_is_a_difference(tmp_path: Path) -> None:
-    # A game cancelled, or one the lake missed: Kalshi resolved it and the record can't, so it
-    # counts from the game's listed date.
+def test_a_payout_the_record_leaves_unsettled_after_its_first_night_is_a_difference(
+    tmp_path: Path,
+) -> None:
+    # A game cancelled, or one the lake missed: Kalshi resolved it at a fair price. Its first
+    # night it waits for nhl real settle to pay it out (#290); a record still without it the
+    # next night counts from the game's listed date.
     record, exchange, client, _ = finished(tmp_path)
     exchange.settled[WSH] = kalshi_settled("scalar", revenue=37)
     unsettled = rl.settlements(lb.R2Store(ConditionalBucket(), "bucket"))
