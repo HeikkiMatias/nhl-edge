@@ -36,7 +36,8 @@ It covers the frozen policy's regular-season paper decisions (ADR 0032):
   (backtest/selected.py).
 - **Shadow evaluations (#252),** paper only and with no verdict: the frozen rules on the
   market-only control, and the policy's own bets at the best fresh price of the other books
-  (live/shadow.py).
+  (live/shadow.py). Beside them, #308's edge bids: a resting bid at the edge price on every side
+  the policy didn't bet, filled by Pinnacle's later snapshots, against the policy's own CLV.
 - **Challengers (ADR 0038),** with no verdict: every registered challenger over the decision days
   after its registration (live/challengers.py), against the blend and B1 by paired log loss, and
   against its baseline challenger when its ADR names one; its shadow bets under the frozen rules,
@@ -615,10 +616,46 @@ def proxy_lead(moves: pl.DataFrame, bets: pl.DataFrame, leads: pl.DataFrame) -> 
     return {"move_points": _by_lead(valid, "points"), "clv": _by_lead(valued, "clv")}
 
 
-def shadows(started: pl.DataFrame, moves: pl.DataFrame, odds: pl.DataFrame) -> dict[str, Any]:
+def edge_bids(
+    started: pl.DataFrame,
+    moves: pl.DataFrame,
+    odds: pl.DataFrame,
+    own: pl.DataFrame,
+    dailyfaceoff: pl.DataFrame | None,
+) -> dict[str, Any]:
+    """#308's shadow, with no verdict: a bid at the edge price on every side of the started games
+    the policy didn't bet (live/shadow.py), its fills from Pinnacle's later snapshots valued at
+    the bid against the same close as the policy's own bets (own, valued), and the share of fills
+    after Daily Faceoff's named starter changed. The fills' CLV waits for MIN_WEEKS weeks."""
+    bids = shadow.edge_bids(started)
+    filled = shadow.edge_fills(bids, odds).filter(pl.col("fill_utc").is_not_null())
+    valued = shadow.valued(filled.with_columns(price=pl.col("bid")), moves)
+    changed = None
+    if dailyfaceoff is not None:
+        flagged = shadow.starter_changes(filled, dailyfaceoff)["starter_changed"]
+        changed = {"known": int(flagged.is_not_null().sum()), "changed": int(flagged.sum())}
+    return {
+        "bids": bids.height,
+        "filled": filled.height,
+        "slots": _counts(filled, "fill_slot"),
+        "with_close": valued.height,
+        "clv_per_fill": estimate(valued, "clv"),
+        "fair_move_per_fill": estimate(valued, "fair_move"),
+        "policy_clv_per_bet": estimate(own, "clv"),
+        "starter_changed": changed,
+    }
+
+
+def shadows(
+    started: pl.DataFrame,
+    moves: pl.DataFrame,
+    odds: pl.DataFrame,
+    dailyfaceoff: pl.DataFrame | None = None,
+) -> dict[str, Any]:
     """#252's paper shadows over the started predicted games (live/shadow.py), with no verdict:
     the market-only control's bets against the policy's own, and the policy's bets at the best
-    fresh price of the other books, each valued against the same close as the policy's."""
+    fresh price of the other books, each valued against the same close as the policy's; and
+    #308's edge bids (edge_bids), with Daily Faceoff's polls when given."""
     keys = ["game_date", "game_id"]
     policy_bets = started.filter(pl.col("bet").fill_null(False))
     own = shadow.valued(policy_bets, moves)
@@ -647,6 +684,7 @@ def shadows(started: pl.DataFrame, moves: pl.DataFrame, odds: pl.DataFrame) -> d
             "clv_any": estimate(priced, "clv_any"),
             "gain_any": estimate(priced, "gain_any"),
         },
+        "edge_bids": edge_bids(started, moves, odds, own, dailyfaceoff),
     }
 
 
@@ -897,6 +935,7 @@ def report(
     challenger_outputs: pl.DataFrame | None = None,
     unfinished_bundles: Sequence[date] | None = None,
     goalie_spreads: pl.DataFrame | None = None,
+    dailyfaceoff: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
     """The live report of one policy, the frozen one by default, as of as_of: ledger and
     settlements as written, games' results, the odds' Pinnacle quotes, SBR's history
@@ -904,7 +943,8 @@ def report(
     outputs (challenger_predictions, none by default). now is the report's clock, noon UTC the
     day after as_of by default: entry to close counts the games started by then.
     unfinished_bundles are the decision days whose run bundle has no manifest, None when not
-    checked, which ADR 0039's start rule reads."""
+    checked, which ADR 0039's start rule reads. dailyfaceoff is Daily Faceoff's goalie polls,
+    which #308's edge bids read for the share of fills after a starter changed."""
     now = now or datetime.combine(as_of + timedelta(days=1), time(12), UTC)
     rows = counted(ledger, as_of, policy)
     bets = bets_of(rows, settlements)
@@ -945,7 +985,7 @@ def report(
         "entry_to_close": entry_to_close(moves),
         "proxy_lead": proxy_lead(moves, bets, proxy_leads(started, odds, now)),
         "selected_calibration": selected_calibration(scored),
-        "shadows": shadows(started, moves, odds),
+        "shadows": shadows(started, moves, odds, dailyfaceoff),
         "real_stakes": real_stakes(
             bets,
             season_bets,
@@ -1290,6 +1330,7 @@ def markdown(result: dict[str, Any]) -> str:
         "- With the exchanges, before their commission, CLV per bet: "
         f"{_fmt(best['clv_any'], 'bets')}; gain: {_fmt(best['gain_any'], 'bets')}",
     ]
+    lines += _edge_bid_lines(result["shadows"]["edge_bids"])
     lines += _challenger_lines(result["challengers"])
     if "returns" in result:
         ret = result["returns"]
@@ -1302,6 +1343,35 @@ def markdown(result: dict[str, Any]) -> str:
             f"- Return per bet: {_fmt(ret['return_per_bet'], 'bets')}",
         ]
     return "\n".join(lines) + "\n"
+
+
+def _edge_bid_lines(edge: dict[str, Any]) -> list[str]:
+    """#308's shadow: the bids, their fills by slot, the fills' CLV beside the policy's and the
+    share filled after a starter changed."""
+    slots = ", ".join(f"{slot} {n}" for slot, n in edge["slots"].items())
+    changed = edge["starter_changed"]
+    named = (
+        f"{_share(changed['changed'], changed['known'])} of the fills with Daily Faceoff's "
+        "starters named at both"
+        if changed is not None
+        else "not read"
+    )
+    return [
+        "",
+        "**Edge bids on every game (#308):** a resting bid on every side the policy didn't bet, "
+        "at the lowest price to the cent where the blend clears the side's hurdle, filled at the "
+        "bid by the first later fresh Pinnacle quote at or above it before the start. Five slots "
+        "a day undercount the fills, and a logged quote shows no stake: an upper bound. Fewer "
+        f"than {MIN_WEEKS} weeks of fills decide nothing.",
+        "",
+        f"- Bids: {edge['bids']}; filled: {_share(edge['filled'], edge['bids'])}"
+        + (f" ({slots})" if slots else "")
+        + f"; with a close: {edge['with_close']}.",
+        f"- CLV per fill: {_fmt(edge['clv_per_fill'], 'fills')}; the policy's per bet: "
+        f"{_fmt(edge['policy_clv_per_bet'], 'bets')}",
+        f"- Fair move per fill: {_fmt(edge['fair_move_per_fill'], 'fills')}",
+        f"- Filled after a named starter changed: {named}.",
+    ]
 
 
 def _selected_lines(section: dict[str, Any]) -> list[str]:

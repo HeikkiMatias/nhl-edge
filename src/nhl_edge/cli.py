@@ -3291,7 +3291,13 @@ def live_report(
     lake = Lake.from_env(mirror=r2)
     if r2:
         assert lake.objects is not None and lake.bucket is not None
-        tables = ("games", "odds_snapshots", "paper_settlements", "sbr_odds")
+        tables = (
+            "games",
+            "odds_snapshots",
+            "paper_settlements",
+            "sbr_odds",
+            "dailyfaceoff_goalies",
+        )
         pulled = sum(lake.pull(table) for table in tables)
         typer.echo(f"pulled {pulled:,} table files from R2")
         # The ledgers in R2 are the record, and so are the challengers' outputs.
@@ -3325,6 +3331,7 @@ def live_report(
         challenger_outputs=outputs,
         unfinished_bundles=unfinished,
         goalie_spreads=spreads,
+        dailyfaceoff=lake.read("dailyfaceoff_goalies", seasons=[blend_fit.LIVE_SEASON]),
     )
     json_path, md_path = lr.write(result, out)
     if supabase:

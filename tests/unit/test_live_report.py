@@ -11,7 +11,7 @@ import pytest
 
 from nhl_edge.betting.selection import POLICY_VERSION
 from nhl_edge.ingest.odds import ODDS_FRAME_SCHEMA
-from nhl_edge.lake.schemas import PaperLedger, dtypes
+from nhl_edge.lake.schemas import DailyFaceoffGoalies, PaperLedger, dtypes
 from nhl_edge.live import predict as lp
 from nhl_edge.live import report as lr
 from nhl_edge.live import settle as ls
@@ -159,6 +159,7 @@ class Season:
             challenger_outputs=changes.pop("challenger_outputs", None),
             unfinished_bundles=changes.pop("unfinished_bundles", None),
             goalie_spreads=changes.pop("goalie_spreads", None),
+            dailyfaceoff=changes.pop("dailyfaceoff", None),
         )
 
 
@@ -814,6 +815,7 @@ def test_nhl_live_report_and_slate(tmp_path: Any, monkeypatch: pytest.MonkeyPatc
         "lineup_replacements": pl.DataFrame(schema=dtypes(LineupReplacements)),
         "challenger_predictions": TABLES["challenger_predictions"].empty(),
         "goalie_spreads": TABLES["goalie_spreads"].empty(),
+        "dailyfaceoff_goalies": TABLES["dailyfaceoff_goalies"].empty(),
     }
 
     def read(self: Lake, table: str, seasons: Any = None) -> pl.DataFrame:
@@ -856,6 +858,7 @@ def test_nhl_live_report_upserts_the_report_into_supabase(
         "sbr_odds": TABLES["sbr_odds"].empty(),
         "challenger_predictions": TABLES["challenger_predictions"].empty(),
         "goalie_spreads": TABLES["goalie_spreads"].empty(),
+        "dailyfaceoff_goalies": TABLES["dailyfaceoff_goalies"].empty(),
     }
     monkeypatch.setattr(Lake, "read", lambda self, table, seasons=None: tables[table])
     monkeypatch.setattr(lr, "sbr_history", lambda sbr, games: pl.DataFrame(schema=HISTORY))
@@ -1258,6 +1261,65 @@ def test_the_report_shows_the_shadows_apart_from_its_verdicts() -> None:
     text = lr.markdown(result)
     assert "## Shadow evaluations (#252)" in text
     assert "withheld until 4 weeks of both" in text
+
+
+def test_the_edge_bids_shadow_counts_its_bids_and_waits_for_fills() -> None:
+    # #308: without later snapshots no bid fills, so its CLV is counts only, and without Daily
+    # Faceoff's polls the starter share is not read.
+    season = Season(n_weeks=2)
+    result = season.report()
+    edge = result["shadows"]["edge_bids"]
+    assert edge["bids"] > 0 and edge["filled"] == 0 and edge["with_close"] == 0
+    assert edge["clv_per_fill"] == {"games": 0, "weeks": 0}
+    assert edge["starter_changed"] is None
+    text = lr.markdown(result)
+    assert "**Edge bids on every game (#308):**" in text
+    assert f"- Bids: {edge['bids']}; filled: 0 of {edge['bids']} (0.0%); with a close: 0." in text
+    assert "- Filled after a named starter changed: not read." in text
+    polled = season.report(dailyfaceoff=pl.DataFrame(schema=dtypes(DailyFaceoffGoalies)))
+    assert polled["shadows"]["edge_bids"]["starter_changed"] == {"known": 0, "changed": 0}
+
+
+def test_the_edge_bids_shadow_values_its_fills_by_week() -> None:
+    # A later fresh Pinnacle quote high on both sides fills every bid of a game (#308), and with
+    # a close each fill is valued, by week as the bootstrap resamples them.
+    season = Season(n_weeks=3)
+    rows = season.ledger.filter(pl.col("status") == lp.PREDICTED)
+    quotes = []
+    for row in rows.iter_rows(named=True):
+        for at, slot, proxy in (
+            (row["decision_snapshot_utc"], "midday", False),
+            (row["start_utc"] - timedelta(minutes=60), "pre7", False),
+            (row["start_utc"] - timedelta(minutes=15), "pre8", True),
+        ):
+            for side in ("home", "away"):
+                quotes.append(
+                    {
+                        "snapshot_utc": at,
+                        "last_update_utc": at,
+                        "event_id": row["event_id"],
+                        "commence_time_utc": row["start_utc"],
+                        "home": row["home"],
+                        "away": row["away"],
+                        "book": "pinnacle",
+                        "market": "h2h",
+                        "side": side,
+                        "line": None,
+                        "price_decimal": 9.0 if slot == "pre7" else 1.95,
+                        "is_closing_proxy": proxy,
+                        "slot": slot,
+                        "raw_key": "k",
+                        "game_id": row["game_id"],
+                    }
+                )
+    odds = pl.DataFrame(quotes, schema=ODDS_FRAME_SCHEMA | {"game_id": pl.Int64})
+    edge = season.report(odds=odds)["shadows"]["edge_bids"]
+    assert edge["filled"] == edge["bids"] > 0 and edge["slots"] == {"pre7": edge["filled"]}
+    # The fixture's 23:00 UTC starts come before the pre-game slots once DST ends, so those games
+    # have no proxy and their fills no close; the fills with one span under four weeks.
+    assert 0 < edge["with_close"] <= edge["filled"]
+    assert edge["clv_per_fill"] == {"games": edge["with_close"], "weeks": 3}
+    assert edge["fair_move_per_fill"]["games"] == edge["with_close"]
 
 
 def test_the_selected_bets_split_gives_counts_under_four_weeks() -> None:
