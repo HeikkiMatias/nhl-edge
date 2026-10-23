@@ -25,6 +25,13 @@ export const NIGHTLY_UTC = "09:00";
 // until a minute before the next, inside GitHub's 6-hour job limit.
 export const KALSHI_WATCH_ET = ["07:05", "11:05", "15:05", "19:05"];
 
+// The Kalshi re-valuation's checks in US Eastern wall time (#321): every 15 minutes from 13:05,
+// after the midday decision's orders, to 22:50, clear of the odds slots at :45, which re-value at
+// each slot themselves.
+export const KALSHI_REVALUE_ET = Array.from({ length: 10 }, (_, i) => 13 + i).flatMap((hour) =>
+  ["05", "20", "35", "50"].map((minute) => `${hour}:${minute}`),
+);
+
 const EASTERN = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
   hour: "2-digit",
@@ -57,6 +64,9 @@ export function dueJobs(scheduledMs) {
   const slot = ODDS_SLOTS[eastern];
   if (slot) jobs.push({ workflow: "odds-snapshots.yml", inputs: { slot } });
   if (KALSHI_WATCH_ET.includes(eastern)) jobs.push({ workflow: "kalshi-watch.yml", inputs: {} });
+  if (KALSHI_REVALUE_ET.includes(eastern)) {
+    jobs.push({ workflow: "kalshi-revalue.yml", inputs: {} });
+  }
   const [hour, minute] = utc.split(":").map(Number);
   if (minute === 50 && GOALIE_HOURS_UTC.includes(hour)) {
     jobs.push({ workflow: "pregame-goalies.yml", inputs: {} });

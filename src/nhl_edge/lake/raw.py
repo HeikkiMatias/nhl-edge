@@ -16,6 +16,7 @@ import json
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -125,6 +126,40 @@ class RawStore:
             if names:
                 return f"{prefix}/{max(names)}"
         return self._pull_latest(prefix)
+
+    def latest_before(self, prefix: str, at: datetime) -> str | None:
+        """The raw key of the newest complete response stored directly under <prefix>/ whose key
+        starts with a UTC stamp at or before at, or None: from the local cache and, when R2 is
+        configured, from R2, the chosen response downloaded if only R2 has it. A key's stamp is
+        when its fetch or poll began, so a reader still checks each row's own fetch time."""
+        stamp = f"{at.astimezone(UTC):%Y%m%dT%H%M%SZ}"
+        directory = self.base_dir / prefix
+        local = {
+            path.name.removesuffix(SUFFIX)
+            for path in (directory.glob(f"*{SUFFIX}") if directory.is_dir() else [])
+            if path.with_name(path.name.removesuffix(SUFFIX) + META).exists()
+        }
+        names = set(local)
+        if self.objects is not None:
+            remote = f"{R2_RAW}{prefix}/"
+            keys = {
+                key.removeprefix(remote)
+                for key, _ in list_keys(self.objects, self.bucket or "", remote)
+            }
+            names |= {
+                name.removesuffix(SUFFIX)
+                for name in keys
+                if "/" not in name
+                and name.endswith(SUFFIX)
+                and name.removesuffix(SUFFIX) + META in keys
+            }
+        eligible = [name for name in names if name[: len(stamp)] <= stamp]
+        if not eligible:
+            return None
+        name = max(eligible)
+        if name not in local:
+            self._download(f"{prefix}/{name}")
+        return f"{prefix}/{name}"
 
     def _pull_latest(self, prefix: str) -> str | None:
         if self.objects is None:

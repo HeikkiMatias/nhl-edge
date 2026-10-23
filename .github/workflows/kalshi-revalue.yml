@@ -1,0 +1,61 @@
+name: kalshi-revalue
+# Each resting maker part re-valued every 15 minutes from the midday decision to its expiry (ADR
+# 0045 item 2, #321): a move of 3 cents in its market's best Yes bid or ask since its last
+# valuation, from the Kalshi watch's stored top of book (#319), brings one Odds API h2h call
+# (1 credit), at most 4 a day, and the bid is lowered or cancelled at Pinnacle's fresh price,
+# never raised; a change in Daily Faceoff's named starter since the decision cancels it. Kalshi's
+# prices are a trigger only, never an input to the value. The Cloudflare timer in infra/timer
+# dispatches it at :05, :20, :35 and :50 from 13:05 to 22:50 US Eastern, clear of the odds slots
+# at :45, which re-value at each slot themselves. The job prints counts only, since run logs are
+# public; the bids lowered or cancelled go to the owner's Telegram.
+on:
+  schedule:
+    # The fallback while the timer is off: every quarter hour of both halves of the DST year's
+    # window, each run checking the Eastern time it starts at, since GitHub's cron is UTC.
+    - cron: "5,20,35,50 17-23,0-3 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  revalue:
+    # GitHub's schedule is the fallback: once the Cloudflare timer runs (#50), the repository
+    # variable TIMER_ACTIVE is true and only its on-time dispatches start this job.
+    if: github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The live Kalshi key is the kalshi-live environment's secret, restricted to main (#294).
+    environment: kalshi-live
+    # Shared with odds-snapshots.yml's slot re-valuation, so no two runs amend the same bids at
+    # once (Codex on #327).
+    concurrency:
+      group: kalshi-orders
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - run: uv sync --frozen
+      - name: Kalshi re-valuation (#321)
+        env:
+          KALSHI_TRADING: ${{ vars.KALSHI_TRADING || 'off' }}
+          KALSHI_DEMO_KEY_ID: ${{ secrets.KALSHI_DEMO_KEY_ID }}
+          KALSHI_DEMO_PRIVATE_KEY: ${{ secrets.KALSHI_DEMO_PRIVATE_KEY }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_PRIVATE_KEY: ${{ secrets.KALSHI_PRIVATE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          # A scheduled run outside 13:05 to 22:50 US Eastern does nothing: the UTC cron covers
+          # both halves of the DST year (Codex on #327).
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            eastern=$(TZ=America/New_York date +%H%M)
+            if [ "$((10#$eastern))" -lt 1305 ] || [ "$((10#$eastern))" -gt 2250 ]; then
+              echo "kalshi revalue: $eastern ET is outside the window, nothing re-valued"
+              exit 0
+            fi
+          fi
+          uv run nhl real revalue --r2
