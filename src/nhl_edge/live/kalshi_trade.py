@@ -464,16 +464,27 @@ class KalshiTrade:
         )
         return None if response.status_code == NOT_FOUND else response.json()
 
-    def amend(self, order_id: str, ticker: str, price: Decimal, count: Decimal) -> dict[str, Any]:
+    def amend(
+        self,
+        order_id: str,
+        ticker: str,
+        price: Decimal,
+        count: Decimal,
+        client_order_id: str | None = None,
+    ) -> dict[str, Any]:
         """Lower a resting bid (POST /portfolio/events/orders/{id}/amend, Amend Order V2): price
         is the new limit in dollars and count the order's filled contracts plus those left to
         rest. A lower bid moves away from the asks, so it never crosses the book; the expiry is
-        kept. Returns Kalshi's answer, with the order's id."""
+        kept. client_order_id is the order's new client order id (updated_client_order_id), by
+        which an amend whose answer was lost is found. Returns Kalshi's answer, with the order's
+        id."""
         if not 0 < price < 1 or not on_grid(price, PRICE_STEP):
             raise ValueError(f"a price is above $0 and below $1, in $0.0001s: {price}")
         if count < COUNT_STEP or not on_grid(count, COUNT_STEP):
             raise ValueError(f"a count is at least 0.01, in 0.01s: {count}")
         body = {"ticker": ticker, "side": "bid", "price": f"{price:.4f}", "count": f"{count:.2f}"}
+        if client_order_id is not None:
+            body["updated_client_order_id"] = client_order_id
         found = self._json(
             "amend-order", "POST", f"/portfolio/events/orders/{order_id}/amend", body=body
         )

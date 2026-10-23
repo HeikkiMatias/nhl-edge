@@ -21,6 +21,7 @@ from nhl_edge.cli import app
 from nhl_edge.live import bundle as lb
 from nhl_edge.live import placement as pm
 from nhl_edge.live import real
+from nhl_edge.live import real_ledger as rl
 from nhl_edge.live import revalue as rv
 from nhl_edge.live.exchange import cost
 from nhl_edge.live.predict import devig
@@ -133,6 +134,14 @@ def test_a_quote_older_than_five_minutes_is_no_valuation(tmp_path: Path) -> None
     assert vf.records(record)[-1]["action"] == rv.STALE
 
 
+def test_a_pair_de_vigging_refuses_is_no_quote(tmp_path: Path) -> None:
+    # Both sides at plus money sum below 100%: no price for that game, and the run goes on
+    record, exchange, report = slot_run(tmp_path, (2.10, 2.10))
+    assert report.stale == 3 and report.valued == report.failed == 0 and not exchange.amends
+    valued = vf.records(record)[-1]
+    assert valued["action"] == rv.STALE and valued["quote"] is None
+
+
 def test_a_snapshot_the_decision_read_before_the_order_went_values_nothing(
     tmp_path: Path,
 ) -> None:
@@ -161,6 +170,49 @@ def test_a_lowered_bid_rests_at_its_new_limit_for_the_next_valuation(tmp_path: P
     assert exchange.orders[vf.WSH_MAKER]["yes_price_dollars"] == "0.4800"
 
 
+def test_an_amend_whose_answer_is_lost_is_found_by_its_new_client_order_id(
+    tmp_path: Path,
+) -> None:
+    # Kalshi applies the amend as another order and the answer is lost: the retry against the
+    # old order fails, and the bid is found by the client order id the amend gave it.
+    exchange = Exchange()
+    exchange.new_ids, exchange.lost_amend = True, 503
+    record, raw, exchange, client, clock = vf.placed(tmp_path, exchange)
+    body = vf.odds_body({2026020053: (2.20, 1.72)}, vf.SLOT - timedelta(seconds=20))
+    key = vf.store_slot(raw, vf.SLOT, body)
+    clock.at = AFTER
+    report = run(record, raw, client, clock, slot=rv.Snapshot(body, vf.SLOT, key))
+    assert report.lowered == 1 and report.failed == 0
+    lowered = vf.records(record)[-1]
+    assert lowered["action"] == rv.LOWER and lowered["order_id"] != vf.WSH_MAKER
+    found = exchange.orders[lowered["order_id"]]
+    assert found["status"] == "resting" and found["yes_price_dollars"] == "0.4800"
+    parts, _ = rv.resting(record, pm.LIVE, rv.ledger_of(record), AFTER)
+    wsh = next(p for p in parts if p.game_id == 2026020053)
+    assert found["client_order_id"] == rv.amend_id(wsh, Decimal("0.48"))
+    assert wsh.order_id == lowered["order_id"]
+
+
+def test_an_amend_kalshi_never_applied_fails_the_run_and_records_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nhl_edge.live.kalshi_trade import KalshiTradeError
+
+    record, raw, exchange, client, clock = vf.placed(tmp_path)
+
+    def refused(*args: Any) -> Any:
+        raise KalshiTradeError("amend-order: status 503")
+
+    monkeypatch.setattr(client, "amend", refused)
+    body = vf.odds_body({2026020053: (2.20, 1.72)}, vf.SLOT - timedelta(seconds=20))
+    key = vf.store_slot(raw, vf.SLOT, body)
+    clock.at = AFTER
+    report = run(record, raw, client, clock, slot=rv.Snapshot(body, vf.SLOT, key))
+    assert report.failed == 1 and report.lowered == 0
+    assert vf.records(record) == []
+    assert exchange.orders[vf.WSH_MAKER]["yes_price_dollars"] == "0.4900"
+
+
 # The starters
 
 
@@ -178,6 +230,17 @@ def test_a_starter_change_since_the_decision_cancels_the_bid_without_a_price(
     valued = vf.records(record)[-1]
     assert (valued["trigger"], valued["action"]) == (rv.STARTER, rv.CANCEL)
     assert valued["starters"] == {"decision": {"WSH": 1, "PIT": 2}, "now": {"WSH": 7, "PIT": 2}}
+
+
+def test_a_starter_change_is_seen_when_daily_faceoff_lists_another_start(tmp_path: Path) -> None:
+    # Daily Faceoff's start five minutes off the schedule's: each team's game is its nearest
+    record, raw, exchange, client, clock = vf.placed(tmp_path)
+    shift = timedelta(minutes=5)
+    vf.store_page(raw, pf.DECISION - timedelta(minutes=2), {"WSH": 1, "PIT": 2}, shift)
+    vf.store_page(raw, AFTER - timedelta(minutes=1), {"WSH": 7, "PIT": 2}, shift)
+    clock.at = AFTER
+    report = run(record, raw, client, clock)
+    assert report.starters == 1 and exchange.orders[vf.WSH_MAKER]["status"] == "canceled"
 
 
 def test_a_starter_first_named_after_the_decision_is_no_change(tmp_path: Path) -> None:
@@ -242,6 +305,28 @@ def test_a_stale_top_of_book_triggers_nothing(tmp_path: Path) -> None:
     record, raw, _, client, clock = moved_setup(tmp_path, age=rv.TOP_AGE + timedelta(minutes=1))
     calls: list[httpx.Request] = []
     assert run(record, raw, client, clock, odds=vf.odds_api(b"[]", clock, calls)).moved == 0
+
+
+def test_a_poll_answered_after_the_placement_gives_way_to_the_one_before(tmp_path: Path) -> None:
+    # A poll begun before the order went but answered after it is no baseline: the poll before
+    # it is, so the move since is still seen.
+    record, raw, _exchange, client, clock = vf.placed(tmp_path)
+    vf.store_tops(raw, vf.PLACED_AT - timedelta(minutes=1), {vf.WSH: ("0.4500", "0.5200")})
+    vf.store_tops(
+        raw,
+        vf.PLACED_AT - timedelta(seconds=10),
+        {vf.WSH: ("0.4500", "0.5800")},
+        fetched=vf.PLACED_AT + timedelta(seconds=20),
+    )
+    parts, _ = rv.resting(record, pm.LIVE, rv.ledger_of(record), vf.PLACED_AT)
+    wsh = next(p for p in parts if p.game_id == 2026020053)
+    top = rv.top_at(raw, wsh, vf.PLACED_AT)
+    assert top is not None and top["yes_ask"] == 0.52
+    clock.at = AFTER
+    vf.store_tops(raw, AFTER - timedelta(minutes=1), {vf.WSH: ("0.4500", "0.5500")})
+    calls: list[httpx.Request] = []
+    body = vf.odds_body({2026020053: (2.20, 1.72)}, AFTER - timedelta(seconds=30))
+    assert run(record, raw, client, clock, odds=vf.odds_api(body, clock, calls)).moved == 1
 
 
 def test_the_next_move_is_measured_from_the_last_valuation(tmp_path: Path) -> None:
@@ -325,6 +410,10 @@ def test_the_reconcile_takes_every_fill_of_a_lowered_bid(tmp_path: Path) -> None
     final = json.loads(record.get(pm.order_key(pm.LIVE, pf.DAY, 2026020053, "final")))
     assert final["parts"][pm.MAKER]["contracts"] == "1.50"
     assert len(final["maker_orders"]) == 2
+    # the bet names every maker order that filled before the start
+    assert final["parts"][pm.MAKER]["order_ids"] == [vf.WSH_MAKER, lowered["order_id"]]
+    bet = json.loads(record.get(rl.entry_key(pf.DAY, 2026020053)))
+    assert vf.WSH_MAKER in bet["bet_id"] and lowered["order_id"] in bet["bet_id"]
 
 
 def test_a_part_kalshi_no_longer_shows_resting_is_left_to_the_reconcile(tmp_path: Path) -> None:
@@ -419,6 +508,32 @@ def test_nhl_real_revalue_at_a_slot_lowers_and_prints_counts_only(
     clock.at += timedelta(minutes=1)
     assert runner.invoke(app, ["real", "revalue", "--r2", "--slot"]).exit_code == 0
     assert len(sent) == 1
+
+
+def test_nhl_real_revalue_tells_a_refused_message_once_nothing_rests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every bid cancelled, and Telegram refuses the message: the next run, with nothing resting,
+    # still sends it.
+    from nhl_edge.live import telegram
+
+    record, raw, _exchange, sent, clock = command(tmp_path, monkeypatch, "live")
+    monkeypatch.setattr(rv, "lowered", lambda *args: None)
+    prices = {game_id: (2.60, 1.52) for game_id in vf.DECISION_PRICES}
+    vf.store_slot(raw, vf.SLOT, vf.odds_body(prices, vf.SLOT - timedelta(seconds=20)))
+
+    def refused(text: str) -> None:
+        raise telegram.TelegramError("synthetic")
+
+    monkeypatch.setattr(telegram, "send", refused)
+    result = runner.invoke(app, ["real", "revalue", "--r2", "--slot"])
+    assert result.exit_code == 1 and "3 cancelled" in result.output
+    assert rv.resting(record, pm.LIVE, rv.ledger_of(record), clock())[0] == []
+    monkeypatch.setattr(telegram, "send", lambda text: sent.append(text))
+    clock.at += timedelta(minutes=15)
+    result = runner.invoke(app, ["real", "revalue", "--r2"])
+    assert result.exit_code == 0 and "nothing resting" in result.output
+    assert len(sent) == 1 and sent[0].count("bid cancelled") == 3
 
 
 def test_nhl_real_revalue_at_a_slot_without_its_snapshot_values_nothing(

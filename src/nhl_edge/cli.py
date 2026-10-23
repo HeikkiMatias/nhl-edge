@@ -5674,8 +5674,18 @@ def real_revalue(
         typer.echo(
             f"::warning::kalshi revalue {setting}: {missing} resting parts without a ledger row"
         )
+
+    def tell() -> None:
+        """The bids lowered or cancelled and not told yet, a refused message's included, even
+        once nothing rests (Codex on #327)."""
+        told = rv.unnotified(store, setting)
+        if _send_quietly(rv.message(setting, told)):
+            raise typer.Exit(code=1)
+        rv.mark_notified(store, setting, told, datetime.now(UTC))
+
     if not parts:
         typer.echo(f"kalshi revalue {setting}: nothing resting")
+        tell()
         return
     rules = placement.code_exchange(setting)
     paths = sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
@@ -5699,6 +5709,7 @@ def real_revalue(
         # Only the slot's own snapshot, taken minutes before: an older one is no slot's.
         if key is None or taken is None or now - taken > timedelta(minutes=15):
             typer.echo(f"kalshi revalue {setting}: no slot snapshot in the last 15 minutes")
+            tell()
             return
         snapshot = rv.Snapshot(raw.get(key), taken, key)
     else:
@@ -5715,10 +5726,7 @@ def real_revalue(
     )
     report.missing = missing
     typer.echo(report.line(setting))
-    told = rv.unnotified(store, setting)
-    if _send_quietly(rv.message(setting, told)):
-        raise typer.Exit(code=1)
-    rv.mark_notified(store, setting, told, datetime.now(UTC))
+    tell()
     if report.failed:
         typer.echo(f"kalshi revalue {setting}: {report.failed} failed", err=True)
         raise typer.Exit(code=1)

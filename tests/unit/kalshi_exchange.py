@@ -87,9 +87,11 @@ class Exchange:
         self.cross: str | int = "cancel"
         # the clock fills at placement are dated by
         self.now: Callable[[], datetime] = lambda: NOW
-        # amends received, and whether an amend answers with a new order id
+        # amends received, whether an amend answers with a new order id, and an amend applied
+        # whose answer is lost (this status instead)
         self.amends: list[tuple[str, dict[str, Any]]] = []
         self.new_ids = False
+        self.lost_amend: int | None = None
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -192,7 +194,7 @@ class Exchange:
 
     def _amend(self, order_id: str, body: dict[str, Any]) -> httpx.Response:
         """Amend Order V2: a new price and total count (filled plus resting), same order id unless
-        new_ids is set, as Kalshi might answer with another."""
+        new_ids is set, as Kalshi might answer with another, and the updated client order id."""
         order = self.orders.get(order_id)
         if order is None or order["status"] != "resting":
             return httpx.Response(404, json={"code": "not_found"})
@@ -207,6 +209,11 @@ class Exchange:
             self.orders[answered] = order | {"order_id": answered, "fill_count_fp": "0.00"}
             self.orders[answered]["remaining_count_fp"] = f"{remaining:.2f}"
             order["status"] = "canceled"
+        if body.get("updated_client_order_id"):
+            self.orders[answered]["client_order_id"] = body["updated_client_order_id"]
+        if self.lost_amend is not None:
+            status, self.lost_amend = self.lost_amend, None
+            return httpx.Response(status, json={"error": "synthetic"})
         return httpx.Response(
             200,
             json={"order_id": answered, "remaining_count": f"{remaining:.2f}", "ts_ms": 0},

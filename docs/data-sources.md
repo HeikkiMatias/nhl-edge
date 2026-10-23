@@ -574,21 +574,21 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - **When:**
     - at every odds slot, right after the goalie poll and the snapshot (`--slot`), with that snapshot. It values every part placed before the snapshot, so nothing at midday;
     - every 15 minutes from 13:05 to 22:50 ET (`kalshi-revalue.yml`, dispatched by the timer), on either trigger:
-      - a move of 3¢ or more in the market's best Yes bid or ask since the part's last valuation. The move is read from the watch's newest stored top of book (#319), at most 10 minutes old. Before any valuation, the baseline is the last top stored before the part was placed;
-      - a change in Daily Faceoff's named starter for either team since the decision. The run polls the page itself. A team with no starter named at the decision has none to change.
+      - a move of 3¢ or more in the market's best Yes bid or ask since the part's last valuation. The move is read from the watch's newest stored top of book (#319), at most 10 minutes old. Before any valuation, the baseline is the last top stored before the part was placed. A poll still being answered at that moment gives way to the one before it;
+      - a change in Daily Faceoff's named starter for either team since the decision. The run polls the page itself. Each team's game is the one nearest the schedule's start, since Daily Faceoff's can differ by minutes (as `lineup/confirmed.py` matches them). A team with no starter named at the decision has none to change.
   - **The fresh price:**
     - A slot reads its own snapshot, at most 15 minutes old.
     - A Kalshi move needs one Odds API h2h call in the EU region (1 credit), at most 4 a day. Each call is claimed once in R2 (`real/revalue-calls/<ET date>/<n>.json`). Past the cap, the trigger waits for the next slot.
     - The response is stored raw under `odds-revalue/`, apart from `odds/`, so it never enters `odds_snapshots` or the closing proxy.
-  - **The value p′:** the frozen live blend (`BLEND`) with Pinnacle's fresh pair de-vigged multiplicatively (`market/devig.py`), with the decision's B3 and u from the day's ledger and the decision's hurdle. A quote last updated over 5 minutes before the valuation is none (ADR 0033), and so is one for a game the Odds API has already started (as `odds.available_at` reads one), and the part rests. Kalshi's prices are a trigger only, never an input.
+  - **The value p′:** the frozen live blend (`BLEND`) with Pinnacle's fresh pair de-vigged multiplicatively (`market/devig.py`), with the decision's B3 and u from the day's ledger and the decision's hurdle. A quote last updated over 5 minutes before the valuation is none (ADR 0033), and so is one for a game the Odds API has already started (as `odds.available_at` reads one) or a pair de-vigging refuses (as `predict.devigable` reads one), and the part rests. Kalshi's prices are a trigger only, never an input.
   - **The rule:** L′ is the highest cent at or below the resting limit at which the resting contracts clear the hurdle at p′ with the maker fee.
     - No such cent: the part is cancelled.
-    - L′ below the limit: the bid is lowered there through Kalshi's amend (Amend Order V2), keeping the filled count.
+    - L′ below the limit: the bid is lowered there through Kalshi's amend (Amend Order V2), keeping the filled count. Each cent gives the order its own client order id, so an amend whose answer was lost is found by it.
     - Otherwise it rests.
     - A starter change cancels outright.
   - **The record:** each valuation is written once beside its order (`...-reval-<stamp>.json`). It holds the time, trigger, p′, action, the limits before and after, the resting contracts, the quote and the top of book it read, and the starters for a starter change.
-  - **The reconcile:** the final record reads every maker order id the valuations name, should an amend answer with a new one, and keeps each fill once.
-  - **Messages:** the owner's Telegram hears of each bid lowered or cancelled, told once (`...-notified_reval-<stamp>.json`). The log prints counts only.
+  - **The reconcile:** the final record reads every maker order id the valuations name, should an amend answer with a new one, and keeps each fill once. The bet's id names each maker order that filled before the start.
+  - **Messages:** the owner's Telegram hears of each bid lowered or cancelled, told once (`...-notified_reval-<stamp>.json`), a refused message with a later run's, even once nothing rests. The log prints counts only.
 - **`nhl real place --dry-run --date <d> [--env demo|live]`:** prints a day's orders with their prices and sends nothing. It is for the owner's terminal only, never a workflow.
 - **Logs and messages:** a run prints counts only. The orders placed and the fills go to the owner's Telegram, a demo one marked "DEMO, mock funds".
   - **Told once:** each message, once sent, is marked on its orders (`...-notified_placed.json`, `...-notified_final.json`), so a message Telegram refused goes with the next run.

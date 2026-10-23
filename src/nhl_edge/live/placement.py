@@ -860,7 +860,8 @@ def held_contracts(final: Mapping[str, Any]) -> Decimal:
 def entry(record: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     """A live order's entry in the real record, as the dashboard's form writes one
     (real_ledger.ENTRY_FIELDS). Its bet id is Kalshi's order id, or for ADR 0045's order the ids
-    of the parts that filled before the start, taker part first."""
+    of the parts that filled before the start, taker part first, and each maker order that did
+    when a lowered bid became another order."""
     order, final = record["order"], record.get("final")
     contracts = _decimal(final.get("contracts")) if final else Decimal(0)
     base = {
@@ -885,7 +886,10 @@ def entry(record: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     stake = max(round(float(cost) / order["usd_per_eur"], 2), 0.01)
     if "parts" in final:
         filled = [part for part in final["parts"].values() if _decimal(part["contracts"]) > 0]
-        bet_id = " + ".join(str(part["order_id"]) for part in filled)
+        bet_id = " + ".join(
+            " + ".join(str(i) for i in part.get("order_ids") or [part["order_id"]])
+            for part in filled
+        )
     else:
         bet_id = record[PLACED]["order_id"]
     return base | {
@@ -1102,6 +1106,14 @@ def reconcile(
                 final["filled_contracts"] = f"{held:.2f}"
                 if len(ids.get(MAKER, [])) > 1:
                     final["maker_orders"] = [dict(o) for o in shown[MAKER]]
+                    # every maker order filled before the start, should a lowered bid be
+                    # another order, so the bet names each one (Codex on #327)
+                    held_ids = {
+                        str(f.get("order_id"))
+                        for f in flat[MAKER]
+                        if _instant(f["created_time"]) < begins
+                    }
+                    final["parts"][MAKER]["order_ids"] = [i for i in ids[MAKER] if i in held_ids]
             else:
                 final = final_record(shown[""][-1], flat[""], begins, now())
             report.filled += _decimal(final["contracts"]) > 0

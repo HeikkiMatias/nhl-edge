@@ -36,6 +36,7 @@ log prints counts only (run logs are public).
 """
 
 import json
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -46,6 +47,7 @@ import numpy as np
 import polars as pl
 from pandera.errors import SchemaError
 
+from nhl_edge.backtest.walk_forward import refused
 from nhl_edge.ingest import dailyfaceoff as dfo
 from nhl_edge.ingest import kalshi
 from nhl_edge.ingest import kalshi_watch as kw
@@ -70,6 +72,8 @@ REGIONS = "eu"
 # A top of book this old at a check moves nothing: the watch isn't running.
 TOP_AGE = timedelta(minutes=10)
 TOPS_PREFIX = f"{kalshi.SOURCE}/{kw.WATCH}/{kw.TOPS}"
+# The polls a check looks back through for one whose responses came before it.
+POLLS_BACK = 3
 
 
 def _instant(value: str) -> datetime:
@@ -92,6 +96,7 @@ class Resting:
     expires_utc: datetime
     placed_utc: datetime
     order_id: str
+    client_order_id: str
     limit: Decimal
     hurdle: float
     p_b3: float
@@ -149,6 +154,7 @@ def resting(
                 expires_utc=expires,
                 placed_utc=_instant(maker["placed_utc"]),
                 order_id=lowered[-1]["order_id"] if lowered else maker["order_id"],
+                client_order_id=maker["client_order_id"],
                 limit=Decimal(lowered[-1]["limit_after"] if lowered else maker["limit"]),
                 hurdle=float(order["hurdle"]),
                 p_b3=float(row["p_b3"]),
@@ -197,7 +203,9 @@ class Quote:
 def quotes(
     body: bytes, snapshot_utc: datetime, raw_key: str, parts: Sequence[Resting]
 ) -> dict[int, Quote]:
-    """Pinnacle's h2h pair of each part's game in a stored Odds API response."""
+    """Pinnacle's h2h pair of each part's game in a stored Odds API response. A pair de-vigging
+    refuses (implied probabilities summing below 100%) is no price, as predict.devigable reads
+    one, so its part rests."""
     rows = parse_odds(body, snapshot_utc, "revalue", raw_key)
     listings = pl.DataFrame(
         [
@@ -226,19 +234,22 @@ def quotes(
         sides = {
             r["side"]: r for r in h2h.filter(pl.col("game_id") == game_id).iter_rows(named=True)
         }
-        if "home" in sides and "away" in sides:
-            found[int(game_id)] = Quote(
-                snapshot_utc=snapshot_utc,
-                last_update_utc=min(
-                    sides["home"]["last_update_utc"], sides["away"]["last_update_utc"]
-                ),
-                home_price=float(sides["home"]["price_decimal"]),
-                away_price=float(sides["away"]["price_decimal"]),
-                raw_key=raw_key,
-                commence_utc=min(
-                    sides["home"]["commence_time_utc"], sides["away"]["commence_time_utc"]
-                ),
-            )
+        if "home" not in sides or "away" not in sides:
+            continue
+        home_price = float(sides["home"]["price_decimal"])
+        away_price = float(sides["away"]["price_decimal"])
+        if refused(pl.DataFrame({"home_price": [home_price], "away_price": [away_price]}))[0]:
+            continue
+        found[int(game_id)] = Quote(
+            snapshot_utc=snapshot_utc,
+            last_update_utc=min(sides["home"]["last_update_utc"], sides["away"]["last_update_utc"]),
+            home_price=home_price,
+            away_price=away_price,
+            raw_key=raw_key,
+            commence_utc=min(
+                sides["home"]["commence_time_utc"], sides["away"]["commence_time_utc"]
+            ),
+        )
     return found
 
 
@@ -249,6 +260,13 @@ def p_side(part: Resting, quote: Quote, live: blend_fit.LiveFit) -> float:
     p_b0 = devig(pair).to_numpy()
     p_home = float(live.blends["BLEND"].predict(p_b0, np.array([part.p_b3]), np.array([part.u]))[0])
     return p_home if part.is_home else 1 - p_home
+
+
+def amend_id(part: Resting, price: Decimal) -> str:
+    """The client order id a part's bid takes when lowered to a price: the same for the same part
+    and cent, and each cent's its own, since a bid is only ever lowered."""
+    name = f"{part.client_order_id}:amend:{round(price * 100)}"
+    return str(uuid.uuid5(pm.NAMESPACE, name))
 
 
 def lowered(
@@ -266,10 +284,24 @@ def lowered(
 
 def top_at(raw: RawStore, part: Resting, at: datetime) -> dict[str, Any] | None:
     """The part's market's best Yes bid and ask in the watch's newest top-of-book poll stored at
-    or before at, fetched before at and before the start, or None."""
-    key = raw.latest_before(f"{TOPS_PREFIX}/{part.game_date.isoformat()}", at)
-    if key is None:
-        return None
+    or before at, fetched before at and before the start, or None. A poll's key is stamped when
+    it began, so a poll whose responses came after at gives way to the one before it, up to
+    POLLS_BACK polls."""
+    prefix, before = f"{TOPS_PREFIX}/{part.game_date.isoformat()}", at
+    for _ in range(POLLS_BACK):
+        key = raw.latest_before(prefix, before)
+        if key is None:
+            return None
+        found = _top_in(raw, key, part, at)
+        if found is not None:
+            return found
+        began = datetime.strptime(key.rsplit("/", 1)[-1][:16], "%Y%m%dT%H%M%SZ")
+        before = began.replace(tzinfo=UTC) - timedelta(seconds=1)
+    return None
+
+
+def _top_in(raw: RawStore, key: str, part: Resting, at: datetime) -> dict[str, Any] | None:
+    """The part's market's top of book in one stored poll, from a response fetched before at."""
     try:
         meta = raw.meta(key)
         markets = {m["ticker"]: kalshi.market_of(m) for m in meta["markets"]}
@@ -312,7 +344,9 @@ def moved(before: Mapping[str, Any] | None, after: Mapping[str, Any] | None) -> 
 
 def starters(raw: RawStore, part: Resting, at: datetime) -> dict[str, int | None] | None:
     """Each team's starter Daily Faceoff named (its id) in its newest page stored at or before
-    at, among games not started then, or None without a page."""
+    at, among games not started then, or None without a page. Its listed start can differ by
+    minutes from the schedule's, so each team's game is the one nearest the part's start, as
+    confirmed.calls matches them."""
     key = raw.latest_before(f"{dfo.PREFIX}/{part.game_date.isoformat()}", at)
     if key is None:
         return None
@@ -323,10 +357,12 @@ def starters(raw: RawStore, part: Resting, at: datetime) -> dict[str, int | None
         return None
     if observed > at:
         return None
-    game = rows.filter(
-        pl.col("team").is_in([part.home, part.away]), pl.col("start_utc") == part.start_utc
-    )
-    named = {r["team"]: r["dfo_goalie_id"] for r in game.iter_rows(named=True)}
+    named: dict[str, int | None] = {}
+    for team in (part.home, part.away):
+        listed = rows.filter(pl.col("team") == team)
+        if listed.height:
+            gap = (pl.col("start_utc") - part.start_utc).abs()
+            named[team] = listed.sort(gap).row(0, named=True)["dfo_goalie_id"]
     return {team: named.get(team) for team in (part.home, part.away)}
 
 
@@ -461,7 +497,17 @@ def value(
             trade.cancel(part.order_id, part.ticker)
             action = CANCEL
         elif target < current:
-            answer = trade.amend(part.order_id, part.ticker, target, filled + remaining)
+            renamed = amend_id(part, target)
+            try:
+                answer = trade.amend(
+                    part.order_id, part.ticker, target, filled + remaining, renamed
+                )
+            except KalshiTradeError:
+                # An answer lost after Kalshi applied the amend, which may have replaced the
+                # order: the bid is found by its new client order id, else the run failed.
+                answer = trade.find_order(part.ticker, renamed)
+                if answer is None:
+                    raise
             order_id, action = str(answer["order_id"]), LOWER
         else:
             action = REST

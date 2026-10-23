@@ -130,14 +130,14 @@ def odds_api(body: bytes, clock: Clock, calls: list[httpx.Request]) -> OddsApi:
     return OddsApi("synthetic-key", client, now=clock)
 
 
-def dfo_page(goalies: dict[str, int | None]) -> bytes:
+def dfo_page(goalies: dict[str, int | None], shift: timedelta = timedelta(0)) -> bytes:
     """SYNTHETIC: a Daily Faceoff starting-goalies page naming each team's goalie id (None for
-    none), for the day's games."""
+    none), for the day's games, each listed shift from the schedule's start."""
     games = []
     for home, away, start in pf.GAMES.values():
         game: dict[str, Any] = {
             "date": pf.DAY.isoformat(),
-            "dateGmt": start.isoformat().replace("+00:00", "Z"),
+            "dateGmt": (start + shift).isoformat().replace("+00:00", "Z"),
             "homeTeamName": NAMES[home],
             "awayTeamName": NAMES[away],
         }
@@ -151,17 +151,25 @@ def dfo_page(goalies: dict[str, int | None]) -> bytes:
     return f'<script id="__NEXT_DATA__" type="application/json">{data}</script>'.encode()
 
 
-def store_page(raw: RawStore, at: datetime, goalies: dict[str, int | None]) -> str:
+def store_page(
+    raw: RawStore, at: datetime, goalies: dict[str, int | None], shift: timedelta = timedelta(0)
+) -> str:
     return raw.put(
         "dailyfaceoff",
         f"starting-goalies/{pf.DAY.isoformat()}/{at:%Y%m%dT%H%M%SZ}",
-        dfo_page(goalies),
+        dfo_page(goalies, shift),
         {"fetched_utc": at.isoformat(), "status": 200},
     )
 
 
-def store_tops(raw: RawStore, at: datetime, tops: dict[str, tuple[str, str]]) -> str | None:
-    """A watch poll of the day's markets at at, each ticker with its best Yes bid and ask."""
+def store_tops(
+    raw: RawStore,
+    at: datetime,
+    tops: dict[str, tuple[str, str]],
+    fetched: datetime | None = None,
+) -> str | None:
+    """A watch poll of the day's markets begun at at and answered at fetched (at when not given),
+    each ticker with its best Yes bid and ask."""
     markets = kw.markets_of(pf.slate())
     listed = [
         {
@@ -172,7 +180,8 @@ def store_tops(raw: RawStore, at: datetime, tops: dict[str, tuple[str, str]]) ->
         }
         for ticker, (bid, ask) in tops.items()
     ]
-    response = kw.Response(None, kalshi.OK, json.dumps({"markets": listed}).encode(), at, 1)
+    body = json.dumps({"markets": listed}).encode()
+    response = kw.Response(None, kalshi.OK, body, fetched or at, 1)
     return kw.store_poll(raw, kw.TOPS, markets, [response], at)
 
 
