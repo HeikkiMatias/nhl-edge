@@ -138,14 +138,14 @@ def coefficients(tables: b3.Tables, terms: b3.Terms = b3.V1) -> np.ndarray:
 
 # B3, and B3 with Δĝ split into its parts (ADR 0044), whose goalie part reads the boxscores'
 # starters and whose special teams read the expected power plays.
-TERMS = pytest.mark.parametrize("terms", [b3.V1, b3.Terms(split=True)], ids=["B3", "split"])
+B3_AND_SPLIT = pytest.mark.parametrize("terms", [b3.V1, b3.Terms(split=True)], ids=["B3", "split"])
 
 
 LAST = LEAGUE.games.filter(pl.col("season") == TEST - 10001)["game_id"].max()
 IS_LAST = pl.col("game_id") == LAST
 
 
-@TERMS
+@B3_AND_SPLIT
 def test_an_earlier_result_published_after_the_fold_start_is_not_fitted_on(terms: b3.Terms) -> None:
     published_late = LEAGUE.games.with_columns(
         observed_utc=pl.when(IS_LAST)
@@ -160,7 +160,7 @@ def test_an_earlier_result_published_after_the_fold_start_is_not_fitted_on(terms
     )
 
 
-@TERMS
+@B3_AND_SPLIT
 def test_an_earlier_boxscore_published_after_the_fold_start_is_not_fitted_on(
     terms: b3.Terms,
 ) -> None:
@@ -172,7 +172,7 @@ def test_an_earlier_boxscore_published_after_the_fold_start_is_not_fitted_on(
     )
 
 
-@TERMS
+@B3_AND_SPLIT
 @pytest.mark.parametrize("name", PER_GAME)
 def test_an_earlier_row_published_after_the_fold_start_leaves_its_game_out(
     name: str, terms: b3.Terms
