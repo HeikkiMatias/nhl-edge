@@ -198,6 +198,25 @@ test("an automatic Kalshi bet shows its order and no form", async () => {
   expect(screen.queryByLabelText("Price")).toBeNull();
 });
 
+test("a two-part Kalshi order shows its taker part and its maker part", async () => {
+  const twoParts = {
+    ...KALSHI,
+    exchange: {
+      ...KALSHI.exchange,
+      execution: "adr-0045" as const,
+      maker: { limit: "0.49", contracts: "3.10", max_cost_usd: "1.5372", stake: 1.3252, effective: 2.016 },
+    },
+  };
+  const { supabase } = stubbed({ real_alerts: [twoParts], real_entries: [] }, new Set(["anon"]));
+  render(<RealBets client={supabase} />);
+  expect(
+    await screen.findByText(
+      /Placed automatically\. Kalshi: buy Yes TOR at most 47¢ at once, 2\.89 contracts, at most \$1\.41 \(1\.21 €\); then a bid at most 49¢ for the rest, both parts at most \$1\.54 \(1\.33 €\), resting until/,
+    ),
+  ).toBeTruthy();
+  expect(screen.queryByText("Record placed bet")).toBeNull();
+});
+
 test("an expired Kalshi order waits for its fills, still without a form", async () => {
   vi.setSystemTime(new Date("2026-11-17T23:56:00Z"));
   const { supabase } = stubbed({ real_alerts: [KALSHI], real_entries: [] }, new Set(["anon"]));

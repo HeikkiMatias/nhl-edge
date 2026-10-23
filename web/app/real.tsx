@@ -183,15 +183,25 @@ function RealBet({
 }
 
 function Order({ alert, order, now }: { alert: RealAlert; order: RealOrder; now: number }) {
-  const cents = Math.round(Number(order.limit) * 100);
+  const cents = (limit: string) => Math.round(Number(limit) * 100);
+  const size = `${order.contracts} contracts, at most $${Number(order.max_cost_usd).toFixed(2)} (${euros(order.stake)})`;
+  // ADR 0045's two parts: a taker part at once, then a maker part resting (#321).
+  const maker = order.execution === "adr-0045" ? order.maker : undefined;
   const what =
-    `Kalshi: buy Yes ${team(alert)} at most ${cents}¢, ${order.contracts} contracts, at most ` +
-    `$${Number(order.max_cost_usd).toFixed(2)} (${euros(order.stake)})`;
+    order.execution === "adr-0045"
+      ? `Kalshi: buy Yes ${team(alert)} at most ${cents(order.limit)}¢ at once, ${size}` +
+        (maker
+          ? `; then a bid at most ${cents(maker.limit)}¢ for the rest, both parts at most ` +
+            `$${Number(maker.max_cost_usd).toFixed(2)} (${euros(maker.stake)})`
+          : "")
+      : `Kalshi: buy Yes ${team(alert)} at most ${cents(order.limit)}¢, ${size}`;
   if (now < new Date(order.expires_utc).getTime()) {
+    const rests = order.execution !== "adr-0045" || maker;
     return (
       <p>
-        Placed automatically. {what}, resting until {helsinkiTime(order.expires_utc)}. Nothing to
-        enter: its fills are recorded once it expires.
+        Placed automatically. {what}
+        {rests ? `, resting until ${helsinkiTime(order.expires_utc)}` : ""}. Nothing to enter:
+        its fills are recorded once it expires.
       </p>
     );
   }

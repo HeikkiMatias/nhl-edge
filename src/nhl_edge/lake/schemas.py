@@ -2596,13 +2596,18 @@ class KalshiTrades(pa.DataFrameModel):
 
 KALSHI_ENVS = ("live", "demo")
 REAL_ORDER_STATES = ("planned", "skipped", "placed", "not sent", "canceled", "executed")
+# ADR 0040's one resting order, or ADR 0045's taker and maker parts.
+KALSHI_EXECUTIONS = ("adr-0040", "adr-0045")
 
 
 class RealOrders(pa.DataFrameModel):
     """One buy order of an alerted bet on Kalshi (ADR 0040, #281): in env "live" a real bet, in
     "demo" one on Kalshi's demo exchange with mock funds, kept apart from the record. limit is its
     highest price in dollars, contracts its size and max_cost_usd the most it costs, fee included;
-    it expires at expires_utc, before the game's start. status is planned (written, not sent),
+    it expires at expires_utc, before the game's start. execution is adr-0040 for one resting
+    order, or adr-0045 for an immediate-or-cancel taker part (limit, contracts, order_id) and a
+    post-only maker part resting at maker_limit (#321), with each part's contracts filled before
+    the start. status is planned (written, not sent),
     skipped (with its reason), placed (sent, resting), or once expired: not sent, canceled or
     executed, with the contracts filled, their cost and fees in USD, the first fill's time and
     whether any fill came at or after the start. Rebuilt from R2 (real/live/orders/,
@@ -2631,6 +2636,12 @@ class RealOrders(pa.DataFrameModel):
     fees_usd: pl.Float64 = pa.Field(nullable=True, ge=0)
     first_fill_utc: UtcDatetime = pa.Field(nullable=True)
     after_start: pl.Boolean = pa.Field(nullable=True)
+    execution: pl.String = pa.Field(isin=KALSHI_EXECUTIONS)
+    maker_limit: pl.Float64 = pa.Field(nullable=True, gt=0, lt=1)
+    maker_contracts: pl.Float64 = pa.Field(nullable=True, gt=0)
+    maker_order_id: pl.String = pa.Field(nullable=True)
+    taker_filled: pl.Float64 = pa.Field(nullable=True, ge=0)
+    maker_filled: pl.Float64 = pa.Field(nullable=True, ge=0)
     code_version: pl.String
 
     class Config(pa.DataFrameModel.Config):

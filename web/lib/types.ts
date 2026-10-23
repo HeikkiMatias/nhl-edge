@@ -195,16 +195,30 @@ export type RealAlert = {
 
 /** An alerted bet's buy order on Kalshi, placed automatically (ADR 0040): at most limit dollars
  * a contract, for contracts, costing at most max_cost_usd with the fee (stake euros at
- * usd_per_eur), resting until expires_utc, 5 minutes before the start. */
+ * usd_per_eur), resting until expires_utc, 5 minutes before the start. From ADR 0045 (#321,
+ * execution "adr-0045") those are its taker part's, bought at once, and maker is the post-only
+ * bid for the rest, both parts at most its max_cost_usd; null when its stake buys no contract. */
 export type RealOrder = {
   env: "live" | "demo";
+  execution?: "adr-0045";
   limit: string;
   contracts: string;
   max_cost_usd: string;
   stake: number;
   effective: number;
+  maker?: RealOrderPart | null;
   usd_per_eur: number;
   expires_utc: string;
+};
+
+/** An order part's limit in dollars, contracts, most cost in USD, stake in euros and effective
+ * decimal price. */
+export type RealOrderPart = {
+  limit: string;
+  contracts: string;
+  max_cost_usd: string;
+  stake: number;
+  effective: number;
 };
 
 /** What the owner did with an alerted bet, from the form (public.real_entries), or an automatic

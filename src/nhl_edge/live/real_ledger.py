@@ -54,6 +54,9 @@ PREFIX = "real/live"
 REPORTS = Path("reports/live")
 HELSINKI = ZoneInfo("Europe/Helsinki")
 CENT = 100
+# The execution an exchange order follows: ADR 0045's taker part at once and maker part resting,
+# or ADR 0040's one resting order, which an order without the field is.
+EXECUTION, ONE_ORDER = "adr-0045", "adr-0040"
 
 PRACTICE, REAL, PAUSED, STOPPED, CLOSED = REAL_MODES
 ALERTED = "alerted"
@@ -231,23 +234,37 @@ def stake_at(table: Sequence[Sequence[float]], price: float) -> float:
 def exchange_order(
     row: Mapping[str, Any], table: Sequence[Sequence[float]], rules: real.Exchange
 ) -> dict[str, Any] | None:
-    """A bet's buy order on an exchange venue (ADR 0040), as its alert row's exchange column holds
-    it: the limit in dollars, the contracts, the most it costs in USD and in euros, its effective
-    decimal price, the rate and when it expires. None when the stake buys no contract."""
-    found = exchange.order(
-        row["p_side"], row["hurdle"], lambda price: stake_at(table, price), rules
-    )
+    """A bet's buy order on an exchange venue (ADR 0040 and 0045), as its alert row's exchange
+    column holds it: its taker part, an immediate-or-cancel buy, with its limit in dollars, its
+    contracts, the most it costs in USD and in euros and its effective decimal price; its maker
+    part, a post-only bid resting until the expiry, the same at the maker fee as sized when the
+    taker part fills nothing (None when the stake buys no contract at it); the rate and when it
+    expires. None when the stake buys no contract at the taker part's limit."""
+
+    def allowed(price: float) -> float:
+        return stake_at(table, price)
+
+    found = exchange.order(row["p_side"], row["hurdle"], allowed, rules)
     if found is None:
         return None
+    maker = exchange.order(row["p_side"], row["hurdle"], allowed, rules, maker=True)
     return {
         "env": rules.env,
+        "execution": EXECUTION,
+        **_part(found),
+        "maker": _part(maker) if maker is not None else None,
+        "usd_per_eur": rules.usd_per_eur,
+        "expires_utc": (row["start_utc"] - rules.expire_before).isoformat(),
+    }
+
+
+def _part(found: exchange.Order) -> dict[str, Any]:
+    return {
         "limit": f"{found.price:.2f}",
         "contracts": f"{found.contracts:.2f}",
         "max_cost_usd": f"{found.cost:.4f}",
         "stake": round(found.stake, 4),
         "effective": round(found.effective, 6),
-        "usd_per_eur": rules.usd_per_eur,
-        "expires_utc": (row["start_utc"] - rules.expire_before).isoformat(),
     }
 
 
@@ -377,14 +394,7 @@ def message(
             lines.append(f"{game}: no bet ({row['status'].removeprefix('skipped: ')})")
             continue
         if row["exchange"] is not None:
-            placed = json.loads(row["exchange"])
-            expires = datetime.fromisoformat(placed["expires_utc"]).astimezone(HELSINKI)
-            lines += [
-                f"{game} · bet {team}",
-                f"  Kalshi: buy Yes {team} at most {round(float(placed['limit']) * CENT)}¢, "
-                f"{placed['contracts']} contracts, at most ${float(placed['max_cost_usd']):.2f} "
-                f"({placed['stake']:.2f} €), resting until {expires:%H:%M}",
-            ]
+            lines += [f"{game} · bet {team}", *order_lines(json.loads(row["exchange"]), team)]
             continue
         steps = ladder(json.loads(row["stakes"]))
         stakes = " · ".join(
@@ -407,8 +417,9 @@ def message(
     elif automatic:
         lines += [
             "",
-            "The orders go to Kalshi automatically, each expiring 5 minutes before its game. "
-            "Their fills are recorded once they expire; there is nothing to enter.",
+            "The orders go to Kalshi automatically: each buys what it can at once, and its bid "
+            "for the rest expires 5 minutes before its game. Their fills are recorded once they "
+            "expire; there is nothing to enter.",
         ]
     else:
         lines += [
@@ -420,6 +431,34 @@ def message(
     if practice:
         lines.append("Practice only: nothing here is a real bet.")
     return "\n".join(lines)
+
+
+def _cents(value: str) -> int:
+    return round(float(value) * CENT)
+
+
+def order_lines(placed: Mapping[str, Any], team: str) -> list[str]:
+    """An alerted bet's Kalshi order in the message: ADR 0045's taker part at once and its maker
+    part resting, or ADR 0040's one resting order."""
+    expires = datetime.fromisoformat(placed["expires_utc"]).astimezone(HELSINKI)
+    size = (
+        f"{placed['contracts']} contracts, at most ${float(placed['max_cost_usd']):.2f} "
+        f"({placed['stake']:.2f} €)"
+    )
+    if placed.get("execution") != EXECUTION:
+        return [
+            f"  Kalshi: buy Yes {team} at most {_cents(placed['limit'])}¢, {size}, resting until "
+            f"{expires:%H:%M}"
+        ]
+    lines = [f"  Kalshi: buy Yes {team} at most {_cents(placed['limit'])}¢ at once, {size}"]
+    maker = placed.get("maker")
+    if maker is not None:
+        lines.append(
+            f"  then a bid at most {_cents(maker['limit'])}¢ for the rest, both parts at most "
+            f"${float(maker['max_cost_usd']):.2f} ({maker['stake']:.2f} €), resting until "
+            f"{expires:%H:%M}"
+        )
+    return lines
 
 
 def _restart() -> str:

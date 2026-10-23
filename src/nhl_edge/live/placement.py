@@ -1,5 +1,5 @@
-"""Real bets placed automatically on Kalshi (ADR 0040, #281): each alerted bet's buy order, its
-fills, and its entry in the real record.
+"""Real bets placed automatically on Kalshi (ADR 0040 and 0045, #281, #321): each alerted bet's
+buy order in two parts, their fills, and the bet's entry in the real record.
 
 **The switch.** KALSHI_TRADING, a repository variable, is off, demo or live:
 - **off:** nothing is placed, and a run cancels our resting orders;
@@ -11,37 +11,52 @@ fills, and its entry in the real record.
 **The order** of an alerted bet is its alert row's buy order (the exchange column, written with the
 day's alert) for a live order; a demo order is computed the same way at the demo exchange's rules
 (real.DEMO_EXCHANGE), from the row's probability, hurdle and stake table. It goes to the team's
-market (ingest/kalshi.ticker) with a client order id derived from its environment, mode, date,
-game and policy, so a retry or a rerun is the same order, which Kalshi refuses twice (409).
+market (ingest/kalshi.ticker) in two parts (ADR 0045), each with a client order id derived from
+its environment, mode, date, game, policy and part, so a retry or a rerun is the same order, which
+Kalshi refuses twice (409):
+- **the taker part:** an immediate-or-cancel buy at L_t, the limit at the taker fee, sized at L_t;
+  what doesn't fill at once Kalshi cancels;
+- **the maker part:** then, once the taker part's fills are read, a post-only bid at L_m, the
+  highest cent that clears the hurdle at the maker fee, resting until the expiry. Its contracts
+  keep both parts within the maker part's planned cost and within the stake the table allows at
+  their effective price together (exchange.rest). A post-only bid can't rest at or above the best
+  ask, and Kalshi refuses or cancels one that would: it is then sent a cent lower, down to L_t,
+  since no Kalshi price is read to place it (ADR 0040 item 2). Each cent tried has its own client
+  order id.
 
 **Before each order** (place), all of these hold, or nothing is sent and the record says why:
 - the game's start, as the schedule lists it now, is still the alert's (leakage audit of #281: an
   order resting into a game moved earlier would fill during it);
 - the order expires at least LEAD from now, its game's start less the exchange's expire_before;
-- its most cost is within the frozen policy's max_bet of the bankroll, and the day's orders
-  together, an earlier run's included, within max_day;
+- its most cost, the larger of its two parts' (the taker part's fills leave the maker part only the
+  rest of its own planned cost), is within the frozen policy's max_bet of the bankroll, and the
+  day's orders together, an earlier run's included, within max_day;
 - **the code's own limits** (#294), whatever the alert row in R2 says: the environment's exchange
   is one the code names (DEMO_EXCHANGE, or the live venue's in real.VENUES), at the row's rate;
-  the order's cost, recomputed from its contracts and limit under those rules, is no more than its
-  row states; and that cost, and the day's together, are within max_bet and max_day of
-  CEILING_BANKROLL at the code's rate. Anyone who could rewrite R2 could otherwise size the
-  orders;
+  each part's cost, recomputed from its contracts and limit under those rules (the maker part's at
+  the maker fee, all a post-only order can pay), is no more than its row states; and the order's
+  most cost, and the day's together, are within max_bet and max_day of CEILING_BANKROLL at the
+  code's rate. Anyone who could rewrite R2 could otherwise size the orders;
 - the balance covers them;
 - the market is active.
 
 Each planned order is written to the record (orders/<date>/<game_id>.json) before any check, a
-skipped one's reason after its check (...-skipped.json), and Kalshi's order id once it is sent
-(...-placed.json). A rerun sends nothing for an order already placed.
+skipped one's reason after its check (...-skipped.json), and Kalshi's order id of each part once it
+is sent (...-taker-placed.json, ...-maker-placed.json), or why no maker part went
+(...-maker-skipped.json). A rerun sends nothing for a part already placed, and sends the maker
+part of a bet whose run stopped after its taker part. ADR 0040's orders, one resting order each
+(...-placed.json), are tracked to their end as before.
 
 **Its deadline** is its expiry, or earlier if the schedule moves its game earlier; the earliest
 start any run has seen holds (...-moved-<start>.json), so one unread schedule loses no move. Each
-run (reconcile) cancels a resting order whose deadline has passed. Once it has, and in a run that
-read the schedule, the order is read with its fills and written once (...-final.json). The bet is
-its fills before the start, the earliest seen; a fill at or after it, which the expiry rules out,
-is kept apart, flagged, and never the bet's (hard rule 2). On the live exchange, the bet's entry in
-the real record follows (real/live/entries/), as the dashboard's form would write it:
+run (reconcile) cancels a resting part whose deadline has passed. Once it has, and in a run that
+read the schedule, each part is read with its fills and the order is written once (...-final.json).
+The bet is its parts' fills before the start, the earliest seen, each tagged taker or maker by
+Kalshi's is_taker; a fill at or after it, which the expiry rules out, is kept apart, flagged, and
+never the bet's (hard rule 2). On the live exchange, the bet's entry in the real record follows
+(real/live/entries/), as the dashboard's form would write it:
 - placed, at the matched price contracts / cost, fees included, with the stake cost / rate in
-  euros, Kalshi's order id and the first fill's time;
+  euros, the order ids of the parts that filled and the first fill's time;
 - not placed, not matched, when nothing filled before the start;
 - not placed, missed it, when no order went.
 
@@ -69,6 +84,7 @@ from nhl_edge.live import kalshi_trade as kt
 from nhl_edge.live import real
 from nhl_edge.live import real_ledger as rl
 from nhl_edge.live.exchange import cost as order_cost
+from nhl_edge.live.exchange import rest
 from nhl_edge.live.kalshi_trade import KalshiTrade, KalshiTradeError, OrderRequest
 
 # The switch's settings: off, or the environment orders go to.
@@ -87,6 +103,25 @@ PREFIXES = {LIVE: rl.PREFIX, DEMO: "real/demo"}
 NAMESPACE = uuid.UUID("5d3c1f0e-2a8b-4c6e-9f1a-7b2e4d6c8a10")
 CAP_TOLERANCE = Decimal("0.0001")
 NOT_MATCHED, MISSED = "not matched", "missed it"
+# ADR 0045's two parts, and their record parts; ADR 0040's one order is the part "" (placed).
+TAKER, MAKER = "taker", "maker"
+PLACED, TAKER_PLACED, MAKER_PLACED, MAKER_SKIPPED = (
+    "placed",
+    "taker-placed",
+    "maker-placed",
+    "maker-skipped",
+)
+PLACED_PARTS = {"": PLACED, TAKER: TAKER_PLACED, MAKER: MAKER_PLACED}
+# The status Kalshi answers a request it refuses as invalid, as a post-only bid that would cross
+# the book may be.
+BAD_REQUEST = 400
+# A part's fill costs and fees as Kalshi's order shows them.
+FILL_COSTS = (
+    "taker_fill_cost_dollars",
+    "taker_fees_dollars",
+    "maker_fill_cost_dollars",
+    "maker_fees_dollars",
+)
 
 
 def switch_of(value: str | None) -> str:
@@ -97,10 +132,11 @@ def switch_of(value: str | None) -> str:
     return setting
 
 
-def client_order_id(env: str, row: Mapping[str, Any]) -> str:
-    """The order's client order id: the same for the same bet in the same environment."""
+def client_order_id(env: str, row: Mapping[str, Any], part: str = "") -> str:
+    """An order part's client order id: the same for the same bet's part in the same environment.
+    ADR 0040's one order had no part."""
     name = f"nhl-edge:{env}:{row['mode']}:{row['game_date']}:{row['game_id']}:"
-    return str(uuid.uuid5(NAMESPACE, name + row["policy_version"]))
+    return str(uuid.uuid5(NAMESPACE, name + row["policy_version"] + (f":{part}" if part else "")))
 
 
 def team_of(row: Mapping[str, Any]) -> str:
@@ -108,8 +144,43 @@ def team_of(row: Mapping[str, Any]) -> str:
 
 
 @dataclass(frozen=True)
+class Part:
+    """An order part as planned: its limit in dollars, its contracts, the most it costs in USD
+    with its fee, that cost in euros and its effective decimal price."""
+
+    limit: Decimal
+    contracts: Decimal
+    max_cost_usd: Decimal
+    stake: float
+    effective: float
+
+    @classmethod
+    def of(cls, fields: Mapping[str, Any]) -> "Part":
+        return cls(
+            limit=Decimal(fields["limit"]),
+            contracts=Decimal(fields["contracts"]),
+            max_cost_usd=Decimal(fields["max_cost_usd"]),
+            stake=fields["stake"],
+            effective=fields["effective"],
+        )
+
+    def record(self) -> dict[str, Any]:
+        return {
+            "limit": f"{self.limit:.2f}",
+            "contracts": f"{self.contracts:.2f}",
+            "max_cost_usd": f"{self.max_cost_usd:.4f}",
+            "stake": self.stake,
+            "effective": self.effective,
+        }
+
+
+@dataclass(frozen=True)
 class Plan:
-    """An order to send for an alerted bet."""
+    """An order to send for an alerted bet (ADR 0045): its taker part (limit, contracts,
+    max_cost_usd, stake, effective, client_order_id) and its maker part (None when its stake buys
+    no contract), with the client order id of each cent the maker part may rest at, from L_m down
+    to L_t, and the bet's probability, hurdle and stake table, which size the maker part once the
+    taker part's fills are known."""
 
     env: str
     game_date: date
@@ -128,10 +199,20 @@ class Plan:
     usd_per_eur: float
     bankroll: float
     expires_utc: datetime
+    p_side: float
+    hurdle: float
+    stakes: tuple[tuple[float, float], ...]
+    maker: Part | None
+    maker_ids: tuple[tuple[int, str], ...]
 
     def record(self, written: datetime, code_version: str) -> dict[str, Any]:
+        maker = None
+        if self.maker is not None:
+            ids = {str(cents): found for cents, found in self.maker_ids}
+            maker = self.maker.record() | {"client_order_ids": ids}
         return {
             "env": self.env,
+            "execution": rl.EXECUTION,
             "game_date": self.game_date.isoformat(),
             "season": self.season,
             "game_id": self.game_id,
@@ -145,6 +226,10 @@ class Plan:
             "max_cost_usd": f"{self.max_cost_usd:.4f}",
             "stake": self.stake,
             "effective": self.effective,
+            "maker": maker,
+            "p_side": self.p_side,
+            "hurdle": self.hurdle,
+            "stakes": [list(pair) for pair in self.stakes],
             "usd_per_eur": self.usd_per_eur,
             "bankroll": self.bankroll,
             "expires_utc": self.expires_utc.isoformat(),
@@ -153,13 +238,35 @@ class Plan:
         }
 
     def request(self) -> OrderRequest:
+        """The taker part: immediate or cancel, so it never rests and takes no expiry."""
         return OrderRequest(
             ticker=self.ticker,
             client_order_id=self.client_order_id,
             count=self.contracts,
             price=self.limit,
-            expiration_time=self.expires_utc,
+            time_in_force=kt.IOC,
         )
+
+    def maker_request(self, cents: int, contracts: Decimal) -> OrderRequest:
+        """The maker part at a cent: post-only, resting until the expiry."""
+        return OrderRequest(
+            ticker=self.ticker,
+            client_order_id=dict(self.maker_ids)[cents],
+            count=contracts,
+            price=Decimal(cents) / 100,
+            expiration_time=self.expires_utc,
+            post_only=True,
+        )
+
+    def most_cost(self) -> Decimal:
+        """The most the order can cost as its row states it: the taker part's, or the maker
+        part's, which the taker part's fills leave only the rest of."""
+        maker = self.maker.max_cost_usd if self.maker is not None else Decimal(0)
+        return max(self.max_cost_usd, maker)
+
+
+def _cents(value: Decimal | str) -> int:
+    return round(float(value) * 100)
 
 
 def plans(rows: pl.DataFrame, setting: str) -> list[Plan]:
@@ -182,6 +289,8 @@ def plans(rows: pl.DataFrame, setting: str) -> list[Plan]:
             if order is None:
                 continue
         team = team_of(row)
+        maker = Part.of(order["maker"]) if order.get("maker") else None
+        cents = range(_cents(maker.limit), _cents(order["limit"]) - 1, -1) if maker else range(0)
         found.append(
             Plan(
                 env=setting,
@@ -192,7 +301,7 @@ def plans(rows: pl.DataFrame, setting: str) -> list[Plan]:
                 mode=row["mode"],
                 team=team,
                 ticker=ticker(row["game_date"], row["away"], row["home"], team),
-                client_order_id=client_order_id(setting, row),
+                client_order_id=client_order_id(setting, row, TAKER),
                 limit=Decimal(order["limit"]),
                 contracts=Decimal(order["contracts"]),
                 max_cost_usd=Decimal(order["max_cost_usd"]),
@@ -201,6 +310,11 @@ def plans(rows: pl.DataFrame, setting: str) -> list[Plan]:
                 usd_per_eur=order["usd_per_eur"],
                 bankroll=row["bankroll"],
                 expires_utc=datetime.fromisoformat(order["expires_utc"]).astimezone(UTC),
+                p_side=row["p_side"],
+                hurdle=row["hurdle"],
+                stakes=tuple((float(p), float(s)) for p, s in json.loads(row["stakes"])),
+                maker=maker,
+                maker_ids=tuple((c, client_order_id(setting, row, f"{MAKER}:{c}")) for c in cents),
             )
         )
     return found
@@ -225,16 +339,40 @@ def _ceiling(share: float, rules: real.Exchange) -> Decimal:
     return Decimal(str(share * CEILING_BANKROLL * rules.usd_per_eur))
 
 
+def two_parts(order: Mapping[str, Any]) -> bool:
+    """Whether an order record is ADR 0045's two parts, not ADR 0040's one resting order."""
+    return order.get("execution") == rl.EXECUTION
+
+
+def most_cost(order: Mapping[str, Any], rules: real.Exchange) -> Decimal:
+    """The most an order record can cost, recomputed from its own contracts and limits under the
+    code's rules: ADR 0040's one order at the taker fee; ADR 0045's taker part at the taker fee or
+    its maker part at the maker fee, whichever is more, since the maker part gets only what the
+    taker part's fills leave of its own planned cost."""
+    taker = order_cost(Decimal(order["contracts"]), Decimal(order["limit"]), rules)
+    maker = order.get("maker") if two_parts(order) else None
+    if not maker:
+        return taker
+    rested = order_cost(Decimal(maker["contracts"]), Decimal(maker["limit"]), rules, maker=True)
+    return max(taker, rested)
+
+
+def is_placed(record: Mapping[str, Any]) -> bool:
+    """Whether any part of an order went to Kalshi: ADR 0040's order, or ADR 0045's taker part,
+    which goes first."""
+    return PLACED in record or TAKER_PLACED in record or MAKER_PLACED in record
+
+
 def _sent_cost(store: lb.Store, env: str, game_date: date, rules: real.Exchange) -> Decimal:
-    """The most the orders an earlier run sent for a game date can cost: each order record with
-    its placed part, at its cost recomputed from its own contracts and limit under the code's
+    """The most the orders an earlier run sent for a game date can cost: each order record with a
+    placed part, at its most cost recomputed from its own contracts and limits under the code's
     rules. Never from the day's alert rows, which R2 could rewrite after the orders went (Codex
     on #295)."""
     total = Decimal(0)
     for (day, _), record in stored_orders(store, env).items():
         order = record.get("order")
-        if day == game_date.isoformat() and order is not None and "placed" in record:
-            total += order_cost(Decimal(order["contracts"]), Decimal(order["limit"]), rules)
+        if day == game_date.isoformat() and order is not None and is_placed(record):
+            total += most_cost(order, rules)
     return total
 
 
@@ -253,19 +391,30 @@ class PlaceReport:
     existed: int = 0
     already: int = 0
     failed: int = 0
+    makers: int = 0
+    unread: int = 0
     skipped: dict[str, int] = field(default_factory=dict)
+    makers_skipped: dict[str, int] = field(default_factory=dict)
     placed_plans: list[Plan] = field(default_factory=list)
 
     def skip(self, reason: str) -> None:
         self.skipped[reason] = self.skipped.get(reason, 0) + 1
 
+    def skip_maker(self, reason: str) -> None:
+        self.makers_skipped[reason] = self.makers_skipped.get(reason, 0) + 1
+
     def line(self, env: str) -> str:
         skips = "".join(f"; {n} {reason}" for reason, n in sorted(self.skipped.items()))
+        makers = "".join(
+            f"; {n} maker parts not sent: {reason}"
+            for reason, n in sorted(self.makers_skipped.items())
+        )
+        unread = f"; {self.unread} maker parts waiting for their taker part" if self.unread else ""
         failed = f"; {self.failed} failed" if self.failed else ""
         return (
             f"kalshi orders {env}: {self.planned} planned, {self.placed} placed "
-            f"({self.existed} found already on Kalshi), {self.already} placed before{skips}"
-            f"{failed}"
+            f"({self.existed} found already on Kalshi), {self.already} placed before, "
+            f"{self.makers} maker parts resting{skips}{makers}{unread}{failed}"
         )
 
 
@@ -278,9 +427,11 @@ def place(
     starts: Mapping[int, datetime],
 ) -> PlaceReport:
     """Send each planned order that isn't placed yet, after the checks the module names: each is
-    written to the record before it is sent and its order id after. A skipped order's reason is
-    written once too. starts is each game's start as the schedule lists it now: an order goes only
-    while its game's start is still the alert's, so it can't rest into a game moved earlier."""
+    written to the record before it is sent, and each part's order id after. A skipped order's
+    reason is written once too. starts is each game's start as the schedule lists it now: an
+    order goes only while its game's start is still the alert's, so it can't rest into a game
+    moved earlier. Each order's taker part goes first and its maker part right after it
+    (send_maker); an order whose earlier run stopped between the two gets its maker part too."""
     report = PlaceReport(planned=len(planned))
 
     def skip(plan: Plan, reason: str) -> None:
@@ -289,16 +440,26 @@ def place(
         if not _held(store, key):
             _put(store, key, {"reason": reason, "skipped_utc": now().isoformat()})
 
-    due = []
+    def held(plan: Plan, part: str) -> bool:
+        return _held(store, order_key(plan.env, plan.game_date, plan.game_id, part))
+
+    due, resumed = [], []
     for plan in planned:
         key = order_key(plan.env, plan.game_date, plan.game_id)
         if not _held(store, key):
             _put(store, key, plan.record(now(), code_version))
-        if _held(store, order_key(plan.env, plan.game_date, plan.game_id, "placed")):
+        if held(plan, PLACED) or held(plan, TAKER_PLACED):
             # Sent by an earlier run, final or not: it counts against the day cap (Codex on #289),
-            # from its own record below.
+            # from its own record below. Its maker part goes now if that run stopped before it.
             report.already += 1
-        elif _held(store, order_key(plan.env, plan.game_date, plan.game_id, "final")):
+            if held(plan, TAKER_PLACED) and not any(
+                held(plan, part) for part in (MAKER_PLACED, MAKER_SKIPPED, "final")
+            ):
+                resumed.append(plan)
+        elif not two_parts(json.loads(store.get(key))):
+            # Written by a run before ADR 0045, whose record the reconcile tracks as one order.
+            skip(plan, "the order was planned before ADR 0045")
+        elif held(plan, "final"):
             # Its deadline has passed once, with nothing sent: a later run never revives it.
             skip(plan, "the order is already final")
         elif plan.game_id not in starts:
@@ -309,47 +470,81 @@ def place(
             skip(plan, "too close to the start")
         else:
             due.append(plan)
-    if not due:
-        return report
     capped: list[Plan] = []
     code_rules: real.Exchange | None = None
     for plan in due:
-        cap = Decimal(str(POLICY.max_bet * plan.bankroll * plan.usd_per_eur))
-        # The code's own limits first (#294): a row from R2 never sizes an order by itself.
-        rules = code_exchange(plan.env)
-        if rules is None:
-            skip(plan, "the code names no exchange for its environment")
-        elif plan.usd_per_eur != rules.usd_per_eur:
-            skip(plan, "its rate isn't the code's")
-        elif order_cost(plan.contracts, plan.limit, rules) > plan.max_cost_usd + CAP_TOLERANCE:
-            skip(plan, "it costs more than its row says")
-        elif plan.max_cost_usd > _ceiling(POLICY.max_bet, rules) + CAP_TOLERANCE:
-            skip(plan, "over the code's bet ceiling")
-        elif plan.max_cost_usd > cap + CAP_TOLERANCE:
-            skip(plan, "over the bet cap")
+        reason = _refused(plan)
+        if reason is not None:
+            skip(plan, reason)
         else:
             capped.append(plan)
-            code_rules = rules
-    if not capped or code_rules is None:
-        return report
+            code_rules = code_exchange(plan.env)
+    for plan in resumed:
+        # The same limits for a maker part an earlier run left unsent: its row is read again now.
+        reason = _refused(plan)
+        if reason is not None:
+            skip_maker(store, plan, reason, now, report)
+        else:
+            send_maker(store, trade, plan, now, starts, report)
+    if capped and code_rules is not None:
+        _send(store, trade, capped, code_rules, now, starts, report, skip)
+    return report
+
+
+def _refused(plan: Plan) -> str | None:
+    """Why the code's own limits refuse an order (#294), or None: a row from R2 never sizes an
+    order by itself. The exchange is the code's at the row's rate, each part costs no more than
+    its row says at its own worst fee, and the order's most cost is within the code's bet ceiling
+    and the bet cap."""
+    rules = code_exchange(plan.env)
+    if rules is None:
+        return "the code names no exchange for its environment"
+    if plan.usd_per_eur != rules.usd_per_eur:
+        return "its rate isn't the code's"
+    if order_cost(plan.contracts, plan.limit, rules) > plan.max_cost_usd + CAP_TOLERANCE or (
+        plan.maker is not None
+        and order_cost(plan.maker.contracts, plan.maker.limit, rules, maker=True)
+        > plan.maker.max_cost_usd + CAP_TOLERANCE
+    ):
+        return "it costs more than its row says"
+    if plan.most_cost() > _ceiling(POLICY.max_bet, rules) + CAP_TOLERANCE:
+        return "over the code's bet ceiling"
+    cap = Decimal(str(POLICY.max_bet * plan.bankroll * plan.usd_per_eur))
+    if plan.most_cost() > cap + CAP_TOLERANCE:
+        return "over the bet cap"
+    return None
+
+
+def _send(
+    store: lb.Store,
+    trade: KalshiTrade,
+    capped: Sequence[Plan],
+    rules: real.Exchange,
+    now: Callable[[], datetime],
+    starts: Mapping[int, datetime],
+    report: PlaceReport,
+    skip: Callable[[Plan, str], None],
+) -> None:
+    """The day cap and the balance for the orders that passed their own checks, then each one's
+    market, its taker part and its maker part."""
     # The day's orders together, those an earlier run placed included, within the day cap and
     # within the code's own day ceiling.
     first = capped[0]
     day_cap = Decimal(str(POLICY.max_day * first.bankroll * first.usd_per_eur))
-    new = sum((plan.max_cost_usd for plan in capped), Decimal(0))
-    day_total = new + _sent_cost(store, first.env, first.game_date, code_rules)
+    new = sum((plan.most_cost() for plan in capped), Decimal(0))
+    day_total = new + _sent_cost(store, first.env, first.game_date, rules)
     for limit, reason in (
-        (_ceiling(POLICY.max_day, code_rules), "over the code's day ceiling"),
+        (_ceiling(POLICY.max_day, rules), "over the code's day ceiling"),
         (day_cap, "over the day cap"),
     ):
         if day_total > limit + CAP_TOLERANCE:
             for plan in capped:
                 skip(plan, reason)
-            return report
+            return
     if Decimal(trade.balance()["balance"]) / 100 < new:
         for plan in capped:
             skip(plan, "the balance doesn't cover the orders")
-        return report
+        return
     for plan in capped:
         # A market that can't be read is its own plan's skip, never the others' (Codex on #289).
         try:
@@ -375,7 +570,7 @@ def place(
         with contextlib.suppress(lb.Conflict):
             _put(
                 store,
-                order_key(plan.env, plan.game_date, plan.game_id, "placed"),
+                order_key(plan.env, plan.game_date, plan.game_id, TAKER_PLACED),
                 {
                     "order_id": placed.order_id,
                     "client_order_id": placed.client_order_id,
@@ -386,7 +581,124 @@ def place(
         report.placed += 1
         report.existed += placed.existed
         report.placed_plans.append(plan)
-    return report
+        send_maker(store, trade, plan, now, starts, report)
+
+
+def _filled(order: Mapping[str, Any]) -> tuple[Decimal, Decimal]:
+    """An order's filled contracts and their cost in USD with their fees, as Kalshi shows them."""
+    spent = sum((_decimal(order.get(name)) for name in FILL_COSTS), Decimal(0))
+    return _decimal(order.get("fill_count_fp")), spent
+
+
+def skip_maker(
+    store: lb.Store, plan: Plan, reason: str, now: Callable[[], datetime], report: PlaceReport
+) -> None:
+    """Record once why a bet's maker part doesn't go (...-maker-skipped.json)."""
+    report.skip_maker(reason)
+    key = order_key(plan.env, plan.game_date, plan.game_id, MAKER_SKIPPED)
+    if not _held(store, key):
+        _put(store, key, {"reason": reason, "skipped_utc": now().isoformat()})
+
+
+def send_maker(
+    store: lb.Store,
+    trade: KalshiTrade,
+    plan: Plan,
+    now: Callable[[], datetime],
+    starts: Mapping[int, datetime],
+    report: PlaceReport,
+) -> None:
+    """Send a bet's maker part once its taker part is placed (ADR 0045): the taker part is read
+    until Kalshi shows it done, so its fills size the maker part (exchange.rest), at the code's
+    rules; then a post-only bid at L_m, or a cent lower each time Kalshi refuses or cancels one at
+    once for crossing the book, down to L_t. The part's placed record holds the cent it rests at,
+    its contracts and most cost, the cents refused, and the taker part's fills it was sized after.
+    A maker part that can't go is recorded once with its reason (...-maker-skipped.json), except
+    while the taker part can't be read or the send fails, so a rerun sends it."""
+
+    def skip(reason: str) -> None:
+        skip_maker(store, plan, reason, now, report)
+
+    rules = code_exchange(plan.env)
+    if plan.maker is None:
+        skip("the stake buys no contract at the maker limit")
+        return
+    if rules is None or plan.usd_per_eur != rules.usd_per_eur:
+        skip("the code names no exchange at its rate")
+        return
+    if plan.game_id not in starts:
+        report.unread += 1  # a rerun with the schedule sends it
+        return
+    if starts[plan.game_id] != plan.start_utc:
+        skip("the game's start moved")
+        return
+    taker = json.loads(store.get(order_key(plan.env, plan.game_date, plan.game_id, TAKER_PLACED)))
+    try:
+        shown = trade.read_order(taker["order_id"], lambda o: o.get("status") != "resting")
+    except KalshiTradeError:
+        shown = None
+    if shown is None or shown.get("status") == "resting":
+        report.unread += 1
+        return
+    filled, spent = _filled(shown)
+    planned = order_cost(plan.maker.contracts, plan.maker.limit, rules, maker=True)
+    budget = planned - spent
+
+    def allowed(price: float) -> float:
+        return rl.stake_at(plan.stakes, price)
+
+    step = Decimal(str(rules.step))
+    crossed: list[int] = []
+    for cents, _ in plan.maker_ids:
+        price = Decimal(cents) / 100
+        contracts = rest(price, budget, (filled, spent), plan.p_side, plan.hurdle, allowed, rules)
+        if contracts < step:
+            continue
+        if now() >= plan.expires_utc - LEAD:
+            skip("too close to the start")
+            return
+        try:
+            sent = trade.create_order(plan.maker_request(cents, contracts))
+        except KalshiTradeError as exc:
+            if exc.status == BAD_REQUEST:
+                crossed.append(cents)
+                continue
+            # It may have reached Kalshi: the reconcile finds it by its client order id.
+            report.failed += 1
+            return
+        # A read that fails is one that lags: the part is recorded as resting, and the reconcile
+        # reads it, rather than stop the other orders.
+        try:
+            found = trade.read_order(sent.order_id, lambda _: True)
+        except KalshiTradeError:
+            found = None
+        if found is not None and found.get("status") != "resting" and not _filled(found)[0]:
+            crossed.append(cents)  # cancelled at once: it would have crossed the book
+            continue
+        with contextlib.suppress(lb.Conflict):
+            _put(
+                store,
+                order_key(plan.env, plan.game_date, plan.game_id, MAKER_PLACED),
+                {
+                    "order_id": sent.order_id,
+                    "client_order_id": sent.client_order_id,
+                    "existed": sent.existed,
+                    "placed_utc": now().isoformat(),
+                    "limit": f"{price:.2f}",
+                    "contracts": f"{contracts:.2f}",
+                    "max_cost_usd": f"{order_cost(contracts, price, rules, maker=True):.4f}",
+                    "crossed": crossed,
+                    "taker_contracts": f"{filled:.2f}",
+                    "taker_cost_usd": f"{spent:.6f}",
+                },
+            )
+        report.makers += 1
+        return
+    skip(
+        "Kalshi refused it at every cent down to the taker limit"
+        if crossed
+        else "the taker part left no stake for it"
+    )
 
 
 def _decimal(value: Any) -> Decimal:
@@ -460,9 +772,47 @@ def final_record(
     }
 
 
+def final_parts(
+    parts: Mapping[str, tuple[Mapping[str, Any], Sequence[Mapping[str, Any]]]],
+    start: datetime,
+    read: datetime,
+) -> dict[str, Any]:
+    """ADR 0045's order final (final_record) from each sent part's order as read and its fills,
+    taker part first: both parts' fills before the start are the bet, and the record adds each
+    part's order id, status, contracts and cost before the start, Kalshi's orders as read, and
+    every contract the parts filled, which Kalshi settles. order is the first part sent's, the
+    taker part's, and status the maker part's when it went."""
+    first = parts[TAKER] if TAKER in parts else parts[MAKER]
+    fills = [fill for _, listed in parts.values() for fill in listed]
+    found = final_record(first[0], fills, start, read)
+    found["status"] = parts.get(MAKER, first)[0].get("status")
+    found["parts"] = {}
+    for name, (shown, listed) in parts.items():
+        contracts, cost, _ = _totals([f for f in listed if _instant(f["created_time"]) < start])
+        found["parts"][name] = {
+            "order_id": shown.get("order_id"),
+            "status": shown.get("status"),
+            "contracts": f"{contracts:.2f}",
+            "cost_usd": f"{cost:.6f}",
+        }
+    found["orders"] = {name: dict(shown) for name, (shown, _) in parts.items()}
+    held = sum((_decimal(shown.get("fill_count_fp")) for shown, _ in parts.values()), Decimal(0))
+    found["filled_contracts"] = f"{held:.2f}"
+    return found
+
+
+def held_contracts(final: Mapping[str, Any]) -> Decimal:
+    """Every contract an order's final record filled, before the start or not, which Kalshi
+    settles: ADR 0045's parts together, or ADR 0040's one order's."""
+    if "filled_contracts" in final:
+        return _decimal(final["filled_contracts"])
+    return _decimal(final["order"].get("fill_count_fp"))
+
+
 def entry(record: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     """A live order's entry in the real record, as the dashboard's form writes one
-    (real_ledger.ENTRY_FIELDS)."""
+    (real_ledger.ENTRY_FIELDS). Its bet id is Kalshi's order id, or for ADR 0045's order the ids
+    of the parts that filled before the start, taker part first."""
     order, final = record["order"], record.get("final")
     contracts = _decimal(final.get("contracts")) if final else Decimal(0)
     base = {
@@ -472,7 +822,7 @@ def entry(record: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         "late": False,
     }
     if contracts <= 0 or final is None:
-        reason = NOT_MATCHED if final is not None and "placed" in record else MISSED
+        reason = NOT_MATCHED if final is not None and is_placed(record) else MISSED
         return base | {
             "outcome": rl.NOT_PLACED,
             "matched_price": None,
@@ -485,11 +835,16 @@ def entry(record: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     # A fill costing under half a cent still stakes a cent: the record needs a positive stake,
     # and the rounding is under a cent either way (Codex on #289).
     stake = max(round(float(cost) / order["usd_per_eur"], 2), 0.01)
+    if "parts" in final:
+        filled = [part for part in final["parts"].values() if _decimal(part["contracts"]) > 0]
+        bet_id = " + ".join(str(part["order_id"]) for part in filled)
+    else:
+        bet_id = record[PLACED]["order_id"]
     return base | {
         "outcome": rl.PLACED,
         "matched_price": round(float(contracts / cost), 3),
         "stake": stake,
-        "bet_id": record["placed"]["order_id"],
+        "bet_id": bet_id,
         "placed_utc": final["first_fill_utc"],
         "reason": None,
     }
@@ -516,6 +871,10 @@ class ReconcileReport:
         )
 
 
+def _parts(order: Mapping[str, Any]) -> tuple[str, ...]:
+    return (TAKER, MAKER) if two_parts(order) else ("",)
+
+
 def adopt(
     store: lb.Store,
     trade: KalshiTrade,
@@ -523,21 +882,37 @@ def adopt(
     game_date: date,
     game_id: int,
     now: Callable[[], datetime],
+    part: str = "",
 ) -> dict[str, Any] | None:
-    """The placed record of an order Kalshi holds under its client order id though no run recorded
-    it, as when a create's answer was lost: written once, and returned; None when Kalshi has no
-    such order."""
-    found = trade.find_order(order["ticker"], order["client_order_id"])
+    """The placed record of an order part Kalshi holds under its client order id though no run
+    recorded it, as when a create's answer was lost: written once, and returned; None when Kalshi
+    has no such order. A maker part is any of its cents' ids that rests or filled: a bid Kalshi
+    cancelled at once for crossing the book never held anything."""
+    if part == MAKER:
+        ids = {found: int(cents) for cents, found in order["maker"]["client_order_ids"].items()}
+        listed = [
+            found
+            for found in trade.orders(order["ticker"])
+            if found.get("client_order_id") in ids
+            and (found.get("status") == "resting" or _decimal(found.get("fill_count_fp")) > 0)
+        ]
+        if len(listed) > 1:
+            raise KalshiTradeError("adopt: more than one maker part rests or filled")
+        found = listed[0] if listed else None
+        extra = {"limit": f"{ids[found['client_order_id']] / 100:.2f}"} if found else {}
+    else:
+        found = trade.find_order(order["ticker"], order["client_order_id"])
+        extra = {}
     if found is None:
         return None
     placed = {
         "order_id": found["order_id"],
-        "client_order_id": order["client_order_id"],
+        "client_order_id": found["client_order_id"],
         "existed": True,
         "placed_utc": now().isoformat(),
         "adopted": True,
-    }
-    _put(store, order_key(trade.env, game_date, game_id, "placed"), placed)
+    } | extra
+    _put(store, order_key(trade.env, game_date, game_id, PLACED_PARTS[part]), placed)
     return placed
 
 
@@ -552,12 +927,13 @@ def reconcile(
     is the earliest of the alert's and every earlier one a run has seen in the schedule (starts,
     read now; None when it couldn't be read), each written once (...-moved-<start>.json), so one
     unread schedule loses no move. Its deadline is that start less the expiry's lead. A resting
-    order is cancelled when cancel is set (the switch doesn't name its environment), once a moved
+    part is cancelled when cancel is set (the switch doesn't name its environment), once a moved
     game's deadline has passed, or when it still rests GRACE after its own expiry. Once the
-    deadline has passed, a placed order is read with its fills and its final record written, and
-    on the live exchange the bet's entry, from the fills before the start; but not in a run whose
-    schedule couldn't be read (leakage audit of #281), nor while its fills don't add up to its fill
-    count: it waits for the next run."""
+    deadline has passed, each part sent is read with its fills and the order's final record
+    written, and on the live exchange the bet's entry, from the fills before the start; but not in
+    a run whose schedule couldn't be read (leakage audit of #281), nor while a part's fills don't
+    add up to its fill count: it waits for the next run. ADR 0040's orders have one part, ADR
+    0045's a taker part and a maker part."""
     report = ReconcileReport()
     env = trade.env
     held_entries = set(store.keys(f"{rl.PREFIX}/entries"))
@@ -589,23 +965,35 @@ def reconcile(
             seen.append(listed)
         begins = min([start, *seen])
         deadline = min(expires, begins - (start - expires))
-        placed = record.get("placed")
-        if placed is None:
-            # An order whose create reached Kalshi though its run never recorded it is found by
-            # its client order id, at every run, so it is tracked and told while it rests, and
-            # before a cancel or calling it not sent (Codex on #289). Before those, a failed read
-            # waits for the next run rather than stop this one's other orders.
-            try:
-                placed = adopt(store, trade, order, game_date, game_id, now)
-            except KalshiTradeError:
-                if cancel or now() >= deadline:
-                    raise
-                report.waiting += 1
-                continue
+        sent: dict[str, dict[str, Any]] = {}
+        unread = False
+        for part in _parts(order):
+            placed = record.get(PLACED_PARTS[part])
+            # A part whose create reached Kalshi though its run never recorded it is found by its
+            # client order id, at every run, so it is tracked and told while it rests, and before
+            # a cancel or calling it not sent (Codex on #289). A maker part goes only after its
+            # taker part, and never once its skip is written. Before those, a failed read waits
+            # for the next run rather than stop this one's other orders.
+            adoptable = part != MAKER or (
+                TAKER in sent and bool(order.get("maker")) and MAKER_SKIPPED not in record
+            )
+            if placed is None and adoptable:
+                try:
+                    placed = adopt(store, trade, order, game_date, game_id, now, part)
+                except KalshiTradeError:
+                    if cancel or now() >= deadline:
+                        raise
+                    unread = True
+                    break
+                if placed is not None:
+                    record = record | {PLACED_PARTS[part]: placed}
+                    report.adopted += 1
             if placed is not None:
-                record = record | {"placed": placed}
-                report.adopted += 1
-        if placed is None:
+                sent[part] = placed
+        if unread:
+            report.waiting += 1
+            continue
+        if not sent:
             if now() < deadline:
                 continue
             if starts is None:
@@ -617,52 +1005,84 @@ def reconcile(
                 "read_utc": now().isoformat(),
             }
         else:
-            # Any state, waiting a little for a new order to show (Kalshi's reads lag).
-            found = trade.read_order(placed["order_id"], lambda _: True)
-            if found is None:
+            shown = _read_parts(trade, order, sent, cancel, now, expires, deadline, report)
+            if shown is None:
                 report.waiting += 1
                 continue
-            late = now() >= (expires + GRACE if deadline == expires else deadline)
-            if found.get("status") == "resting" and (cancel or late):
-                trade.cancel(placed["order_id"], order["ticker"])
-                report.cancelled += 1
-                found = trade.read_order(placed["order_id"], lambda o: o.get("status") != "resting")
-                if found is None:
-                    report.waiting += 1
-                    continue
-            if found.get("status") == "resting" or now() < deadline:
-                report.resting += found.get("status") == "resting"
+            resting = any(found.get("status") == "resting" for found in shown.values())
+            if resting or now() < deadline:
+                report.resting += resting
                 continue
             if starts is None:
                 report.waiting += 1
                 continue
-            fills = trade.fills(placed["order_id"])
-            counted = sum((_decimal(fill.get("count_fp")) for fill in fills), Decimal(0))
-            if counted != _decimal(found.get("fill_count_fp")):
+            fills = {part: trade.fills(placed["order_id"]) for part, placed in sent.items()}
+            if any(
+                sum((_decimal(fill.get("count_fp")) for fill in fills[part]), Decimal(0))
+                != _decimal(shown[part].get("fill_count_fp"))
+                for part in sent
+            ):
                 report.waiting += 1
                 continue
-            final = final_record(found, fills, begins, now())
+            if two_parts(order):
+                both = {part: (shown[part], fills[part]) for part in sent}
+                final = final_parts(both, begins, now())
+            else:
+                final = final_record(shown[""], fills[""], begins, now())
             report.filled += _decimal(final["contracts"]) > 0
             report.after_start += bool(final["after_start"])
         _put(store, order_key(env, game_date, game_id, "final"), final)
         report.finalized += 1
-        report.finals.append({"order": order, "placed": placed, "final": final})
+        report.finals.append({"order": order, "placed": sent, "final": final})
         if env == LIVE and rl.entry_key(game_date, game_id) not in held_entries:
             rl.store_entries(store, [entry(record | {"final": final}, now())])
             report.entries += 1
     return report
 
 
+def _read_parts(
+    trade: KalshiTrade,
+    order: Mapping[str, Any],
+    sent: Mapping[str, Mapping[str, Any]],
+    cancel: bool,
+    now: Callable[[], datetime],
+    expires: datetime,
+    deadline: datetime,
+    report: ReconcileReport,
+) -> dict[str, dict[str, Any]] | None:
+    """Each sent part as Kalshi shows it, in any state, waiting a little for a new order to show
+    (Kalshi's reads lag); a resting part is cancelled first when cancel is set or it is late.
+    None when a part can't be read yet."""
+    shown = {}
+    late = now() >= (expires + GRACE if deadline == expires else deadline)
+    for part, placed in sent.items():
+        found = trade.read_order(placed["order_id"], lambda _: True)
+        if found is None:
+            return None
+        if found.get("status") == "resting" and (cancel or late):
+            trade.cancel(placed["order_id"], order["ticker"])
+            report.cancelled += 1
+            found = trade.read_order(placed["order_id"], lambda o: o.get("status") != "resting")
+            if found is None:
+                return None
+        shown[part] = found
+    return shown
+
+
 def table(store: lb.Store) -> pl.DataFrame:
     """Every order of both environments (the lake's real_orders): what was planned and sent, why
-    one was skipped, and its final fills."""
+    one was skipped, and its final fills. An ADR 0045 order's row is its taker part's, with its
+    maker part's limit, contracts and order id beside it, and each part's contracts filled before
+    the start."""
     rows = []
     for env in (LIVE, DEMO):
         for record in stored_orders(store, env).values():
             if "order" not in record:
                 continue
-            order, placed = record["order"], record.get("placed")
+            order, maker = record["order"], record.get(MAKER_PLACED)
+            placed = record.get(PLACED) or record.get(TAKER_PLACED) or maker
             final, skipped = record.get("final"), record.get("skipped")
+            parts = (final or {}).get("parts", {})
             if final is not None:
                 status = final["status"]
             elif placed is not None:
@@ -697,16 +1117,20 @@ def table(store: lb.Store) -> pl.DataFrame:
                     if final and final.get("first_fill_utc")
                     else None,
                     "after_start": final.get("after_start") if final else None,
+                    "execution": rl.EXECUTION if two_parts(order) else rl.ONE_ORDER,
+                    "maker_limit": float(maker["limit"]) if maker else None,
+                    "maker_contracts": float(maker["contracts"])
+                    if maker and maker.get("contracts")
+                    else None,
+                    "maker_order_id": maker["order_id"] if maker else None,
+                    "taker_filled": float(parts[TAKER]["contracts"]) if TAKER in parts else None,
+                    "maker_filled": float(parts[MAKER]["contracts"]) if MAKER in parts else None,
                     "code_version": order["code_version"],
                 }
             )
     columns = dtypes(RealOrders)
     built = pl.DataFrame(rows, schema=columns).sort("env", "game_date", "game_id")
     return RealOrders.validate(built)  # type: ignore[return-value]
-
-
-def _cents(value: str) -> int:
-    return round(float(value) * 100)
 
 
 # The owner is told of each order once it is placed and once it is final: a part's message, once
@@ -722,7 +1146,9 @@ def unnotified(store: lb.Store, env: str, part: str) -> list[dict[str, Any]]:
     return [
         record | {"day": day, "game_id": game_id}
         for (day, game_id), record in sorted(stored_orders(store, env).items())
-        if "order" in record and part in record and marker not in record
+        if "order" in record
+        and (is_placed(record) if part == PLACED else part in record)
+        and marker not in record
     ]
 
 
@@ -748,27 +1174,53 @@ def placed_message(
     placed: Sequence[Mapping[str, Any]],
     skipped: Mapping[str, int] | None = None,
     failed: int = 0,
+    unread: int = 0,
 ) -> str | None:
     """The owner's message of orders placed and not told yet (unnotified "placed"), and of the
     run's orders not placed and failed, or None without any. The alert said the bets go
     automatically, so a day whose orders all stay unsent says so too (Codex on #289). An order
-    of another day than the run's says its date."""
-    if not placed and not skipped and not failed:
+    of another day than the run's says its date. An ADR 0045 order says what its taker part
+    filled at once and where its maker part rests, or why it doesn't; unread counts the maker
+    parts still waiting for their taker part's read."""
+    if not placed and not skipped and not failed and not unread:
         return None
     lines = [f"NHL Edge · Kalshi {_header(env)} · {day:%a} {day.day} {day:%b}"]
     for record in placed:
         order = record["order"]
         expires = _instant(order["expires_utc"]).astimezone(rl.HELSINKI)
         when = "" if order["game_date"] == day.isoformat() else f"{order['game_date']} "
-        lines.append(
-            f"{when}{order['team']}: buy Yes at most {_cents(order['limit'])}¢, "
+        size = (
             f"{order['contracts']} contracts, at most ${_decimal(order['max_cost_usd']):.2f} "
-            f"({order['stake']:.2f} €), until {expires:%H:%M}"
+            f"({order['stake']:.2f} €)"
         )
+        if not two_parts(order):
+            lines.append(
+                f"{when}{order['team']}: buy Yes at most {_cents(order['limit'])}¢, {size}, "
+                f"until {expires:%H:%M}"
+            )
+            continue
+        line = f"{when}{order['team']}: buy Yes at most {_cents(order['limit'])}¢ at once, {size}"
+        maker, passed = record.get(MAKER_PLACED), record.get(MAKER_SKIPPED)
+        if maker is not None:
+            if "taker_contracts" in maker:
+                line += (
+                    f": {maker['taker_contracts']} filled for "
+                    f"${_decimal(maker['taker_cost_usd']):.2f}"
+                )
+            count = f" for {maker['contracts']} contracts" if maker.get("contracts") else ""
+            line += f"; then a bid at {_cents(maker['limit'])}¢{count} until {expires:%H:%M}"
+        elif passed is not None:
+            line += f"; no bid for the rest: {passed['reason']}"
+        lines.append(line)
     if skipped:
         lines.append("Not placed: " + ", ".join(f"{n} {why}" for why, n in skipped.items()))
     if failed:
         lines.append(f"Failed to send: {failed} (the next run looks for them on Kalshi)")
+    if unread:
+        lines.append(
+            f"Bids for the rest not sent yet: {unread}, their taker part couldn't be read (a "
+            "rerun of the midday step sends them)"
+        )
     return "\n".join(lines)
 
 
@@ -785,8 +1237,15 @@ def fills_message(env: str, finals: Sequence[Mapping[str, Any]]) -> str | None:
             what = "nothing filled" if final["status"] != "not sent" else "no order was sent"
         else:
             cost = _decimal(final["cost_usd"])
+            parts = final.get("parts", {})
+            split = (
+                f" ({parts[TAKER]['contracts'] if TAKER in parts else '0.00'} at once, "
+                f"{parts[MAKER]['contracts'] if MAKER in parts else '0.00'} resting)"
+                if two_parts(order)
+                else f" of {order['contracts']}"
+            )
             what = (
-                f"{contracts} of {order['contracts']} contracts for ${cost:.2f}, fees "
+                f"{contracts}{split} contracts for ${cost:.2f}, fees "
                 f"${_decimal(final['fees_usd']):.2f}: decimal {float(contracts / cost):.3f}, "
                 f"{float(cost) / order['usd_per_eur']:.2f} €"
             )
@@ -866,7 +1325,7 @@ def check_settlements(
         game_date = date.fromisoformat(day)
         if final is None or order is None or "order" not in final:
             continue
-        held = _decimal(final["order"].get("fill_count_fp"))
+        held = held_contracts(final)
         if held <= 0 or (today - game_date).days > CHECK_DAYS:
             continue
         report.checked += 1

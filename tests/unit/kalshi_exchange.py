@@ -80,6 +80,13 @@ class Exchange:
         self.stale = 0
         # contracts a seller fills before the cancel lands
         self.filled_before_cancel = "0.00"
+        # each market's asks, (price, contracts) cheapest first, which an immediate-or-cancel
+        # order takes from and a post-only bid at or above crosses
+        self.asks: dict[str, list[tuple[str, str]]] = {}
+        # how a post-only bid that would cross is refused: cancelled at once, or a 400
+        self.cross: str | int = "cancel"
+        # the clock fills at placement are dated by
+        self.now: Callable[[], datetime] = lambda: NOW
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -137,6 +144,11 @@ class Exchange:
     def _create(self, body: dict[str, Any]) -> httpx.Response:
         if any(o["client_order_id"] == body["client_order_id"] for o in self.orders.values()):
             return httpx.Response(409, json={"code": "order_already_exists"})
+        price = Decimal(body["price"])
+        asks = self.asks.get(body["ticker"], [])
+        crosses = any(Decimal(ask) <= price for ask, _ in asks)
+        if body["post_only"] and crosses and self.cross != "cancel":
+            return httpx.Response(int(self.cross), json={"code": "post_only_cross"})
         order_id = f"order-{len(self.orders) + 1}"
         self.orders[order_id] = {
             "order_id": order_id,
@@ -151,6 +163,13 @@ class Exchange:
             "maker_fees_dollars": "0.000000",
             "body": body,
         }
+        order = self.orders[order_id]
+        if body["post_only"] and crosses:
+            order["status"] = "canceled"
+        elif body["time_in_force"] == kt.IOC:
+            self._take(order_id, price, Decimal(body["count"]), asks)
+            if order["status"] == "resting":
+                order["status"] = "canceled"
         if self.lost_create is not None:
             status, self.lost_create = self.lost_create, None
             return httpx.Response(status, json={"error": "synthetic"})
@@ -200,6 +219,25 @@ class Exchange:
                     "created_time": at.isoformat().replace("+00:00", "Z"),
                 }
             )
+
+    def _take(
+        self, order_id: str, price: Decimal, count: Decimal, asks: list[tuple[str, str]]
+    ) -> None:
+        """An immediate-or-cancel order's fills from the asks at or below its price, each at the
+        ask with the taker fee rounded up to $0.0001; the asks it takes are gone from the book."""
+        left = count
+        for i, (ask, size) in enumerate(list(asks)):
+            level = Decimal(ask)
+            if level > price or left <= 0:
+                break
+            taken = min(left, Decimal(size))
+            fee = Decimal("0.07") * taken * level * (1 - level)
+            fee = (fee / Decimal("0.0001")).to_integral_value(rounding="ROUND_CEILING")
+            fee *= Decimal("0.0001")
+            self.fill(order_id, f"{taken:.2f}", f"{level:.4f}", f"{fee:.4f}", self.now(), True)
+            left -= taken
+            asks[i] = (ask, f"{Decimal(size) - taken:.2f}")
+        asks[:] = [(ask, size) for ask, size in asks if Decimal(size) > 0]
 
     def expire(self, order_id: str) -> None:
         """The order's expiry: its resting part cancelled by Kalshi."""
