@@ -204,8 +204,8 @@ Every deliverable merged under its own task issue:
 
 **The second external review (2026-10-23, #317).** Its agenda: select and execute on Kalshi's own prices against a sharp fair value. The work: #318 to #323.
 - **Done: the reference after each fill** (#318, `live/fills.py`). `nhl real fills --r2` runs nightly. Each order's taker part and maker part get CLV only from the fills observed before the game's Pinnacle proxy; a later fill is counted apart, never valued against an earlier quote. The figures go privately to `real/<env>/fill-reports/`, with counts only in the log.
+- **Built: every game's Kalshi markets watched through the day** (#319, `ingest/kalshi_watch.py`, `kalshi-watch.yml`). The top of book is polled each minute, and the full books and the trades every 5 minutes, from 07:05 ET to each start, into the private `kalshi_tops`, `kalshi_depth` and `kalshi_trades`. **The owner:** redeploy the timer (`npx wrangler@4 deploy` in `infra/timer`), so it dispatches the four windows.
 - **Decided by the owner, still to build:**
-  - every game's Kalshi books and trades, logged privately as the real-time source (#319);
   - from 2026-11-16, an immediate taker buy, then a post-only maker bid, re-valued when Kalshi moves (#321, through an ADR amending 0040);
   - a scale-up rule of at least 12 weeks of real fills with CLV's lower bound above 0 (#322).
 - **Still the owner's decision:** one or two paid Odds API months for the historical Pinnacle prices of 2022-11-28 to 2025-26 (#323).

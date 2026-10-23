@@ -21,6 +21,10 @@ export const GOALIE_HOURS_UTC = [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 // results count as public (ADR 0003).
 export const NIGHTLY_UTC = "09:00";
 
+// The Kalshi watch's windows in US Eastern wall time (#319): each run polls every game's markets
+// until a minute before the next, inside GitHub's 6-hour job limit.
+export const KALSHI_WATCH_ET = ["07:05", "11:05", "15:05", "19:05"];
+
 const EASTERN = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
   hour: "2-digit",
@@ -49,8 +53,10 @@ export function dueJobs(scheduledMs) {
   const ms = Math.floor(scheduledMs / 60_000) * 60_000;
   const utc = utcClock(ms);
   const jobs = [];
-  const slot = ODDS_SLOTS[easternClock(ms)];
+  const eastern = easternClock(ms);
+  const slot = ODDS_SLOTS[eastern];
   if (slot) jobs.push({ workflow: "odds-snapshots.yml", inputs: { slot } });
+  if (KALSHI_WATCH_ET.includes(eastern)) jobs.push({ workflow: "kalshi-watch.yml", inputs: {} });
   const [hour, minute] = utc.split(":").map(Number);
   if (minute === 50 && GOALIE_HOURS_UTC.includes(hour)) {
     jobs.push({ workflow: "pregame-goalies.yml", inputs: {} });

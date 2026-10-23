@@ -1,0 +1,40 @@
+name: kalshi-watch
+# Every game's Kalshi markets watched from the morning to the start (#319), for choosing the
+# owner's own orders (the owner's decision of 2026-10-23): the top of book each minute, the full
+# books and the trades every 5 minutes, stored raw in R2 and rebuilt into the lake's private
+# kalshi_tops, kalshi_depth and kalshi_trades. The Cloudflare timer in infra/timer dispatches it at
+# 07:05, 11:05, 15:05 and 19:05 US Eastern, since GitHub's schedule started runs hours late (#50);
+# each run stops a minute before the next window, or after 5 h 45 for the last, inside GitHub's
+# 6-hour job limit, and a day without games ends at once. Kalshi's Developer Agreement limits its
+# API to a member's own trading (3.1): the data stays in R2, and the job prints counts only, since
+# run logs are public. Public REST only: no Kalshi key is read.
+on:
+  schedule:
+    # The fallback while the timer is off, one line per window and UTC offset: a late run only
+    # watches until the next window.
+    - cron: "5 11,15,19,23 * * *"   # EDT
+    - cron: "5 12,16,20,0 * * *"    # EST
+  workflow_dispatch:
+concurrency:
+  group: kalshi-watch
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  watch:
+    # GitHub's schedule is the fallback: once the Cloudflare timer runs (#50), the repository
+    # variable TIMER_ACTIVE is true and only its on-time dispatches start this job.
+    if: github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 358
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - run: uv sync --frozen
+      - name: Kalshi watch (#319)
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: uv run nhl kalshi watch --mirror-raw

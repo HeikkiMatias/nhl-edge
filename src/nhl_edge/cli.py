@@ -5728,6 +5728,63 @@ def kalshi_books(
         raise typer.Exit(code=1)
 
 
+@kalshi_app.command("watch")
+def kalshi_watch(
+    mirror_raw: Annotated[
+        bool,
+        typer.Option(help="Mirror the raw polls and the tables to R2 (needs the R2_* variables)."),
+    ] = False,
+    until: Annotated[
+        datetime | None,
+        typer.Option(
+            formats=["%Y-%m-%dT%H:%M"],
+            help="Stop at this UTC time, by default a minute before the next window (#319).",
+        ),
+    ] = None,
+) -> None:
+    """Watch every game of today's slate on Kalshi (#319), for choosing the owner's own orders:
+    each market's top of book every minute, its full book and its trades every 5 minutes, until
+    the next window or every game's start, never a game at or after its start. Then rebuild the
+    day's kalshi_tops, kalshi_depth and kalshi_trades from the stored polls. Only counts are
+    printed: Kalshi's data stays private (its Developer Agreement, 3.1), and run logs are
+    public."""
+    from datetime import UTC
+
+    from nhl_edge.ingest import kalshi
+    from nhl_edge.ingest import kalshi_watch as kw
+    from nhl_edge.ingest.nhl_api import NhlApi, utc_now
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import slate as live_slate
+    from nhl_edge.settings import load_env
+
+    load_env()
+    now = utc_now()
+    day = now.astimezone(ET).date()
+    store = RawStore.from_env(mirror=mirror_raw)
+    api = NhlApi(store)
+
+    def todays() -> "pl.DataFrame":
+        return live_slate.fetch(api, day).games
+
+    end = until.replace(tzinfo=UTC) if until is not None else kw.window_end(now)
+    report = kw.watch(client=kalshi.Kalshi(store), slate=todays, until=end, echo=typer.echo)
+    if report.stored:
+        lake = Lake.from_env(mirror=mirror_raw, flag="--mirror-raw")
+        if mirror_raw:
+            # The day's earlier windows' polls, so the rebuilt partitions keep all of them.
+            for kind in kw.KINDS:
+                store.restore_from_r2(f"{kalshi.SOURCE}/{kw.WATCH}/{kind}/{day.isoformat()}/")
+        replayed = kw.replay(store, lake, [day])
+        typer.echo(
+            f"kalshi watch {day}: rebuilt from {sum(replayed.objects.values())} stored polls, "
+            f"{len(replayed.unparsed)} unparsed"
+        )
+    if report.failed:
+        raise typer.Exit(code=1)
+
+
 @kalshi_app.command("replay")
 def kalshi_replay(
     recent: Annotated[
@@ -5741,12 +5798,14 @@ def kalshi_replay(
         ),
     ] = False,
 ) -> None:
-    """Rebuild the lake's kalshi_books from the stored order books only, never calling Kalshi
-    (#282). Without --recent, every stored date is replayed. Its counts come from Kalshi's data,
-    so it is for the owner's own terminal: no workflow runs it."""
+    """Rebuild the lake's kalshi_books from the stored order books (#282), and kalshi_tops,
+    kalshi_depth and kalshi_trades from the stored watch polls (#319), never calling Kalshi.
+    Without --recent, every stored date is replayed. Its counts come from Kalshi's data, so it is
+    for the owner's own terminal: no workflow runs it."""
     from datetime import timedelta
 
     from nhl_edge.ingest import kalshi
+    from nhl_edge.ingest import kalshi_watch as kw
     from nhl_edge.ingest.nhl_api import utc_now
     from nhl_edge.ingest.odds import ET
     from nhl_edge.lake.raw import RawStore
@@ -5760,10 +5819,11 @@ def kalshi_replay(
     load_env()
     store = RawStore.from_env(mirror=r2, flag="--r2")
     if r2:
+        roots = [kalshi.PREFIX, *(f"{kalshi.SOURCE}/{kw.WATCH}/{kind}" for kind in kw.KINDS)]
         prefixes = (
-            [f"{kalshi.PREFIX}/"]
+            [f"{root}/" for root in roots]
             if dates is None
-            else [f"{kalshi.PREFIX}/{day.isoformat()}/" for day in dates]
+            else [f"{root}/{day.isoformat()}/" for root in roots for day in dates]
         )
         restored = sum(store.restore_from_r2(prefix).copied for prefix in prefixes)
         typer.echo(f"restored {restored} raw responses from R2")
@@ -5775,6 +5835,14 @@ def kalshi_replay(
         f"{report.not_found} not found, {report.empty} empty books, {report.after_start} "
         f"fetched after the start, {len(report.unparsed)} unparsed, "
         f"{len(report.incomplete)} incomplete"
+    )
+    watched = kw.replay(store, lake, dates)
+    window = f"{watched.dates[0]}..{watched.dates[-1]}" if watched.dates else "no stored polls"
+    typer.echo(
+        f"kalshi watch replay {window}: "
+        + ", ".join(f"{watched.objects[k]} {k} polls, {watched.rows[k]} rows" for k in kw.KINDS)
+        + f"; {watched.not_found} not found, {len(watched.unparsed)} unparsed, "
+        f"{len(watched.incomplete)} incomplete"
     )
 
 

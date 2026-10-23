@@ -14,6 +14,9 @@ bounded exponential backoff (4.3). The owner is a Kalshi member, so:
   the replay, whose counts come from the books, is run by hand only;
 - the table is never a model input: no feature or model code reads it.
 
+Every game's markets are watched through the day apart from this, by the owner's decision of
+2026-10-23 (#319, ingest/kalshi_watch.py), with this client's spacing and backoff.
+
 **Source.** `GET /markets/{ticker}/orderbook` (public, no key) answers
 `{"orderbook_fp": {"yes_dollars": [[price, contracts], ...], "no_dollars": [...]}}`, both as
 strings, each list ascending by price, so the best Yes bid is the last yes entry and the best Yes
@@ -177,28 +180,33 @@ class Kalshi:
             self.sleep(wait)
         self._last_request = self.monotonic()
 
-    def orderbook(self, market: Market, slot: str | None) -> Fetched:
-        """GET /markets/{ticker}/orderbook, stored raw with its fetch time. A 404 is stored and
-        returned, never retried; 429, 5xx and transport errors are tried again after
-        exponentially longer waits, at most TRIES tries in all. The clock is checked just before
-        each try: a game that has started is never asked for (Started)."""
-        path = f"/markets/{market.ticker}/{BOOKS}"
+    def request(
+        self,
+        path: str,
+        params: Mapping[str, str | int] | None = None,
+        *,
+        deadline: datetime | None = None,
+    ) -> tuple[httpx.Response, int]:
+        """GET path, throttled: the response, a 200 or a 404, never retried, and the tries it
+        took. 429, 5xx and transport errors are tried again after exponentially longer waits, at
+        most TRIES tries in all. With a deadline, a game's start, the clock is checked just
+        before each try, and nothing is asked at or after it (Started)."""
         error = ""
         for attempt, backoff in enumerate((*self.backoff_s, None), start=1):
             self._throttle()
-            if self.now() >= market.start_utc:
+            if deadline is not None and self.now() >= deadline:
                 raise Started("the game started before the request")
             self.requests += 1
             retry_after: float | None = None
             try:
-                response = self.client.get(path)
+                response = self.client.get(path, params=params)
             except httpx.TransportError as exc:
                 error = type(exc).__name__
             except httpx.HTTPError as exc:
                 raise KalshiError(f"the request failed: {type(exc).__name__}") from None
             else:
                 if response.status_code in (OK, NOT_FOUND):
-                    return self._store(market, response, attempt, slot)
+                    return response, attempt
                 if not retryable(response.status_code):
                     raise KalshiError(f"status {response.status_code}")
                 error = f"status {response.status_code}"
@@ -207,6 +215,13 @@ class Kalshi:
                 break
             self.sleep(min(max(backoff, retry_after or 0.0), MAX_WAIT_S))
         raise KalshiError(f"failed after {len(self.backoff_s) + 1} tries: {error}")
+
+    def orderbook(self, market: Market, slot: str | None) -> Fetched:
+        """GET /markets/{ticker}/orderbook, stored raw with its fetch time; a 404 is stored too.
+        A game that has started is never asked for (Started)."""
+        path = f"/markets/{market.ticker}/{BOOKS}"
+        response, attempt = self.request(path, deadline=market.start_utc)
+        return self._store(market, response, attempt, slot)
 
     def _store(
         self, market: Market, response: httpx.Response, attempt: int, slot: str | None
