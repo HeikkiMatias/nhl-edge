@@ -1,6 +1,6 @@
 # 0045. Kalshi execution v2: a taker part, a post-only maker part, and re-valuation
 
-- Status: Proposed (drafted for the owner, 2026-10-23, #321)
+- Status: Accepted (the owner, 2026-10-23, #321)
 - Date: 2026-10-23
 - Amends: ADR 0040 items 1, 2 and 9 (the order, its limit and the record). What is bet, its p, its hurdle, its stake rule, the limits in the code, the kill switch and the 11-09 rule are unchanged.
 
