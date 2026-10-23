@@ -29,6 +29,11 @@
      - **The evidence:** on 11-09, #281's private measurement on the order books #282 logs. There, a bid resting at L counts as filled, with the maker fee, at the first snapshot logged after the decision whose best Yes ask is at or below L. From the start, at each weekly report, the real orders' resting fills, the maker fills (`is_taker` false).
      - **The decision:** if the interval's upper bound is below 0, the resting part goes and orders become immediate-or-cancel at L. Otherwise the order stays as it is.
      - **The floor:** fewer than 4 weeks of resting fills decide nothing.
+     - **The reference, clarified by the owner on 2026-10-23 (#318):**
+       - a fill observed at or after its game's proxy gets no CLV, since a resting order fills until 5 minutes before the start and the proxy can be 90 minutes before it;
+       - such a fill is counted as "after the reference", never valued against an earlier quote;
+       - the figures are given for taker and maker fills apart, and by the delay from placement to the first fill;
+       - the real fills' figures are kept private (`nhl real fills`, #280).
 4. **Post-only at the bid:** the maker fee only, but no fill while the price doesn't come down, and the most adverse selection.
 
 ## Decision: option 3

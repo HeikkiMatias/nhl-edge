@@ -552,6 +552,13 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   Each settlement it reads is kept once, raw, with the time it was first read: `real/live/exchange-settlements/<date>/<game_id>.json` (`{ticker, observed_utc, settlement}`), never rewritten. A held bet whose settlement is first read that night waits, for the next `settle` pays it out; after that its payout is compared.
 
   A difference, or a settlement missing on either side 2 days after the game was played, goes to the owner's Telegram (a postponed game counts from the start it was played at, from the lake's final games, and one neither side has settled waits while it isn't final), and the log has counts only. A correction (`nhl real correct`) then brings the record's result, price or stake in line with Kalshi's statement, with its reason. A held bet is settled at Kalshi's payout instead (#290). A `scalar` result on a game played on time stays a difference for the owner.
+- **`nhl real fills --r2`, nightly after `reconcile-kalshi`:** values each environment's fills against the close (#318, the owner's rule of 2026-10-23, clarifying ADR 0040):
+  - **The parts:** each order's fills before the start are split by Kalshi's `is_taker` into a taker part and a maker part, each one bid with its contracts and cost, fees included. A fill without `is_taker` counts as `unknown`.
+  - **The reference:** Pinnacle's closing proxy of the game, de-vigged multiplicatively (hard rule 3), as for the paper bets. A part's fills observed before the proxy form the bid valued: CLV = p_close · contracts / cost − 1.
+  - **Never an earlier quote:** a fill at or after the proxy, which a resting order can make until 5 minutes before the start, gets no CLV and is counted as `after the reference`. Every fill of a started game without a proxy is `no reference`, and one of a game not yet started is `pending`.
+  - **The figures:** for taker and maker apart, CLV per bid with its weekly block bootstrap interval (counts only under 4 weeks), overall and by the delay from the order's placement to the bid's first fill (under 1 minute, to 1 hour, to 4 hours, beyond).
+  - **Private (#280):** they go to `real/<env>/fill-reports/<run time>.json` beside the orders, never to the repository or the public weekly report. The log has counts only.
+  - Point in time: `tests/leakage/test_fill_reference.py`.
 - **Inputs:** an order is built from the day's alert only. No Kalshi price is an input: of the market's data only its status is used (`tests/leakage/test_kalshi_orders.py`, which also checks that no model package reads the real record or the orders).
 
 ## Odds snapshots

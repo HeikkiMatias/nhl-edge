@@ -100,12 +100,15 @@ jobs:
           if [ "$SUPABASE_REAL" = "true" ]; then sb=(--supabase); else sb=(); fi
           # A failed orders run fails the step after sync and settle, which don't need it. Then
           # the record is checked against Kalshi's own settlements (#287; the differences go to
-          # the owner's Telegram, the log has counts only).
+          # the owner's Telegram, the log has counts only), and the fills are valued against the
+          # Pinnacle reference observed after them (#318; the figures privately to R2, the log
+          # has counts only).
           status=0
           uv run nhl real orders --r2 || status=1
           uv run nhl real sync --r2 "${sb[@]}"
           uv run nhl real settle --r2 "${sb[@]}"
           uv run nhl real reconcile-kalshi --r2 || status=1
+          uv run nhl real fills --r2 || status=1
           exit $status
       - name: Pre-game goalies into the lake
         # Pre-game goalie polls, NHL and Daily Faceoff (#42, #48), rebuilt from the raw copies:

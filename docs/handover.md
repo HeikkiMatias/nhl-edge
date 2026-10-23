@@ -202,6 +202,14 @@ Every deliverable merged under its own task issue:
   - **Best-price execution:** a better fresh bookmaker price existed for 7 of v1's 17 bets with a close, adding +0.56 points of CLV. Counting the exchanges (before commission), 16 of 17 had a better price, adding +1.8 points.
 - **Edge bids on every game** (#308, `live/shadow.py`): a resting bid on every side the policy didn't bet, at the lowest price to the cent where the blend clears that side's hurdle, filled at the bid by the first later fresh Pinnacle quote at or above it before the start, and valued against the same close. Beside it, the share of fills after Daily Faceoff's named starter of either team changed, the adverse selection it would suffer. First reading (v2's decisions of 2026-10-15 to 10-22): 102 bids, 8 filled (7 at the 18:45 slot, 1 at 19:45), all 8 with a close, and no starter change before any of them. Its CLV gives counts only until 4 weeks; a positive interval after enough weeks would earn its own ADR and a new policy version (#308).
 
+**The second external review (2026-10-23, #317).** Its agenda: select and execute on Kalshi's own prices against a sharp fair value. The work: #318 to #323.
+- **Done: the reference after each fill** (#318, `live/fills.py`). `nhl real fills --r2` runs nightly. Each order's taker part and maker part get CLV only from the fills observed before the game's Pinnacle proxy; a later fill is counted apart, never valued against an earlier quote. The figures go privately to `real/<env>/fill-reports/`, with counts only in the log.
+- **Decided by the owner, still to build:**
+  - every game's Kalshi books and trades, logged privately as the real-time source (#319);
+  - from 2026-11-16, an immediate taker buy, then a post-only maker bid, re-valued when Kalshi moves (#321, through an ADR amending 0040);
+  - a scale-up rule of at least 12 weeks of real fills with CLV's lower bound above 0 (#322).
+- **Still the owner's decision:** one or two paid Odds API months for the historical Pinnacle prices of 2022-11-28 to 2025-26 (#323).
+
 **Research run bundles (#186).** Every `nhl backtest` run keeps its per-game rows in `bundles/research/<run id>/` (pass `--r2` so a session's run outlives its container). The bundle is sealed only once they reproduce the report. `nhl research compare` pairs two kept runs' models game by game, with intervals, and names the inputs they read differently (docs/data-sources.md). Runs before 2026-10-21 have no bundle, and spent tests are never run again to make one.
 
 **Challengers (#255, ADR 0038).** New models are judged only on decision days after their registration, never on history again.
