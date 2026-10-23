@@ -1,11 +1,14 @@
-"""Point-in-time rules for the Kalshi orders (ADR 0040, #281), on the synthetic day and the fake
-exchange: an order is built only from the day's alert, written before it is sent, and never from a
-Kalshi price; it expires before its game, is never sent once that is near, and a fill at or after
-the start never becomes a bet (hard rules 1, 2 and 4)."""
+"""Point-in-time rules for the Kalshi orders (ADR 0040 and 0045, #281, #321), on the synthetic day
+and the fake exchange: an order's two parts are built only from the day's alert, the maker part
+sized after the taker part's own fills, each written before it is sent, and never from a Kalshi
+price; each part clears the hurdle at the most it can pay; the maker part expires before its game,
+none is sent once that is near, and a fill at or after the start never becomes a bet (hard rules
+1, 2 and 4)."""
 
 import ast
 import json
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +20,7 @@ from fakes import ConditionalBucket
 from kalshi_exchange import Exchange, trade
 
 from nhl_edge.live import bundle as lb
+from nhl_edge.live import exchange as ex
 from nhl_edge.live import placement as pm
 from nhl_edge.live import real
 from nhl_edge.live import real_ledger as rl
@@ -33,6 +37,9 @@ def kalshi_venue(monkeypatch: pytest.MonkeyPatch) -> None:
 
 REAL_DAY = rl.Mode(rl.REAL, rf.ALERT.date())
 STARTS = {game_id: game[2] for game_id, game in pf.GAMES.items()}
+# With no asks on the book, WSH's taker part is Kalshi's first order and its resting maker part
+# the second.
+WSH_MAKER = "order-2"
 
 
 def instant(text: str) -> datetime:
@@ -65,16 +72,16 @@ def test_an_order_is_built_from_the_alert_alone_and_written_after_it(tmp_path: P
     for row in alert.iter_rows(named=True):
         assert row["prediction_utc"] < row["alert_utc"]
         order = json.loads(record.get(pm.order_key("live", pf.DAY, row["game_id"])))
-        placed = json.loads(record.get(pm.order_key("live", pf.DAY, row["game_id"], "placed")))
         assert row["alert_utc"] <= instant(order["written_utc"])
-        assert instant(order["written_utc"]) <= instant(placed["placed_utc"])
-        # the order is the alert's, number for number
+        for part in (pm.TAKER_PLACED, pm.MAKER_PLACED):
+            placed = json.loads(record.get(pm.order_key("live", pf.DAY, row["game_id"], part)))
+            assert instant(order["written_utc"]) <= instant(placed["placed_utc"])
+        # both parts are the alert's, number for number
         expected = json.loads(row["exchange"])
-        assert (order["limit"], order["contracts"], order["max_cost_usd"]) == (
-            expected["limit"],
-            expected["contracts"],
-            expected["max_cost_usd"],
-        )
+        fields = ("limit", "contracts", "max_cost_usd")
+        assert [order[name] for name in fields] == [expected[name] for name in fields]
+        maker = {name: order["maker"][name] for name in (*fields, "stake", "effective")}
+        assert maker == expected["maker"]
 
 
 def test_no_kalshi_price_changes_an_order(tmp_path: Path) -> None:
@@ -87,7 +94,33 @@ def test_no_kalshi_price_changes_an_order(tmp_path: Path) -> None:
     _, at_high = sent(tmp_path / "high", high)
     assert [m["yes_ask_dollars"] for m in low.markets_served] == ["0.0500"] * 3
     assert [m["yes_ask_dollars"] for m in high.markets_served] == ["0.9500"] * 3
-    assert at_low == at_high and len(at_low) == 3
+    assert at_low == at_high and len(at_low) == 6
+
+
+@pytest.mark.parametrize("asks", [[], [("0.4700", "1.20")], [("0.4900", "3.00")]])
+def test_each_part_clears_the_hurdle_at_the_most_it_can_pay(
+    tmp_path: Path, asks: list[tuple[str, str]]
+) -> None:
+    # Hard rule 4 for both parts: the taker part at the taker fee, the maker part, wherever it
+    # rests between L_m and L_t and however the taker part filled, at the maker fee, the most a
+    # post-only order pays; and the two together within the stake rule at their worst prices.
+    exchange = Exchange()
+    exchange.asks["KXNHLGAME-26OCT07PITWSH-WSH"] = list(asks)
+    record, _ = sent(tmp_path, exchange)
+    rules = KALSHI.exchange
+    assert rules is not None
+    for plan in pm.plans(rows(), pm.LIVE):
+        taker = ex.cost(plan.contracts, plan.limit, rules)
+        assert plan.p_side * float(plan.contracts / taker) - 1 >= plan.hurdle
+        maker = json.loads(record.get(pm.order_key("live", pf.DAY, plan.game_id, pm.MAKER_PLACED)))
+        price, count = Decimal(maker["limit"]), Decimal(maker["contracts"])
+        assert plan.limit <= price <= plan.maker.limit  # type: ignore[union-attr]
+        rested = ex.cost(count, price, rules, maker=True)
+        assert plan.p_side * float(count / rested) - 1 >= plan.hurdle
+        spent = Decimal(maker["taker_cost_usd"])
+        filled = Decimal(maker["taker_contracts"])
+        together = float((filled + count) / (spent + rested))
+        assert float(spent + rested) / rules.usd_per_eur <= rl.stake_at(plan.stakes, together)
 
 
 def test_every_order_expires_before_its_game_and_none_goes_once_it_is_near(
@@ -116,10 +149,10 @@ def test_an_order_never_rests_into_a_game_moved_earlier(tmp_path: Path) -> None:
     record, exchange, clock = lb.R2Store(ConditionalBucket(), "bucket"), Exchange(), Clock()
     client, _ = trade(tmp_path / "after", exchange, env=pm.LIVE, now=clock)
     pm.place(record, client, pm.plans(rows(), pm.LIVE), clock, rf.CODE, STARTS)
-    exchange.fill("order-1", "1.00", "0.4700", "0.0175", moved + timedelta(minutes=1))
+    exchange.fill(WSH_MAKER, "1.00", "0.4900", "0.0044", moved + timedelta(minutes=1))
     clock.at = moved + timedelta(minutes=10)
     pm.reconcile(record, client, clock, starts)
-    assert exchange.orders["order-1"]["status"] == "canceled"
+    assert exchange.orders[WSH_MAKER]["status"] == "canceled"
     final = json.loads(record.get(pm.order_key("live", pf.DAY, 2026020053, "final")))
     assert final["after_start"] is True and final["contracts"] == "0.00"
     wsh = next(e for e in rl.entries(record) if e["game_id"] == 2026020053)
@@ -136,10 +169,10 @@ def test_a_move_seen_once_holds_when_the_schedule_cant_be_read_after(tmp_path: P
     pm.place(record, client, pm.plans(rows(), pm.LIVE), clock, rf.CODE, STARTS)
     clock.at = moved - timedelta(minutes=30)
     pm.reconcile(record, client, clock, STARTS | {2026020053: moved})
-    exchange.fill("order-1", "1.00", "0.4700", "0.0175", moved + timedelta(minutes=30))
+    exchange.fill(WSH_MAKER, "1.00", "0.4900", "0.0044", moved + timedelta(minutes=30))
     clock.at = moved + timedelta(hours=1)
     unread = pm.reconcile(record, client, clock, None)
-    assert exchange.orders["order-1"]["status"] == "canceled"
+    assert exchange.orders[WSH_MAKER]["status"] == "canceled"
     assert unread.waiting >= 1 and not rl.entries(record)
     clock.at = pf.START + timedelta(hours=5)
     pm.reconcile(record, client, clock, None)
@@ -206,7 +239,7 @@ def test_a_fill_at_or_after_the_start_never_becomes_a_bet(tmp_path: Path) -> Non
     record, exchange, clock = lb.R2Store(ConditionalBucket(), "bucket"), Exchange(), Clock()
     client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
     pm.place(record, client, pm.plans(rows(), pm.LIVE), clock, rf.CODE, STARTS)
-    exchange.fill("order-1", "1.00", "0.4700", "0.0175", pf.START)
+    exchange.fill(WSH_MAKER, "1.00", "0.4900", "0.0044", pf.START)
     for order_id in exchange.orders:
         exchange.expire(order_id)
     clock.at = pf.START + timedelta(hours=5)
@@ -217,3 +250,32 @@ def test_a_fill_at_or_after_the_start_never_becomes_a_bet(tmp_path: Path) -> Non
     placed = [e for e in entries if e["outcome"] == rl.PLACED]
     starts = {g: pf.GAMES[g][2] for g in pf.GAMES}
     assert all(instant(e["placed_utc"]) < starts[e["game_id"]] for e in placed)
+
+
+def test_no_part_goes_once_a_run_has_seen_the_game_moved_earlier(tmp_path: Path) -> None:
+    # The audit's probe (#321): a reconcile sees the game listed 2 hours earlier; the next
+    # placing run's schedule lists the alert's start again. The earliest start seen holds, so
+    # neither an unsent order nor a maker part its run left unsent goes, since it would rest past
+    # the earlier start.
+    moved = pf.START - timedelta(hours=2)
+    planned = pm.plans(rows(), pm.LIVE)
+    # an order never sent: its first run couldn't read the schedule
+    record, exchange, clock = lb.R2Store(ConditionalBucket(), "bucket"), Exchange(), Clock()
+    client, _ = trade(tmp_path / "unsent", exchange, env=pm.LIVE, now=clock)
+    pm.place(record, client, planned[:1], clock, rf.CODE, {})
+    pm.reconcile(record, client, clock, STARTS | {2026020053: moved})
+    report = pm.place(record, client, planned[:1], clock, rf.CODE, STARTS)
+    assert report.skipped == {"the game's start moved": 1} and not exchange.orders
+    # a maker part its run left unsent after the taker part
+    record, exchange, clock = lb.R2Store(ConditionalBucket(), "bucket"), Exchange(), Clock()
+    client, _ = trade(tmp_path / "resumed", exchange, env=pm.LIVE, now=clock)
+    send = pm.send_maker
+    pm.send_maker = lambda *args, **kwargs: None  # type: ignore[assignment]
+    try:
+        pm.place(record, client, planned[:1], clock, rf.CODE, STARTS)
+    finally:
+        pm.send_maker = send  # type: ignore[assignment]
+    pm.reconcile(record, client, clock, STARTS | {2026020053: moved})
+    again = pm.place(record, client, planned[:1], clock, rf.CODE, STARTS)
+    assert again.makers == 0 and again.makers_skipped == {"the game's start moved": 1}
+    assert [o["body"]["time_in_force"] for o in exchange.orders.values()] == ["immediate_or_cancel"]

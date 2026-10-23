@@ -47,6 +47,23 @@ def test_taker_and_maker_parts_are_valued_apart_at_their_cost_fees_included(
     assert maker["band"] == "1 to 4 hours"
 
 
+def test_an_adr_0045_orders_two_parts_are_its_taker_and_maker_bids(tmp_path: Path) -> None:
+    # #321: the taker part's fills and the maker part's, each tagged by Kalshi's is_taker, with
+    # the delay from the taker part's send, the first to go.
+    store = lb.LocalStore(tmp_path)
+    ff.two_parts(store, [TAKER], [MAKER])
+    refs = lf.references(ff.odds(), ff.AFTER)
+    bids = lf.bids(lf.referenced(lf.fills(store, pm.DEMO), refs, ff.TEAMS, ff.AFTER))
+    assert sorted(bids["kind"].to_list()) == [lf.MAKER, lf.TAKER]
+    maker = bids.filter(pl.col("kind") == lf.MAKER).row(0, named=True)
+    assert maker["clv"] == pytest.approx(ff.P_HOME * 2 / 0.9644 - 1)
+    assert maker["band"] == "1 to 4 hours"
+    final = json.loads(store.get(pm.order_key(pm.DEMO, pf.DAY, ff.WSH, "final")))
+    assert final["parts"]["taker"]["contracts"] == "1.00"
+    assert final["parts"]["maker"]["contracts"] == "2.00"
+    assert final["contracts"] == "3.00" and final["filled_contracts"] == "3.00"
+
+
 def test_the_delay_runs_from_the_send_never_from_a_later_adoption(tmp_path: Path) -> None:
     # An adopted order's placed time is when a later run found it on Kalshi, hours after the
     # send and the fill: the delay reads Kalshi's creation time, or the record written before the

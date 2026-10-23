@@ -46,13 +46,15 @@ PESSIMISTIC = "p10"
 class Exchange:
     """An exchange's order rules (ADR 0040): its environment ("demo" or "live", live/kalshi_trade),
     the owner's deposit rate in USD per euro, fixed for the season, the contract step, the taker
-    fee rate, the precision the fee is rounded up to (a direct member's $0.0001), and how long
-    before the listed start an order expires."""
+    fee rate, the maker fee rate a post-only order pays (a quarter of the taker's, ADR 0045), the
+    precision the fee is rounded up to (a direct member's $0.0001), and how long before the listed
+    start an order expires."""
 
     env: str
     usd_per_eur: float
     step: float = 0.01
     taker_fee: float = 0.07
+    maker_fee: float = 0.0175
     fee_precision: float = 0.0001
     expire_before: timedelta = timedelta(minutes=5)
 

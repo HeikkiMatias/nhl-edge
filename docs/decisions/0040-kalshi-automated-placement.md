@@ -1,6 +1,7 @@
 # 0040. Real bets placed automatically on Kalshi through its API
 
 - Status: Accepted (the owner, 2026-10-22). On 2026-10-18 the owner chose the venue, the automation, the order type, the currency and the practice on the demo exchange.
+- Amended by: ADR 0045 (2026-10-23), items 1, 2 and 9: a taker part and a post-only maker part, the maker part re-valued.
 - Date: 2026-10-18
 - Amends: ADR 0039 item 4 (the stake's currency and rounding on an exchange) and item 6 (the venue and placement). The start rule, the stops, the bankroll and what is bet are unchanged.
 

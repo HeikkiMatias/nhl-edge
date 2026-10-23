@@ -72,6 +72,40 @@ def record(
         lb.put_once(store, pm.order_key(env, day, game_id, part), json.dumps(body).encode())
 
 
+def two_parts(
+    store: lb.Store, taker: list[dict[str, Any]], maker: list[dict[str, Any]], env: str = pm.DEMO
+) -> None:
+    """An ADR 0045 order's record (#321): its taker part, sent at PLACED, and its maker part, each
+    with its fills, and the final record placement writes from them."""
+    order = {
+        "execution": "adr-0045",
+        "game_date": pf.DAY.isoformat(),
+        "season": 20262027,
+        "game_id": WSH,
+        "team": "WSH",
+        "start_utc": pf.START.isoformat(),
+        "written_utc": (PLACED - timedelta(seconds=30)).isoformat(),
+    }
+    parts = {}
+    for name, order_id, listed in (("taker", "order-t", taker), ("maker", "order-m", maker)):
+        count = sum(float(f["count_fp"]) for f in listed)
+        shown = {"order_id": order_id, "status": "canceled", "fill_count_fp": f"{count:.2f}"}
+        parts[name] = (shown, [f | {"order_id": order_id} for f in listed])
+    final = pm.final_parts(parts, pf.START, AFTER)
+    placed = {"order_id": "order-t", "placed_utc": PLACED.isoformat()}
+    maker_placed = {
+        "order_id": "order-m",
+        "placed_utc": (PLACED + timedelta(seconds=2)).isoformat(),
+    }
+    for part, body in (
+        ("", order),
+        (pm.TAKER_PLACED, placed),
+        (pm.MAKER_PLACED, maker_placed),
+        ("final", final),
+    ):
+        lb.put_once(store, pm.order_key(env, pf.DAY, WSH, part), json.dumps(body).encode())
+
+
 def odds(proxy: datetime | None = PROXY, *later: datetime) -> pl.DataFrame:
     """Pinnacle's decision quote, its pre-game quote at proxy (none when None), and any later
     snapshots at the same prices."""

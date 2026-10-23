@@ -508,6 +508,8 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - An RSA key uses RSA-PSS over SHA-256, with MGF1 SHA-256 and a salt of the digest's length.
 - **Orders** ([Create Order (V2)](https://docs.kalshi.com/api-reference/orders/create-order-v2)): `side: bid` buys Yes at a limit `price` in dollars, for `count` contracts in steps of 0.01.
   - `time_in_force: good_till_canceled` with an `expiration_time` (unix seconds) rests the order until then. `cancel_order_on_pause` cancels it if trading pauses, and `post_only` refuses an order that would fill at once.
+  - `time_in_force: immediate_or_cancel` fills what it can at once and cancels the rest. It takes no `expiration_time`.
+  - **A post-only bid that would cross:** the REST docs don't say how it is refused. Kalshi's FIX docs cancel it at once (`POST_ONLY_CROSS`). The placement treats a 400 or an order cancelled at once with no fill as that refusal (#321); the demo practice shows which one Kalshi answers.
   - A repeated `client_order_id` is refused with 409. The client reads that order back instead of sending another, so a retry or a rerun never places a bet twice.
   - Order status is `resting`, `canceled` or `executed`. The order carries its fill count, its taker and maker fill costs and its fees. Its fills carry each count, price, fee, time and `is_taker`.
 - **Fees** ([Fee Rounding](https://docs.kalshi.com/getting_started/fee_rounding)): the fee schedule's taker fee is 0.07 × C × P × (1 − P), and a maker pays a quarter of that on markets with maker fees. A direct member's balance is aligned to $0.0001, and a fee accumulator keeps an order's total close to one equivalent fill.
@@ -525,16 +527,17 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - The live check needs a balance of at least a few cents.
 - **When:** `kalshi-check.yml`, dispatched by the owner with `env` demo or live. It passes only the chosen environment's key.
 
-## Kalshi orders (#281)
+## Kalshi orders (#281, #321)
 
-`live/placement.py` places each alerted bet on Kalshi, tracks its order and writes its entry (ADR 0040).
+`live/placement.py` places each alerted bet on Kalshi in two parts, tracks them and writes the bet's entry (ADR 0040 as amended by ADR 0045).
 
 - **The switch:** the repository variable `KALSHI_TRADING`.
   - **`off`**, or unset: nothing is placed, and every run cancels our resting orders.
   - **`demo`:** every alerted bet, practice or real, goes to Kalshi's demo exchange at the demo rules (`real.DEMO_EXCHANGE`), recorded under `real/demo/`, never in the practice or real record.
   - **`live`:** the real days' alerted bets go to the live exchange, from their alert rows' orders. These exist only once the venue is Kalshi's (`real.VENUE`).
 - **`nhl real place --r2 [--cron]`:** at the midday slot, right after `nhl real alert`. Each planned order is written once to R2 (`real/<live|demo>/orders/<date>/<game_id>.json`), then checked:
-  - the game's start, as the NHL's schedule lists it now (`/v1/schedule/{date}` for the week from the day before, so a game moved into that day is listed too; fetched fresh and stored raw), is still the alert's. Without the schedule, no order goes;
+  - the game's start, as the NHL's schedule lists it now (`/v1/schedule/{date}` for the week from the day before, so a game moved into that day is listed too; fetched fresh and stored raw), is still the alert's, and no run has seen it listed earlier (`...-moved-<start>.json`). Without the schedule, no order goes;
+  - a plan made again from the day's row is the order its record holds, so an order goes only as it was written;
   - its expiry is at least a minute away;
   - its most cost is within 1.5% of the bankroll, and the day's orders, earlier runs' included, within 5%;
   - the code's own limits (#294), whatever the alert row says:
@@ -544,23 +547,29 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - the balance covers the orders;
   - the market is active.
 
-  Then it is sent. Kalshi's order id is written after (`...-placed.json`), or the reason it wasn't sent (`...-skipped.json`; the orders table shows it only for an order never sent). A rerun sends nothing for an order already placed. The client order id is the same on every run, so Kalshi refuses a second order (409). The owner's Telegram gets the orders placed, and the counts of those not placed or failed, even on a day when none went.
-  - **Failures:** a market that can't be read skips only its own order. A create that fails after its tries fails the run after the others.
-  - **Lost answers:** an order Kalshi holds though no run recorded it, as when a create's answer was lost, is found by its client order id. Every tracking run looks for each order with no Kalshi id, so it is tracked and told while it rests, and before a cancel or calling it not sent (`...-placed.json` with `adopted`). A placing run that finds its order already recorded this way moves on.
+  Its most cost is its taker part's or its maker part's, whichever is more: the maker part gets only what the taker part's fills leave of its own planned cost. Each part's cost is recomputed at its own worst fee, the taker fee for the taker part and the maker fee for the post-only part.
+
+  Then its taker part is sent, and its id written (`...-taker-placed.json`); then its maker part (`...-maker-placed.json`), or the reason none went (`...-maker-skipped.json`). The reason the order wasn't sent goes to `...-skipped.json`; the orders table shows it only for an order never sent. A rerun sends nothing for a part already placed, and sends the maker part of an order whose run stopped after its taker part. Each part's client order id is the same on every run, so Kalshi refuses a second order (409). The owner's Telegram gets the orders placed, with what the taker part filled and where the maker part rests, and the counts of those not placed or failed, even on a day when none went.
+  - **Failures:** a market that can't be read skips only its own order. A create that fails after its tries fails the run after the others. A maker part whose taker part can't be read back is not sent, and one whose own read-back fails is not recorded as resting; either fails the run, so a rerun of the midday step sends or confirms it (the same cent's client order id brings back the same order).
+  - **Lost answers:** a part Kalshi holds though no run recorded it, as when a create's answer was lost, is found by its client order id. Every tracking run looks for each part with no Kalshi id, so it is tracked and told while it rests, and before a cancel or calling it not sent (`...-taker-placed.json` or `...-maker-placed.json` with `adopted`). A maker part is any of its cents' ids that rests or filled, never one Kalshi cancelled at once for crossing. A placing run that finds its part already recorded this way moves on.
   - **The day cap** counts every order a run has sent that day, final or not.
-- **The order:** a limit buy of Yes at the alert's limit, `good_till_canceled` with `expiration_time` 5 minutes before the start, and `cancel_order_on_pause`. It fills at once from asks at or below the limit, and the rest rests until it expires.
+- **The order, in two parts (ADR 0045):**
+  - **The taker part:** an `immediate_or_cancel` buy of Yes at L_t, the alert's limit at the taker fee, sized at L_t. It fills at once from asks at or below L_t, and Kalshi cancels the rest.
+  - **The maker part:** then a `post_only` bid at L_m, the highest cent that clears the hurdle at the maker fee, `good_till_canceled` with `expiration_time` 5 minutes before the start, and `cancel_order_on_pause`. It is sized once the taker part's fills are read (`exchange.rest`): both parts together stay within the maker part's planned cost, and within the stake the alert's table allows at their effective price together; the maker part alone clears the hurdle.
+  - **A bid that would cross** (ADR 0045 item 1, the owner's amendment of 2026-10-23): a post-only bid can't rest at or above the best ask. When Kalshi refuses or cancels one, it is sent a cent lower, down to L_t, each cent with its own client order id. No Kalshi price is read to place it (ADR 0040 item 2). A bid refused at every cent is skipped with that reason.
+  - **ADR 0040's orders,** one resting order each (`...-placed.json`), are tracked to their end as before. A rerun never sends parts for one.
 - **`nhl real orders --r2 [--cancel]`:** at every odds slot and in the nightly job, for each environment whose key is set.
   - An environment the switch doesn't name has its resting orders cancelled first, and so does every environment with `--cancel` (`kalshi-cancel.yml`, the manual kill switch). The kill switch sweeps twice, 90 seconds apart, so an order an odds job sends meanwhile is caught by its client order id.
   - **The deadline:** an order's deadline is its expiry, or earlier when the schedule, read again, lists its game earlier than the alert did. Every earlier start a run sees is written once (`...-moved-<start>.json`), and the earliest holds, so one unread schedule loses no move. A run that can't read the schedule still cancels past the deadline, but writes no final record and no entry: those wait for a run that reads it.
-  - **A resting order** is counted. One past a moved game's deadline is cancelled, and so is one still resting 2 minutes after its own expiry.
-  - **The final record:** once an order's deadline has passed, it is read with its fills and written once (`...-final.json`). It holds the bet, which is the fills before the start (the earlier of the alert's and the schedule's), with their contracts, cost and fees in USD and the first fill's time. Fills at or after the start are kept apart with their count and cost, flagged, and never the bet's. An order whose fills don't add up yet waits for the next run.
+  - **A resting order** is counted. A part past a moved game's deadline is cancelled, and so is one still resting 2 minutes after its own expiry.
+  - **The final record:** once an order's deadline has passed, each part is read with its fills and the order is written once (`...-final.json`). It holds the bet, which is both parts' fills before the start (the earlier of the alert's and the schedule's), with their contracts, cost and fees in USD and the first fill's time. It also holds each part's order id, status, contracts and cost before the start, and every contract the parts filled, which Kalshi settles. Each fill keeps Kalshi's `is_taker`. Fills at or after the start are kept apart with their count and cost, flagged, and never the bet's. An order whose fills don't add up yet waits for the next run.
   - On the live exchange the bet's entry follows (`real/live/entries/`):
-    - placed, at contracts ÷ cost and cost ÷ rate in euros, with Kalshi's order id and the first fill's time, and never late;
+    - placed, at contracts ÷ cost and cost ÷ rate in euros, with the order ids of the parts that filled (taker part first) and the first fill's time, and never late;
     - not placed, "not matched", when nothing filled before the start;
     - not placed, "missed it", when no order went.
 
     A fill at or after the start also raises a warning in the log and the owner's message. A fill costing under half a cent still stakes a cent. An entry a stopped run didn't write after its final record is written by the next run.
-  - The lake's `real_orders` is rebuilt from the records.
+  - The lake's `real_orders` is rebuilt from the records: one row per order, its taker part's limit, contracts and id, beside its maker part's limit, contracts and id, and each part's contracts filled before the start (`execution` is `adr-0040` or `adr-0045`).
 - **`nhl real place --dry-run --date <d> [--env demo|live]`:** prints a day's orders with their prices and sends nothing. It is for the owner's terminal only, never a workflow.
 - **Logs and messages:** a run prints counts only. The orders placed and the fills go to the owner's Telegram, a demo one marked "DEMO, mock funds".
   - **Told once:** each message, once sent, is marked on its orders (`...-notified_placed.json`, `...-notified_final.json`), so a message Telegram refused goes with the next run.

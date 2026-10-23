@@ -70,13 +70,13 @@ def _kind(fill: Mapping[str, Any]) -> str:
 
 def _sent(record: Mapping[str, Any]) -> str:
     """When the order went to Kalshi, for its fills' delay: Kalshi's own creation time when its
-    order shows one; else the placed record's time, unless the order was adopted, whose placed
-    time is when a later run found it (Codex on #324), and then the order record's, written just
-    before the send."""
+    order shows one (an ADR 0045 order's taker part's, sent first); else the placed record's time,
+    unless the order was adopted, whose placed time is when a later run found it (Codex on #324),
+    and then the order record's, written just before the send."""
     created = record["final"].get("order", {}).get("created_time")
     if created:
         return str(created).replace("Z", "+00:00")
-    placed = record.get("placed")
+    placed = record.get(placement.PLACED) or record.get(placement.TAKER_PLACED)
     if placed and not placed.get("adopted"):
         return placed["placed_utc"]
     return record["order"]["written_utc"]

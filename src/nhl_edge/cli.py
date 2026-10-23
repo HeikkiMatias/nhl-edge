@@ -5448,10 +5448,16 @@ def real_place(
         typer.echo(f"kalshi orders {setting} {game_date}: {len(planned)} would be sent")
         for plan in planned:
             typer.echo(
-                f"  {plan.team} {plan.ticker}: at most {plan.limit}, {plan.contracts} contracts, "
-                f"at most ${plan.max_cost_usd:.2f} ({plan.stake:.2f} €, decimal "
-                f"{plan.effective:.3f}), expires {plan.expires_utc:%H:%M} UTC"
+                f"  {plan.team} {plan.ticker}: at most {plan.limit} at once, {plan.contracts} "
+                f"contracts, at most ${plan.max_cost_usd:.2f} ({plan.stake:.2f} €, decimal "
+                f"{plan.effective:.3f})"
             )
+            if plan.maker is not None:
+                typer.echo(
+                    f"    then a post-only bid at most {plan.maker.limit}, both parts at most "
+                    f"${plan.maker.max_cost_usd:.2f} ({plan.maker.stake:.2f} €), expires "
+                    f"{plan.expires_utc:%H:%M} UTC"
+                )
         return
     # Each game's start now, as the schedule lists it: a game moved since the alert gets no order,
     # and nor does any while the schedule can't be read.
@@ -5465,13 +5471,19 @@ def real_place(
         typer.echo(f"kalshi orders {setting}: failed ({exc})", err=True)
         raise typer.Exit(code=1) from None
     typer.echo(report.line(setting))
-    told = placement.unnotified(store, setting, "placed")
-    text = placement.placed_message(game_date, setting, told, report.skipped, report.failed)
+    told = placement.unnotified(store, setting, placement.PLACED)
+    text = placement.placed_message(
+        game_date, setting, told, report.skipped, report.failed, report.unread
+    )
     if _send_quietly(text):
         raise typer.Exit(code=1)
-    placement.mark_notified(store, setting, told, "placed", datetime.now(UTC))
-    if report.failed:
-        typer.echo(f"kalshi orders {setting}: {report.failed} orders failed", err=True)
+    placement.mark_notified(store, setting, told, placement.PLACED, datetime.now(UTC))
+    if report.failed or report.unread:
+        typer.echo(
+            f"kalshi orders {setting}: {report.failed} orders failed, {report.unread} maker parts "
+            "waiting for a read",
+            err=True,
+        )
         raise typer.Exit(code=1)
 
 

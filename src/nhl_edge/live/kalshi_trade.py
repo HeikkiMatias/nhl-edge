@@ -70,6 +70,9 @@ MAX_PAGES = 50
 READ_TRIES = 5
 READ_WAIT_S = 1.0
 CENT = Decimal("0.01")
+# Create Order V2's times in force: good till cancelled, which an expiration time ends, and
+# immediate or cancel.
+GTC, IOC = "good_till_canceled", "immediate_or_cancel"
 # The finest price and count an order takes: $0.0001 and 0.01 contracts (Fixed-Point
 # Representation); a market's own grid can be coarser (its price_ranges).
 PRICE_STEP = Decimal("0.0001")
@@ -84,7 +87,12 @@ type PrivateKey = ed25519.Ed25519PrivateKey | rsa.RSAPrivateKey
 
 class KalshiTradeError(RuntimeError):
     """A request that failed after its tries or answered an unexpected status, or a key that
-    can't sign. Its message names the call and status only: run logs are public."""
+    can't sign. Its message names the call and status only: run logs are public. status is the
+    unexpected status Kalshi answered, when it answered one."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def clock() -> datetime:
@@ -174,7 +182,9 @@ def on_grid(value: Decimal, step: Decimal) -> bool:
 class OrderRequest:
     """A limit buy of Yes (a bid) of count contracts at most price dollars each, good until
     cancelled or until expiration_time. It fills at once from asks at or below its price and the
-    rest rests, unless post_only, which refuses an order that would fill at once."""
+    rest rests, unless post_only, which refuses an order that would fill at once. Immediate or
+    cancel (IOC) fills what it can at once and cancels the rest, so it takes no expiration time
+    (Create Order V2)."""
 
     ticker: str
     client_order_id: str
@@ -183,6 +193,7 @@ class OrderRequest:
     expiration_time: datetime | None = None
     post_only: bool = False
     cancel_order_on_pause: bool = True
+    time_in_force: str = GTC
 
     def __post_init__(self) -> None:
         if not self.ticker or not self.client_order_id:
@@ -195,6 +206,10 @@ class OrderRequest:
             )
         if self.expiration_time is not None and self.expiration_time.tzinfo is None:
             raise ValueError("an order's expiration time needs its time zone")
+        if self.time_in_force not in (GTC, IOC):
+            raise ValueError(f"an order is {GTC} or {IOC}: {self.time_in_force}")
+        if self.time_in_force == IOC and (self.expiration_time is not None or self.post_only):
+            raise ValueError("an immediate-or-cancel order takes no expiry and can't be post-only")
 
     def body(self) -> dict[str, Any]:
         """The request body of Create Order (V2)."""
@@ -204,7 +219,7 @@ class OrderRequest:
             "side": "bid",
             "count": f"{self.count:.2f}",
             "price": f"{self.price:.4f}",
-            "time_in_force": "good_till_canceled",
+            "time_in_force": self.time_in_force,
             "self_trade_prevention_type": "taker_at_cross",
             "post_only": self.post_only,
             "cancel_order_on_pause": self.cancel_order_on_pause,
@@ -303,7 +318,9 @@ class KalshiTrade:
                 if response.status_code in (*expected, *passed):
                     return response
                 if not retryable(response.status_code):
-                    raise KalshiTradeError(f"{call}: status {response.status_code}")
+                    raise KalshiTradeError(
+                        f"{call}: status {response.status_code}", response.status_code
+                    )
                 error = f"status {response.status_code}"
                 retry_after = retry_after_s(response.headers.get("Retry-After"), self.now())
             if backoff is None:

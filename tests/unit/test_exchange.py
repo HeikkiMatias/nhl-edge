@@ -1,5 +1,6 @@
-"""A real bet's buy order on an exchange (ADR 0040, #281): the fee, the limit, the contracts, and
-the alert rows and message of an exchange venue, on the synthetic day of real_fixtures."""
+"""A real bet's buy order on an exchange (ADR 0040 and 0045, #281, #321): the fees, the two parts'
+limits, their contracts, and the alert rows and message of an exchange venue, on the synthetic day
+of real_fixtures."""
 
 import json
 from collections.abc import Callable, Sequence
@@ -35,8 +36,18 @@ def test_the_fee_is_rounded_up_to_the_accounts_precision() -> None:
 
 
 def test_one_contracts_cost_rises_with_its_price() -> None:
-    costs = [ex.cost(Decimal(1), Decimal(c) / 100, RULES) for c in range(1, 100)]
-    assert costs == sorted(costs) and len(set(costs)) == len(costs)
+    for maker in (False, True):
+        costs = [ex.cost(Decimal(1), Decimal(c) / 100, RULES, maker) for c in range(1, 100)]
+        assert costs == sorted(costs) and len(set(costs)) == len(costs)
+
+
+def test_the_maker_fee_is_a_quarter_of_the_takers_rounded_up() -> None:
+    # 0.0175 x 2.31 x 0.77 x 0.23 = 0.0071592675
+    assert ex.fee(Decimal("2.31"), Decimal("0.77"), RULES, maker=True) == Decimal("0.0072")
+    assert RULES.maker_fee * 4 == RULES.taker_fee
+    for cents in range(1, 100):
+        price = Decimal(cents) / 100
+        assert ex.cost(Decimal(3), price, RULES, True) <= ex.cost(Decimal(3), price, RULES)
 
 
 # The limit and the contracts
@@ -82,6 +93,78 @@ def test_a_fill_at_a_lower_price_still_clears_the_hurdle_and_the_rule() -> None:
         assert float(total) / RULES.usd_per_eur <= rl.stake_at(TABLE, effective)
 
 
+# The maker part (ADR 0045)
+
+
+@pytest.mark.parametrize("p_side", [0.36, 0.45, 0.5163520783349841, 0.6, 0.74])
+@pytest.mark.parametrize("hurdle", [0.02, 0.025, 0.04])
+def test_the_maker_limit_is_at_least_the_takers_and_clears_the_hurdle_at_the_maker_fee(
+    p_side: float, hurdle: float
+) -> None:
+    low = rl.min_price(p_side, hurdle, 10.0)
+    table = [(round(low + i * 0.01, 2), 1.0 + 0.02 * i) for i in range(40)]
+    taker = ex.order(p_side, hurdle, allowed(table), RULES)
+    maker = ex.order(p_side, hurdle, allowed(table), RULES, maker=True)
+    assert taker is not None and maker is not None
+    assert maker.price >= taker.price
+    assert maker.cost == ex.cost(maker.contracts, maker.price, RULES, maker=True)
+    assert p_side * maker.effective - 1 >= hurdle
+    assert maker.stake + ex.HALF_CENT <= rl.stake_at(table, maker.effective) + 1e-12
+
+
+def test_the_maker_limit_is_a_cent_or_two_above_the_takers_at_the_reviews_example() -> None:
+    # The review of 2026-10-23 (#317): p = 0.55 and a 2.5% hurdle give 51¢ and 53¢.
+    low = rl.min_price(0.55, 0.025, 10.0)
+    table = [(round(low + i * 0.01, 2), 1.0) for i in range(40)]
+    taker = ex.order(0.55, 0.025, allowed(table), RULES)
+    maker = ex.order(0.55, 0.025, allowed(table), RULES, maker=True)
+    assert taker is not None and maker is not None
+    assert (taker.price, maker.price) == (Decimal("0.51"), Decimal("0.53"))
+
+
+@pytest.mark.parametrize("filled", ["0.00", "0.50", "1.20", "2.15"])
+@pytest.mark.parametrize("taker_cents", [44, 48])
+def test_the_maker_part_after_the_taker_part_keeps_both_within_the_rule(
+    filled: str, taker_cents: int
+) -> None:
+    p_side, hurdle = 0.5163520783349841, 0.025
+    maker = ex.order(p_side, hurdle, allowed(), RULES, maker=True)
+    assert maker is not None
+    count = Decimal(filled)
+    spent = ex.cost(count, Decimal(taker_cents) / 100, RULES) if count else Decimal(0)
+    budget = maker.cost - spent
+    for cents in range(round(maker.price * 100), 40, -1):
+        price = Decimal(cents) / 100
+        contracts = ex.rest(price, budget, (count, spent), p_side, hurdle, allowed(), RULES)
+        if contracts == 0:
+            continue
+        rested = ex.cost(contracts, price, RULES, maker=True)
+        together = spent + rested
+        # within the maker part's planned cost, the stake rule at both parts' price, the hurdle
+        assert together <= maker.cost
+        effective = float((count + contracts) / together)
+        assert float(together) / RULES.usd_per_eur + ex.HALF_CENT <= rl.stake_at(TABLE, effective)
+        assert p_side * float(contracts / rested) - 1 >= hurdle
+        # the most: one more step breaks one of them
+        more = contracts + Decimal("0.01")
+        bigger = ex.cost(more, price, RULES, maker=True)
+        assert (
+            bigger > budget
+            or p_side * float(more / bigger) - 1 < hurdle
+            or float(spent + bigger) / RULES.usd_per_eur + ex.HALF_CENT
+            > rl.stake_at(TABLE, float((count + more) / (spent + bigger)))
+        )
+
+
+def test_a_taker_part_that_spent_the_maker_parts_cost_leaves_it_nothing() -> None:
+    p_side, hurdle = 0.5163520783349841, 0.025
+    maker = ex.order(p_side, hurdle, allowed(), RULES, maker=True)
+    assert maker is not None
+    prior = (Decimal("5.00"), maker.cost)
+    assert ex.rest(maker.price, Decimal(0), prior, p_side, hurdle, allowed(), RULES) == 0
+    assert ex.rest(maker.price, Decimal("-0.10"), prior, p_side, hurdle, allowed(), RULES) == 0
+
+
 def test_more_dollars_per_euro_buy_more_contracts() -> None:
     low = ex.order(0.5163520783349841, 0.025, allowed(), RULES)
     high = ex.order(0.5163520783349841, 0.025, allowed(), real.Exchange("live", 1.30))
@@ -117,18 +200,29 @@ def test_an_exchange_venues_alert_carries_each_bets_order() -> None:
         assert rows[name].to_list() == practice[name].to_list()
     assert practice["exchange"].is_null().all()
     order = json.loads(rows.filter(pl.col("game_id") == 2026020053)["exchange"].item())
-    found = ex.order(0.5163520783349841, 0.025, allowed(rf.table_of(rows, 2026020053)), RULES)
-    assert found is not None
+    table = allowed(rf.table_of(rows, 2026020053))
+    found = ex.order(0.5163520783349841, 0.025, table, RULES)
+    maker = ex.order(0.5163520783349841, 0.025, table, RULES, maker=True)
+    assert found is not None and maker is not None
     assert order == {
         "env": "live",
+        "execution": "adr-0045",
         "limit": f"{found.price:.2f}",
         "contracts": f"{found.contracts:.2f}",
         "max_cost_usd": f"{found.cost:.4f}",
         "stake": round(found.stake, 4),
         "effective": round(found.effective, 6),
+        "maker": {
+            "limit": f"{maker.price:.2f}",
+            "contracts": f"{maker.contracts:.2f}",
+            "max_cost_usd": f"{maker.cost:.4f}",
+            "stake": round(maker.stake, 4),
+            "effective": round(maker.effective, 6),
+        },
         "usd_per_eur": 1.16,
         "expires_utc": "2026-10-07T23:25:00+00:00",
     }
+    assert (order["limit"], order["maker"]["limit"]) == ("0.48", "0.49")
 
 
 def test_a_stake_that_buys_no_contract_is_skipped() -> None:
@@ -142,13 +236,25 @@ def test_an_exchange_venues_message_gives_each_order_and_nothing_to_enter() -> N
     rows = rf.alert_rows(REAL_DAY, venue=KALSHI)
     text = rl.message(rf.ALERT.date(), REAL_DAY, rows, 100.0, "https://dash")
     order = json.loads(rows.filter(pl.col("game_id") == 2026020053)["exchange"].item())
-    cents = round(float(order["limit"]) * 100)
+    maker = order["maker"]
     assert (
-        f"  Kalshi: buy Yes WSH at most {cents}¢, {order['contracts']} contracts, at most "
-        f"${float(order['max_cost_usd']):.2f} ({order['stake']:.2f} €), resting until 02:25"
+        f"  Kalshi: buy Yes WSH at most 48¢ at once, {order['contracts']} contracts, at most "
+        f"${float(order['max_cost_usd']):.2f} ({order['stake']:.2f} €)\n"
+        f"  then a bid at most 49¢ for the rest, both parts at most "
+        f"${float(maker['max_cost_usd']):.2f} ({maker['stake']:.2f} €), resting until 02:25"
     ) in text
     assert "The orders go to Kalshi automatically" in text
     assert "Record each bet on the dashboard" not in text and "minimum price" not in text
+
+
+def test_an_adr_0040_order_reads_as_one_resting_order() -> None:
+    rows = rf.alert_rows(REAL_DAY, venue=KALSHI)
+    order = json.loads(rows.filter(pl.col("game_id") == 2026020053)["exchange"].item())
+    legacy = {key: value for key, value in order.items() if key not in ("execution", "maker")}
+    assert rl.order_lines(legacy, "WSH") == [
+        f"  Kalshi: buy Yes WSH at most 48¢, {order['contracts']} contracts, at most "
+        f"${float(order['max_cost_usd']):.2f} ({order['stake']:.2f} €), resting until 02:25"
+    ]
 
 
 def test_the_practice_message_is_unchanged() -> None:
