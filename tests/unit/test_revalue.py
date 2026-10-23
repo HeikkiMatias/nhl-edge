@@ -128,6 +128,20 @@ def test_a_bid_no_cent_clears_for_is_cancelled_on_kalshi(
     assert 2026020053 not in {p.game_id for p in parts}
 
 
+def test_a_cancel_kalshi_answers_as_no_longer_resting_records_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The bid filled between its read and the cancel: not told as cancelled, left to the reconcile
+    monkeypatch.setattr(rv, "lowered", lambda *args: None)
+    record, raw, _exchange, client, clock = vf.placed(tmp_path)
+    monkeypatch.setattr(client, "cancel", lambda *args: None)
+    body = vf.odds_body({2026020053: (2.60, 1.52)}, vf.SLOT - timedelta(seconds=20))
+    key = vf.store_slot(raw, vf.SLOT, body)
+    clock.at = AFTER
+    report = run(record, raw, client, clock, slot=rv.Snapshot(body, vf.SLOT, key))
+    assert report.cancelled == 0 and not vf.records(record)
+
+
 def test_a_quote_older_than_five_minutes_is_no_valuation(tmp_path: Path) -> None:
     record, exchange, report = slot_run(tmp_path, (2.60, 1.52), vf.SLOT - timedelta(minutes=6))
     assert report.stale == 3 and report.valued == 0 and not exchange.amends
@@ -243,6 +257,16 @@ def test_a_starter_change_is_seen_when_daily_faceoff_lists_another_start(tmp_pat
     assert report.starters == 1 and exchange.orders[vf.WSH_MAKER]["status"] == "canceled"
 
 
+def test_a_starter_change_on_a_bid_already_filled_records_no_cancel(tmp_path: Path) -> None:
+    record, raw, exchange, client, clock = vf.placed(tmp_path)
+    exchange.orders[vf.WSH_MAKER]["status"] = "executed"
+    vf.store_page(raw, pf.DECISION - timedelta(minutes=2), {"WSH": 1, "PIT": 2})
+    vf.store_page(raw, AFTER - timedelta(minutes=1), {"WSH": 7, "PIT": 2})
+    clock.at = AFTER
+    report = run(record, raw, client, clock)
+    assert report.starters == 1 and report.cancelled == 0 and not vf.records(record)
+
+
 def test_a_starter_first_named_after_the_decision_is_no_change(tmp_path: Path) -> None:
     record, raw, exchange, client, clock = vf.placed(tmp_path)
     vf.store_page(raw, pf.DECISION - timedelta(minutes=2), {"WSH": None, "PIT": 2})
@@ -327,6 +351,26 @@ def test_a_poll_answered_after_the_placement_gives_way_to_the_one_before(tmp_pat
     calls: list[httpx.Request] = []
     body = vf.odds_body({2026020053: (2.20, 1.72)}, AFTER - timedelta(seconds=30))
     assert run(record, raw, client, clock, odds=vf.odds_api(body, clock, calls)).moved == 1
+
+
+def test_a_move_before_a_valuation_without_a_top_isnt_seen_again(tmp_path: Path) -> None:
+    # The watch was down at the slot: its valuation keeps no stale top, and the move since the
+    # placement, which the slot's fresh price already valued, claims no call when the watch
+    # resumes.
+    record, raw, _exchange, client, clock = vf.placed(tmp_path)
+    vf.store_tops(raw, vf.PLACED_AT - timedelta(minutes=1), {vf.WSH: ("0.4500", "0.5200")})
+    body = vf.odds_body(
+        {2026020053: vf.DECISION_PRICES[2026020053]}, vf.SLOT - timedelta(seconds=20)
+    )
+    key = vf.store_slot(raw, vf.SLOT, body)
+    clock.at = AFTER
+    run(record, raw, client, clock, slot=rv.Snapshot(body, vf.SLOT, key))
+    assert vf.records(record)[-1]["top"] is None
+    clock.at = AFTER + timedelta(minutes=15)
+    vf.store_tops(raw, clock.at - timedelta(minutes=1), {vf.WSH: ("0.4500", "0.5600")})
+    calls: list[httpx.Request] = []
+    assert run(record, raw, client, clock, odds=vf.odds_api(b"[]", clock, calls)).moved == 0
+    assert not calls
 
 
 def test_the_next_move_is_measured_from_the_last_valuation(tmp_path: Path) -> None:
@@ -431,6 +475,19 @@ def test_nothing_rests_once_the_expiry_is_near(tmp_path: Path) -> None:
     near = pf.START - timedelta(minutes=5) - pm.LEAD
     parts, _ = rv.resting(record, pm.LIVE, rv.ledger_of(record), near)
     assert {p.game_id for p in parts} == {2026020055}
+
+
+def test_every_run_that_amends_bids_shares_one_concurrency_group() -> None:
+    # The slot's re-valuation and the 15-minute one never amend the same bids at once, and the
+    # snapshot job stays out of the group, so a re-valuation never cancels a pending snapshot.
+    workflows = Path(__file__).parents[2] / ".github" / "workflows"
+    snapshot, slot = (workflows / "odds-snapshots.yml").read_text().split("\n  revalue:\n")
+    assert "group: kalshi-orders" in slot and "nhl real revalue --r2 --slot" in slot
+    assert "kalshi-orders" not in snapshot and "nhl real revalue" not in snapshot
+    triggered = (workflows / "kalshi-revalue.yml").read_text()
+    assert "group: kalshi-orders" in triggered
+    # the UTC fallback cron runs only inside the Eastern window
+    assert "TZ=America/New_York" in triggered and "1305" in triggered and "2250" in triggered
 
 
 # The command

@@ -330,6 +330,14 @@ def _top_in(raw: RawStore, key: str, part: Resting, at: datetime) -> dict[str, A
     return None
 
 
+def fresh_top(raw: RawStore, part: Resting, at: datetime) -> dict[str, Any] | None:
+    """top_at, or None when it was observed over TOP_AGE before at: the watch isn't running."""
+    found = top_at(raw, part, at)
+    if found is None or at - _instant(found["observed_utc"]) > TOP_AGE:
+        return None
+    return found
+
+
 def moved(before: Mapping[str, Any] | None, after: Mapping[str, Any] | None) -> bool:
     """A move of MOVE or more in the best Yes bid or the best Yes ask between two tops of book.
     A side missing from either has nothing to compare."""
@@ -494,7 +502,8 @@ def value(
     order_id = part.order_id
     try:
         if target is None:
-            trade.cancel(part.order_id, part.ticker)
+            if trade.cancel(part.order_id, part.ticker) is None:
+                return  # no longer resting since its read: the reconcile's (Codex on #327)
             action = CANCEL
         elif target < current:
             renamed = amend_id(part, target)
@@ -561,10 +570,12 @@ def revalue(
             continue
         report.starters += 1
         try:
-            trade.cancel(part.order_id, part.ticker)
+            cancelled = trade.cancel(part.order_id, part.ticker)
         except KalshiTradeError:
             report.failed += 1
             continue
+        if cancelled is None:
+            continue  # no longer resting, filled or gone since: the reconcile's (Codex on #327)
         report.cancelled += 1
         report.records.append(
             _write(
@@ -598,7 +609,7 @@ def revalue(
                 part,
                 found.get(part.game_id),
                 SLOT,
-                top_at(raw, part, at),
+                fresh_top(raw, part, at),
                 at,
                 report,
             )
@@ -606,11 +617,13 @@ def revalue(
     triggered = []
     for part in left:
         at = now()
-        last = part.last.get("top") if part.last is not None else None
-        before = last if last is not None else top_at(raw, part, part.placed_utc)
-        after = top_at(raw, part, at)
-        if after is not None and at - _instant(after["observed_utc"]) > TOP_AGE:
-            after = None
+        # The baseline: the last valuation's top, else the fresh one at its time, so a move it
+        # already priced in isn't seen again (Codex on #327); before any, the top at placement.
+        if part.last is not None:
+            before = part.last.get("top") or fresh_top(raw, part, _instant(part.last["valued_utc"]))
+        else:
+            before = fresh_top(raw, part, part.placed_utc)
+        after = fresh_top(raw, part, at)
         if moved(before, after):
             triggered.append((part, after))
     report.moved = len(triggered)

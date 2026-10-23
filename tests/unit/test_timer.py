@@ -9,7 +9,8 @@ from nhl_edge.ingest.odds import SLOT_PLANS
 ROOT = Path(__file__).parents[2]
 TIMER = (ROOT / "infra" / "timer" / "src" / "schedule.js").read_text()
 WORKFLOWS = ROOT / ".github" / "workflows"
-GUARD = "if: github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true'"
+# Every job of a timed workflow skips its late schedule, alone or after always() (#327).
+GUARD = "github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true'"
 
 
 def test_timer_dispatches_every_odds_slot_at_its_eastern_time() -> None:
@@ -64,7 +65,7 @@ def test_every_scheduled_workflow_is_dispatched_by_the_timer_and_skips_its_sched
     for name in dispatched:
         text = (WORKFLOWS / name).read_text()
         assert "workflow_dispatch:" in text, name
-        assert text.count("runs-on:") == text.count(GUARD) == 1, name
+        assert text.count("runs-on:") == text.count(GUARD) >= 1, name
 
 
 def test_a_workflow_left_to_github_s_schedule_never_skips_it() -> None:

@@ -174,27 +174,6 @@ jobs:
           fi
           uv run nhl real orders --r2 || status=1
           exit $status
-      - name: Kalshi re-valuation (#321)
-        # Each resting maker part re-valued with this slot's own Pinnacle snapshot (ADR 0045 item
-        # 2): its bid lowered, or cancelled when no cent clears the hurdle, never raised, and
-        # cancelled on a change in Daily Faceoff's named starter since the decision, from the
-        # goalie poll above. No Odds API call: kalshi-revalue.yml makes the triggered ones. At
-        # midday the orders go after the snapshot, so nothing is valued with it. Counts only in
-        # the log; the bids lowered or cancelled go to the owner's Telegram.
-        if: always()
-        env:
-          KALSHI_TRADING: ${{ vars.KALSHI_TRADING || 'off' }}
-          KALSHI_DEMO_KEY_ID: ${{ secrets.KALSHI_DEMO_KEY_ID }}
-          KALSHI_DEMO_PRIVATE_KEY: ${{ secrets.KALSHI_DEMO_PRIVATE_KEY }}
-          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
-          KALSHI_PRIVATE_KEY: ${{ secrets.KALSHI_PRIVATE_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: uv run nhl real revalue --r2 --slot
       - name: Kalshi books (#282)
         # Kalshi's public order book of both teams' markets of each game in the day's real bets
         # alert, stored raw in R2 and rebuilt into the lake's kalshi_books, for the owner's own
@@ -215,3 +194,39 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
           uv run nhl kalshi books --mirror-raw "${pick[@]}"
+  revalue:
+    # Each resting maker part re-valued with this slot's own Pinnacle snapshot (ADR 0045 item 2):
+    # its bid lowered, or cancelled when no cent clears the hurdle, never raised, and cancelled on
+    # a change in Daily Faceoff's named starter since the decision, from the goalie poll in the
+    # snapshot job. No Odds API call: kalshi-revalue.yml makes the triggered ones. At midday the
+    # orders go after the snapshot, so nothing is valued with it. It runs once the snapshot job
+    # ends, whatever it did, in the kalshi-orders concurrency group it shares with
+    # kalshi-revalue.yml, so no two runs amend the same bids at once (Codex on #327); the
+    # snapshot job stays out of that group, so a re-valuation never cancels a pending snapshot.
+    # Counts only in the log; the bids lowered or cancelled go to the owner's Telegram.
+    needs: snapshot
+    if: always() && (github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: kalshi-live
+    concurrency:
+      group: kalshi-orders
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+      - run: uv sync --frozen
+      - name: Kalshi re-valuation (#321)
+        env:
+          KALSHI_TRADING: ${{ vars.KALSHI_TRADING || 'off' }}
+          KALSHI_DEMO_KEY_ID: ${{ secrets.KALSHI_DEMO_KEY_ID }}
+          KALSHI_DEMO_PRIVATE_KEY: ${{ secrets.KALSHI_DEMO_PRIVATE_KEY }}
+          KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
+          KALSHI_PRIVATE_KEY: ${{ secrets.KALSHI_PRIVATE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: uv run nhl real revalue --r2 --slot
