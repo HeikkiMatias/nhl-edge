@@ -202,11 +202,11 @@ LIVE_MODEL = (
     "slate",
     "targets",
 )
-PRIVATE_MODULES = ("placement", "exchange", "real_ledger", "kalshi_trade", "real")
+PRIVATE_MODULES = ("placement", "exchange", "real_ledger", "kalshi_trade", "real", "revalue")
 PRIVATE_TABLES = ("real_orders", "real_bets", "real_settlements", "real_alerts", "kalshi_books")
 # The record's own R2 prefixes, read directly rather than through a module or a lake table: its
 # settlements, Kalshi's settlements kept for its payouts (#290) and the demo orders.
-PRIVATE_PREFIXES = ("real/live", "real/demo")
+PRIVATE_PREFIXES = ("real/live", "real/demo", "real/revalue-calls", "odds-revalue")
 
 
 def imported(tree: ast.AST) -> set[str]:

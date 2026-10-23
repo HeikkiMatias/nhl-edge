@@ -5625,6 +5625,105 @@ def real_fills(
         typer.echo(lf.count_line(env, rows))
 
 
+@real_app.command("revalue")
+def real_revalue(
+    r2: Annotated[
+        bool,
+        typer.Option("--r2", help="The orders' record, the ledger and the raw polls in R2."),
+    ] = False,
+    slot: Annotated[
+        bool,
+        typer.Option(
+            "--slot",
+            help="Value every resting part with the slot's own odds snapshot, the newest stored "
+            "today; no Odds API call.",
+        ),
+    ] = False,
+) -> None:
+    """Re-value each resting maker part of the environment the switch KALSHI_TRADING names (ADR
+    0045 item 2, #321): its bid lowered or cancelled on fresh information, never raised. With
+    --slot, at each odds slot, with the slot's snapshot; without it, every 15 minutes
+    (kalshi-revalue.yml), on a Kalshi move of 3 cents since the last valuation, from the watch's
+    stored top of book, with one Odds API h2h call claimed within the day's cap of 4, or on a
+    change in Daily Faceoff's named starter since the decision, which cancels. Each valuation is
+    written once beside its order; the owner's Telegram hears of each bid lowered or cancelled.
+    The log prints counts only."""
+    import json
+    from datetime import UTC, timedelta
+
+    from nhl_edge.ingest import dailyfaceoff as dfo
+    from nhl_edge.ingest.nhl_api import parse_utc
+    from nhl_edge.ingest.odds import OddsApi
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.live import blend_fit, placement
+    from nhl_edge.live import kalshi_trade as kt
+    from nhl_edge.live import revalue as rv
+    from nhl_edge.settings import MissingSettingError, optional
+
+    _, store = _real_record(r2)
+    try:
+        setting = placement.switch_of(optional("KALSHI_TRADING"))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    if setting == placement.OFF:
+        typer.echo("kalshi revalue: KALSHI_TRADING is off, nothing re-valued")
+        return
+    now = datetime.now(UTC)
+    parts, missing = rv.resting(store, setting, rv.ledger_of(store), now)
+    if missing:
+        typer.echo(
+            f"::warning::kalshi revalue {setting}: {missing} resting parts without a ledger row"
+        )
+    if not parts:
+        typer.echo(f"kalshi revalue {setting}: nothing resting")
+        return
+    rules = placement.code_exchange(setting)
+    paths = sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
+    if rules is None or len(paths) != 1:
+        typer.echo(
+            f"kalshi revalue {setting}: needs the code's exchange and the season's one live fit",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    live = blend_fit.load(json.loads(paths[0].read_text()))
+    raw = RawStore.from_env(mirror=r2, flag="--r2")
+    try:
+        trade = kt.KalshiTrade.from_env(setting, raw)
+    except (MissingSettingError, kt.KalshiTradeError) as exc:
+        typer.echo(f"kalshi revalue {setting}: failed ({exc})", err=True)
+        raise typer.Exit(code=1) from None
+    snapshot, odds = None, None
+    if slot:
+        key = raw.latest(f"odds/{now:%Y-%m-%d}")
+        taken = parse_utc(raw.meta(key)["fetched_utc"]) if key is not None else None
+        # Only the slot's own snapshot, taken minutes before: an older one is no slot's.
+        if key is None or taken is None or now - taken > timedelta(minutes=15):
+            typer.echo(f"kalshi revalue {setting}: no slot snapshot in the last 15 minutes")
+            return
+        snapshot = rv.Snapshot(raw.get(key), taken, key)
+    else:
+        daily = dfo.DailyFaceoff(raw)
+        for day in sorted({part.game_date for part in parts}):
+            try:
+                daily.starting_goalies(day)
+            except dfo.DailyFaceoffError as exc:
+                typer.echo(f"::warning::daily faceoff {day}: {exc}")
+        key_value = optional("ODDS_API_KEY")
+        odds = OddsApi(key_value) if key_value else None
+    report = rv.revalue(
+        store, raw, trade, live, rules, parts, lambda: datetime.now(UTC), slot=snapshot, odds=odds
+    )
+    report.missing = missing
+    typer.echo(report.line(setting))
+    told = rv.unnotified(store, setting)
+    if _send_quietly(rv.message(setting, told)):
+        raise typer.Exit(code=1)
+    rv.mark_notified(store, setting, told, datetime.now(UTC))
+    if report.failed:
+        typer.echo(f"kalshi revalue {setting}: {report.failed} failed", err=True)
+        raise typer.Exit(code=1)
+
+
 @real_app.command("reconcile-kalshi")
 def real_reconcile_kalshi(
     r2: Annotated[bool, typer.Option("--r2", help="The real record in R2.")] = False,

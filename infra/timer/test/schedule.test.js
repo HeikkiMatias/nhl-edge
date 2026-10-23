@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { dueJobs, easternClock } from "../src/schedule.js";
+import { KALSHI_REVALUE_ET, dueJobs, easternClock } from "../src/schedule.js";
 
 const at = (iso) => Date.parse(iso);
 const names = (iso) => dueJobs(at(iso)).map((j) => `${j.workflow}${j.inputs.slot ? `:${j.inputs.slot}` : ""}`);
@@ -19,7 +19,7 @@ test("odds slots follow US Eastern time in EDT and EST", () => {
 
 test("goalie polls at :50 from 12:50 to 02:50 UTC, and the nightly ingest at 09:00 UTC", () => {
   assert.deepEqual(names("2026-09-29T12:50:00Z"), ["pregame-goalies.yml"]);
-  assert.deepEqual(names("2026-09-30T02:50:00Z"), ["pregame-goalies.yml"]);
+  assert.deepEqual(names("2026-09-30T02:50:00Z"), ["kalshi-revalue.yml", "pregame-goalies.yml"]);
   assert.deepEqual(names("2026-09-30T03:50:00Z"), []);
   assert.deepEqual(names("2026-09-30T11:50:00Z"), []);
   assert.deepEqual(names("2026-09-30T09:00:00Z"), ["ingest-nightly.yml"]);
@@ -56,8 +56,22 @@ test("the Kalshi watch starts at its four US Eastern windows in EDT and EST (#31
   assert.deepEqual(names("2026-10-23T11:05:00Z"), ["odds-snapshots.yml:morning", "kalshi-watch.yml"]);
   assert.deepEqual(names("2026-12-01T12:05:00Z"), ["odds-snapshots.yml:morning", "kalshi-watch.yml"]);
   assert.deepEqual(names("2026-10-23T15:05:00Z"), ["kalshi-watch.yml"]);
-  assert.deepEqual(names("2026-10-23T19:05:00Z"), ["kalshi-watch.yml"]);
-  assert.deepEqual(names("2026-10-23T23:05:00Z"), ["kalshi-watch.yml"]);
-  assert.deepEqual(names("2026-12-02T00:05:00Z"), ["kalshi-watch.yml"]);
+  assert.deepEqual(names("2026-10-23T19:05:00Z"), ["kalshi-watch.yml", "kalshi-revalue.yml"]);
+  assert.deepEqual(names("2026-10-23T23:05:00Z"), ["kalshi-watch.yml", "kalshi-revalue.yml"]);
+  assert.deepEqual(names("2026-12-02T00:05:00Z"), ["kalshi-watch.yml", "kalshi-revalue.yml"]);
   assert.deepEqual(names("2026-10-23T15:10:00Z"), []);
+});
+
+test("the Kalshi re-valuation every 15 minutes from 13:05 to 22:50 US Eastern, clear of the slots", () => {
+  // 13:05 EDT is 17:05 UTC; 13:05 EST is 18:05 UTC.
+  assert.deepEqual(names("2026-10-23T17:05:00Z"), ["kalshi-revalue.yml"]);
+  assert.deepEqual(names("2026-12-01T18:05:00Z"), ["kalshi-revalue.yml"]);
+  assert.deepEqual(names("2026-10-23T17:20:00Z"), ["kalshi-revalue.yml"]);
+  assert.deepEqual(names("2026-10-24T02:35:00Z"), ["kalshi-revalue.yml"]);
+  // before the decision's orders, after 22:50, and at the slots' :45
+  assert.deepEqual(names("2026-10-23T16:50:00Z"), ["pregame-goalies.yml"]);
+  assert.deepEqual(names("2026-10-24T03:05:00Z"), []);
+  assert.deepEqual(names("2026-10-23T22:45:00Z"), ["odds-snapshots.yml:pre7"]);
+  assert.equal(KALSHI_REVALUE_ET.length, 40);
+  assert.equal(KALSHI_REVALUE_ET.at(-1), "22:50");
 });

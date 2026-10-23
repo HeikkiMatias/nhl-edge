@@ -112,6 +112,8 @@ PLACED, TAKER_PLACED, MAKER_PLACED, MAKER_SKIPPED = (
     "maker-skipped",
 )
 PLACED_PARTS = {"": PLACED, TAKER: TAKER_PLACED, MAKER: MAKER_PLACED}
+# A valuation of a resting maker part (live/revalue.py, ADR 0045 item 2), ...-reval-<stamp>.json.
+REVAL = "reval"
 # The status Kalshi answers a request it refuses as invalid, as a post-only bid that would cross
 # the book may be.
 BAD_REQUEST = 400
@@ -921,6 +923,23 @@ def _parts(order: Mapping[str, Any]) -> tuple[str, ...]:
     return (TAKER, MAKER) if two_parts(order) else ("",)
 
 
+def valuations(record: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """An order's valuations of its maker part (live/revalue.py), oldest first."""
+    return [body for name, body in sorted(record.items()) if name.startswith(f"{REVAL}-")]
+
+
+def _order_ids(record: Mapping[str, Any], part: str, placed: Mapping[str, Any]) -> list[str]:
+    """A sent part's order ids, first to latest: its placed one, and for the maker part each
+    other one a valuation's amend answered with, should Kalshi have given a new one."""
+    ids = [str(placed["order_id"])]
+    if part == MAKER:
+        for valued in valuations(record):
+            found = valued.get("order_id")
+            if found and str(found) not in ids:
+                ids.append(str(found))
+    return ids
+
+
 def adopt(
     store: lb.Store,
     trade: KalshiTrade,
@@ -1051,30 +1070,40 @@ def reconcile(
                 "read_utc": now().isoformat(),
             }
         else:
-            shown = _read_parts(trade, order, sent, cancel, now, expires, deadline, report)
+            ids = {part: _order_ids(record, part, placed) for part, placed in sent.items()}
+            shown = _read_parts(trade, order, ids, cancel, now, expires, deadline, report)
             if shown is None:
                 report.waiting += 1
                 continue
-            resting = any(found.get("status") == "resting" for found in shown.values())
+            resting = any(o.get("status") == "resting" for found in shown.values() for o in found)
             if resting or now() < deadline:
                 report.resting += resting
                 continue
             if starts is None:
                 report.waiting += 1
                 continue
-            fills = {part: trade.fills(placed["order_id"]) for part, placed in sent.items()}
+            fills = {part: [trade.fills(order_id) for order_id in ids[part]] for part in sent}
             if any(
-                sum((_decimal(fill.get("count_fp")) for fill in fills[part]), Decimal(0))
-                != _decimal(shown[part].get("fill_count_fp"))
+                sum((_decimal(fill.get("count_fp")) for fill in listed), Decimal(0))
+                != _decimal(found.get("fill_count_fp"))
                 for part in sent
+                for listed, found in zip(fills[part], shown[part], strict=True)
             ):
                 report.waiting += 1
                 continue
+            flat = {part: _distinct(fills[part]) for part in sent}
             if two_parts(order):
-                both = {part: (shown[part], fills[part]) for part in sent}
+                both = {part: (shown[part][-1], flat[part]) for part in sent}
                 final = final_parts(both, begins, now())
+                held = sum(
+                    (_decimal(o.get("fill_count_fp")) for found in shown.values() for o in found),
+                    Decimal(0),
+                )
+                final["filled_contracts"] = f"{held:.2f}"
+                if len(ids.get(MAKER, [])) > 1:
+                    final["maker_orders"] = [dict(o) for o in shown[MAKER]]
             else:
-                final = final_record(shown[""], fills[""], begins, now())
+                final = final_record(shown[""][-1], flat[""], begins, now())
             report.filled += _decimal(final["contracts"]) > 0
             report.after_start += bool(final["after_start"])
         _put(store, order_key(env, game_date, game_id, "final"), final)
@@ -1086,32 +1115,49 @@ def reconcile(
     return report
 
 
+def _distinct(listed: Sequence[Sequence[Mapping[str, Any]]]) -> list[dict[str, Any]]:
+    """Fills of a part's orders as one list, a fill listed twice kept once by its fill id."""
+    seen: set[str] = set()
+    found = []
+    for fills in listed:
+        for fill in fills:
+            fill_id = fill.get("fill_id")
+            if fill_id is not None and fill_id in seen:
+                continue
+            if fill_id is not None:
+                seen.add(fill_id)
+            found.append(dict(fill))
+    return found
+
+
 def _read_parts(
     trade: KalshiTrade,
     order: Mapping[str, Any],
-    sent: Mapping[str, Mapping[str, Any]],
+    ids: Mapping[str, Sequence[str]],
     cancel: bool,
     now: Callable[[], datetime],
     expires: datetime,
     deadline: datetime,
     report: ReconcileReport,
-) -> dict[str, dict[str, Any]] | None:
-    """Each sent part as Kalshi shows it, in any state, waiting a little for a new order to show
-    (Kalshi's reads lag); a resting part is cancelled first when cancel is set or it is late.
-    None when a part can't be read yet."""
-    shown = {}
+) -> dict[str, list[dict[str, Any]]] | None:
+    """Each sent part's orders as Kalshi shows them, in any state, waiting a little for a new
+    order to show (Kalshi's reads lag); a resting one is cancelled first when cancel is set or it
+    is late. None when an order can't be read yet."""
+    shown: dict[str, list[dict[str, Any]]] = {}
     late = now() >= (expires + GRACE if deadline == expires else deadline)
-    for part, placed in sent.items():
-        found = trade.read_order(placed["order_id"], lambda _: True)
-        if found is None:
-            return None
-        if found.get("status") == "resting" and (cancel or late):
-            trade.cancel(placed["order_id"], order["ticker"])
-            report.cancelled += 1
-            found = trade.read_order(placed["order_id"], lambda o: o.get("status") != "resting")
+    for part, order_ids in ids.items():
+        shown[part] = []
+        for order_id in order_ids:
+            found = trade.read_order(order_id, lambda _: True)
             if found is None:
                 return None
-        shown[part] = found
+            if found.get("status") == "resting" and (cancel or late):
+                trade.cancel(order_id, order["ticker"])
+                report.cancelled += 1
+                found = trade.read_order(order_id, lambda o: o.get("status") != "resting")
+                if found is None:
+                    return None
+            shown[part].append(found)
     return shown
 
 

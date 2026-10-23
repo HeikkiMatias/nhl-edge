@@ -53,7 +53,13 @@ def test_every_scheduled_workflow_is_dispatched_by_the_timer_and_skips_its_sched
     assert (
         sorted(set(scheduled) - set(GITHUB_ONLY))
         == dispatched
-        == ["ingest-nightly.yml", "kalshi-watch.yml", "odds-snapshots.yml", "pregame-goalies.yml"]
+        == [
+            "ingest-nightly.yml",
+            "kalshi-revalue.yml",
+            "kalshi-watch.yml",
+            "odds-snapshots.yml",
+            "pregame-goalies.yml",
+        ]
     )
     for name in dispatched:
         text = (WORKFLOWS / name).read_text()
