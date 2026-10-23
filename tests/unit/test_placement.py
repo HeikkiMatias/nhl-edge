@@ -1296,6 +1296,34 @@ def test_a_run_that_stopped_after_the_taker_part_sends_only_the_maker_part_next(
     ]
 
 
+def test_an_order_goes_only_as_its_record_was_written(tmp_path: Path) -> None:
+    # The day's limits count earlier orders from their records (Codex on #295): a row rewritten
+    # after its order was written, within every ceiling, sends neither part, nor a maker part a
+    # run left unsent.
+    record, exchange, clock = store(), Exchange(), Clock()
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    planned = pm.plans(real_rows(), pm.LIVE)
+    assert pm.place(record, client, planned[:1], clock, rf.CODE, {}).placed == 0
+    smaller = tampered(planned[0], "1.00")
+    report = pm.place(record, client, [smaller], clock, rf.CODE, STARTS)
+    assert report.skipped == {"its row changed since its order was written": 1}
+    assert not exchange.orders
+    send = pm.send_maker
+    pm.send_maker = lambda *args, **kwargs: None  # type: ignore[assignment]
+    try:
+        assert pm.place(record, client, planned[1:2], clock, rf.CODE, STARTS).placed == 1
+    finally:
+        pm.send_maker = send  # type: ignore[assignment]
+    second = planned[1]
+    assert second.maker is not None
+    other = dataclasses.replace(
+        second, maker=dataclasses.replace(second.maker, limit=Decimal("0.52"))
+    )
+    resumed = pm.place(record, client, [other], clock, rf.CODE, STARTS)
+    assert resumed.makers_skipped == {"its row changed since its order was written": 1}
+    assert len(exchange.orders) == 1
+
+
 def test_a_maker_part_waits_while_its_taker_part_cant_be_read(tmp_path: Path) -> None:
     record, exchange, clock = store(), Exchange(), Clock()
     client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)

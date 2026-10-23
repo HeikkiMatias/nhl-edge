@@ -250,3 +250,32 @@ def test_a_fill_at_or_after_the_start_never_becomes_a_bet(tmp_path: Path) -> Non
     placed = [e for e in entries if e["outcome"] == rl.PLACED]
     starts = {g: pf.GAMES[g][2] for g in pf.GAMES}
     assert all(instant(e["placed_utc"]) < starts[e["game_id"]] for e in placed)
+
+
+def test_no_part_goes_once_a_run_has_seen_the_game_moved_earlier(tmp_path: Path) -> None:
+    # The audit's probe (#321): a reconcile sees the game listed 2 hours earlier; the next
+    # placing run's schedule lists the alert's start again. The earliest start seen holds, so
+    # neither an unsent order nor a maker part its run left unsent goes, since it would rest past
+    # the earlier start.
+    moved = pf.START - timedelta(hours=2)
+    planned = pm.plans(rows(), pm.LIVE)
+    # an order never sent: its first run couldn't read the schedule
+    record, exchange, clock = lb.R2Store(ConditionalBucket(), "bucket"), Exchange(), Clock()
+    client, _ = trade(tmp_path / "unsent", exchange, env=pm.LIVE, now=clock)
+    pm.place(record, client, planned[:1], clock, rf.CODE, {})
+    pm.reconcile(record, client, clock, STARTS | {2026020053: moved})
+    report = pm.place(record, client, planned[:1], clock, rf.CODE, STARTS)
+    assert report.skipped == {"the game's start moved": 1} and not exchange.orders
+    # a maker part its run left unsent after the taker part
+    record, exchange, clock = lb.R2Store(ConditionalBucket(), "bucket"), Exchange(), Clock()
+    client, _ = trade(tmp_path / "resumed", exchange, env=pm.LIVE, now=clock)
+    send = pm.send_maker
+    pm.send_maker = lambda *args, **kwargs: None  # type: ignore[assignment]
+    try:
+        pm.place(record, client, planned[:1], clock, rf.CODE, STARTS)
+    finally:
+        pm.send_maker = send  # type: ignore[assignment]
+    pm.reconcile(record, client, clock, STARTS | {2026020053: moved})
+    again = pm.place(record, client, planned[:1], clock, rf.CODE, STARTS)
+    assert again.makers == 0 and again.makers_skipped == {"the game's start moved": 1}
+    assert [o["body"]["time_in_force"] for o in exchange.orders.values()] == ["immediate_or_cancel"]

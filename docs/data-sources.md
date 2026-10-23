@@ -536,7 +536,8 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - **`demo`:** every alerted bet, practice or real, goes to Kalshi's demo exchange at the demo rules (`real.DEMO_EXCHANGE`), recorded under `real/demo/`, never in the practice or real record.
   - **`live`:** the real days' alerted bets go to the live exchange, from their alert rows' orders. These exist only once the venue is Kalshi's (`real.VENUE`).
 - **`nhl real place --r2 [--cron]`:** at the midday slot, right after `nhl real alert`. Each planned order is written once to R2 (`real/<live|demo>/orders/<date>/<game_id>.json`), then checked:
-  - the game's start, as the NHL's schedule lists it now (`/v1/schedule/{date}` for the week from the day before, so a game moved into that day is listed too; fetched fresh and stored raw), is still the alert's. Without the schedule, no order goes;
+  - the game's start, as the NHL's schedule lists it now (`/v1/schedule/{date}` for the week from the day before, so a game moved into that day is listed too; fetched fresh and stored raw), is still the alert's, and no run has seen it listed earlier (`...-moved-<start>.json`). Without the schedule, no order goes;
+  - a plan made again from the day's row is the order its record holds, so an order goes only as it was written;
   - its expiry is at least a minute away;
   - its most cost is within 1.5% of the bankroll, and the day's orders, earlier runs' included, within 5%;
   - the code's own limits (#294), whatever the alert row says:

@@ -448,6 +448,7 @@ def place(
         key = order_key(plan.env, plan.game_date, plan.game_id)
         if not _held(store, key):
             _put(store, key, plan.record(now(), code_version))
+        written = json.loads(store.get(key))
         if held(plan, PLACED) or held(plan, TAKER_PLACED):
             # Sent by an earlier run, final or not: it counts against the day cap (Codex on #289),
             # from its own record below. Its maker part goes now if that run stopped before it.
@@ -456,15 +457,20 @@ def place(
                 held(plan, part) for part in (MAKER_PLACED, MAKER_SKIPPED, "final")
             ):
                 resumed.append(plan)
-        elif not two_parts(json.loads(store.get(key))):
+        elif not two_parts(written):
             # Written by a run before ADR 0045, whose record the reconcile tracks as one order.
             skip(plan, "the order was planned before ADR 0045")
         elif held(plan, "final"):
             # Its deadline has passed once, with nothing sent: a later run never revives it.
             skip(plan, "the order is already final")
+        elif not _as_written(plan, written):
+            # The record is what later runs count against the day's limits: an order goes only as
+            # it was written, never from a row rewritten since.
+            skip(plan, "its row changed since its order was written")
         elif plan.game_id not in starts:
             skip(plan, "the game's start couldn't be checked")
-        elif starts[plan.game_id] != plan.start_utc:
+        elif starts[plan.game_id] != plan.start_utc or _moved(store, plan):
+            # A move a run saw holds, even while the schedule lists the alert's start again.
             skip(plan, "the game's start moved")
         elif now() >= plan.expires_utc - LEAD:
             skip(plan, "too close to the start")
@@ -480,8 +486,12 @@ def place(
             capped.append(plan)
             code_rules = code_exchange(plan.env)
     for plan in resumed:
-        # The same limits for a maker part an earlier run left unsent: its row is read again now.
+        # The same limits for a maker part an earlier run left unsent, and only as its order was
+        # written: the day's limits counted the record's cost when its taker part went.
+        key = order_key(plan.env, plan.game_date, plan.game_id)
         reason = _refused(plan)
+        if reason is None and not _as_written(plan, json.loads(store.get(key))):
+            reason = "its row changed since its order was written"
         if reason is not None:
             skip_maker(store, plan, reason, now, report)
         else:
@@ -489,6 +499,36 @@ def place(
     if capped and code_rules is not None:
         _send(store, trade, capped, code_rules, now, starts, report, skip)
     return report
+
+
+# The fields of an order's record that size it, compared with a plan made again from its row.
+SIZING = (
+    "client_order_id",
+    "limit",
+    "contracts",
+    "max_cost_usd",
+    "maker",
+    "p_side",
+    "hurdle",
+    "stakes",
+    "usd_per_eur",
+    "bankroll",
+    "expires_utc",
+    "start_utc",
+)
+
+
+def _as_written(plan: Plan, written: Mapping[str, Any]) -> bool:
+    """Whether a plan made from the day's row is the order its record holds, field for field."""
+    planned = json.loads(json.dumps(plan.record(datetime.now(UTC), "")))
+    return all(planned.get(name) == written.get(name) for name in SIZING)
+
+
+def _moved(store: lb.Store, plan: Plan) -> bool:
+    """Whether a run has seen the game's start listed earlier than the alert's
+    (...-moved-<start>.json): the earliest start seen holds."""
+    prefix = order_key(plan.env, plan.game_date, plan.game_id, MOVED).removesuffix(".json")
+    return any(key.startswith(prefix) for key in store.keys(prefix.rsplit("/", 1)[0]))
 
 
 def _refused(plan: Plan) -> str | None:
@@ -629,7 +669,7 @@ def send_maker(
     if plan.game_id not in starts:
         report.unread += 1  # a rerun with the schedule sends it
         return
-    if starts[plan.game_id] != plan.start_utc:
+    if starts[plan.game_id] != plan.start_utc or _moved(store, plan):
         skip("the game's start moved")
         return
     taker = json.loads(store.get(order_key(plan.env, plan.game_date, plan.game_id, TAKER_PLACED)))
