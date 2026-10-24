@@ -2514,7 +2514,7 @@ class KalshiDepth(KalshiBooks):
     orders (the owner's decision of 2026-10-23). The levels as KalshiBooks, from the watch's
     bundles (ingest/kalshi_watch.py); observed_utc is the book's own fetch time. Private under
     Kalshi's Developer Agreement (3.1): never published and never a model input or a CLV
-    reference."""
+    reference; the Kalshi price shadow simulates its executions on it (#320, ADR 0046)."""
 
 
 KALSHI_TOPS_KEY = ("observed_utc", "ticker")

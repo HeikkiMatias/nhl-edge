@@ -88,8 +88,9 @@ def test_no_model_or_feature_code_reads_the_books() -> None:
     # Kalshi's data is for the owner's own orders only (#281): only its ingest, its table's
     # registration and schema, the trading client (#286), the orders and the real record built
     # on it (ADR 0040), the orders' fills valued against the close (#318), the watch of every
-    # game's markets (#319), the re-valuation of the resting bids it triggers (#321) and the CLI
-    # that runs them name it, and only the first three and the CLI name the books' table.
+    # game's markets (#319), the re-valuation of the resting bids it triggers (#321), the shadow
+    # that selects on Kalshi's own prices (#320, ADR 0046) and the CLI that runs them name it, and
+    # only the first three and the CLI name the books' table.
     src = Path(__file__).parents[2] / "src" / "nhl_edge"
     texts = {path.relative_to(src).as_posix(): path.read_text() for path in src.rglob("*.py")}
     naming = {path for path, text in texts.items() if "kalshi" in text.lower()}
@@ -101,6 +102,7 @@ def test_no_model_or_feature_code_reads_the_books() -> None:
         "lake/tables.py",
         "live/exchange.py",
         "live/fills.py",
+        "live/kalshi_shadow.py",
         "live/kalshi_trade.py",
         "live/placement.py",
         "live/real.py",
