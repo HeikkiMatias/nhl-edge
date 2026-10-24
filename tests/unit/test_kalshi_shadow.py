@@ -125,6 +125,20 @@ def test_the_taker_walks_the_levels_while_they_clear() -> None:
     assert contracts == sum(q for _, q, _ in levels) and cost == sum(k for _, _, k in levels)
 
 
+def test_a_larger_taker_part_the_rounded_fee_lets_clear_is_kept() -> None:
+    # Codex's case on #334: at 0.50 the fee's rounding up fails 1.47 contracts on the hurdle and
+    # passes 1.48, which are within the stake, so the part is 1.48, not none.
+    p, hurdle, price = 0.53044, 0.025, Decimal("0.50")
+    allowed = ks.kelly(p, 0.0)
+    contracts, cost, _ = ks.take([(price, Decimal("10"))], p, hurdle, allowed, sf.RULES)
+    assert contracts == Decimal("1.48")
+    effective = float(contracts / cost)
+    assert p * effective - 1 >= hurdle
+    assert float(cost) / sf.RULES.usd_per_eur + ex.HALF_CENT <= allowed(effective) + 1e-12
+    smaller = Decimal("1.47")
+    assert p * float(smaller / ex.cost(smaller, price, sf.RULES)) - 1 < hurdle
+
+
 # The maker bid and its fills
 
 
@@ -313,6 +327,38 @@ def test_a_starter_change_takes_the_game_out_of_the_hockey_arm_and_cancels_its_b
     assert "pre7" in market["slot"].to_list()
 
 
+def test_a_starter_change_cancels_a_resting_hockey_bid_without_a_fresh_pair() -> None:
+    # Codex's case on #334: pre7's pair is stale, so pre7 has no opportunity, yet the starter
+    # named by then cancels the hockey bid, as a real one's re-valuation checks the starters
+    # before any quote; a later trade at its price fills only the market arm's.
+    polls = [
+        (sf.MIDDAY - timedelta(minutes=10), sf.HOME, "Goalie One"),
+        (sf.MIDDAY - timedelta(minutes=10), sf.AWAY, "Goalie Two"),
+        (sf.PRE7 - timedelta(minutes=10), sf.HOME, "Goalie Three"),
+    ]
+    odds = pl.concat(
+        [
+            sf.odds(MIDDAY_ODDS),
+            sf.odds([("pre7", sf.PRE7, 1.80, 2.10)], age=timedelta(minutes=10)),
+        ]
+    )
+    result = ks.run_day(
+        sf.DAY,
+        sf.ledger(),
+        odds,
+        sf.depth([(BOOK_AT, sf.HOME, [(0.52, 10.0)], [(0.51, 5.0), (0.49, 9.0)])]),
+        sf.trades([(sf.PRE7 + timedelta(minutes=5), sf.HOME, 0.40, 50.0)]),
+        sf.tops(),
+        sf.dailyfaceoff(polls),
+        WEIGHTS,
+        sf.RULES,
+    )
+    assert "pre7" not in result.opportunities["slot"].to_list()
+    assert result.counts[ks.HOCKEY]["bids"]["cancelled"] == 1
+    assert of(result, ks.HOCKEY, ks.MAKER).is_empty()
+    assert of(result, ks.MARKET, ks.MAKER).height == 1
+
+
 # The measures
 
 
@@ -406,6 +452,41 @@ def test_a_fill_after_pinnacle_moved_against_its_side_is_marked() -> None:
     assert made["moved_against"].to_list() == [True]
 
 
+def test_a_fill_whose_starters_were_never_named_is_unknown_not_unchanged() -> None:
+    # Codex's case on #334: with no Daily Faceoff poll the starter share must not count the fill
+    # as one without a change; with both goalies named and the same, it does.
+    found = [(sf.PUBLISHED + timedelta(hours=1), sf.HOME, 0.40, 50.0)]
+    unnamed = of(maker_day(found=found), kind=ks.MAKER)
+    assert unnamed.height == 1 and unnamed["starter_changed"].to_list() == [None]
+    polls = [
+        (sf.MIDDAY - timedelta(minutes=10), sf.HOME, "Goalie One"),
+        (sf.MIDDAY - timedelta(minutes=10), sf.AWAY, "Goalie Two"),
+    ]
+    named = of(maker_day(found=found, polls=polls), kind=ks.MAKER)
+    assert named["starter_changed"].to_list() == [False]
+
+
+def test_a_fill_of_a_game_without_a_decision_row_reads_its_teams_from_the_odds() -> None:
+    # Codex's case on #334: its side and reference need the game's teams, from the odds' listing.
+    assert ks.teams(sf.ledger().clear(), sf.odds(MIDDAY_ODDS)).rows() == [
+        (sf.GAME, sf.HOME, sf.AWAY)
+    ]
+    later = sf.PRE7 + timedelta(minutes=5)
+    result = ks.run_day(
+        sf.DAY,
+        sf.ledger().clear(),
+        sf.odds([*MIDDAY_ODDS, ("pre7", sf.PRE7, 1.95, 1.95)]),
+        sf.depth([(sf.MIDDAY, sf.HOME, [(0.52, 10.0)], [(0.51, 5.0), (0.49, 9.0)])]),
+        sf.trades([(later, sf.HOME, 0.40, 50.0)]),
+        sf.tops(),
+        sf.dailyfaceoff(),
+        WEIGHTS,
+        sf.RULES,
+    )
+    # WSH's fair price fell from midday to pre7: against the home side it was bid on
+    assert of(result, kind=ks.MAKER)["moved_against"].to_list() == [True]
+
+
 # What is kept
 
 
@@ -473,6 +554,18 @@ def test_a_game_without_a_decision_row_is_market_only() -> None:
     first = rows.row(0, named=True)
     assert first["start_utc"] == sf.START and first["season"] == sf.SEASON
     assert first["at_utc"] == sf.MIDDAY  # no publication to wait for
+
+
+def test_a_later_days_game_in_the_snapshot_is_no_opportunity() -> None:
+    # Codex's case on #334: a slot's snapshot lists the next days' games too; without a decision
+    # row of the day, only a game the listing starts on the day is one.
+    tomorrow = sf.odds(MIDDAY_ODDS).with_columns(
+        game_id=pl.lit(sf.GAME + 1, pl.Int64),
+        commence_time_utc=pl.lit(sf.START + timedelta(days=1)).cast(sf.UTC_US),
+    )
+    odds = pl.concat([sf.odds(MIDDAY_ODDS), tomorrow])
+    rows = ks.opportunities(sf.ledger(), odds, sf.dailyfaceoff(), WEIGHTS, sf.DAY)
+    assert set(rows["game_id"].to_list()) == {sf.GAME}
 
 
 def test_another_policys_decision_has_no_hockey_arm() -> None:

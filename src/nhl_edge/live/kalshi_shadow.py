@@ -174,14 +174,17 @@ def quotes(odds: pl.DataFrame, day: date) -> pl.DataFrame:
     return pairs.with_columns(p_home=pl.Series(fair, dtype=pl.Float64))
 
 
-def starter_changed(rows: pl.DataFrame, dailyfaceoff: pl.DataFrame) -> pl.Series:
+def starter_changed(
+    rows: pl.DataFrame, dailyfaceoff: pl.DataFrame, unknown: bool | None = False
+) -> pl.Series:
     """Per row (game_date, game_id, home, away, start_utc, decision_snapshot_utc, at_utc): whether
     Daily Faceoff's goalie for either team at its latest poll before the row's at_utc differs
     from its latest before the decision's snapshot, by name, as the edge bids read it
-    (live/shadow.py). Each row on its own time, so two rows of a slot never share a poll. False
-    when no team is named at both."""
+    (live/shadow.py). Each row on its own time, so two rows of a slot never share a poll. unknown
+    when no team is named at both: False for a hook (a real bid's check, live/revalue.py), None
+    for a measure, which counts only what it saw."""
     if rows.is_empty() or dailyfaceoff.is_empty():
-        return pl.Series([False] * rows.height, dtype=pl.Boolean)
+        return pl.Series([unknown] * rows.height, dtype=pl.Boolean)
     keys = ["game_date", "game_id", "row"]
     indexed = rows.with_row_index("row")
     teams = pl.concat(
@@ -200,12 +203,44 @@ def starter_changed(rows: pl.DataFrame, dailyfaceoff: pl.DataFrame) -> pl.Series
         pl.col("name").is_not_null(), pl.col("name_now").is_not_null()
     )
     changed = known.group_by(keys).agg(changed=(pl.col("name") != pl.col("name_now")).any())
-    return (
-        indexed.select(keys)
-        .join(changed, on=keys, how="left")
-        .sort("row")["changed"]
-        .fill_null(False)
+    found = indexed.select(keys).join(changed, on=keys, how="left").sort("row")["changed"]
+    return found if unknown is None else found.fill_null(unknown)
+
+
+LEFT_SCHEMA = {"game_id": pl.Int64, "left_utc": pl.Datetime("us", UTC)}
+
+
+def left_at(games: pl.DataFrame, moments: pl.Series, dailyfaceoff: pl.DataFrame) -> pl.DataFrame:
+    """Each game's first slot (game_id, left_utc) at which Daily Faceoff names another starter for
+    either team than at the decision, at each of the day's slot snapshots whether or not the
+    game's own pair is fresh then, as a real bid's re-valuation checks the starters before any
+    quote (live/revalue.py). From then the game leaves the hockey arm, and its resting bid is
+    cancelled. games: the slate's rows (with published_utc and decision_snapshot_utc)."""
+    if games.is_empty() or moments.is_empty():
+        return pl.DataFrame(schema=LEFT_SCHEMA)
+    rows = (
+        games.join(pl.DataFrame({"snapshot_utc": moments.unique()}), how="cross")
+        .with_columns(at_utc=pl.max_horizontal(_utc("snapshot_utc"), _utc("published_utc")))
+        .filter(pl.col("at_utc") < pl.col("start_utc"))
     )
+    if rows.is_empty():
+        return pl.DataFrame(schema=LEFT_SCHEMA)
+    return (
+        rows.with_columns(changed=starter_changed(rows, dailyfaceoff))
+        .filter(pl.col("changed"))
+        .group_by("game_id")
+        .agg(left_utc=pl.col("at_utc").min())
+        .cast(LEFT_SCHEMA)  # type: ignore[arg-type]
+    )
+
+
+def teams(ledger: pl.DataFrame, odds: pl.DataFrame) -> pl.DataFrame:
+    """Each game's home and away (game_id, home, away): its ledger row's, else the odds' own
+    listing, as the opportunities read a game without a decision row."""
+    listed = odds.filter(pl.col("game_id").is_not_null()).select("game_id", "home", "away")
+    return pl.concat(
+        [ledger.select("game_id", "home", "away"), listed], how="vertical_relaxed"
+    ).unique("game_id", keep="first", maintain_order=True)
 
 
 def opportunities(
@@ -216,11 +251,11 @@ def opportunities(
     day: date,
 ) -> pl.DataFrame:
     """Each arm's opportunities of the day, one row per arm, slot, game and team (arm, slot,
-    at_utc, game_date, season, game_id, team, home, away, start_utc, p_side, hurdle, doubt, left):
-    at each slot's fresh Pinnacle pair of a game in the day's ledger. The hockey arm has the
+    at_utc, game_date, season, game_id, team, home, away, start_utc, p_side, hurdle, doubt, left,
+    left_utc): at each slot's fresh Pinnacle pair of a game of the day. The hockey arm has the
     predicted games with p_B3 and u, while weights (conservative_blend's a, b_m, b_d for the week)
-    are given; from the first slot a game's starter changed since the decision, its rows are left
-    (left): no hook, and a resting bid of it is cancelled."""
+    are given; from the first slot a game's starter changed since the decision (left_utc,
+    left_at), its rows are left (left): no hook, and a resting bid of it is cancelled."""
     slate = ledger.filter(pl.col("game_date") == day).select(
         "game_date",
         "season",
@@ -235,10 +270,13 @@ def opportunities(
         "u_sd",
         "decision_snapshot_utc",
     )
-    # A game without a decision row is market-only, at the odds' own listing (ADR 0046).
-    fresh = (
+    on_day = pl.col("commence_time_utc").dt.convert_time_zone("America/New_York").dt.date() == day
+    listed = (
         quotes(odds, day)
         .join(slate, on="game_id", how="left")
+        # A game without a decision row is market-only, at the odds' own listing, when that
+        # starts it on the day (ADR 0046): a snapshot's later games are other days'.
+        .filter(pl.col("game_date").is_not_null() | on_day)
         .with_columns(
             game_date=pl.col("game_date").fill_null(day),
             season=pl.col("season").fill_null(season_of(pl.col("game_id"))),
@@ -249,37 +287,44 @@ def opportunities(
         .with_columns(
             at_utc=pl.max_horizontal(_utc("snapshot_utc"), _utc("published_utc")),
         )
-        .filter(
-            pl.col("snapshot_utc") - pl.col("last_update_utc") <= MAX_QUOTE_AGE,
-            pl.col("at_utc") - pl.col("last_update_utc") <= MAX_PUBLISHED_AGE,
-            pl.col("at_utc") < pl.col("start_utc"),
-            pl.col("at_utc") < pl.col("commence_time_utc"),
-        )
-        .sort("at_utc", "game_id")
     )
-    hockey = fresh.filter(
-        pl.lit(weights is not None),
-        pl.col("policy_version") == challengers.TRAINS_ON,
-        pl.col("status") == PREDICTED,
-        pl.col("p_b3").is_not_null(),
-        pl.col("u_sd").is_not_null(),
-        pl.col("decision_snapshot_utc").is_not_null(),
+    fresh = listed.filter(
+        pl.col("snapshot_utc") - pl.col("last_update_utc") <= MAX_QUOTE_AGE,
+        pl.col("at_utc") - pl.col("last_update_utc") <= MAX_PUBLISHED_AGE,
+        pl.col("at_utc") < pl.col("start_utc"),
+        pl.col("at_utc") < pl.col("commence_time_utc"),
+    ).sort("at_utc", "game_id")
+    eligible = (
+        pl.lit(weights is not None)
+        & (pl.col("policy_version") == challengers.TRAINS_ON)
+        & (pl.col("status") == PREDICTED)
+        & pl.col("p_b3").is_not_null()
+        & pl.col("u_sd").is_not_null()
+        & pl.col("decision_snapshot_utc").is_not_null()
     )
+    hockey = fresh.filter(eligible)
     if hockey.height and weights is not None:
         a, b_m, b_d = weights
         market = logit(hockey["p_home"].to_numpy())
         p = sigmoid(a + b_m * market + b_d * (logit(hockey["p_b3"].to_numpy()) - market))
-        changed = starter_changed(hockey, dailyfaceoff)
+        gone = left_at(slate.filter(eligible), listed["snapshot_utc"], dailyfaceoff)
         hockey = (
-            hockey.with_columns(p_home=pl.Series(p, dtype=pl.Float64), changed=changed)
-            .sort("at_utc", maintain_order=True)
-            .with_columns(left=pl.col("changed").cum_max().over("game_id"))
+            hockey.with_columns(p_home=pl.Series(p, dtype=pl.Float64))
+            .join(gone, on="game_id", how="left")
+            .with_columns(left=(pl.col("at_utc") >= pl.col("left_utc")).fill_null(False))
         )
     else:
-        hockey = hockey.with_columns(left=pl.lit(False))
+        hockey = hockey.with_columns(
+            left=pl.lit(False), left_utc=pl.lit(None, LEFT_SCHEMA["left_utc"])
+        )
     doubt = pl.when(pl.col("u_sd") > 0).then(pl.col("u_sd")).otherwise(0.0)
     arms = [
-        fresh.with_columns(arm=pl.lit(MARKET), doubt=pl.lit(0.0), left=pl.lit(False)),
+        fresh.with_columns(
+            arm=pl.lit(MARKET),
+            doubt=pl.lit(0.0),
+            left=pl.lit(False),
+            left_utc=pl.lit(None, LEFT_SCHEMA["left_utc"]),
+        ),
         hockey.with_columns(arm=pl.lit(HOCKEY), doubt=doubt),
     ]
     rows = []
@@ -301,6 +346,7 @@ def opportunities(
                     "start_utc",
                     "doubt",
                     "left",
+                    "left_utc",
                     team=pl.col(side),
                     p_side=p_side,
                     hurdle=POLICY.min_ev + POLICY.ev_per_sd * pl.col("doubt"),
@@ -321,6 +367,7 @@ def opportunities(
         "hurdle",
         "doubt",
         "left",
+        "left_utc",
     ]
     if not rows:
         return pl.DataFrame(
@@ -330,6 +377,7 @@ def opportunities(
                 "away": pl.String,
                 "doubt": pl.Float64,
                 "left": pl.Boolean,
+                "left_utc": LEFT_SCHEMA["left_utc"],
             }
         ).select(columns)
     return pl.concat([r.select(columns) for r in rows]).sort(
@@ -448,7 +496,12 @@ def take(
     """The taker part from the asks, cheapest first: the most contracts whose cost, each level at
     the taker fee rounded up, clears the hurdle at its effective price and is within the stake
     allowed there, plus a half cent (exchange.sized's margin). Its contracts, cost in USD, and
-    each level's (price, contracts, cost)."""
+    each level's (price, contracts, cost).
+
+    The rounded fee makes the hurdle no monotone test of size: a larger part can clear where a
+    smaller one fails, its fee's rounding spread over more contracts. So each level, as
+    exchange.sized does, goes down from the most the stake could allow at the unrounded fee to
+    the first size that clears both."""
     step, rate = _d(rules.step), _d(rules.usd_per_eur)
     contracts, spent = Decimal(0), Decimal(0)
     levels: list[tuple[Decimal, Decimal, Decimal]] = []
@@ -462,21 +515,29 @@ def take(
 
     for price, quantity in asks:
         top = int((quantity / step).to_integral_value(ROUND_FLOOR))
-        low, high = 0, top
-        while low < high:
-            mid = (low + high + 1) // 2
-            q = step * mid
-            if ok(contracts + q, spent + ex.cost(q, price, rules)):
-                low = mid
-            else:
-                high = mid - 1
-        if low == 0:
+        unit = price + _d(rules.taker_fee) * price * (1 - price)
+        # The parts' decimal price together is at most the better of theirs alone, and the stake
+        # allowed only grows with the decimal price, so no size beyond this is within it.
+        best = max(float(1 / unit), float(contracts / spent) if spent else 0.0)
+        bound = (_d(allowed(best)) * rate - spent) / unit / step
+        n = min(top, max(0, int(bound.to_integral_value(ROUND_FLOOR))))
+        # The expected return at the unrounded fee bounds every size's from above and is monotone
+        # in size: a level whose smallest and largest sizes both miss the hurdle has none clear.
+        reach = [Decimal(1), Decimal(n)] if n else []
+        if not any(
+            p * float((contracts + step * m) / (spent + step * m * unit)) - 1 >= hurdle
+            for m in reach
+        ):
             break
-        q = step * low
+        while n > 0 and not ok(contracts + step * n, spent + ex.cost(step * n, price, rules)):
+            n -= 1
+        if n == 0:
+            break
+        q = step * n
         k = ex.cost(q, price, rules)
         contracts, spent = contracts + q, spent + k
         levels.append((price, q, k))
-        if low < top:
+        if n < top:
             break
     return contracts, spent, levels
 
@@ -610,31 +671,36 @@ def run_arm(
     rules: Exchange,
 ) -> ArmDay:
     """One arm's day: slot by slot in time, each resting bid advanced and re-valued, then each
-    opportunity's taker part and maker bid, highest expected return at the best ask first."""
+    opportunity's taker part and maker bid, highest expected return at the best ask first. A
+    resting bid of a game that left the arm (left_utc) fills up to then and is cancelled."""
     state = ArmDay(arm, rules)
     by_slot = rows.sort("at_utc").partition_by("slot", "at_utc", maintain_order=True)
     rows_by_key = {(r["game_id"], r["team"]): r for r in rows.iter_rows(named=True)}
+    leaves = {r["game_id"]: r["left_utc"] for r in rows_by_key.values() if r["left_utc"]}
     for slot_rows in by_slot:
         at = slot_rows["at_utc"][0]
         here = {(r["game_id"], r["team"]): r for r in slot_rows.iter_rows(named=True)}
         # the resting bids first: their fills to now, then the slot's value
         for key, bid in list(state.bids.items()):
             market = logs.get(key, EMPTY)
-            filled = advance(bid, at, market, rules)
+            # a game that left the arm by now cancels its bid then, fresh quote or not
+            gone = leaves.get(key[0])
+            gone = gone if gone is not None and gone <= at else None
+            filled = advance(bid, gone or at, market, rules)
             state.record(rows_by_key[key], MAKER, bid.placed_utc, filled)
             if bid.left <= 0:
                 del state.bids[key]
                 state.count("filled")
                 continue
-            if at >= bid.expires_utc:
+            if (gone or at) >= bid.expires_utc:
                 _release(state, key, bid, "expired")
+                continue
+            if gone is not None:
+                _release(state, key, bid, "cancelled")
                 continue
             row = here.get(key)
             if row is None:
                 continue  # no fresh quote at this slot: it rests as it is
-            if row["left"]:
-                _release(state, key, bid, "cancelled")
-                continue
             lower = rv.lowered(row["p_side"], row["hurdle"], bid.price, bid.left, rules)
             if lower is None:
                 _release(state, key, bid, "cancelled")
@@ -682,10 +748,12 @@ def run_arm(
             )
             state.actions.append((row, action))
     for key, bid in list(state.bids.items()):
-        market = logs.get(key, EMPTY)
-        filled = advance(bid, bid.expires_utc, market, rules)
+        gone = leaves.get(key[0])
+        cancelled = gone is not None and gone < bid.expires_utc
+        end = gone if gone is not None and cancelled else bid.expires_utc
+        filled = advance(bid, end, logs.get(key, EMPTY), rules)
         state.record(rows_by_key[key], MAKER, bid.placed_utc, filled)
-        state.count("expired" if bid.left > 0 else "filled")
+        state.count("filled" if bid.left <= 0 else "cancelled" if cancelled else "expired")
     state.bids.clear()
     return state
 
@@ -810,13 +878,15 @@ def adverse(
 ) -> pl.DataFrame:
     """Each fill with starter_changed (Daily Faceoff's goalie for either team at the fill differs
     from at the hook's placement) and moved_against (Pinnacle's fair price for the team at its
-    newest pair before the fill is below its pair before the placement); null when unknown."""
+    newest pair before the fill is below its pair before the placement); null when unknown, as
+    when Daily Faceoff named neither team's goalie at both, so a share counts only what it saw.
+    A game's teams are its ledger row's, else the odds' listing (teams)."""
     if found.is_empty():
         return found.with_columns(
             starter_changed=pl.lit(None, pl.Boolean), moved_against=pl.lit(None, pl.Boolean)
         ).select(list(FILL_SCHEMA))
-    teams = ledger.filter(pl.col("game_date") == day).select("game_id", "home", "away")
-    rows = found.with_row_index("fill").join(teams, on="game_id", how="left")
+    sides = teams(ledger.filter(pl.col("game_date") == day), odds)
+    rows = found.with_row_index("fill").join(sides, on="game_id", how="left")
     moments = rows.select(
         "game_date",
         "game_id",
@@ -826,7 +896,7 @@ def adverse(
         decision_snapshot_utc="placed_utc",
         at_utc="fill_utc",
     )
-    changed = starter_changed(moments, dailyfaceoff)
+    changed = starter_changed(moments, dailyfaceoff, unknown=None)
     pairs = quotes(odds, day).select("game_id", "snapshot_utc", "p_home").sort("snapshot_utc")
 
     def fair_before(column: str) -> pl.Series:

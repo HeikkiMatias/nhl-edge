@@ -5683,7 +5683,8 @@ def real_shadow(
     found, opportunities, metas = ks.kept(store)
     if found.height:
         refs = lf.references(read["odds_snapshots"], now)
-        teams = read["paper_ledger"].select("game_id", "home", "away").unique("game_id")
+        # a market-only game without a ledger row has its teams from the odds' listing
+        teams = ks.teams(read["paper_ledger"], read["odds_snapshots"])
         rows = lf.referenced(found, refs, teams, now)
     else:
         rows = found.with_columns(
