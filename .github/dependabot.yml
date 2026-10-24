@@ -8,3 +8,13 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+  # The dashboard's packages (#316): a critical advisory in next 16.4.0 went unflagged (#314).
+  # Minor and patch updates arrive as one PR, so next, react and the @types packages move together;
+  # package.json keeps its exact pins, which Dependabot raises in place.
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    groups:
+      dashboard:
+        update-types: ["minor", "patch"]
