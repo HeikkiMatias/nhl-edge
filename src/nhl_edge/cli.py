@@ -5625,6 +5625,76 @@ def real_fills(
         typer.echo(lf.count_line(env, rows))
 
 
+@real_app.command("shadow")
+def real_shadow(
+    r2: Annotated[
+        bool,
+        typer.Option("--r2", help="The record in R2, and the lake's tables pulled from it first."),
+    ] = False,
+) -> None:
+    """Run shadow kalshi_prices (#320, ADR 0046) on each game date from its registration, before
+    today, not kept yet: both arms (market-only, and conservative_blend's hockey-adjusted fair
+    value) select on Kalshi's own prices from the watch's logs, with one taker and maker execution
+    and one notional budget each. Each day is kept once, privately, in the record's store; then
+    the figures over every kept day, with their weekly block bootstrap intervals, go there too.
+    It reads Kalshi's books and trades, so the log prints counts only (#280). Paper only: no
+    paper bet, real bet or policy reads it."""
+    import json
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.live import fills as lf
+    from nhl_edge.live import kalshi_shadow as ks
+    from nhl_edge.live import placement, real
+
+    now = datetime.now(UTC)
+    version = reports.version("kalshi-shadow", now)
+    if r2 and version.endswith("-dirty"):
+        raise typer.BadParameter("commit first: the figures name their commit")
+    lake, store = _real_record(r2)
+    tables = ks.TABLES
+    if r2:
+        for table in tables:
+            lake.pull(table)
+    read = {table: lake.read(table) for table in tables}
+    rules = placement.code_exchange(placement.LIVE) or real.DEMO_EXCHANGE
+    days = ks.due(now.astimezone(ET).date(), ks.stored_days(store))
+    for day in days:
+        fit = ks.week_fit(read["paper_ledger"], read["games"], day)
+        dated = {
+            table: read[table].filter(pl.col("game_date") == day)
+            for table in ("paper_ledger", "kalshi_depth", "kalshi_trades", "kalshi_tops")
+        }
+        result = ks.run_day(
+            day,
+            dated["paper_ledger"],
+            read["odds_snapshots"],
+            dated["kalshi_depth"],
+            dated["kalshi_trades"],
+            dated["kalshi_tops"],
+            read["dailyfaceoff_goalies"],
+            ks.weights_of(fit),
+            rules,
+        )
+        ks.keep(store, day, result, version, now, fit)
+    found, opportunities, metas = ks.kept(store)
+    if found.height:
+        refs = lf.references(read["odds_snapshots"], now)
+        teams = read["paper_ledger"].select("game_id", "home", "away").unique("game_id")
+        rows = lf.referenced(found, refs, teams, now)
+    else:
+        rows = found.with_columns(
+            reference=pl.lit(None, pl.String), p_close=pl.lit(None, pl.Float64)
+        )
+    figures = {"as_of_utc": now.isoformat(), "code_version": version}
+    figures |= ks.summary(rows, opportunities, metas, rules.usd_per_eur)
+    store.put(ks.report_key(now), json.dumps(figures, sort_keys=True).encode())
+    typer.echo(ks.count_line(metas, len(days)))
+
+
 @real_app.command("revalue")
 def real_revalue(
     r2: Annotated[

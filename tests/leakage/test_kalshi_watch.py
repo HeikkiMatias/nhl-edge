@@ -83,8 +83,10 @@ def test_nothing_fetched_or_traded_at_or_after_the_start_is_kept() -> None:
 
 
 def test_no_model_or_feature_code_reads_the_watch() -> None:
-    # Only the watch itself, its tables' registration and schemas and the CLI that runs it name
-    # them (#319): Kalshi's data is for the owner's own orders, never a model input.
+    # Only the watch itself, its tables' registration and schemas, the CLI that runs it and the
+    # shadow that simulates executions on them (#320, ADR 0046) name them (#319): Kalshi's data is
+    # for the owner's own orders, never a model input, a fair value or a CLV reference
+    # (tests/leakage/test_kalshi_shadow.py).
     src = Path(__file__).parents[2] / "src" / "nhl_edge"
     names = ("kalshi_tops", "kalshi_depth", "kalshi_trades", "KalshiTops", "KalshiDepth")
     naming = {
@@ -92,4 +94,10 @@ def test_no_model_or_feature_code_reads_the_watch() -> None:
         for path in src.rglob("*.py")
         if any(name in path.read_text() for name in (*names, "KalshiTrades"))
     }
-    assert naming == {"cli.py", "ingest/kalshi_watch.py", "lake/schemas.py", "lake/tables.py"}
+    assert naming == {
+        "cli.py",
+        "ingest/kalshi_watch.py",
+        "lake/schemas.py",
+        "lake/tables.py",
+        "live/kalshi_shadow.py",
+    }

@@ -616,6 +616,18 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - **The figures:** for taker and maker apart, CLV per bid with its weekly block bootstrap interval (counts only under 4 weeks), overall and by the delay from the order's placement to the bid's first fill (under 1 minute, to 1 hour, to 4 hours, beyond).
   - **Private (#280):** they go to `real/<env>/fill-reports/<run time>.json` beside the orders, never to the repository or the public weekly report. The log has counts only.
   - Point in time: `tests/leakage/test_fill_reference.py`.
+- **`nhl real shadow --r2`, nightly after the challengers:** shadow `kalshi_prices` (#320, ADR 0046, `live/kalshi_shadow.py`). It is paper only: no paper bet, real bet or policy reads it.
+  - **The days:** each game date from 2026-10-24 (the ADR's) before today, not kept yet, is computed once.
+  - **The opportunities:** both teams' Yes markets of every game in the day's ledger, at each odds slot from the midday decision to the start. Each needs Pinnacle's pair fresh by ADR 0033, and a Kalshi book from the watch (#319) at most 5 minutes old. The midday slot acts at the decision's publication.
+  - **Two arms:**
+    - **market:** Pinnacle de-vigged (hard rule 3), 2.5% hurdle, quarter Kelly;
+    - **hockey:** `conservative_blend` version 1's weekly fit (ADR 0041) at the slot's market probability and the decision's B3, with ADR 0028's u terms. It has no opportunities in a week the blend is unfitted, and a game leaves it from the first slot Daily Faceoff names another starter.
+  - **Execution, the same in both:** a taker part from the logged asks at the taker fee, then a post-only maker bid a cent below the best ask, sized after the taker part. The bid is re-valued at each later slot (lowered or cancelled, never raised).
+    - **The fill model:** a bid fills when the trades after its posting at or below its price exceed the depth ahead of it, or when an ask reaches it. Both parts are upper bounds.
+    - **No ladder.**
+  - **One budget per arm:** 100 € notional, at most 1.5% a game across every hook and one team per game, and 5% a day. A resting bid counts as filled until cancelled.
+  - **The figures:** fills by reference status; CLV per bid against #318's reference; expected profit in euros; the paired difference, hockey minus market, on the days both ran; and the share of maker fills after a starter change or a move against. Each figure has its weekly block bootstrap interval, counts only under 4 weeks.
+  - **Private (#280):** each day under `real/shadow/kalshi_prices/1/days/` and each run's figures under `.../reports/`. The log has counts only. Point in time: `tests/leakage/test_kalshi_shadow.py`.
 - **Inputs:** an order is built from the day's alert only. No Kalshi price is an input: of the market's data only its status is used (`tests/leakage/test_kalshi_orders.py`, which also checks that no model package reads the real record or the orders).
 
 ## Odds snapshots

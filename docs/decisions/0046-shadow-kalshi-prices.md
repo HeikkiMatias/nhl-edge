@@ -1,6 +1,6 @@
 # 0046. Shadow `kalshi_prices`: select on Kalshi's own prices, market-only against hockey-adjusted fair value, with one execution and one budget
 
-- Status: Proposed
+- Status: Accepted (the owner, 2026-10-24)
 - Date: 2026-10-24
 - Part of: the external review of 2026-10-23 (#317); the shadow is #320
 
