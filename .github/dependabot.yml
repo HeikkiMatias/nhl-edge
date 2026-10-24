@@ -18,3 +18,9 @@ updates:
     groups:
       dashboard:
         update-types: ["minor", "patch"]
+    # @types/node follows the Node the dashboard runs on (22: web.yml and engines), not Node's
+    # latest, so its types never accept an API the runtime lacks (#335). Its minor and patch
+    # updates still come with the group; a later Node moves web.yml, engines and it together.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
