@@ -26,6 +26,7 @@ The repository is public, and the owner's card pays for Cloudflare (R2) and Kals
   So a rewritten alert in R2 can spend at most 3 € an order and 10 € a day, in USD at the deposit rate.
   An order over the ceiling is refused, not shrunk. If the real bankroll nears 200 €, `CEILING_BANKROLL` is raised in a commit.
 - **Pinned actions.** Every third-party action is pinned to a commit SHA, and Dependabot updates them.
+- **The dashboard's packages.** Dependabot also watches `web/`'s npm packages weekly (#316). Their minor and patch updates come as one PR, and `package.json` keeps its exact pins.
 - **Read-only tokens.** The workflows' GitHub tokens are read-only (`permissions: contents: read`).
 - **The live Kalshi key is restricted to `main`.** Its jobs run under the `kalshi-live` environment, so the key can be held there and kept from workflows on other branches.
 
@@ -46,6 +47,7 @@ Done once, in this order. Each can be checked again at any time.
    - Turn on "Restrict deletions" and "Block force pushes".
    - Requiring a pull request is optional.
 3. **Secret scanning.** Settings → Advanced Security ("Code security" on older pages): turn on secret scanning ("Secret Protection") and "Push protection". Both are free on public repositories.
+   - Optional, on the same page: Dependabot alerts and Dependabot security updates. A critical advisory then opens its PR the same day, not at the next weekly run (#316).
 4. **Actions.** Settings → Actions → General.
    - "Workflow permissions": "Read repository contents and packages permissions".
    - "Approval for running fork pull request workflows from contributors": "Require approval for all external contributors" (older pages: "all outside collaborators").
