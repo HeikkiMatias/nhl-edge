@@ -1,0 +1,791 @@
+{
+  "alerts": {
+    "drawdown": {
+      "first_utc": null,
+      "threshold": 0.2,
+      "triggered": false
+    },
+    "operations": {
+      "days": 12,
+      "days_skipped": 0,
+      "guarded": 0,
+      "missing_input": 0,
+      "no_price": 0,
+      "picked": 20,
+      "stale_price": 0
+    },
+    "u_range": {
+      "availability_doubt_beyond_3_sd": 0,
+      "games": 80,
+      "goalie_doubt_beyond_3_sd": 36,
+      "rookie_share_beyond_3_sd": 1,
+      "u_beyond_2_sd": 12,
+      "u_beyond_3_sd": 0
+    }
+  },
+  "as_of": "2026-10-26",
+  "blend_versions": [
+    "blend-live-20261007-89ec631"
+  ],
+  "calibration": {
+    "games": 80,
+    "weeks": 3
+  },
+  "challengers": {
+    "challengers": {
+      "b3_split/1": {
+        "adr": "0044",
+        "baseline": "B3",
+        "baseline_missing_days": [],
+        "comparisons": {
+          "B1": {
+            "difference": {
+              "games": 22,
+              "weeks": 2
+            },
+            "left_out": 0
+          },
+          "B3": {
+            "difference": {
+              "games": 22,
+              "weeks": 2
+            },
+            "left_out": 0
+          },
+          "BLEND": {
+            "difference": {
+              "games": 22,
+              "weeks": 2
+            },
+            "left_out": 0
+          }
+        },
+        "days": 4,
+        "games": 22,
+        "missing_days": [],
+        "name": "b3_split",
+        "not_predicted": {},
+        "pending_days": [],
+        "predicted": 22,
+        "registered_on": "2026-10-22",
+        "shadow": {
+          "bets": 7,
+          "clv_per_bet": {
+            "games": 7,
+            "weeks": 2
+          }
+        },
+        "toward_close": {
+          "points_toward": {
+            "games": 17,
+            "weeks": 2
+          },
+          "share_toward": {
+            "games": 15,
+            "weeks": 2
+          },
+          "slope": {
+            "games": 17,
+            "weeks": 2
+          }
+        },
+        "version": "1"
+      },
+      "conservative_blend/1": {
+        "adr": "0041",
+        "comparisons": {
+          "B1": {
+            "difference": {
+              "games": 0,
+              "weeks": 0
+            },
+            "left_out": 0
+          },
+          "BLEND": {
+            "difference": {
+              "games": 0,
+              "weeks": 0
+            },
+            "left_out": 0
+          }
+        },
+        "days": 4,
+        "games": 22,
+        "latest_fit": {
+          "games": 77,
+          "minimum": 200,
+          "week": "2026-10-26"
+        },
+        "missing_days": [],
+        "name": "conservative_blend",
+        "not_predicted": {
+          "unfitted": 22
+        },
+        "pending_days": [],
+        "predicted": 0,
+        "registered_on": "2026-10-22",
+        "shadow": {
+          "bets": 0,
+          "clv_per_bet": {
+            "games": 0,
+            "weeks": 0
+          }
+        },
+        "toward_close": {
+          "points_toward": {
+            "games": 0,
+            "weeks": 0
+          },
+          "share_toward": {
+            "games": 0,
+            "weeks": 0
+          },
+          "slope": {
+            "games": 0,
+            "weeks": 0
+          }
+        },
+        "version": "1"
+      },
+      "goalie_spread_blend/1": {
+        "adr": "0042",
+        "baseline": "conservative_blend/1",
+        "baseline_missing_days": [],
+        "comparisons": {
+          "B1": {
+            "difference": {
+              "games": 0,
+              "weeks": 0
+            },
+            "left_out": 0
+          },
+          "BLEND": {
+            "difference": {
+              "games": 0,
+              "weeks": 0
+            },
+            "left_out": 0
+          },
+          "conservative_blend/1": {
+            "difference": {
+              "games": 0,
+              "weeks": 0
+            },
+            "left_out": 0
+          },
+          "conservative_blend/1, goalie spread above 0": {
+            "difference": {
+              "games": 0,
+              "weeks": 0
+            },
+            "left_out": 0
+          }
+        },
+        "days": 4,
+        "games": 22,
+        "latest_fit": {
+          "games": 77,
+          "minimum": 200,
+          "week": "2026-10-26",
+          "without_spread": 0
+        },
+        "missing_days": [],
+        "name": "goalie_spread_blend",
+        "not_predicted": {
+          "unfitted": 22
+        },
+        "pending_days": [],
+        "predicted": 0,
+        "registered_on": "2026-10-22",
+        "shadow": {
+          "bets": 0,
+          "clv_per_bet": {
+            "games": 0,
+            "weeks": 0
+          }
+        },
+        "toward_close": {
+          "points_toward": {
+            "games": 0,
+            "weeks": 0
+          },
+          "share_toward": {
+            "games": 0,
+            "weeks": 0
+          },
+          "slope": {
+            "games": 0,
+            "weeks": 0
+          }
+        },
+        "version": "1"
+      },
+      "market_only/1": {
+        "adr": "0038",
+        "comparisons": {
+          "B1": {
+            "difference": {
+              "games": 69,
+              "weeks": 3
+            },
+            "left_out": 0
+          },
+          "BLEND": {
+            "difference": {
+              "games": 69,
+              "weeks": 3
+            },
+            "left_out": 0
+          }
+        },
+        "days": 11,
+        "games": 69,
+        "missing_days": [],
+        "name": "market_only",
+        "not_predicted": {},
+        "pending_days": [],
+        "predicted": 69,
+        "registered_on": "2026-10-15",
+        "shadow": {
+          "bets": 0,
+          "clv_per_bet": {
+            "games": 0,
+            "weeks": 0
+          }
+        },
+        "toward_close": {
+          "points_toward": {
+            "games": 59,
+            "weeks": 3
+          },
+          "share_toward": {
+            "games": 55,
+            "weeks": 3
+          },
+          "slope": {
+            "games": 59,
+            "weeks": 3
+          }
+        },
+        "version": "1"
+      },
+      "team_residual_blend/1": {
+        "adr": "0043",
+        "baseline": "conservative_blend/1",
+        "baseline_missing_days": [],
+        "comparisons": {
+          "B1": {
+            "difference": {
+              "games": 0,
+              "weeks": 0
+            },
+            "left_out": 0
+          },
+          "BLEND": {
+            "difference": {
+              "games": 0,
+              "weeks": 0
+            },
+            "left_out": 0
+          },
+          "conservative_blend/1": {
+            "difference": {
+              "games": 0,
+              "weeks": 0
+            },
+            "left_out": 0
+          }
+        },
+        "days": 4,
+        "games": 22,
+        "latest_fit": {
+          "games": 77,
+          "minimum": 200,
+          "team_effects": {
+            "ANA": -0.0256861673643126,
+            "BOS": 0.048241517999080476,
+            "BUF": -0.03100617185110867,
+            "CAR": 0.003166242135908048,
+            "CBJ": 0.0015333301088783903,
+            "CGY": 0.058897851238481666,
+            "CHI": -0.01455263437483158,
+            "COL": -0.03425988895395112,
+            "DAL": 0.04836751997393157,
+            "DET": 0.009048138324400917,
+            "EDM": 0.003364482205882985,
+            "FLA": 0.00038608728320422983,
+            "LAK": 0.006452655138861009,
+            "MIN": 0.01913457178628914,
+            "MTL": 0.01946660450282082,
+            "NJD": 0.038500134070784627,
+            "NSH": -0.017477017744810884,
+            "NYI": -0.012812230547197023,
+            "NYR": -0.05299816071880326,
+            "OTT": 0.007787189346926838,
+            "PHI": 0.02675859843439729,
+            "PIT": -0.004245354529919985,
+            "SEA": -0.0028434898670928717,
+            "SJS": 0.02994846812985791,
+            "STL": -0.011398642410762895,
+            "TBL": -0.0022150655559094443,
+            "TOR": 0.031546540653235616,
+            "UTA": 0.016028857084773068,
+            "VAN": -0.05460608000983659,
+            "VGK": -0.03575208548079223,
+            "WPG": -0.080332800512946,
+            "WSH": 0.011557001504560549
+          },
+          "week": "2026-10-26"
+        },
+        "missing_days": [],
+        "name": "team_residual_blend",
+        "not_predicted": {
+          "unfitted": 22
+        },
+        "pending_days": [],
+        "predicted": 0,
+        "registered_on": "2026-10-22",
+        "shadow": {
+          "bets": 0,
+          "clv_per_bet": {
+            "games": 0,
+            "weeks": 0
+          }
+        },
+        "toward_close": {
+          "points_toward": {
+            "games": 0,
+            "weeks": 0
+          },
+          "share_toward": {
+            "games": 0,
+            "weeks": 0
+          },
+          "slope": {
+            "games": 0,
+            "weeks": 0
+          }
+        },
+        "version": "1"
+      }
+    },
+    "registered": 5
+  },
+  "closing_value": {
+    "bound": {
+      "p10": {
+        "clv_per_bet": {
+          "games": 17,
+          "weeks": 3
+        },
+        "imputed": 0,
+        "stand_in": null
+      },
+      "p90": {
+        "clv_per_bet": {
+          "games": 17,
+          "weeks": 3
+        },
+        "imputed": 0,
+        "stand_in": null
+      }
+    },
+    "clv_per_bet": {
+      "games": 17,
+      "weeks": 3
+    },
+    "clv_stake_weighted": {
+      "games": 17,
+      "weeks": 3
+    },
+    "fair_move_per_bet": {
+      "games": 17,
+      "weeks": 3
+    },
+    "floor": {
+      "required": 0.9,
+      "share_with_proxy": 1.0
+    }
+  },
+  "comparisons": {
+    "B3 - B2": {
+      "difference": {
+        "games": 80,
+        "weeks": 3
+      },
+      "left_out": 0
+    },
+    "BLEND - B1": {
+      "difference": {
+        "games": 80,
+        "weeks": 3
+      },
+      "left_out": 0
+    },
+    "BLEND - BLEND_B2": {
+      "difference": {
+        "games": 80,
+        "weeks": 3
+      },
+      "left_out": 0
+    },
+    "BLEND - BLEND_MARKET": {
+      "difference": {
+        "games": 80,
+        "weeks": 3
+      },
+      "left_out": 0
+    }
+  },
+  "coverage": {
+    "awaiting_result": 0,
+    "awaiting_settlement": 0,
+    "bets": 20,
+    "eligible": 17,
+    "eligible_without_proxy": {},
+    "no_pregame_snapshot": 3,
+    "not_predicted": {},
+    "predicted": 80,
+    "settled": 20,
+    "share_with_proxy": 1.0,
+    "slate_games": 80,
+    "void_postponed": 0,
+    "with_proxy": 17
+  },
+  "entry_to_close": {
+    "b3_by_u": {
+      "u above average": {
+        "points_toward": {
+          "games": 11,
+          "weeks": 2
+        },
+        "share_toward": {
+          "games": 10,
+          "weeks": 2
+        },
+        "slope": {
+          "games": 11,
+          "weeks": 2
+        }
+      },
+      "u at or below average": {
+        "points_toward": {
+          "games": 59,
+          "weeks": 3
+        },
+        "share_toward": {
+          "games": 55,
+          "weeks": 3
+        },
+        "slope": {
+          "games": 59,
+          "weeks": 3
+        }
+      }
+    },
+    "games": 70,
+    "models": {
+      "B3": {
+        "points_toward": {
+          "games": 70,
+          "weeks": 3
+        },
+        "share_toward": {
+          "games": 65,
+          "weeks": 3
+        },
+        "slope": {
+          "games": 70,
+          "weeks": 3
+        }
+      },
+      "BLEND": {
+        "points_toward": {
+          "games": 70,
+          "weeks": 3
+        },
+        "share_toward": {
+          "games": 65,
+          "weeks": 3
+        },
+        "slope": {
+          "games": 70,
+          "weeks": 3
+        }
+      }
+    },
+    "move_points": {
+      "games": 70,
+      "weeks": 3
+    },
+    "unmoved": 5,
+    "without_close": {
+      "no pre-game snapshot": 10
+    }
+  },
+  "freshness": {
+    "decision_quote_age_min": {
+      "max": 0.6,
+      "median": 0.25
+    },
+    "proxy_age_min": {
+      "max": 0.4166666666666667,
+      "median": 0.15
+    },
+    "proxy_lead_min": {
+      "max": 73.9,
+      "median": 13.083333333333334
+    }
+  },
+  "gaps": [],
+  "kind": "interim",
+  "market_timing": {
+    "pinnacle_1245": {
+      "games": 80,
+      "weeks": 3
+    },
+    "sbr_close": {
+      "games": 4519,
+      "high": 0.6680767276891165,
+      "low": 0.6547945643120479,
+      "mean": 0.6614187558099366,
+      "weeks": 99
+    },
+    "sbr_opener": {
+      "games": 4519,
+      "high": 0.6703153529571133,
+      "low": 0.6573115093346291,
+      "mean": 0.663775261728824,
+      "weeks": 99
+    },
+    "seasons": [
+      20182019,
+      20192020,
+      20202021,
+      20212022
+    ]
+  },
+  "policy_version": "policy-20261014-e15db87",
+  "proxy_lead": {
+    "clv": {
+      "bands": [
+        {
+          "band": "up to 30 min",
+          "estimate": {
+            "games": 12,
+            "weeks": 2
+          }
+        },
+        {
+          "band": "30 to 60 min",
+          "estimate": {
+            "games": 2,
+            "weeks": 2
+          }
+        },
+        {
+          "band": "over 60 min",
+          "estimate": {
+            "games": 3,
+            "weeks": 1
+          }
+        }
+      ],
+      "slope_per_hour": {
+        "games": 17,
+        "weeks": 3
+      }
+    },
+    "move_points": {
+      "bands": [
+        {
+          "band": "up to 30 min",
+          "estimate": {
+            "games": 54,
+            "weeks": 3
+          }
+        },
+        {
+          "band": "30 to 60 min",
+          "estimate": {
+            "games": 7,
+            "weeks": 3
+          }
+        },
+        {
+          "band": "over 60 min",
+          "estimate": {
+            "games": 9,
+            "weeks": 2
+          }
+        }
+      ],
+      "slope_per_hour": {
+        "games": 70,
+        "weeks": 3
+      }
+    }
+  },
+  "real_stakes": {
+    "clv_stop": {
+      "measured": false,
+      "pause": null,
+      "stop": null,
+      "weekly": true
+    },
+    "complete": true,
+    "conditions": {
+      "a": {
+        "bound": {
+          "games": 17,
+          "weeks": 3
+        },
+        "clv_per_bet": {
+          "games": 17,
+          "weeks": 3
+        },
+        "floor": 0.9,
+        "holds": false,
+        "measured": false,
+        "share_with_proxy": 1.0
+      },
+      "c": {
+        "holds": true,
+        "skipped_days": {},
+        "undecided_days": [],
+        "unfinished_bundles": []
+      },
+      "d": {
+        "holds": false,
+        "venue": null
+      }
+    },
+    "drawdown_review": {
+      "applies": false
+    },
+    "failing": [
+      "a",
+      "d"
+    ],
+    "verdict": "not before 2026-11-16",
+    "veto": {
+      "applies": true,
+      "paper_bankroll": 99.66652673308472,
+      "start": 100.0
+    },
+    "weekly": true,
+    "window": [
+      "2026-11-16",
+      "2026-11-30"
+    ]
+  },
+  "review_date": "2027-04-12",
+  "selected_calibration": {
+    "games": 80,
+    "price": {
+      "favourites": {
+        "games": 42,
+        "weeks": 3
+      },
+      "left_out": 0,
+      "underdogs": {
+        "games": 38,
+        "weeks": 3
+      }
+    },
+    "selected": {
+      "bets": {
+        "games": 20,
+        "weeks": 3
+      },
+      "left_out": 0,
+      "other games": {
+        "games": 60,
+        "weeks": 3
+      }
+    },
+    "u": {
+      "left_out": 0,
+      "u at or above it": {
+        "games": 13,
+        "weeks": 2
+      },
+      "u below its training mean": {
+        "games": 67,
+        "weeks": 3
+      }
+    },
+    "without_a_side": 0
+  },
+  "shadows": {
+    "best_price": {
+      "bets": 17,
+      "better_any": 17,
+      "better_bookmaker": 1,
+      "books": {
+        "sport888": 1
+      },
+      "clv_any": {
+        "games": 17,
+        "weeks": 3
+      },
+      "clv_bookmaker": {
+        "games": 17,
+        "weeks": 3
+      },
+      "gain_any": {
+        "games": 17,
+        "weeks": 3
+      },
+      "gain_bookmaker": {
+        "games": 17,
+        "weeks": 3
+      }
+    },
+    "edge_bids": {
+      "bids": 140,
+      "clv_per_fill": {
+        "games": 13,
+        "weeks": 2
+      },
+      "fair_move_per_fill": {
+        "games": 13,
+        "weeks": 2
+      },
+      "filled": 13,
+      "policy_clv_per_bet": {
+        "games": 17,
+        "weeks": 3
+      },
+      "slots": {
+        "pre10": 1,
+        "pre7": 10,
+        "pre8": 2
+      },
+      "starter_changed": {
+        "games": 13,
+        "weeks": 2
+      },
+      "with_close": 13
+    },
+    "market_only": {
+      "bets": 0,
+      "both": 0,
+      "clv_per_bet": {
+        "games": 0,
+        "weeks": 0
+      },
+      "policy_bets": 17,
+      "policy_clv_per_bet": {
+        "games": 17,
+        "weeks": 3
+      },
+      "policy_minus_market_only": null
+    }
+  },
+  "verdicts": {
+    "calibration": "interim: no verdict before the formal review",
+    "closing_value": "interim: no verdict before the formal review",
+    "incomplete": {}
+  }
+}
