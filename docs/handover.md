@@ -133,13 +133,15 @@ Every deliverable merged under its own task issue:
   - it polls the goalies, raw only, then takes the odds snapshot;
   - it runs `nhl predict`, which reads the day's polls itself under v2 (`live/goalies.py`);
   - it writes the write-once ledger and the run bundle to R2, and mirrors the ledger to Supabase.
+- **Kalshi watch (#319):** at 07:05, 11:05, 15:05 and 19:05 ET, each run watching every game's markets until a minute before the next.
+- **Kalshi re-valuation (#321):** every 15 minutes from 13:05 to 22:50 ET, besides each odds slot.
 - **Kalshi books (#282):** every slot ends with `nhl kalshi books --mirror-raw`. From the midday alert to each game's start, it keeps Kalshi's order book of the alerted bets' markets in R2 and the lake's `kalshi_books`, privately, for the owner's own orders (#281). It prints counts only, and its data never goes into the repository (docs/data-sources.md, "Kalshi order book").
 - **The 09:00 UTC nightly:**
   - the ingest, then `nhl recheck`;
   - the odds replay, with each game's closing proxy;
   - `nhl live settle` and the Supabase copy;
   - the goalie replays and the day's slate feature rows;
-  - the live report to Supabase, the run bundle check, and the challengers (#255).
+  - the live report to Supabase, the run bundle check, the challengers (#255) and the Kalshi price shadow (#320).
 
 **The pieces, all merged:**
 - **The live data,** each with its task:
@@ -204,10 +206,10 @@ Every deliverable merged under its own task issue:
 
 **The second external review (2026-10-23, #317).** Its agenda: select and execute on Kalshi's own prices against a sharp fair value. The work: #318 to #323.
 - **Done: the reference after each fill** (#318, `live/fills.py`). `nhl real fills --r2` runs nightly. Each order's taker part and maker part get CLV only from the fills observed before the game's Pinnacle proxy; a later fill is counted apart, never valued against an earlier quote. The figures go privately to `real/<env>/fill-reports/`, with counts only in the log.
-- **Built: every game's Kalshi markets watched through the day** (#319, `ingest/kalshi_watch.py`, `kalshi-watch.yml`). The top of book is polled each minute, and the full books and the trades every 5 minutes, from 07:05 ET to each start, into the private `kalshi_tops`, `kalshi_depth` and `kalshi_trades`. **The owner:** redeploy the timer (`npx wrangler@4 deploy` in `infra/timer`), so it dispatches the four windows.
+- **Built: every game's Kalshi markets watched through the day** (#319, `ingest/kalshi_watch.py`, `kalshi-watch.yml`). The top of book is polled each minute, and the full books and the trades every 5 minutes, from 07:05 ET to each start, into the private `kalshi_tops`, `kalshi_depth` and `kalshi_trades`. The owner redeployed the timer on 2026-10-28, and it now dispatches the four windows; that day was watched from one manual run at 19:27 UTC.
 - **Built: each order in two parts** (#321 part A, ADR 0045, accepted by the owner on 2026-10-23). Each alerted bet's order is an immediate-or-cancel taker part at L_t, then a post-only maker part at L_m, the higher limit the maker fee allows, sized from what the taker part filled; a bid that would cross the book goes a cent lower, down to L_t. It goes to the demo exchange from the merge, for the week of practice before 2026-11-16. ADR 0040's orders already placed are tracked to their end as one order.
-- **Built: the Kalshi price shadow** (#320, ADR 0046, `live/kalshi_shadow.py`, `nhl real shadow`, nightly). Two fair values select on Kalshi's own prices from the watch's logs: Pinnacle de-vigged, and `conservative_blend`'s. Both use one taker and maker execution and one notional 100 € budget each. It is private in R2 and paper only, with no verdict before 4 weeks. It needs the watch, so the timer's redeploy, and its hockey arm starts with the blend's first fitted week (about 2026-11-16).
-- **Built: re-valuing a resting maker part** (#321 part B, `live/revalue.py`). A resting bid is re-valued at every odds slot with the slot's snapshot. Every 15 minutes (`kalshi-revalue.yml`) it is also re-valued on a 3¢ move in Kalshi's top of book, with one Odds API h2h call (at most 4 a day), or on a change in Daily Faceoff's named starter, which cancels it. The bid is lowered or cancelled at the frozen blend with Pinnacle's fresh price and the decision's B3 and u, and never raised. **The owner:** redeploy the timer (`npx wrangler@4 deploy` in `infra/timer`), so it dispatches the re-valuation as well as the watch.
+- **Built: the Kalshi price shadow** (#320, ADR 0046, `live/kalshi_shadow.py`, `nhl real shadow`, nightly). Two fair values select on Kalshi's own prices from the watch's logs: Pinnacle de-vigged, and `conservative_blend`'s. Both use one taker and maker execution and one notional 100 € budget each. It is private in R2 and paper only, with no verdict before 4 weeks. Its days 2026-10-24 to 10-27 were kept with no watch logs, before the timer's redeploy on 10-28; its hockey arm starts with the blend's first fitted week (about 2026-11-16).
+- **Built: re-valuing a resting maker part** (#321 part B, `live/revalue.py`). A resting bid is re-valued at every odds slot with the slot's snapshot. Every 15 minutes (`kalshi-revalue.yml`) it is also re-valued on a 3¢ move in Kalshi's top of book, with one Odds API h2h call (at most 4 a day), or on a change in Daily Faceoff's named starter, which cancels it. The bid is lowered or cancelled at the frozen blend with Pinnacle's fresh price and the decision's B3 and u, and never raised. The timer has dispatched it since its redeploy on 2026-10-28.
 - **Decided by the owner, still to build:**
   - a scale-up rule of at least 12 weeks of real fills with CLV's lower bound above 0 (#322).
 - **Still the owner's decision:** one or two paid Odds API months for the historical Pinnacle prices of 2022-11-28 to 2025-26 (#323).
