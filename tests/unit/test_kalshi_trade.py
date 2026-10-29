@@ -172,9 +172,32 @@ def test_a_call_gives_up_after_its_tries(tmp_path: Path) -> None:
     exchange = Exchange()
     exchange.fail = [500] * 5
     client, waits = trade(tmp_path, exchange)
-    with pytest.raises(KalshiTradeError, match="balance: failed after 5 tries"):
+    with pytest.raises(KalshiTradeError, match="balance: failed after 5 tries") as raised:
         client.balance()
     assert len(exchange.requests) == 5 and waits == [1.0, 2.0, 4.0, 8.0]
+    # Kalshi answered every try: its last status rides on for the private record (Codex on #348)
+    assert raised.value.status == 500
+
+
+def test_a_call_whose_last_try_had_no_answer_gives_up_without_a_status(tmp_path: Path) -> None:
+    exchange = Exchange()
+    exchange.fail = [503] * 4
+    calls = {"n": 0}
+
+    def answered_until_the_last(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 5:
+            raise httpx.ConnectError("synthetic")
+        return exchange(request)
+
+    client, _ = trade(tmp_path, exchange)
+    client.client = httpx.Client(
+        base_url=kt.HOSTS[kt.DEMO] + kt.API_ROOT,
+        transport=httpx.MockTransport(answered_until_the_last),
+    )
+    with pytest.raises(KalshiTradeError, match=r"failed after 5 tries \(ConnectError\)") as raised:
+        client.balance()
+    assert raised.value.status is None and raised.value.code is None
 
 
 def test_another_status_is_an_error_at_once(tmp_path: Path) -> None:
@@ -459,3 +482,12 @@ def test_nhl_kalshi_check_without_its_key_fails_naming_the_variable(
 def test_nhl_kalshi_check_takes_demo_or_live_only() -> None:
     result = runner.invoke(app, ["kalshi", "check", "--env", "prod"])
     assert result.exit_code == 2
+
+
+def test_a_refusal_carries_kalshis_error_code_for_the_private_record() -> None:
+    # #346: the message stays the call and status (run logs are public); the code rides apart.
+    explained = httpx.Response(403, json={"error": {"code": "not_allowed", "message": "no"}})
+    assert kt.error_code(explained) == "not_allowed"
+    assert kt.error_code(httpx.Response(403, json={"code": "other_shape"})) is None
+    assert kt.error_code(httpx.Response(403, text="<html>")) is None
+    assert kt.error_code(httpx.Response(403, json=["a list"])) is None

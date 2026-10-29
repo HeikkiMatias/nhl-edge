@@ -88,11 +88,23 @@ type PrivateKey = ed25519.Ed25519PrivateKey | rsa.RSAPrivateKey
 class KalshiTradeError(RuntimeError):
     """A request that failed after its tries or answered an unexpected status, or a key that
     can't sign. Its message names the call and status only: run logs are public. status is the
-    unexpected status Kalshi answered, when it answered one."""
+    status Kalshi last answered, unexpected or retried to the end, when it answered one, and code
+    its error code, for the private record only (#346)."""
 
-    def __init__(self, message: str, status: int | None = None) -> None:
+    def __init__(self, message: str, status: int | None = None, code: str | None = None) -> None:
         super().__init__(message)
         self.status = status
+        self.code = code
+
+
+def error_code(response: httpx.Response) -> str | None:
+    """The error code of a refusal Kalshi explains ({"error": {"code": ...}}), or None."""
+    try:
+        error = response.json().get("error")
+    except (ValueError, AttributeError):
+        return None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
 
 
 def clock() -> datetime:
@@ -297,8 +309,9 @@ class KalshiTrade:
         passed: Sequence[int] = (),
     ) -> httpx.Response:
         """One call, signed afresh at each try and stored raw: a response with an expected or a
-        passed status is returned, a retryable one tried again, and any other is an error."""
-        error = ""
+        passed status is returned, a retryable one tried again, and any other is an error. An error
+        after the last try keeps that try's status and error code, none if it had no answer."""
+        error, status, code = "", None, None
         for attempt, backoff in enumerate((*self.backoff_s, None), start=1):
             self._throttle()
             request = self.client.build_request(method, path, params=params, json=body)
@@ -308,7 +321,7 @@ class KalshiTrade:
             try:
                 response = self.client.send(request)
             except httpx.TransportError as exc:
-                error = type(exc).__name__
+                error, status, code = type(exc).__name__, None, None
             except httpx.HTTPError as exc:
                 raise KalshiTradeError(
                     f"{call}: the request failed ({type(exc).__name__})"
@@ -319,14 +332,19 @@ class KalshiTrade:
                     return response
                 if not retryable(response.status_code):
                     raise KalshiTradeError(
-                        f"{call}: status {response.status_code}", response.status_code
+                        f"{call}: status {response.status_code}",
+                        response.status_code,
+                        error_code(response),
                     )
                 error = f"status {response.status_code}"
+                status, code = response.status_code, error_code(response)
                 retry_after = retry_after_s(response.headers.get("Retry-After"), self.now())
             if backoff is None:
                 break
             self.sleep(min(max(backoff, retry_after or 0.0), MAX_WAIT_S))
-        raise KalshiTradeError(f"{call}: failed after {len(self.backoff_s) + 1} tries ({error})")
+        raise KalshiTradeError(
+            f"{call}: failed after {len(self.backoff_s) + 1} tries ({error})", status, code
+        )
 
     def _store(
         self,

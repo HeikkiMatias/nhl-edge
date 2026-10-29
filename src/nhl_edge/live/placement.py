@@ -114,6 +114,8 @@ PLACED, TAKER_PLACED, MAKER_PLACED, MAKER_SKIPPED = (
 PLACED_PARTS = {"": PLACED, TAKER: TAKER_PLACED, MAKER: MAKER_PLACED}
 # A valuation of a resting maker part (live/revalue.py, ADR 0045 item 2), ...-reval-<stamp>.json.
 REVAL = "reval"
+# A part's create that Kalshi refused or that failed, ...-<part>-failed-<stamp>.json (#346).
+FAILED = "failed"
 # The status Kalshi answers a request it refuses as invalid, as a post-only bid that would cross
 # the book may be.
 BAD_REQUEST = 400
@@ -386,6 +388,38 @@ def _put(store: lb.Store, key: str, record: Mapping[str, Any]) -> None:
     lb.put_once(store, key, json.dumps(record, sort_keys=True).encode())
 
 
+def record_failure(
+    store: lb.Store, plan: Plan, part: str, exc: KalshiTradeError, at: datetime
+) -> None:
+    """A part's create that failed, written once beside its order (#346): the call and status
+    the error names, and Kalshi's error code when it gave one. Never a price, size or id."""
+    key = order_key(
+        plan.env, plan.game_date, plan.game_id, f"{part}-{FAILED}-{at:%Y%m%dT%H%M%S%fZ}"
+    )
+    _put(
+        store,
+        key,
+        {
+            "part": part,
+            "error": str(exc),
+            "status": exc.status,
+            "code": exc.code,
+            "failed_utc": at.isoformat(),
+        },
+    )
+
+
+def refusal(record: Mapping[str, Any]) -> str | None:
+    """The newest failed create among an order's records, as a reason: its status, or that no
+    status came back."""
+    failures = [part for part in record if f"-{FAILED}-" in f"-{part}"]
+    if not failures:
+        return None
+    newest = record[max(failures, key=lambda part: part.rsplit("-", 1)[-1])]
+    status = newest.get("status")
+    return f"refused by Kalshi (status {status})" if status is not None else "the send failed"
+
+
 @dataclass
 class PlaceReport:
     planned: int = 0
@@ -398,9 +432,16 @@ class PlaceReport:
     skipped: dict[str, int] = field(default_factory=dict)
     makers_skipped: dict[str, int] = field(default_factory=dict)
     placed_plans: list[Plan] = field(default_factory=list)
+    # The failed creates by the status Kalshi answered ("status 403"), or "no answer".
+    statuses: dict[str, int] = field(default_factory=dict)
 
     def skip(self, reason: str) -> None:
         self.skipped[reason] = self.skipped.get(reason, 0) + 1
+
+    def fail(self, exc: KalshiTradeError) -> None:
+        self.failed += 1
+        status = f"status {exc.status}" if exc.status is not None else "no answer"
+        self.statuses[status] = self.statuses.get(status, 0) + 1
 
     def skip_maker(self, reason: str) -> None:
         self.makers_skipped[reason] = self.makers_skipped.get(reason, 0) + 1
@@ -412,7 +453,8 @@ class PlaceReport:
             for reason, n in sorted(self.makers_skipped.items())
         )
         unread = f"; {self.unread} maker parts waiting for a read" if self.unread else ""
-        failed = f"; {self.failed} failed" if self.failed else ""
+        statuses = ", ".join(f"{status}: {n}" for status, n in sorted(self.statuses.items()))
+        failed = f"; {self.failed} failed ({statuses})" if self.failed else ""
         return (
             f"kalshi orders {env}: {self.planned} planned, {self.placed} placed "
             f"({self.existed} found already on Kalshi), {self.already} placed before, "
@@ -603,10 +645,11 @@ def _send(
             continue
         try:
             placed = trade.create_order(plan.request())
-        except KalshiTradeError:
+        except KalshiTradeError as exc:
             # It may have reached Kalshi all the same: the reconcile finds it by its client order
             # id (adopt) before it would call it not sent. The run fails, after the others.
-            report.failed += 1
+            report.fail(exc)
+            record_failure(store, plan, TAKER, exc, now())
             continue
         # A reconcile running meanwhile may have found it on Kalshi and recorded it first (adopt).
         with contextlib.suppress(lb.Conflict):
@@ -707,7 +750,8 @@ def send_maker(
                 crossed.append(cents)
                 continue
             # It may have reached Kalshi: the reconcile finds it by its client order id.
-            report.failed += 1
+            report.fail(exc)
+            record_failure(store, plan, MAKER, exc, now())
             return
         # A read that fails or never shows the bid leaves it unresolved, never recorded as resting:
         # a rerun sends its cent again, which Kalshi answers with the same order (409), and goes
@@ -1070,7 +1114,7 @@ def reconcile(
                 continue
             final: dict[str, Any] = {
                 "status": "not sent",
-                "reason": (record.get("skipped") or {}).get("reason"),
+                "reason": (record.get("skipped") or {}).get("reason") or refusal(record),
                 "read_utc": now().isoformat(),
             }
         else:
@@ -1175,9 +1219,9 @@ def _read_parts(
 
 def table(store: lb.Store) -> pl.DataFrame:
     """Every order of both environments (the lake's real_orders): what was planned and sent, why
-    one was skipped, and its final fills. An ADR 0045 order's row is its taker part's, with its
-    maker part's limit, contracts and order id beside it, and each part's contracts filled before
-    the start."""
+    one was skipped or refused, and its final fills. An ADR 0045 order's row is its taker part's,
+    with its maker part's limit, contracts and order id beside it, and each part's contracts filled
+    before the start."""
     rows = []
     for env in (LIVE, DEMO):
         for record in stored_orders(store, env).values():
@@ -1210,8 +1254,11 @@ def table(store: lb.Store) -> pl.DataFrame:
                     "expires_utc": _instant(order["expires_utc"]),
                     "written_utc": _instant(order["written_utc"]),
                     "status": status,
-                    # A skip a later run overcame says nothing of a sent order (Codex on #289).
-                    "reason": skipped["reason"] if skipped and placed is None else None,
+                    # A skip a later run overcame says nothing of a sent order (Codex on #289),
+                    # and an order never sent without a skip says what refused it (Codex on #348).
+                    "reason": (skipped or {}).get("reason") or refusal(record)
+                    if placed is None
+                    else None,
                     "order_id": placed["order_id"] if placed else None,
                     "placed_utc": _instant(placed["placed_utc"]) if placed else None,
                     "filled": float(final["contracts"]) if final and "contracts" in final else None,

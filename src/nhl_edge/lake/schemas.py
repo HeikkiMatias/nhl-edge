@@ -2610,7 +2610,8 @@ class RealOrders(pa.DataFrameModel):
     the start. status is planned (written, not sent),
     skipped (with its reason), placed (sent, resting), or once expired: not sent, canceled or
     executed, with the contracts filled, their cost and fees in USD, the first fill's time and
-    whether any fill came at or after the start. Rebuilt from R2 (real/live/orders/,
+    whether any fill came at or after the start. An order never sent has its skip's reason, or
+    without one the status of its newest refused create (#346). Rebuilt from R2 (real/live/orders/,
     real/demo/orders/); private, the owner's own orders, never a model input."""
 
     game_date: pl.Date
