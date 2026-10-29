@@ -1,6 +1,6 @@
 # 0048. Challengers at the 2027-04-12 review: Holm's adjustment over every registered candidate
 
-- Status: Proposed (drafted 2026-10-28 for the owner)
+- Status: Accepted (by the owner, 2026-10-29, #322): option 1, Holm's adjustment at the review
 - Date: 2026-10-28
 - Amends: ADR 0038 rule 4 (multiplicity)
 - Part of: #322, from the external review of 2026-10-23 (#317)
@@ -21,7 +21,7 @@
 2. **A confirmation period:** a candidate passing at the review must pass again on a further fixed stretch of future games before it enters a policy. That gives the strongest evidence, but the season ends in April, so a change waits for 2027-28.
 3. **Both.** The safest, and the slowest.
 
-## Decision (proposed): option 1
+## Decision: option 1 (the owner, 2026-10-29)
 
 1. **The family:** every challenger registered by 2027-04-12, except `market_only`, which is the mechanism's control, not a candidate (ADR 0038). Its size m is fixed at the review.
    - A challenger with under 4 weeks of evidence, or without its primary measure for want of a fit, still counts in m, with p = 1. It can't pass, and it can't be dropped to ease the others.

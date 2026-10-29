@@ -2,6 +2,7 @@
 
 - Status: Accepted (by the owner, 2026-10-15): option 3's start rule, a real bankroll of 100 €, and a start on or after 2026-11-16, later in November being as good
 - Date: 2026-10-15
+- Amended by: ADR 0047 (2026-10-29): when the real bankroll may grow, read once after 12 weeks of real fills.
 - Amends: ADR 0032, where "no verdict, promotion or real stake" follows from an interim report. The verdicts and the formal review on 2027-04-12 are unchanged.
 
 ## Context

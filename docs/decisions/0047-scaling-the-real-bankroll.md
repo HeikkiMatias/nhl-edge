@@ -1,6 +1,6 @@
 # 0047. Growing the real bankroll: 12 weeks of fills, read once
 
-- Status: Proposed (drafted 2026-10-28 for the owner; the owner decided on 2026-10-23 the sample and the measure's bound)
+- Status: Accepted (by the owner, 2026-10-29, #322): option 1, one fixed reading date. The owner decided the sample and the measure's bound on 2026-10-23.
 - Date: 2026-10-28
 - Amends: ADR 0039, which fixes when real stakes start and stop but not when the real bankroll may grow
 - Part of: #322, from the external review of 2026-10-23 (#317)
@@ -19,7 +19,7 @@
 2. **A group-sequential test** fixed in advance (an alpha-spending boundary over weekly looks from week 12). It can decide sooner, but its boundaries are built for normal test statistics. Matching them to a weekly block bootstrap is non-standard and harder to check.
 3. **A weekly look at the fixed-sample interval.** Rejected: it inflates false passes, which is what this ADR exists to prevent.
 
-## Decision (proposed): option 1
+## Decision: option 1 (the owner, 2026-10-29)
 
 1. **The measure:** net CLV per real fill, at the matched cost with fees, against #318's reference observed after the fill (`live/fills.py`, status valued). Its 95% weekly block bootstrap interval must have its **lower bound above 0** (hard rule 7).
 2. **The sample:**
