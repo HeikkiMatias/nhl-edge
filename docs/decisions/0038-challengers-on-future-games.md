@@ -1,6 +1,7 @@
 # 0038. Challengers: pre-registered, judged on future games only
 
 - Status: Accepted (by the owner, 2026-10-15, approving #255's plan)
+- Amended by: ADR 0048 (2026-10-29), rule 4: Holm's adjustment over every registered candidate at the review.
 - Date: 2026-10-15
 - Part of: the review agenda (#250); the runner is #255
 
@@ -46,7 +47,7 @@ Option 2, under these rules.
    Each figure has a weekly block bootstrap interval, with counts only under 4 weeks. There is no verdict before the formal review on 2027-04-12 (ADR 0032).
 4. **Multiplicity:**
    - Every registered challenger is reported, failures included, and the report states how many are registered.
-   - At the review, a challenger becomes a candidate only if its pre-stated primary measure's interval excludes zero.
+   - At the review, a challenger becomes a candidate only if its pre-stated primary measure's interval excludes zero, and it passes Holm's adjustment over every registered candidate (amended by 0048).
    - A candidate enters a policy only through a new policy version, its ADR, its freeze and the owner's decision.
 5. **No change to the frozen policy:** the frozen policy is never changed by a challenger's results, and no challenger figure is part of ADR 0032's verdicts.
 
