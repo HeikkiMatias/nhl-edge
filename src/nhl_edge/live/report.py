@@ -698,12 +698,18 @@ def shadows(
 
 
 def _challenger_figures(
-    own: pl.DataFrame, started: pl.DataFrame, scored: pl.DataFrame, moves: pl.DataFrame
+    own: pl.DataFrame,
+    started: pl.DataFrame,
+    scored: pl.DataFrame,
+    moves: pl.DataFrame,
+    forecasts: str = lc.RESULT,
 ) -> dict[str, Any]:
     """A challenger's figures over its outputs own: paired log loss against the blend and B1 on
     the games with a result, the shadow bets the frozen rules would make on it with a close
     (live/shadow.py), and whether the market moved toward its disagreement at the decision
-    (#251)."""
+    (#251). A challenger that forecasts the close (ADR 0049) is scored on the move to it
+    (_move_figures), and its shadow bets are the policy's own, kept where its forecast close
+    clears the price."""
     keys = ["game_date", "game_id"]
     probability = own.filter(pl.col("p_home").is_not_null()).select(*keys, p_challenger="p_home")
     with_p = scored.join(probability, on=keys)
@@ -718,7 +724,18 @@ def _challenger_figures(
             "difference": estimate(paired, "difference"),
             "left_out": with_p.height - both.height,
         }
-    bets = shadow.valued(shadow.selected(started.join(probability, on=keys), "p_challenger"), moves)
+    if forecasts == lc.CLOSE:
+        p_side = pl.when(pl.col("side") == "home").then(pl.col("p_challenger"))
+        kept = (
+            shadow.selected(started, "p_blend")
+            .join(probability, on=keys)
+            .filter(p_side.otherwise(1 - pl.col("p_challenger")) * pl.col("price") - 1 >= 0)
+        )
+        bets = shadow.valued(kept, moves)
+    else:
+        bets = shadow.valued(
+            shadow.selected(started.join(probability, on=keys), "p_challenger"), moves
+        )
     moved = (
         moves.filter(pl.col("move").is_not_null())
         .join(probability, on=keys)
@@ -727,11 +744,25 @@ def _challenger_figures(
             - (pl.col("p_decision") / (1 - pl.col("p_decision"))).log()
         )
     )
-    return {
+    figures = {
         "comparisons": compared,
         "shadow": {"bets": bets.height, "clv_per_bet": estimate(bets, "clv")},
         "toward_close": _toward(moved, "d_challenger"),
     }
+    if forecasts == lc.CLOSE:
+        figures["move"] = _move_figures(moved)
+    return figures
+
+
+def _move_figures(moved: pl.DataFrame) -> dict[str, Any]:
+    """The primary measure of a challenger that forecasts the close (ADR 0049), over the games
+    with one: (y - ŷ)² - y², y the move to the close and ŷ the forecast's (d_challenger), both in
+    the home side's log-odds. Its forecast's squared error less that of "no move": negative
+    favours the challenger."""
+    frame = moved.with_columns(
+        difference=(pl.col("move") - pl.col("d_challenger")) ** 2 - pl.col("move") ** 2
+    )
+    return {"difference": estimate(frame, "difference")}
 
 
 def _against_baseline(
@@ -818,7 +849,8 @@ def challengers(
         if fits.height:
             entry["latest_fit"] = json.loads(fits["fit"][-1])
         if not missing:
-            entry |= _challenger_figures(own, started, scored, moves)
+            entry["forecasts"] = challenger.forecasts
+            entry |= _challenger_figures(own, started, scored, moves, challenger.forecasts)
             baseline = lc.empty()
             if challenger.baseline in lc.LEDGER_BASELINES:
                 # A ledger model (ADR 0044): the day's own column, never missing a day.
@@ -1579,14 +1611,24 @@ def _challenger_lines(section: dict[str, Any]) -> list[str]:
                 "say why they can't be, before any figure is shown."
             )
             continue
+        close = c.get("forecasts") == lc.CLOSE
+        if close:
+            lines.append(
+                "  - Its forecast of the move to the close, squared error less no move's (its "
+                f"primary measure, ADR 0049): {_fmt(c['move']['difference'])}"
+            )
         lines += [
             *(
                 f"  - Against {model}: {_fmt(compared['difference'])}"
                 + (f", {compared['left_out']} games left out" if compared["left_out"] else "")
                 for model, compared in c["comparisons"].items()
             ),
-            f"  - Shadow bets with a close: {c['shadow']['bets']}; CLV per bet: "
-            f"{_fmt(c['shadow']['clv_per_bet'], 'bets')}",
+            (
+                "  - The policy's own bets its forecast close clears, with a close: "
+                if close
+                else "  - Shadow bets with a close: "
+            )
+            + f"{c['shadow']['bets']}; CLV per bet: {_fmt(c['shadow']['clv_per_bet'], 'bets')}",
             "  - Slope of the move to the close on its disagreement: "
             f"{_fmt(c['toward_close']['slope'])}",
         ]

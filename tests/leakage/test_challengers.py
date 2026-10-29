@@ -7,7 +7,7 @@ team_residual_blend (ADR 0043) corrects each row's B3 by team effects from earli
 
 import json
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import polars as pl
@@ -52,6 +52,13 @@ def test_the_odds_are_read_as_they_were_before_the_cutoff() -> None:
     assert read["price_decimal"].to_list() == [1.9]
     assert not set(lc.ODDS_AFTERWARDS) & set(read.columns)
     assert list(reader.reads) == ["odds_snapshots"]
+    # The same quotes read in another order are the same read (ADR 0049).
+    earlier = odds.with_columns(snapshot_utc=pl.col("snapshot_utc") - timedelta(hours=1))
+    first = lc.PointInTime(Lake(odds_snapshots=earlier), CUTOFF, ("odds_snapshots",))
+    again = lc.PointInTime(Lake(odds_snapshots=earlier.reverse()), CUTOFF, ("odds_snapshots",))
+    assert first.read("odds_snapshots").height == 3
+    again.read("odds_snapshots")
+    assert first.reads == again.reads
 
 
 def test_the_schedule_holds_only_played_games_and_the_slates_own() -> None:
@@ -417,3 +424,148 @@ def test_b3_split_reads_nothing_but_its_bundle(
     inputs = {**league_bundle.inputs, "goalie_starts": pl.concat([starts, late])}
     again = challenger.predict(replace(league_bundle, inputs=inputs), replayed, None, lake)  # type: ignore[arg-type]
     assert again.equals(output)
+
+
+def close_quotes(event: str, decided: datetime, start: datetime, book: str = "pinnacle") -> list:
+    """An event's quotes as the lake holds them: its midday pair at the decision and its pre7
+    pair 15 minutes before its start, a move toward home, both sides."""
+    rows = []
+    for when, slot, prices in (
+        (decided, "midday", (1.9, 2.0)),
+        (start - 15 * 60 * SECOND, "pre7", (1.8, 2.1)),
+    ):
+        for side, price in zip(("home", "away"), prices, strict=True):
+            rows.append(
+                {
+                    "snapshot_utc": when,
+                    "last_update_utc": when,
+                    "event_id": event,
+                    "commence_time_utc": start,
+                    "home": "BOS",
+                    "away": "TOR",
+                    "book": book,
+                    "market": "h2h",
+                    "side": side,
+                    "line": None,
+                    "price_decimal": price,
+                    "is_closing_proxy": False,
+                    "slot": slot,
+                    "raw_key": "k",
+                    "game_id": int(event.removeprefix("e")),
+                    "game_type": 2,
+                }
+            )
+    return rows
+
+
+def test_close_model_trains_only_on_earlier_weeks_decisions_with_a_close_public_by_the_fold() -> (
+    None
+):
+    # ADR 0049: a row from an earlier ET week, both it and its closing proxy public before the
+    # week's fold start, read through the challengers' readers at the bundle's cutoff.
+    from nhl_edge.ingest.odds import ODDS_FRAME_SCHEMA
+
+    day, monday = CUTOFF.date(), date(2026, 10, 12)
+    fold = lc.fold_start(day)
+    earlier = monday - timedelta(days=2)
+
+    def start(on: date) -> datetime:
+        return datetime(on.year, on.month, on.day, 23, tzinfo=UTC)
+
+    decisions = {
+        # game_id: (decided for, its start, its policy, published)
+        1: (earlier, start(earlier), POLICY_V2, None),  # trained on
+        2: (monday, start(monday), POLICY_V2, None),  # the day's own week
+        3: (earlier, start(earlier), POLICY_V1, None),  # another policy's
+        4: (earlier, start(earlier), POLICY_V2, fold),  # published at the fold start
+        5: (earlier, start(monday), POLICY_V2, None),  # moved past the fold: no close by then
+        6: (earlier - timedelta(days=2), start(earlier - timedelta(days=2)), POLICY_V2, None),
+    }
+    rows = [
+        {
+            "game_date": on,
+            "season": 20262027,
+            "game_id": game_id,
+            "start_utc": begins,
+            "home": "BOS",
+            "away": "TOR",
+            "published_utc": published or datetime(on.year, on.month, on.day, 16, 50, tzinfo=UTC),
+            "status": "predicted",
+            "policy_version": policy,
+            "event_id": f"e{game_id}",
+            "decision_snapshot_utc": datetime(on.year, on.month, on.day, 16, 45, tzinfo=UTC),
+            "home_price": 1.9,
+            "away_price": 2.0,
+            "p_b0": 0.5,
+            "p_b3": 0.55,
+            "p_blend": 0.52,
+            "p_morning": None,
+            "u_sd": 0.0,
+        }
+        for game_id, (on, begins, policy, published) in decisions.items()
+    ]
+    # 6 was postponed by a day and decided again on its new date (Codex on #352): the first
+    # decision is void, and the second trains once, on its own quotes.
+    rows.append(
+        {
+            **rows[5],
+            "game_date": earlier - timedelta(days=1),
+            "start_utc": start(earlier - timedelta(days=1)),
+            "published_utc": datetime.combine(earlier - timedelta(days=1), time(16, 50), UTC),
+            "decision_snapshot_utc": datetime.combine(
+                earlier - timedelta(days=1), time(16, 45), UTC
+            ),
+        }
+    )
+    ledger = pl.DataFrame(rows, schema_overrides={"season": pl.Int32, "p_morning": pl.Float64})
+    quotes = [
+        quote
+        for row in rows
+        for quote in close_quotes(row["event_id"], row["decision_snapshot_utc"], row["start_utc"])
+    ]
+    odds = pl.DataFrame(
+        quotes, schema=ODDS_FRAME_SCHEMA | {"game_id": pl.Int64, "game_type": pl.Int8}
+    )
+    reads = lc.REGISTRY[5].reads
+    lake = lc.PointInTime(Lake(paper_ledger=ledger, odds_snapshots=odds), CUTOFF, reads)
+    trained = lc.close_rows(lake.read("paper_ledger"), lake.read("odds_snapshots"), day)
+    assert trained.select("game_id", "game_date").rows() == [
+        (6, earlier - timedelta(days=1)),
+        (1, earlier),
+    ]
+    assert trained["close_snapshot_utc"].to_list() == [
+        start(earlier - timedelta(days=1)) - 15 * 60 * SECOND,
+        start(earlier) - 15 * 60 * SECOND,
+    ]
+    # Monday's decision fits on the same games as Friday's: the fit is the week's.
+    lake = lc.PointInTime(Lake(paper_ledger=ledger, odds_snapshots=odds), fold + 30 * SECOND, reads)
+    again = lc.close_rows(lake.read("paper_ledger"), lake.read("odds_snapshots"), monday)
+    assert again.equals(trained)
+
+
+def test_close_models_inputs_read_only_the_decisions_own_snapshot() -> None:
+    # The other books' gap is read at the row's decision snapshot: a later quote, the close's
+    # own included, never moves it.
+    from nhl_edge.ingest.odds import ODDS_FRAME_SCHEMA
+
+    decided = datetime(2026, 10, 10, 16, 45, tzinfo=UTC)
+    begins = datetime(2026, 10, 10, 23, tzinfo=UTC)
+    row = pl.DataFrame(
+        {
+            "game_date": [decided.date()],
+            "game_id": [1],
+            "event_id": ["e1"],
+            "decision_snapshot_utc": [decided],
+            "status": ["predicted"],
+            "p_b0": [0.5],
+            "p_b3": [0.55],
+            "p_morning": [0.5],
+        }
+    )
+    other = pl.DataFrame(
+        close_quotes("e1", decided, begins, "bet365"),
+        schema=ODDS_FRAME_SCHEMA | {"game_id": pl.Int64, "game_type": pl.Int8},
+    )
+    at_decision = other.filter(pl.col("snapshot_utc") == decided)
+    assert lc.close_inputs(row, other).equals(lc.close_inputs(row, at_decision))
+    assert lc.close_inputs(row, other)["g"][0] != 0
