@@ -459,3 +459,12 @@ def test_nhl_kalshi_check_without_its_key_fails_naming_the_variable(
 def test_nhl_kalshi_check_takes_demo_or_live_only() -> None:
     result = runner.invoke(app, ["kalshi", "check", "--env", "prod"])
     assert result.exit_code == 2
+
+
+def test_a_refusal_carries_kalshis_error_code_for_the_private_record() -> None:
+    # #346: the message stays the call and status (run logs are public); the code rides apart.
+    explained = httpx.Response(403, json={"error": {"code": "not_allowed", "message": "no"}})
+    assert kt.error_code(explained) == "not_allowed"
+    assert kt.error_code(httpx.Response(403, json={"code": "other_shape"})) is None
+    assert kt.error_code(httpx.Response(403, text="<html>")) is None
+    assert kt.error_code(httpx.Response(403, json=["a list"])) is None
