@@ -1508,3 +1508,80 @@ def test_the_scale_up_section_shows_counts_and_the_reading_date_only() -> None:
     # An earlier policy's report doesn't carry it.
     older = season.ledger.with_columns(policy_version=pl.lit(POLICY_V1))
     assert season.report(ledger=older, policy=POLICY_V1, scale_up=counts)["scale_up"] is None
+
+
+def test_the_formal_review_tests_the_candidates_under_holms_step_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADR 0048: at the review each candidate's primary measure gets its bootstrap p-value, Holm's
+    # step-down runs over every candidate, the control aside, and a pass that doesn't favour the
+    # challenger is no candidate. An interim report has none of it.
+    from dataclasses import replace
+
+    from nhl_edge.lake.schemas import ChallengerPredictions
+    from nhl_edge.live import challengers as lc
+
+    season = Season(n_weeks=6)
+    registered = FIRST - timedelta(days=1)
+    control = replace(lc.REGISTRY[0], registered_on=registered)
+    sharp = replace(lc.REGISTRY[0], name="sharp", registered_on=registered, primary="BLEND")
+    blunt = replace(lc.REGISTRY[0], name="blunt", registered_on=registered, primary="BLEND")
+    silent = replace(lc.REGISTRY[0], name="silent", registered_on=registered, primary="BLEND")
+    monkeypatch.setattr(lc, "REGISTRY", (control, sharp, blunt, silent))
+    home_win = (pl.col("home_score") > pl.col("away_score")).cast(pl.Float64)
+    won = season.ledger.join(season.games.select("game_id", won=home_win), on="game_id")
+
+    def outputs(name: str, p_home: pl.Expr) -> pl.DataFrame:
+        return won.select(
+            "game_date",
+            "season",
+            "game_id",
+            challenger=pl.lit(name),
+            challenger_version=pl.lit("1"),
+            adr=pl.lit("0038"),
+            p_home=p_home,
+            status=pl.lit(lp.PREDICTED),
+            bundle_sha256=pl.lit("0" * 64),
+            input_cutoff_utc=pl.col("decision_snapshot_utc"),
+            reads=pl.lit("{}"),
+            fit=pl.lit(None, pl.String),
+            code_version=pl.lit("challengers-20261016-abc1234"),
+            computed_utc=pl.col("published_utc") + timedelta(hours=12),
+        )
+
+    # sharp knows each result, far better than the blend; blunt is far worse; silent never ran.
+    every = ChallengerPredictions.validate(
+        pl.concat(
+            [
+                outputs("market_only", pl.col("p_blend_market")),
+                outputs("sharp", 0.2 + 0.6 * pl.col("won")),
+                outputs("blunt", 0.8 - 0.6 * pl.col("won")),
+            ]
+        )
+    )
+    interim = season.report(challenger_outputs=every)["challengers"]
+    assert "review" not in interim
+    assert "p_value" not in interim["challengers"]["sharp/1"]["comparisons"]["BLEND"]["difference"]
+    review_day = lr.REVIEW_DATE
+    formal = season.report(as_of=review_day, challenger_outputs=every)["challengers"]
+    tested = formal["review"]
+    assert tested["family"] == 3 and "market_only/1" not in tested["challengers"]
+    sharp_result, blunt_result = tested["challengers"]["sharp/1"], tested["challengers"]["blunt/1"]
+    assert sharp_result["p_value"] < 0.05 / 3 and sharp_result["candidate"]
+    # blunt's difference is just as clear, but against it: it passes and is no candidate.
+    assert blunt_result["passes"] and not blunt_result["favours"] and not blunt_result["candidate"]
+    # silent's figures are withheld: it counts with p = 1 and can't pass.
+    assert tested["challengers"]["silent/1"] == {
+        "p_value": 1.0,
+        "rank": 3,
+        "threshold": 0.05,
+        "passes": False,
+        "favours": False,
+        "candidate": False,
+    }
+    figure = formal["challengers"]["sharp/1"]["comparisons"]["BLEND"]["difference"]
+    assert figure["p_value"] == sharp_result["p_value"] and figure["high"] < 0
+    text = lr.markdown(season.report(as_of=review_day, challenger_outputs=every))
+    assert "**The review's test (ADR 0048):** Holm's step-down over the 3 registered" in text
+    assert "- silent/1: p = 1.0000, threshold 0.0500: does not pass." in text
+    assert "passes, but its difference doesn't favour it" in text
