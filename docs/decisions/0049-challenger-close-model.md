@@ -1,6 +1,6 @@
 # 0049. Challenger `close_model`: Pinnacle's move to the close, predicted at the decision
 
-- Status: Proposed (drafted 2026-10-28 for the owner)
+- Status: Accepted (by the owner, 2026-10-29, #260): option 1
 - Date: 2026-10-28
 - Part of: the review agenda (#250); the challenger is #260, scored under ADR 0038
 
@@ -18,7 +18,7 @@
 2. **The same with more inputs** (time to the start, goalie and lineup calls, u's parts). It is richer, but each input added to a few hundred games mostly adds noise. They can come later, as their own version.
 3. **No model of the close; keep #251's diagnostic only.** Free, but it never tests whether a closing forecast could improve selection.
 
-## Decision (proposed): option 1, as challenger `close_model`, version 1, registered on the day its code merges
+## Decision: option 1 (the owner, 2026-10-29), as challenger `close_model`, version 1, registered on the day its code merges
 
 - **The target:** y = logit p_close − logit p_dec, in the home side's log-odds.
   - **p_dec** is Pinnacle's decision pair de-vigged multiplicatively (the ledger's p_b0, hard rule 3).
@@ -48,7 +48,7 @@ None, by design: ADR 0038 spends no history season on a challenger. History also
   - `live/challengers.py`: the registry entry, the inputs from the bundle's odds, and the fit;
   - a leakage test for each input and for the training rows;
   - the report's challenger section, with the squared-error measure.
-- **Multiplicity:** it is a fifth candidate. Under ADR 0048 as proposed, the smallest p-value at the review must then be at most 0.01.
+- **Multiplicity:** it is a fifth candidate. Under ADR 0048, the smallest p-value at the review must then be at most 0.01.
 - **The first fitted week** comes once about 200 v2 games have a close, at about 40 a week: around mid-November.
 
 ## Revisit when
