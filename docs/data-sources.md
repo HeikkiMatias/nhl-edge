@@ -360,7 +360,7 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
       - B3's disagreement, logit p_b3 − logit p_b0;
       - Pinnacle's move since the morning, from the ledger's `p_morning` (the guard's), 0 without one;
       - the median of the other books' de-vigged log-odds less Pinnacle's at the decision snapshot, 0 when no other book quotes. For the day's games this comes from the bundle's `quotes`.
-    - **Its training rows** are the earlier ET weeks' v2 decisions published before the week's fold start, each with a closing proxy public by then (`live/movement.py`). The rows' inputs come from `odds_snapshots` through its reader.
+    - **Its training rows** are the earlier ET weeks' v2 decisions published before the week's fold start, each with a closing proxy public by then (`live/movement.py`). The rows' inputs come from `odds_snapshots` through its reader. Each decision is its game on its date. A decision whose game its quotes moved more than 12 hours from the decided start is void, as the evaluation counts it, and the game trains once, from its new date's decision.
     - **The fit** is the posterior mode of a normal linear model under the ADR's priors, with the residual variance estimated from those rows. It is `unfitted` below 200 games.
     - **The report** scores it on (y − ŷ)² − y², its forecast's squared error less no move's. Its shadow bets are the policy's own bets that its forecast close clears at their price.
     - **The odds reader** sorts the quotes it reads, so the read's sha256 doesn't depend on the lake's partition order.

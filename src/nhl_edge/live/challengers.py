@@ -668,6 +668,8 @@ CLOSE_PRIOR_MEAN = np.zeros(len(CLOSE_TERMS))
 CLOSE_PRIOR_SD = np.array([0.02, 0.5, 0.5, 0.5])
 # The residual variance's least, so a week of moves all alike still fits.
 VARIANCE_FLOOR = 1e-8
+# A decision is its game on its date: a postponed game is decided again on its new date.
+DECISION_KEYS = ["game_date", "game_id"]
 
 
 def _log_odds(p: pl.Expr) -> pl.Expr:
@@ -675,10 +677,11 @@ def _log_odds(p: pl.Expr) -> pl.Expr:
 
 
 def other_books(rows: pl.DataFrame, quotes: pl.DataFrame) -> pl.DataFrame:
-    """Each row's (game_id, event_id, decision_snapshot_utc, p_b0) g: the median over the other
-    books quoting both sides at its decision snapshot of their de-vigged home log-odds
+    """Each row's (game_date, game_id, event_id, decision_snapshot_utc, p_b0) g: the median over
+    the other books quoting both sides at its decision snapshot of their de-vigged home log-odds
     (market/devig.py, hard rule 3) less Pinnacle's decision pair's, null where none does. A pair
-    de-vigging refuses is no price, as for the decision (predict.devigable)."""
+    de-vigging refuses is no price, as for the decision (predict.devigable). Each decision gets
+    its own gap, once: a game decided on two dates has two (Codex on #352)."""
     h2h = lp.devigable(quotes).filter(pl.col("market") == "h2h", pl.col("book") != closing.BOOK)
     keys = ["event_id", "book", "snapshot_utc"]
     pairs = (
@@ -686,18 +689,18 @@ def other_books(rows: pl.DataFrame, quotes: pl.DataFrame) -> pl.DataFrame:
         .select(*keys, home="price_decimal")
         .join(h2h.filter(pl.col("side") == "away").select(*keys, away="price_decimal"), on=keys)
         .join(
-            rows.select("game_id", "event_id", "p_b0", snapshot_utc="decision_snapshot_utc"),
+            rows.select(*DECISION_KEYS, "event_id", "p_b0", snapshot_utc="decision_snapshot_utc"),
             on=["event_id", "snapshot_utc"],
         )
     )
     if pairs.is_empty():
-        return rows.select("game_id", g=pl.lit(None, pl.Float64))
+        return rows.select(*DECISION_KEYS, g=pl.lit(None, pl.Float64))
     fair = fair_probabilities(pairs.select("home", "away").to_numpy())[:, 0]
     gaps = pairs.with_columns(p_book=pl.Series(fair, dtype=pl.Float64)).with_columns(
         gap=_log_odds(pl.col("p_book")) - _log_odds(pl.col("p_b0"))
     )
-    return rows.select("game_id").join(
-        gaps.group_by("game_id").agg(g=pl.col("gap").median()), on="game_id", how="left"
+    return rows.select(DECISION_KEYS).join(
+        gaps.group_by(DECISION_KEYS).agg(g=pl.col("gap").median()), on=DECISION_KEYS, how="left"
     )
 
 
@@ -708,7 +711,7 @@ def close_inputs(rows: pl.DataFrame, quotes: pl.DataFrame) -> pl.DataFrame:
     one; and g (other_books), 0 when no other book quotes."""
     priced = _priced(rows)
     market = _log_odds(pl.col("p_b0"))
-    return priced.join(other_books(priced, quotes), on="game_id", how="left").with_columns(
+    return priced.join(other_books(priced, quotes), on=DECISION_KEYS, how="left").with_columns(
         d_b3=_log_odds(pl.col("p_b3")) - market,
         m=(market - _log_odds(pl.col("p_morning"))).fill_null(0.0),
         g=pl.col("g").fill_null(0.0),
@@ -764,14 +767,24 @@ def close_rows(ledger: pl.DataFrame, odds: pl.DataFrame, day: date) -> pl.DataFr
     # found by event, and the game only rides along (closing.pinnacle_closes).
     if "game_id" not in known.columns:
         known = known.with_columns(game_id=pl.lit(None, pl.Int64))
+    # A decision on a game its quotes moved more than POSTPONED from the start it was decided for
+    # is void, as the evaluation counts it (report.scoreable): its close is the new date's.
+    listed = closing.starts(known).select("event_id", listed_utc="start_utc")
+    decided = (
+        decided.join(listed, on="event_id", how="left")
+        .filter(
+            pl.col("listed_utc").is_null()
+            | ((pl.col("listed_utc") - pl.col("start_utc")).abs() <= POSTPONED)
+        )
+        .drop("listed_utc")
+    )
     moves = movement.table(decided, settle.closes(known, start)).filter(
         pl.col("move").is_not_null()
     )
-    keys = ["game_date", "game_id"]
     return (
         close_inputs(decided, known)
-        .join(moves.select(*keys, "move", "close_snapshot_utc"), on=keys)
-        .sort(keys)
+        .join(moves.select(*DECISION_KEYS, "move", "close_snapshot_utc"), on=DECISION_KEYS)
+        .sort(DECISION_KEYS)
     )
 
 

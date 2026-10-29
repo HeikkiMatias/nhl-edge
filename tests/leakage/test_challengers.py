@@ -7,7 +7,7 @@ team_residual_blend (ADR 0043) corrects each row's B3 by team effects from earli
 
 import json
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import polars as pl
@@ -479,6 +479,7 @@ def test_close_model_trains_only_on_earlier_weeks_decisions_with_a_close_public_
         3: (earlier, start(earlier), POLICY_V1, None),  # another policy's
         4: (earlier, start(earlier), POLICY_V2, fold),  # published at the fold start
         5: (earlier, start(monday), POLICY_V2, None),  # moved past the fold: no close by then
+        6: (earlier - timedelta(days=2), start(earlier - timedelta(days=2)), POLICY_V2, None),
     }
     rows = [
         {
@@ -503,6 +504,19 @@ def test_close_model_trains_only_on_earlier_weeks_decisions_with_a_close_public_
         }
         for game_id, (on, begins, policy, published) in decisions.items()
     ]
+    # 6 was postponed by a day and decided again on its new date (Codex on #352): the first
+    # decision is void, and the second trains once, on its own quotes.
+    rows.append(
+        {
+            **rows[5],
+            "game_date": earlier - timedelta(days=1),
+            "start_utc": start(earlier - timedelta(days=1)),
+            "published_utc": datetime.combine(earlier - timedelta(days=1), time(16, 50), UTC),
+            "decision_snapshot_utc": datetime.combine(
+                earlier - timedelta(days=1), time(16, 45), UTC
+            ),
+        }
+    )
     ledger = pl.DataFrame(rows, schema_overrides={"season": pl.Int32, "p_morning": pl.Float64})
     quotes = [
         quote
@@ -515,8 +529,14 @@ def test_close_model_trains_only_on_earlier_weeks_decisions_with_a_close_public_
     reads = lc.REGISTRY[5].reads
     lake = lc.PointInTime(Lake(paper_ledger=ledger, odds_snapshots=odds), CUTOFF, reads)
     trained = lc.close_rows(lake.read("paper_ledger"), lake.read("odds_snapshots"), day)
-    assert trained["game_id"].to_list() == [1]
-    assert trained["close_snapshot_utc"].to_list() == [start(earlier) - 15 * 60 * SECOND]
+    assert trained.select("game_id", "game_date").rows() == [
+        (6, earlier - timedelta(days=1)),
+        (1, earlier),
+    ]
+    assert trained["close_snapshot_utc"].to_list() == [
+        start(earlier - timedelta(days=1)) - 15 * 60 * SECOND,
+        start(earlier) - 15 * 60 * SECOND,
+    ]
     # Monday's decision fits on the same games as Friday's: the fit is the week's.
     lake = lc.PointInTime(Lake(paper_ledger=ledger, odds_snapshots=odds), fold + 30 * SECOND, reads)
     again = lc.close_rows(lake.read("paper_ledger"), lake.read("odds_snapshots"), monday)
@@ -532,6 +552,7 @@ def test_close_models_inputs_read_only_the_decisions_own_snapshot() -> None:
     begins = datetime(2026, 10, 10, 23, tzinfo=UTC)
     row = pl.DataFrame(
         {
+            "game_date": [decided.date()],
             "game_id": [1],
             "event_id": ["e1"],
             "decision_snapshot_utc": [decided],
