@@ -32,7 +32,7 @@ The game-level gain is small. The win log loss doesn't move detectably, as expec
 
 ## Backtest evidence
 
-`reports/ratings/debut-nhle-20261029-643cc58.md`, from `scripts/debut_nhle.py`.
+`reports/ratings/debut-nhle-20261029-0087fbc.md`, from `scripts/debut_nhle.py`.
 - **The fits:** RAPM's 5v5 model, fitted three times with the frozen settings on the training seasons.
 - **The scoring:** 2012-13 to 2017-18 (ADR 0011), with 95% weekly block bootstrap intervals. Each figure below is the run's minus base's.
 - **The check:** the base fit reproduces the lake's `player_ratings` exactly.
