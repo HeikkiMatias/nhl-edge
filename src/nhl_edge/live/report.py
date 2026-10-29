@@ -45,6 +45,9 @@ It covers the frozen policy's regular-season paper decisions (ADR 0032):
 - **Real stakes (ADR 0039, #267):** the start rule's conditions and verdict, with the paper
   bankroll that its owner's veto reads, and the weekly CLV stop (live/real.py). The frozen
   policy's report only.
+- **Scale-up (ADR 0047, #322):** when the real bankroll's growth is read, and each fill type's
+  sample of real fills so far, counts only: the CLV figures and the verdict come from the real
+  fills, so they stay private (live/scale_up.py, #280). The frozen policy's report only.
 - **Return at the taken price,** and the drawdown's size, only from REVIEW_DATE on (plan §11).
 
 It reads ledgers, settlements, results and prices only: nothing here feeds a decision.
@@ -942,6 +945,7 @@ def report(
     unfinished_bundles: Sequence[date] | None = None,
     goalie_spreads: pl.DataFrame | None = None,
     dailyfaceoff: pl.DataFrame | None = None,
+    scale_up: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The live report of one policy, the frozen one by default, as of as_of: ledger and
     settlements as written, games' results, the odds' Pinnacle quotes, SBR's history
@@ -950,7 +954,8 @@ def report(
     day after as_of by default: entry to close counts the games started by then.
     unfinished_bundles are the decision days whose run bundle has no manifest, None when not
     checked, which ADR 0039's start rule reads. dailyfaceoff is Daily Faceoff's goalie polls,
-    which #308's edge bids read for the share of fills after a starter changed."""
+    which #308's edge bids read for the share of fills after a starter changed. scale_up is ADR
+    0047's public counts (live/scale_up.public), None when not read."""
     now = now or datetime.combine(as_of + timedelta(days=1), time(12), UTC)
     rows = counted(ledger, as_of, policy)
     bets = bets_of(rows, settlements)
@@ -1003,6 +1008,7 @@ def report(
             now,
             policy,
         ),
+        "scale_up": scale_up if policy == POLICY_VERSION else None,
         "challengers": challengers(
             rows,
             started,
@@ -1151,6 +1157,7 @@ def markdown(result: dict[str, Any]) -> str:
     )
     lines += [f"- Verdict: {result['verdicts']['closing_value']}.{unfinished}"]
     lines += _real_stakes_lines(result.get("real_stakes"))
+    lines += _scale_up_lines(result.get("scale_up"))
     lines += [
         "",
         "## Model comparisons",
@@ -1486,6 +1493,46 @@ def _real_stakes_lines(section: dict[str, Any] | None) -> list[str]:
         f"- Weekly CLV stop: {clv_stop}. The 20% real bankroll stop is checked before every "
         "day's bets, from the real ledger (#268).",
     ]
+
+
+def _scale_up_lines(section: dict[str, Any] | None) -> list[str]:
+    """ADR 0047's reading date and samples as markdown lines, counts only, or none when the
+    report didn't read the real record."""
+    if section is None:
+        return []
+    day = section["reading_date"]
+    when = (
+        "no real fill yet: it is read on the Monday "
+        f"{section['weeks_needed']} weeks after the first real fill's week"
+        if day is None
+        else f"read on {day}, at the weekly report's clock"
+        if section["read"]
+        else f"due on {day}: it is taken once every order of a game before its clock has its "
+        "fills recorded"
+        if section["due"]
+        else f"read once, on {day}"
+    )
+    lines = [
+        "",
+        "## Scale-up (ADR 0047)",
+        "",
+        "The real bankroll may grow, at the owner's choice, once one reading shows net CLV per "
+        f"real fill with its interval's lower bound above 0, over at least "
+        f"{section['weeks_needed']} weeks of fills with at least "
+        f"{section['coverage_needed']:.0%} of them referenced after the fill, and no stop fired; "
+        "taker and maker fills apart. The CLV figures and the verdict come from the real fills, "
+        "so they stay private and go to the owner (#280).",
+        "",
+        f"- Reading: {when}.",
+    ]
+    for kind, sample in section["samples"].items():
+        share = sample["coverage"]
+        lines.append(
+            f"- {kind.capitalize()} fills: {sample['fills']} over {sample['weeks']} weeks; "
+            f"{sample['valued']} of {sample['started']} of started games with a reference after "
+            f"them ({f'{share:.0%}' if share is not None else 'none yet'})."
+        )
+    return lines
 
 
 def _challenger_lines(section: dict[str, Any]) -> list[str]:

@@ -193,3 +193,68 @@ def test_nhl_real_fills_writes_the_figures_privately_beside_the_orders(
     assert figures["env"] == pm.DEMO and figures["code_version"] == "real-fills-x"
     assert figures[lf.TAKER]["bids"] == 1 and figures[lf.MAKER]["bids"] == 1
     assert not store.keys("real/live")
+
+
+def test_nhl_real_fills_adds_the_scale_up_block_to_the_live_figures_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ADR 0047 (#322): before the reading's clock, the figures as context and no verdict, kept
+    # privately; the log has the reading date and the weeks of fills only.
+    from nhl_edge import cli
+    from nhl_edge.live import real_ledger as rl
+    from nhl_edge.live import scale_up as su
+
+    store = lb.LocalStore(tmp_path / "record")
+    ff.record(store, [TAKER, MAKER], env=pm.LIVE)
+    alerts = ff.TEAMS.with_columns(game_date=pl.lit(pf.DAY))
+
+    class FakeLake:
+        def read(self, table: str) -> pl.DataFrame:
+            return ff.odds()
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> Any:
+            return ff.AFTER
+
+    monkeypatch.setattr(cli, "_real_record", lambda r2: (FakeLake(), store))
+    monkeypatch.setattr(rl, "alerts", lambda found: alerts)
+    monkeypatch.setattr(cli, "datetime", Later)
+    monkeypatch.setattr("nhl_edge.backtest.reports.version", lambda name, now: "real-fills-x")
+    result = CliRunner().invoke(app, ["real", "fills"])
+    assert result.exit_code == 0, result.output
+    day = pf.DAY - timedelta(days=pf.DAY.weekday()) + timedelta(weeks=12)
+    assert (
+        f"real fills live: scale-up (ADR 0047) reads on {day}; taker 1 weeks, maker 1 weeks"
+        in result.output
+    )
+    (key,) = store.keys("real/live/fill-reports")
+    block = json.loads(store.get(key))["scale_up"]
+    assert block["reading_date"] == day.isoformat() and not block["read"]
+    assert block["context"][lf.TAKER]["valued"] == 1 and "passes" not in json.dumps(block)
+    assert not store.keys("real/live/scale-up")
+    assert su.reading_key(day) not in store.keys("real/live")
+
+
+def test_the_weekly_reports_scale_up_counts_come_from_the_live_fills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # nhl live report --r2 reads only counts from the live exchange's fills (#322, #280).
+    from nhl_edge import cli
+    from nhl_edge.live import real_ledger as rl
+
+    store = lb.LocalStore(tmp_path / "record")
+    assert cli._scale_up_counts(store, ff.odds(), ff.AFTER)["reading_date"] is None
+    ff.record(store, [TAKER, MAKER], env=pm.LIVE)
+    # The demo exchange's mock fills never count.
+    ff.record(store, [TAKER, TAKER], env=pm.DEMO)
+    monkeypatch.setattr(rl, "alerts", lambda found: ff.TEAMS.with_columns(game_date=pl.lit(pf.DAY)))
+    counts = cli._scale_up_counts(store, ff.odds(), ff.AFTER)
+    assert counts["samples"][lf.TAKER] == {
+        "fills": 1,
+        "weeks": 1,
+        "started": 1,
+        "valued": 1,
+        "coverage": 1.0,
+    }
+    assert not counts["read"] and "clv" not in json.dumps(counts)
