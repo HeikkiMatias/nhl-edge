@@ -42,13 +42,17 @@ from nhl_edge.game.b3 import B3Model
 from nhl_edge.ingest.games import results_known_at, schedule_known_at
 from nhl_edge.ingest.odds import ET
 from nhl_edge.lake.schemas import ChallengerPredictions, GoalieSpreads, dtypes
-from nhl_edge.live import b3_split, blend_fit
+from nhl_edge.live import b3_split, blend_fit, movement, settle
 from nhl_edge.live import bundle as lb
 from nhl_edge.live import predict as lp
 from nhl_edge.live.settle import POSTPONED
+from nhl_edge.market import closing
+from nhl_edge.market.devig import fair_probabilities
 from nhl_edge.market.recalibration import logit, sigmoid
 
 PREFIX = "challengers/live"
+# What a challenger's probability forecasts (Challenger.forecasts).
+RESULT, CLOSE = "result", "close"
 # A ledger model a challenger may be paired with, by its column (ADR 0044).
 LEDGER_BASELINES = {"B3": "p_b3"}
 PREDICTED = lp.PREDICTED
@@ -69,8 +73,10 @@ class Reader(Protocol):
 
 def _odds(frame: pl.DataFrame, cutoff: datetime, predicting: tuple[int, ...]) -> pl.DataFrame:
     """The quotes observed before the cutoff, as they were then: by their event, without the
-    columns set afterwards."""
-    return frame.filter(pl.col("snapshot_utc") < cutoff).drop(ODDS_AFTERWARDS)
+    columns set afterwards. Sorted on every column, so its sha256 doesn't depend on the order the
+    lake's partitions were read or rewritten in (ADR 0049)."""
+    known = frame.filter(pl.col("snapshot_utc") < cutoff).drop(ODDS_AFTERWARDS)
+    return known.sort(known.columns, nulls_last=True)
 
 
 def _ledger(frame: pl.DataFrame, cutoff: datetime, predicting: tuple[int, ...]) -> pl.DataFrame:
@@ -170,6 +176,9 @@ class Challenger:
     # What its primary measure is paired with, beside the frozen blend and B1, when its ADR
     # names one: a registered challenger (name/version) or a ledger model (LEDGER_BASELINES).
     baseline: str | None = None
+    # What its probability forecasts: the result (RESULT), or Pinnacle's close (CLOSE, ADR 0049),
+    # which the report scores on the move to the close.
+    forecasts: str = RESULT
 
     def __post_init__(self) -> None:
         unread = sorted(set(self.reads) - set(READERS))
@@ -650,6 +659,150 @@ def _b3_split(
     )
 
 
+# close_model (ADR 0049): Pinnacle's move from the decision to its closing proxy, in the home
+# side's log-odds, forecast from three inputs the decision knew by a shrunk linear model, fitted at
+# the posterior mode under fixed normal priors on the earlier ET weeks' v2 games with a close. It
+# forecasts the market, never the result: its probability is the forecast fair close.
+CLOSE_TERMS = ("a", "b_d", "b_m", "b_g")
+CLOSE_PRIOR_MEAN = np.zeros(len(CLOSE_TERMS))
+CLOSE_PRIOR_SD = np.array([0.02, 0.5, 0.5, 0.5])
+# The residual variance's least, so a week of moves all alike still fits.
+VARIANCE_FLOOR = 1e-8
+
+
+def _log_odds(p: pl.Expr) -> pl.Expr:
+    return (p / (1 - p)).log()
+
+
+def other_books(rows: pl.DataFrame, quotes: pl.DataFrame) -> pl.DataFrame:
+    """Each row's (game_id, event_id, decision_snapshot_utc, p_b0) g: the median over the other
+    books quoting both sides at its decision snapshot of their de-vigged home log-odds
+    (market/devig.py, hard rule 3) less Pinnacle's decision pair's, null where none does. A pair
+    de-vigging refuses is no price, as for the decision (predict.devigable)."""
+    h2h = lp.devigable(quotes).filter(pl.col("market") == "h2h", pl.col("book") != closing.BOOK)
+    keys = ["event_id", "book", "snapshot_utc"]
+    pairs = (
+        h2h.filter(pl.col("side") == "home")
+        .select(*keys, home="price_decimal")
+        .join(h2h.filter(pl.col("side") == "away").select(*keys, away="price_decimal"), on=keys)
+        .join(
+            rows.select("game_id", "event_id", "p_b0", snapshot_utc="decision_snapshot_utc"),
+            on=["event_id", "snapshot_utc"],
+        )
+    )
+    if pairs.is_empty():
+        return rows.select("game_id", g=pl.lit(None, pl.Float64))
+    fair = fair_probabilities(pairs.select("home", "away").to_numpy())[:, 0]
+    gaps = pairs.with_columns(p_book=pl.Series(fair, dtype=pl.Float64)).with_columns(
+        gap=_log_odds(pl.col("p_book")) - _log_odds(pl.col("p_b0"))
+    )
+    return rows.select("game_id").join(
+        gaps.group_by("game_id").agg(g=pl.col("gap").median()), on="game_id", how="left"
+    )
+
+
+def close_inputs(rows: pl.DataFrame, quotes: pl.DataFrame) -> pl.DataFrame:
+    """The predicted rows with Pinnacle's and B3's probabilities (_priced), each with ADR 0049's
+    inputs as its decision saw them: d_b3, B3's disagreement with Pinnacle's decision pair (p_b0);
+    m, Pinnacle's move since its 07:05 ET pair (the ledger's p_morning, its guard's), 0 without
+    one; and g (other_books), 0 when no other book quotes."""
+    priced = _priced(rows)
+    market = _log_odds(pl.col("p_b0"))
+    return priced.join(other_books(priced, quotes), on="game_id", how="left").with_columns(
+        d_b3=_log_odds(pl.col("p_b3")) - market,
+        m=(market - _log_odds(pl.col("p_morning"))).fill_null(0.0),
+        g=pl.col("g").fill_null(0.0),
+    )
+
+
+def close_design(inputs: pl.DataFrame) -> NDArray[np.float64]:
+    """The fit's columns: 1, d_b3, m and g."""
+    return np.column_stack(
+        [np.ones(inputs.height), *(inputs[name].to_numpy() for name in ("d_b3", "m", "g"))]
+    ).astype(np.float64)
+
+
+def close_fit(
+    x: NDArray[np.float64], move: ArrayLike
+) -> tuple[NDArray[np.float64], NDArray[np.float64], float]:
+    """A normal linear model's weights on the columns of x at the posterior mode under ADR 0049's
+    priors, their standard errors and the residual variance, estimated from the training rows:
+    from the moves' variance, the mode at the variance and the variance at the mode in turn,
+    until the variance settles."""
+    y = np.asarray(move, dtype=np.float64)
+    precision = np.diag(1 / CLOSE_PRIOR_SD**2)
+    variance = max(float(np.var(y)), VARIANCE_FLOOR)
+    for _ in range(ITERATIONS):
+        curvature = x.T @ x / variance + precision
+        beta = np.linalg.solve(curvature, x.T @ y / variance + precision @ CLOSE_PRIOR_MEAN)
+        again = max(float(np.mean((y - x @ beta) ** 2)), VARIANCE_FLOOR)
+        settled = abs(again - variance) <= CONVERGED * variance
+        variance = again
+        if settled:
+            break
+    else:
+        raise ValueError(f"the fit did not converge in {ITERATIONS} iterations")
+    curvature = x.T @ x / variance + precision
+    beta = np.linalg.solve(curvature, x.T @ y / variance + precision @ CLOSE_PRIOR_MEAN)
+    return beta, np.sqrt(np.diag(np.linalg.inv(curvature))), variance
+
+
+def close_rows(ledger: pl.DataFrame, odds: pl.DataFrame, day: date) -> pl.DataFrame:
+    """The games the day's fit learns from (ADR 0049): TRAINS_ON's predicted decisions of the ET
+    weeks before the day's, published before the week's fold start, each with its inputs from the
+    quotes as its decision saw them and its move to a closing proxy public by the fold start too
+    (live/movement.py). Every day of a week so fits on the same games."""
+    start = fold_start(day)
+    decided = ledger.filter(
+        pl.col("policy_version") == TRAINS_ON,
+        pl.col("status") == PREDICTED,
+        pl.col("game_date") < week_of(day),
+        pl.col("published_utc") < start,
+    )
+    known = odds.filter(pl.col("snapshot_utc") < start)
+    # The challengers' reader leaves out the game a quote was later matched to; the closes are
+    # found by event, and the game only rides along (closing.pinnacle_closes).
+    if "game_id" not in known.columns:
+        known = known.with_columns(game_id=pl.lit(None, pl.Int64))
+    moves = movement.table(decided, settle.closes(known, start)).filter(
+        pl.col("move").is_not_null()
+    )
+    keys = ["game_date", "game_id"]
+    return (
+        close_inputs(decided, known)
+        .join(moves.select(*keys, "move", "close_snapshot_utc"), on=keys)
+        .sort(keys)
+    )
+
+
+def _close_model(
+    bundle: lb.Bundle, replayed: pl.DataFrame, live: blend_fit.LiveFit, lake: PointInTime
+) -> pl.DataFrame:
+    """The day's forecast fair closes, the home side's (p_home), from the week's fit (ADR 0049), or
+    none, as unfitted, while fewer than MINIMUM_GAMES games train it. The fit, its games and its
+    week ride on every row (fit)."""
+    day = date.fromisoformat(bundle.manifest["day"])
+    seasons = sorted(set(replayed["season"].to_list()))
+    rows = close_rows(lake.read("paper_ledger", seasons), lake.read("odds_snapshots"), day)
+    fit: dict[str, Any] = {
+        "week": week_of(day).isoformat(),
+        "games": rows.height,
+        "minimum": MINIMUM_GAMES,
+    }
+    if rows.height < MINIMUM_GAMES:
+        return _unfitted(replayed, fit)
+    weights, errors, variance = close_fit(close_design(rows), rows["move"])
+    # The latest of what it learned from: a close, or a decision published after its close.
+    cutoff = max(rows["close_snapshot_utc"].max(), rows["published_utc"].max())  # type: ignore[type-var]
+    fit |= _weights(CLOSE_TERMS, weights, errors) | {
+        "residual_sd": float(np.sqrt(variance)),
+        "train_cutoff": cutoff.isoformat(),  # type: ignore[union-attr]
+    }
+    priced = close_inputs(replayed, bundle.inputs["quotes"])
+    p = sigmoid(logit(priced["p_b0"].to_numpy()) + close_design(priced) @ weights)
+    return _fitted(replayed, priced, p, fit)
+
+
 REGISTRY: tuple[Challenger, ...] = (
     Challenger(
         name="market_only",
@@ -693,6 +846,16 @@ REGISTRY: tuple[Challenger, ...] = (
         reads=(),
         predict=_b3_split,
         baseline="B3",
+    ),
+    Challenger(
+        name="close_model",
+        version="1",
+        adr="0049",
+        # The day its code merged (ADR 0049).
+        registered_on=date(2026, 10, 29),
+        reads=("paper_ledger", "odds_snapshots"),
+        predict=_close_model,
+        forecasts=CLOSE,
     ),
 )
 

@@ -883,3 +883,176 @@ def test_b3_split_scores_a_day_without_models_as_its_ledger_says(
     ChallengerPredictions.validate(output)
     assert output["p_home"].null_count() == output.height
     assert output["status"].to_list() == [lc.NO_PROBABILITY] * output.height
+
+
+# close_model (ADR 0049)
+
+CLOSE_MODEL = replace(lc.REGISTRY[5], registered_on=pf.DAY - timedelta(days=1))
+# The fixture day's games' closing proxies at the 18:45 ET slot.
+PROXY = datetime(2026, 10, 7, 22, 45, tzinfo=UTC)
+
+
+def lake_odds(quotes: pl.DataFrame) -> pl.DataFrame:
+    """Quotes as the lake's odds_snapshots holds them, with the columns set afterwards."""
+    return quotes.with_columns(
+        game_id=pl.col("event_id").str.strip_prefix("e").cast(pl.Int64), game_type=pl.lit(2)
+    )
+
+
+def moves(n: int, seed: int = 0) -> pl.DataFrame:
+    """n training rows of close_rows' columns, their moves drawn from a = 0.005, b_d = 0.1,
+    b_m = 0.3 and b_g = 0.2 with a residual sd of 0.04."""
+    rng = np.random.default_rng(seed)
+    d_b3, m, g = rng.normal(0, 0.25, n), rng.normal(0, 0.05, n), rng.normal(0, 0.03, n)
+    move = 0.005 + 0.1 * d_b3 + 0.3 * m + 0.2 * g + rng.normal(0, 0.04, n)
+    days = [WEEK - timedelta(days=7) + timedelta(days=i % 7) for i in range(n)]
+    return pl.DataFrame(
+        {
+            "game_date": days,
+            "game_id": 2026010001 + np.arange(n),
+            "d_b3": d_b3,
+            "m": m,
+            "g": g,
+            "move": move,
+            "close_snapshot_utc": [datetime.combine(day, time(22, 45), UTC) for day in days],
+            "published_utc": [datetime.combine(day, time(16, 50), UTC) for day in days],
+        }
+    )
+
+
+def test_the_close_fit_is_the_posterior_mode_under_adr_0049s_priors() -> None:
+    rows = moves(3000)
+    x = lc.close_design(rows)
+    weights, errors, variance = lc.close_fit(x, rows["move"])
+    y = rows["move"].to_numpy()
+    # The log posterior's gradient is zero at the weights, at the residual variance there.
+    assert variance == pytest.approx(np.mean((y - x @ weights) ** 2), rel=1e-6)
+    prior = (weights - 0.0) / np.array([0.02, 0.5, 0.5, 0.5]) ** 2
+    assert np.abs(x.T @ (y - x @ weights) / variance - prior).max() < 1e-6
+    # On 3,000 games it finds the weights drawn from, within its standard errors.
+    assert np.abs(weights - np.array([0.005, 0.1, 0.3, 0.2])).max() < 3 * errors.max()
+    assert np.sqrt(variance) == pytest.approx(0.04, rel=0.05)
+    # On a handful of moves all alike, the priors keep it finite and the intercept near 0.
+    few = moves(5).with_columns(move=pl.lit(0.0))
+    weights, _, variance = lc.close_fit(lc.close_design(few), few["move"])
+    assert np.isfinite(weights).all() and variance >= lc.VARIANCE_FLOOR
+
+
+def test_close_inputs_are_b3s_disagreement_the_morning_move_and_the_other_books_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nhl_edge.market.devig import fair_probabilities
+
+    store = lb.LocalStore(tmp_path)
+    # Pinnacle moved on WSH since the morning; bet365 quotes it beside Pinnacle at midday.
+    quotes = pf.day_quotes().with_columns(
+        price_decimal=pl.when((pl.col("slot") == "morning") & (pl.col("event_id") == "e2026020053"))
+        .then(pl.when(pl.col("side") == "home").then(2.30).otherwise(1.67))
+        .otherwise("price_decimal")
+    )
+    ledger = decided(store, monkeypatch, quotes=quotes)
+    inputs = lc.close_inputs(ledger, quotes).sort("game_id")
+    assert inputs["game_id"].to_list() == list(pf.GAMES)
+    p_b0 = inputs["p_b0"].to_numpy()
+    assert np.allclose(inputs["d_b3"], logit(inputs["p_b3"].to_numpy()) - logit(p_b0))
+    p_morning = fair_probabilities([[2.30, 1.67]])[0, 0]
+    assert inputs["m"][0] == pytest.approx(logit(p_b0[0]) - logit(p_morning))
+    assert inputs["m"][1:].to_list() == [0.0, 0.0]
+    p_bet365 = fair_probabilities([[2.15, 1.75]])[0, 0]
+    assert inputs["g"][0] == pytest.approx(logit(p_bet365) - logit(p_b0[0]))
+    # No other book quotes the other games: no gap.
+    assert inputs["g"][1:].to_list() == [0.0, 0.0]
+    # A pair de-vigging refuses is no price: both sides at plus money leave WSH without a gap,
+    # never the day without its inputs.
+    refused = pl.concat(
+        [quotes, pf.quotes(pf.quote(pf.MIDDAY, 2026020054, "unibet", 2.10, 2.10))]
+    ).with_columns(
+        price_decimal=pl.when(pl.col("book") == "bet365").then(2.05).otherwise("price_decimal")
+    )
+    again = lc.close_inputs(ledger, refused).sort("game_id")
+    assert again["g"][0] == 0.0 and again["g"][1] == 0.0
+
+
+def test_close_rows_train_on_earlier_weeks_with_a_close_public_by_the_fold_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nhl_edge.market.devig import fair_probabilities
+
+    store = lb.LocalStore(tmp_path)
+    ledger = decided(store, monkeypatch).with_columns(policy_version=pl.lit(POLICY_V2))
+    proxy = pf.quotes(
+        pf.quote(PROXY, 2026020053, "pinnacle", 1.95, 1.95, slot="pre7"),
+        pf.quote(PROXY, 2026020054, "pinnacle", 1.90, 2.00, slot="pre7"),
+    )
+    odds = lake_odds(pl.concat([pf.day_quotes(), proxy])).drop("game_type")
+    # The fixture day's week trains nothing on itself; the next week trains on its games with
+    # a proxy, ANA's starting after the pre7 slot without one.
+    assert lc.close_rows(ledger, odds, pf.DAY + timedelta(days=1)).is_empty()
+    rows = lc.close_rows(ledger, odds, pf.DAY + timedelta(days=7))
+    assert rows["game_id"].to_list() == [2026020053, 2026020054]
+    p_decision = fair_probabilities([[2.10, 1.80], [1.90, 2.00]])[:, 0]
+    p_close = fair_probabilities([[1.95, 1.95], [1.90, 2.00]])[:, 0]
+    assert np.allclose(rows["move"], logit(p_close) - logit(p_decision))
+    # Without the game column the challengers' reader leaves out, the same rows.
+    plain = lc.close_rows(ledger, odds.drop("game_id"), pf.DAY + timedelta(days=7))
+    assert plain.equals(rows)
+    # A decision published after the week's fold start isn't read.
+    late = ledger.with_columns(published_utc=pl.lit(lc.fold_start(pf.DAY + timedelta(days=7))))
+    assert lc.close_rows(late, odds, pf.DAY + timedelta(days=7)).is_empty()
+
+
+def test_close_model_is_unfitted_below_its_minimum(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = lb.LocalStore(tmp_path)
+    ledger = decided(store, monkeypatch)
+    monkeypatch.setattr(lc, "close_rows", lambda ledger, odds, day: moves(lc.MINIMUM_GAMES - 1))
+    lake = Lake(paper_ledger=ledger, odds_snapshots=lake_odds(pf.day_quotes()))
+    output = computed(store, ledger, CLOSE_MODEL, lake)
+    ChallengerPredictions.validate(output)
+    assert output["status"].to_list() == [lc.UNFITTED] * 3
+    assert json.loads(output["fit"][0]) == {"week": "2026-10-05", "games": 199, "minimum": 200}
+    assert set(json.loads(output["reads"][0])) == {"paper_ledger:20262027", "odds_snapshots"}
+
+
+def test_close_model_forecasts_the_close_from_the_weeks_fit_and_saves_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = lb.LocalStore(tmp_path)
+    ledger = decided(store, monkeypatch)
+    training = moves(300)
+    monkeypatch.setattr(lc, "close_rows", lambda ledger, odds, day: training)
+    lake = Lake(paper_ledger=ledger, odds_snapshots=lake_odds(pf.day_quotes()))
+    output = computed(store, ledger, CLOSE_MODEL, lake).sort("game_id")
+    assert output["status"].to_list() == [lc.PREDICTED] * 3
+    weights, errors, variance = lc.close_fit(lc.close_design(training), training["move"])
+    # The forecast close: Pinnacle's decision price moved by the forecast, from the bundle's
+    # quotes as the decision saw them.
+    inputs = lc.close_inputs(ledger, pf.day_quotes()).sort("game_id")
+    expected = sigmoid(logit(inputs["p_b0"].to_numpy()) + lc.close_design(inputs) @ weights)
+    assert np.allclose(output["p_home"].to_numpy(), expected, rtol=0, atol=1e-12)
+    fit = json.loads(output["fit"][0])
+    assert list(fit["weights"]) == ["a", "b_d", "b_m", "b_g"] and fit["games"] == 300
+    assert np.allclose(list(fit["standard_errors"].values()), errors, rtol=0, atol=1e-12)
+    assert fit["residual_sd"] == pytest.approx(np.sqrt(variance))
+    assert fit["train_cutoff"] == training["close_snapshot_utc"].max().isoformat()  # type: ignore[union-attr]
+    # A decision published after the latest close is the cutoff instead.
+    latest = training["close_snapshot_utc"].max()
+    late = training.with_columns(
+        published_utc=pl.when(pl.col("close_snapshot_utc") == latest)
+        .then(pl.col("close_snapshot_utc") + timedelta(minutes=30))
+        .otherwise("published_utc")
+    )
+    monkeypatch.setattr(lc, "close_rows", lambda ledger, odds, day: late)
+    store = lb.LocalStore(tmp_path / "again")
+    ledger = decided(store, monkeypatch)
+    later = json.loads(computed(store, ledger, CLOSE_MODEL, lake)["fit"][0])
+    assert later["train_cutoff"] == (latest + timedelta(minutes=30)).isoformat()  # type: ignore[operator]
+
+
+def test_close_model_forecasts_the_close_and_is_registered_as_its_adr_says() -> None:
+    registered = lc.REGISTRY[5]
+    assert (registered.name, registered.version, registered.adr) == ("close_model", "1", "0049")
+    assert registered.forecasts == lc.CLOSE and registered.baseline is None
+    assert set(registered.reads) == {"paper_ledger", "odds_snapshots"}
+    assert all(c.forecasts == lc.RESULT for c in lc.REGISTRY[:5])

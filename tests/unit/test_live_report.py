@@ -1359,3 +1359,111 @@ def test_the_selected_bets_split_scores_each_game_on_its_side_from_four_weeks() 
     assert section["price"]["favourites"]["games"] == 180
     assert section["price"]["underdogs"] == {"games": 0, "weeks": 0}
     assert section["u"]["u below its training mean"]["games"] == 60
+
+
+def pinnacle_closes(season: "Season", close: tuple[float, float]) -> pl.DataFrame:
+    """Pinnacle's midday quote of each predicted game at the ledger's prices, and a proxy at
+    close before its start, at the pre7 slot."""
+    quotes = []
+    for row in season.ledger.filter(pl.col("status") == lp.PREDICTED).iter_rows(named=True):
+        for when, slot, prices in (
+            (row["decision_snapshot_utc"], "midday", (row["home_price"], row["away_price"])),
+            (row["start_utc"] - timedelta(minutes=15), "pre7", close),
+        ):
+            for side, price in zip(("home", "away"), prices, strict=True):
+                quotes.append(
+                    {
+                        "snapshot_utc": when,
+                        "last_update_utc": when,
+                        "event_id": row["event_id"],
+                        "commence_time_utc": row["start_utc"],
+                        "home": row["home"],
+                        "away": row["away"],
+                        "book": "pinnacle",
+                        "market": "h2h",
+                        "side": side,
+                        "line": None,
+                        "price_decimal": price,
+                        "is_closing_proxy": slot == "pre7",
+                        "slot": slot,
+                        "raw_key": "k",
+                        "game_id": row["game_id"],
+                    }
+                )
+    return pl.DataFrame(quotes, schema=ODDS_FRAME_SCHEMA | {"game_id": pl.Int64})
+
+
+def test_a_challenger_forecasting_the_close_is_scored_on_the_move_to_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADR 0049: close_model's primary measure is its forecast move's squared error less no
+    # move's, and its shadow bets are the policy's own its forecast close clears.
+    from dataclasses import replace
+
+    from nhl_edge.lake.schemas import ChallengerPredictions
+    from nhl_edge.live import challengers as lc
+    from nhl_edge.live import movement, shadow
+
+    season = Season(n_weeks=3)
+    registered = FIRST - timedelta(days=1)
+    close_model = replace(lc.REGISTRY[5], registered_on=registered)
+    monkeypatch.setattr(lc, "REGISTRY", (close_model,))
+    odds = pinnacle_closes(season, (1.80, 2.10))
+
+    def outputs(p_home: pl.Expr) -> pl.DataFrame:
+        return ChallengerPredictions.validate(
+            season.ledger.select(
+                "game_date",
+                "season",
+                "game_id",
+                challenger=pl.lit("close_model"),
+                challenger_version=pl.lit("1"),
+                adr=pl.lit("0049"),
+                p_home=p_home,
+                status=pl.lit(lp.PREDICTED),
+                bundle_sha256=pl.lit("0" * 64),
+                input_cutoff_utc=pl.col("decision_snapshot_utc"),
+                reads=pl.lit("{}"),
+                fit=pl.lit(None, pl.String),
+                code_version=pl.lit("challengers-20261030-abc1234"),
+                computed_utc=pl.col("published_utc") + timedelta(hours=12),
+            )
+        )
+
+    # It forecasts the home side's fair close at 0.52, every game.
+    result = season.report(odds=odds, challenger_outputs=outputs(pl.lit(0.52)))
+    entry = result["challengers"]["challengers"]["close_model/1"]
+    assert entry["forecasts"] == lc.CLOSE
+    rows = lr.counted(season.ledger, date(2026, 12, 31))
+    started = lr.scoreable(rows, season.games)
+    moves = movement.table(started, ls.closes(odds, at(date(2027, 1, 1), 12)))
+    with_close = moves.filter(pl.col("move").is_not_null())
+    assert with_close.height > 0
+    figure = entry["move"]["difference"]
+    assert figure["games"] == with_close.height and figure["weeks"] < 4
+    # Over 4 weeks of games, the figure is the mean of (y - ŷ)² - y².
+    forecast = float(np.log(0.52 / 0.48)) - np.log(
+        with_close["p_decision"] / (1 - with_close["p_decision"])
+    )
+    frame = with_close.with_columns(d_challenger=forecast)
+    weeks = pl.concat(
+        [frame.with_columns(pl.col("game_date") + timedelta(weeks=k)) for k in range(4)]
+    )
+    y, y_hat = weeks["move"].to_numpy(), weeks["d_challenger"].to_numpy()
+    measured = lr._move_figures(weeks)["difference"]
+    assert measured["mean"] == pytest.approx(np.mean((y - y_hat) ** 2 - y**2))
+    # Its shadow bets: the policy's own, kept where its forecast close clears their price. A
+    # forecast far above any price keeps every home bet and no away bet.
+    own = shadow.valued(shadow.selected(started, "p_blend"), moves)
+    assert own.filter(pl.col("side") == "home").height > 0
+    assert own.filter(pl.col("side") == "away").height > 0
+    high = season.report(odds=odds, challenger_outputs=outputs(pl.lit(0.99)))
+    kept = high["challengers"]["challengers"]["close_model/1"]["shadow"]["bets"]
+    assert kept == own.filter(pl.col("side") == "home").height
+    low = season.report(odds=odds, challenger_outputs=outputs(pl.lit(0.01)))
+    assert low["challengers"]["challengers"]["close_model/1"]["shadow"]["bets"] == (
+        own.filter(pl.col("side") == "away").height
+    )
+    text = lr.markdown(result)
+    assert "- Its forecast of the move to the close, squared error less no move's" in text
+    assert "- The policy's own bets its forecast close clears, with a close: " in text
