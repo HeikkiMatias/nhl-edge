@@ -160,6 +160,7 @@ class Season:
             unfinished_bundles=changes.pop("unfinished_bundles", None),
             goalie_spreads=changes.pop("goalie_spreads", None),
             dailyfaceoff=changes.pop("dailyfaceoff", None),
+            scale_up=changes.pop("scale_up", None),
         )
 
 
@@ -1359,3 +1360,39 @@ def test_the_selected_bets_split_scores_each_game_on_its_side_from_four_weeks() 
     assert section["price"]["favourites"]["games"] == 180
     assert section["price"]["underdogs"] == {"games": 0, "weeks": 0}
     assert section["u"]["u below its training mean"]["games"] == 60
+
+
+def test_the_scale_up_section_shows_counts_and_the_reading_date_only() -> None:
+    # ADR 0047 (#322): the CLV figures and the verdict are Kalshi's fills, kept private (#280).
+    from nhl_edge.betting.selection import POLICY_V1
+    from nhl_edge.live import scale_up as su
+
+    season = Season(n_weeks=2)
+    assert season.report()["scale_up"] is None
+    assert "## Scale-up (ADR 0047)" not in lr.markdown(season.report())
+    sample = {"fills": 30, "weeks": 5, "started": 28, "valued": 26, "coverage": 26 / 28}
+    counts = {
+        "reading_date": "2027-02-08",
+        "read": False,
+        "weeks_needed": su.WEEKS,
+        "coverage_needed": su.COVERAGE,
+        "samples": {
+            "taker": sample,
+            "maker": sample | {"fills": 0, "weeks": 0, "started": 0, "valued": 0, "coverage": None},
+        },
+    }
+    text = lr.markdown(season.report(scale_up=counts))
+    assert "## Scale-up (ADR 0047)" in text
+    assert "- Reading: read once, on 2027-02-08." in text
+    assert "- Taker fills: 30 over 5 weeks; 26 of 28 of started games with a reference" in text
+    assert "(93%)" in text and "(none yet)" in text
+    assert "over at least 12 weeks of fills with at least 90% of them referenced" in text
+    read = lr.markdown(season.report(scale_up=counts | {"read": True}))
+    assert "- Reading: read on 2027-02-08, at the weekly report's clock." in read
+    first = counts | {"reading_date": None}
+    assert "no real fill yet: it is read on the Monday 12 weeks after" in lr.markdown(
+        season.report(scale_up=first)
+    )
+    # An earlier policy's report doesn't carry it.
+    older = season.ledger.with_columns(policy_version=pl.lit(POLICY_V1))
+    assert season.report(ledger=older, policy=POLICY_V1, scale_up=counts)["scale_up"] is None

@@ -3307,31 +3307,38 @@ def live_report(
         spreads = lc.sync_spreads(store)
         # ADR 0039's start rule reads whether every decision day's run bundle is complete.
         unfinished = lb.unfinished(store, sorted(set(ledger["game_date"].to_list())))
+        real_record = store
     else:
         ledger = lake.read("paper_ledger", seasons=[blend_fit.LIVE_SEASON])
         outputs = lake.read("challenger_predictions")
         spreads = lake.read("goalie_spreads")
         unfinished = None
+        real_record = None
     paths = sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
     if len(paths) != 1:
         typer.echo(f"expected the season's one live fit, found {len(paths)}", err=True)
         raise typer.Exit(code=1)
     scale = next(iter(json.loads(paths[0].read_text())["fits"].values()))["u_scale"]
     games = lake.read("games")
+    odds = lake.read("odds_snapshots")
+    now = datetime.now(UTC)
+    # ADR 0047's scale-up section counts the real fills, never their figures (#280).
+    scale_up = _scale_up_counts(real_record, odds, now) if real_record is not None else None
     result = lr.report(
         ledger,
         lake.read("paper_settlements"),
         games,
-        lake.read("odds_snapshots"),
+        odds,
         lr.sbr_history(lake.read("sbr_odds"), games),
         scale,
         day,
         policy or POLICY_VERSION,
-        now=datetime.now(UTC),
+        now=now,
         challenger_outputs=outputs,
         unfinished_bundles=unfinished,
         goalie_spreads=spreads,
         dailyfaceoff=lake.read("dailyfaceoff_goalies", seasons=[blend_fit.LIVE_SEASON]),
+        scale_up=scale_up,
     )
     json_path, md_path = lr.write(result, out)
     if supabase:
@@ -3347,6 +3354,22 @@ def live_report(
         f"{cover['with_proxy']} of {cover['eligible']} eligible with a closing proxy"
     )
     typer.echo(f"wrote {md_path} and {json_path}")
+
+
+def _scale_up_counts(store: Any, odds: Any, now: datetime) -> dict[str, Any]:
+    """ADR 0047's public counts from the live exchange's real fills (#322): the reading date and
+    each fill type's sample, never a price, a cost or a CLV."""
+    from nhl_edge.live import fills as lf
+    from nhl_edge.live import kalshi_trade as kt
+    from nhl_edge.live import real_ledger as rl
+    from nhl_edge.live import scale_up as su
+
+    found = lf.fills(store, kt.LIVE)
+    if found.is_empty():
+        return su.public(su.empty(), found, now)
+    teams = rl.alerts(store).select("game_id", "home", "away").unique("game_id")
+    rows = lf.referenced(found, lf.references(odds, now), teams, now)
+    return su.public(rows, found, now)
 
 
 @live_app.command("slate")
@@ -5591,8 +5614,10 @@ def real_fills(
     """Value each environment's Kalshi fills against the close (#318, ADR 0040): a taker or maker
     part of an order gets CLV only from its fills observed before its game's Pinnacle proxy; a
     fill at or after the proxy, or of a game without one, is counted apart, never valued against
-    an earlier quote. The figures, with their weekly block bootstrap intervals, go privately to
-    the record's store beside the orders (#280); the log prints counts only."""
+    an earlier quote. The live exchange's figures also carry ADR 0047's scale-up reading (#322):
+    its figures as context before the reading's clock, then the reading, taken once as of that
+    clock and kept beside the orders. The figures, with their weekly block bootstrap intervals,
+    go privately to the record's store beside the orders (#280); the log prints counts only."""
     import json
     from datetime import UTC
 
@@ -5600,6 +5625,7 @@ def real_fills(
     from nhl_edge.live import fills as lf
     from nhl_edge.live import kalshi_trade as kt
     from nhl_edge.live import real_ledger as rl
+    from nhl_edge.live import scale_up as su
 
     now = datetime.now(UTC)
     version = reports.version("real-fills", now)
@@ -5619,10 +5645,21 @@ def real_fills(
         if refs is None:
             raise typer.BadParameter("no odds snapshots in the lake: pass --r2 to pull them")
         rows = lf.referenced(found, refs, teams, now)
-        figures = {"env": env, "as_of_utc": now.isoformat(), "code_version": version}
+        figures: dict[str, Any] = {
+            "env": env,
+            "as_of_utc": now.isoformat(),
+            "code_version": version,
+        }
         figures |= lf.summary(rows)
+        scale_up = None
+        if env == kt.LIVE:
+            stopped = rl.stopped_days(store)
+            scale_up = su.private(store, found, rows, odds, teams, stopped, now)
+            figures["scale_up"] = scale_up
         store.put(lf.report_key(env, now), json.dumps(figures, sort_keys=True).encode())
         typer.echo(lf.count_line(env, rows))
+        if scale_up is not None:
+            typer.echo(su.count_line(scale_up))
 
 
 @real_app.command("shadow")
