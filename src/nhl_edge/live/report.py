@@ -41,7 +41,9 @@ It covers the frozen policy's regular-season paper decisions (ADR 0032):
 - **Challengers (ADR 0038),** with no verdict: every registered challenger over the decision days
   after its registration (live/challengers.py), against the blend and B1 by paired log loss, and
   against its baseline challenger when its ADR names one; its shadow bets under the frozen rules,
-  and its disagreement against the move to the close.
+  and its disagreement against the move to the close. At the formal review only, each
+  candidate's primary measure gets its bootstrap p-value, and Holm's step-down over every
+  candidate says which are candidates for a policy (ADR 0048).
 - **Real stakes (ADR 0039, #267):** the start rule's conditions and verdict, with the paper
   bankroll that its owner's veto reads, and the weekly CLV stop (live/real.py). The frozen
   policy's report only.
@@ -72,8 +74,10 @@ from nhl_edge.backtest.metrics import (
     bootstrap,
     calibration_draws,
     difference,
+    holm,
     interval,
     log_loss,
+    p_value,
     slope,
     week_of,
 )
@@ -697,12 +701,22 @@ def shadows(
     }
 
 
+def _paired(frame: pl.DataFrame, formal: bool) -> dict[str, Any]:
+    """A challenger's paired difference with its interval, and at the formal review, once it has
+    one, its two-sided p-value from the same weekly block bootstrap (ADR 0048)."""
+    figure = estimate(frame, "difference")
+    if formal and enough(frame):
+        figure["p_value"] = p_value(frame, "difference")
+    return figure
+
+
 def _challenger_figures(
     own: pl.DataFrame,
     started: pl.DataFrame,
     scored: pl.DataFrame,
     moves: pl.DataFrame,
     forecasts: str = lc.RESULT,
+    formal: bool = False,
 ) -> dict[str, Any]:
     """A challenger's figures over its outputs own: paired log loss against the blend and B1 on
     the games with a result, the shadow bets the frozen rules would make on it with a close
@@ -721,7 +735,7 @@ def _challenger_figures(
             - log_loss(pl.col(column), pl.col("home_win"))
         )
         compared[name] = {
-            "difference": estimate(paired, "difference"),
+            "difference": _paired(paired, formal),
             "left_out": with_p.height - both.height,
         }
     if forecasts == lc.CLOSE:
@@ -750,11 +764,11 @@ def _challenger_figures(
         "toward_close": _toward(moved, "d_challenger"),
     }
     if forecasts == lc.CLOSE:
-        figures["move"] = _move_figures(moved)
+        figures[lc.MOVE] = _move_figures(moved, formal)
     return figures
 
 
-def _move_figures(moved: pl.DataFrame) -> dict[str, Any]:
+def _move_figures(moved: pl.DataFrame, formal: bool = False) -> dict[str, Any]:
     """The primary measure of a challenger that forecasts the close (ADR 0049), over the games
     with one: (y - ŷ)² - y², y the move to the close and ŷ the forecast's (d_challenger), both in
     the home side's log-odds. Its forecast's squared error less that of "no move": negative
@@ -762,7 +776,7 @@ def _move_figures(moved: pl.DataFrame) -> dict[str, Any]:
     frame = moved.with_columns(
         difference=(pl.col("move") - pl.col("d_challenger")) ** 2 - pl.col("move") ** 2
     )
-    return {"difference": estimate(frame, "difference")}
+    return {"difference": _paired(frame, formal)}
 
 
 def _against_baseline(
@@ -771,6 +785,7 @@ def _against_baseline(
     name: str,
     scored: pl.DataFrame,
     spreads: pl.DataFrame | None,
+    formal: bool = False,
 ) -> dict[str, Any]:
     """A challenger's paired log loss against its baseline challenger's outputs (ADR 0042) on
     the games both predicted with a result, and on those of them with a goalie spread above 0
@@ -784,12 +799,12 @@ def _against_baseline(
         - log_loss(pl.col("p_baseline"), pl.col("home_win"))
     )
     left_out = with_p.height - paired.height
-    result = {name: {"difference": estimate(paired, "difference"), "left_out": left_out}}
+    result = {name: {"difference": _paired(paired, formal), "left_out": left_out}}
     if spreads is not None:
         spread = spreads.filter(pl.col("goalie_spread") > 0).select(keys)
         within = paired.join(spread, on=keys, how="semi")
         result[f"{name}, goalie spread above 0"] = {
-            "difference": estimate(within, "difference"),
+            "difference": _paired(within, formal),
             "left_out": with_p.join(spread, on=keys, how="semi").height - within.height,
         }
     return result
@@ -804,6 +819,7 @@ def challengers(
     registry: tuple[lc.Challenger, ...],
     now: datetime,
     spreads: pl.DataFrame | None = None,
+    formal: bool = False,
 ) -> dict[str, Any]:
     """Every registered challenger, by name and version, over the counted games of the decision
     days after its registration (ADR 0038), with no verdict, failures included: its days and
@@ -813,7 +829,8 @@ def challengers(
     the next UTC day by the report's clock now, since the nightly scores it the night after its
     decision. A challenger with a baseline is also paired with it (_against_baseline), and on the
     goalie spreads (goalie_spreads) when they are given and it reads them, unless the baseline's
-    own outputs are missing for some of those days."""
+    own outputs are missing for some of those days. At the formal review (formal), the review
+    tests every candidate's primary measure under Holm's step-down (review, ADR 0048)."""
     keys = ["game_date", "game_id"]
 
     def pending(day: date) -> bool:
@@ -850,7 +867,7 @@ def challengers(
             entry["latest_fit"] = json.loads(fits["fit"][-1])
         if not missing:
             entry["forecasts"] = challenger.forecasts
-            entry |= _challenger_figures(own, started, scored, moves, challenger.forecasts)
+            entry |= _challenger_figures(own, started, scored, moves, challenger.forecasts, formal)
             baseline = lc.empty()
             if challenger.baseline in lc.LEDGER_BASELINES:
                 # A ledger model (ADR 0044): the day's own column, never missing a day.
@@ -872,10 +889,45 @@ def challengers(
                 # The goalie-spread subset is the measure of a challenger that reads them.
                 subset = spreads if "goalie_spreads" in challenger.reads else None
                 entry["comparisons"] |= _against_baseline(
-                    own, baseline, challenger.baseline, scored, subset
+                    own, baseline, challenger.baseline, scored, subset, formal
                 )
         result[f"{challenger.name}/{challenger.version}"] = entry
-    return {"registered": len(registry), "challengers": result}
+    section: dict[str, Any] = {"registered": len(registry), "challengers": result}
+    if formal:
+        section["review"] = review(result, registry)
+    return section
+
+
+# The review's family-wise level for the challengers (ADR 0048).
+REVIEW_ALPHA = 0.05
+
+
+def _primary(entry: dict[str, Any], primary: str) -> dict[str, Any] | None:
+    """A challenger's primary measure's figure from its entry, None when withheld."""
+    if primary == lc.MOVE:
+        return (entry.get(lc.MOVE) or {}).get("difference")
+    return (entry.get("comparisons") or {}).get(primary, {}).get("difference")
+
+
+def review(entries: dict[str, Any], registry: tuple[lc.Challenger, ...]) -> dict[str, Any]:
+    """ADR 0048 at the formal review: Holm's step-down at family-wise REVIEW_ALPHA over every
+    registered challenger with a primary measure, the control (market_only) aside. A challenger
+    whose measure is withheld or has no interval yet counts in the family with p = 1, so it can't
+    pass, nor be dropped to ease the others. One that passes is a candidate only if its
+    difference favours it (below 0)."""
+    family: dict[str, float] = {}
+    figures: dict[str, dict[str, Any] | None] = {}
+    for challenger in registry:
+        if challenger.primary is None:
+            continue
+        name = f"{challenger.name}/{challenger.version}"
+        figures[name] = _primary(entries[name], challenger.primary)
+        family[name] = (figures[name] or {}).get("p_value", 1.0)
+    tested = holm(family, REVIEW_ALPHA)
+    for name, result in tested.items():
+        favours = figures[name] is not None and figures[name].get("mean", 0.0) < 0  # type: ignore[union-attr]
+        result |= {"favours": favours, "candidate": result["passes"] and favours}
+    return {"family": len(family), "alpha": REVIEW_ALPHA, "challengers": tested}
 
 
 def real_stakes(
@@ -1050,6 +1102,7 @@ def report(
             lc.REGISTRY,
             now,
             goalie_spreads,
+            formal,
         ),
         "verdicts": {
             "closing_value": INTERIM
@@ -1639,6 +1692,35 @@ def _challenger_lines(section: dict[str, Any]) -> list[str]:
                 f"{len(days)} decision days ({', '.join(days)}), so the pairing would be on games "
                 "its failures chose."
             )
+    if "review" in section:
+        lines += _review_lines(section["review"])
+    return lines
+
+
+def _review_lines(review: dict[str, Any]) -> list[str]:
+    """ADR 0048's step-down at the formal review as markdown lines, in rank order."""
+    lines = [
+        "",
+        f"**The review's test (ADR 0048):** Holm's step-down over the {review['family']} "
+        f"registered candidates at family-wise {review['alpha']:.0%}, each on its primary "
+        "measure's two-sided p-value from its own weekly block bootstrap. A measure withheld or "
+        "without an interval counts with p = 1. A candidate passes and its difference favours "
+        "it; it enters a policy only through a new version, its ADR, its freeze and the owner's "
+        "decision.",
+        "",
+    ]
+    for name, result in sorted(review["challengers"].items(), key=lambda item: item[1]["rank"]):
+        outcome = (
+            "a candidate"
+            if result["candidate"]
+            else "passes, but its difference doesn't favour it"
+            if result["passes"]
+            else "does not pass"
+        )
+        lines.append(
+            f"- {name}: p = {result['p_value']:.4f}, threshold {result['threshold']:.4f}: "
+            f"{outcome}."
+        )
     return lines
 
 

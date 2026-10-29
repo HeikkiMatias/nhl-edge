@@ -53,6 +53,8 @@ from nhl_edge.market.recalibration import logit, sigmoid
 PREFIX = "challengers/live"
 # What a challenger's probability forecasts (Challenger.forecasts).
 RESULT, CLOSE = "result", "close"
+# The primary measure of a challenger that forecasts the close: its move figure (ADR 0049).
+MOVE = "move"
 # A ledger model a challenger may be paired with, by its column (ADR 0044).
 LEDGER_BASELINES = {"B3": "p_b3"}
 PREDICTED = lp.PREDICTED
@@ -179,6 +181,10 @@ class Challenger:
     # What its probability forecasts: the result (RESULT), or Pinnacle's close (CLOSE, ADR 0049),
     # which the report scores on the move to the close.
     forecasts: str = RESULT
+    # Its primary measure as its ADR fixes it (ADR 0038 rule 4), the review's test (ADR 0048):
+    # its paired log loss against "BLEND" or its baseline (a name/version, or a ledger model),
+    # or its MOVE figure. None for the mechanism's control, which is no candidate.
+    primary: str | None = None
 
     def __post_init__(self) -> None:
         unread = sorted(set(self.reads) - set(READERS))
@@ -832,6 +838,7 @@ REGISTRY: tuple[Challenger, ...] = (
         registered_on=date(2026, 10, 22),
         reads=("paper_ledger", "games"),
         predict=_conservative_blend,
+        primary="BLEND",
     ),
     Challenger(
         name="goalie_spread_blend",
@@ -841,6 +848,7 @@ REGISTRY: tuple[Challenger, ...] = (
         reads=("paper_ledger", "games", "goalie_spreads"),
         predict=_goalie_spread_blend,
         baseline="conservative_blend/1",
+        primary="conservative_blend/1",
     ),
     Challenger(
         name="team_residual_blend",
@@ -850,6 +858,7 @@ REGISTRY: tuple[Challenger, ...] = (
         reads=("paper_ledger", "games"),
         predict=_team_residual_blend,
         baseline="conservative_blend/1",
+        primary="conservative_blend/1",
     ),
     Challenger(
         name="b3_split",
@@ -859,6 +868,7 @@ REGISTRY: tuple[Challenger, ...] = (
         reads=(),
         predict=_b3_split,
         baseline="B3",
+        primary="B3",
     ),
     Challenger(
         name="close_model",
@@ -869,6 +879,7 @@ REGISTRY: tuple[Challenger, ...] = (
         reads=("paper_ledger", "odds_snapshots"),
         predict=_close_model,
         forecasts=CLOSE,
+        primary=MOVE,
     ),
 )
 

@@ -1056,3 +1056,22 @@ def test_close_model_forecasts_the_close_and_is_registered_as_its_adr_says() -> 
     assert registered.forecasts == lc.CLOSE and registered.baseline is None
     assert set(registered.reads) == {"paper_ledger", "odds_snapshots"}
     assert all(c.forecasts == lc.RESULT for c in lc.REGISTRY[:5])
+
+
+def test_every_candidate_names_the_primary_measure_its_adr_fixes() -> None:
+    # ADR 0048's family: every registered challenger but the mechanism's control, each tested on
+    # the primary measure its ADR fixed (ADR 0038 rule 4), and one the report computes for it.
+    primaries = {c.name: c.primary for c in lc.REGISTRY}
+    assert primaries == {
+        "market_only": None,
+        "conservative_blend": "BLEND",  # ADR 0041
+        "goalie_spread_blend": "conservative_blend/1",  # ADR 0042
+        "team_residual_blend": "conservative_blend/1",  # ADR 0043
+        "b3_split": "B3",  # ADR 0044
+        "close_model": lc.MOVE,  # ADR 0049
+    }
+    for challenger in lc.REGISTRY:
+        if challenger.primary == lc.MOVE:
+            assert challenger.forecasts == lc.CLOSE
+        elif challenger.primary not in (None, "BLEND", "B1"):
+            assert challenger.primary == challenger.baseline

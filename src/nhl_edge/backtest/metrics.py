@@ -6,10 +6,11 @@ Weeks are drawn within each season, so a pooled interval keeps each season's wei
 is the 2.5th to 97.5th percentile of the resampled means.
 
 The same resampling gives an interval for a difference between two independent groups of games,
-such as two eras of seasons.
+such as two eras of seasons, and a two-sided p-value for a mean against 0, which Holm's step-down
+adjusts over a family of tests (ADR 0048).
 """
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -113,6 +114,30 @@ def bootstrap(frame: pl.DataFrame, value: str, draws: int = DRAWS, seed: int = S
         games=frame.height,
         weeks=_weeks(frame).height,
     )
+
+
+def p_value(frame: pl.DataFrame, value: str, draws: int = DRAWS, seed: int = SEED) -> float:
+    """The two-sided p-value of value's mean against 0 from the same weekly block bootstrap that
+    gives its interval (bootstrap, ADR 0048): twice the smaller of the shares of the resampled
+    means at or below 0 and at or above 0, at most 1."""
+    means = resampled_means(frame, value, np.random.default_rng(seed), draws)
+    return float(min(1.0, 2 * min(np.mean(means <= 0), np.mean(means >= 0))))
+
+
+def holm(p_values: Mapping[str, float], alpha: float = 0.05) -> dict[str, dict[str, Any]]:
+    """Holm's step-down over the family p_values at family-wise alpha (ADR 0048): sorted from the
+    smallest, the k-th passes if it and every one before it is at most alpha / (m - k + 1). It
+    holds the chance of any false pass to alpha under any dependence between the tests. Each
+    name's p-value, rank, threshold and whether it passes; ties are ranked by name."""
+    m = len(p_values)
+    result: dict[str, dict[str, Any]] = {}
+    passing = True
+    ordered = sorted(p_values.items(), key=lambda item: (item[1], item[0]))
+    for rank, (name, p) in enumerate(ordered, start=1):
+        threshold = alpha / (m - rank + 1)
+        passing = passing and p <= threshold
+        result[name] = {"p_value": p, "rank": rank, "threshold": threshold, "passes": passing}
+    return result
 
 
 def slope(frame: pl.DataFrame, x: str, y: str, draws: int = DRAWS, seed: int = SEED) -> Interval:
