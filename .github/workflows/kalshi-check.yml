@@ -17,7 +17,9 @@ permissions:
   contents: read
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # The Kalshi runner the repository variable KALSHI_RUNNER names, so the check proves the
+    # order path from where the orders go (#347).
+    runs-on: ${{ vars.KALSHI_RUNNER == 'self-hosted' && fromJSON('["self-hosted", "kalshi"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     # The live Kalshi key is the kalshi-live environment's secret, which the owner restricts to
     # main (#294): a workflow pushed on any other branch can't read it.

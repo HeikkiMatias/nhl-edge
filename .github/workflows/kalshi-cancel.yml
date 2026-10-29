@@ -4,15 +4,23 @@ name: kalshi-cancel
 # Set the repository variable KALSHI_TRADING to off first, so the next odds slot places nothing;
 # that slot's run would cancel them too, but this one doesn't wait for it. It has its own
 # concurrency group, so a running odds job doesn't hold it back, and it sweeps twice for an order
-# such a job sends meanwhile. The log shows counts only.
+# such a job sends meanwhile. The log shows counts only. It runs on the Kalshi runner the
+# repository variable KALSHI_RUNNER names (#347), or on GitHub's when the owner picks it because
+# that machine is down; Kalshi's own site cancels by hand too.
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: The Kalshi runner, or GitHub's if that machine is down
+        type: choice
+        options: [kalshi, github]
+        default: kalshi
 concurrency: kalshi-cancel
 permissions:
   contents: read
 jobs:
   cancel:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner != 'github' && vars.KALSHI_RUNNER == 'self-hosted' && fromJSON('["self-hosted", "kalshi"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     # The live Kalshi key is the kalshi-live environment's secret, which the owner restricts to
     # main (#294): a workflow pushed on any other branch can't read it.
