@@ -618,7 +618,7 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - **The scale-up reading** (ADR 0047, #322, `live/scale_up.py`), in the live exchange's figures only:
     - **Its date:** the Monday 12 weeks after the Monday of the first real fill's week. Its clock is the weekly report's, once Sunday's results are public (10:00 UTC).
     - **Before the clock:** each fill type's weeks of fills, coverage and CLV per bid as context, with no verdict.
-    - **From the clock:** the reading, taken as of the clock whenever the run comes. It reads only the fills observed before the clock, the references public by it and the stops alerted before the day.
+    - **From the clock:** the reading, taken as of the clock whenever the run comes. It reads only the fills observed before the clock, the references from the quotes observed before it and the stops alerted before the day. It waits until every live order of a game started before the clock has its final record, so no fill is left out; until then the run and the weekly report say it is due.
     - **Each fill type passes** with at least 12 weeks of fills, at least 90% of its fills of started games valued, CLV per bid with its interval's lower bound above 0, and no stop. The reading is written once to `real/live/scale-up/<date>.json` and repeated after, never read again.
     - **The weekly report** shows only the reading date and each fill type's counts. The log shows the date and the weeks.
   - Point in time: `tests/leakage/test_fill_reference.py`.

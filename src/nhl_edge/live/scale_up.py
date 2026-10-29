@@ -10,8 +10,9 @@ The rule, accepted by the owner on 2026-10-29 before any real fill:
 - no stop has fired since the start (ADR 0039 item 5);
 - it is read once, at the weekly report on the Monday WEEKS weeks after the Monday of the first
   real fill's week, on the fills and references public at that report's clock: the moment
-  Sunday's results are public. The reading is taken as of that clock whenever it runs, written
-  once, and repeated after; no earlier run states a verdict, and none later reads again.
+  Sunday's results are public. The reading is taken as of that clock whenever it runs, once
+  every live order of a game started before it has its fills recorded, written once, and
+  repeated after; no earlier run states a verdict, and none later reads again.
 
 A pass permits the owner to grow the real bankroll, up to the code's ceiling
 (placement.CEILING_BANKROLL); it never grows it. The figures are Kalshi's fills, so they and the
@@ -109,10 +110,12 @@ def take(
     day: date,
 ) -> dict[str, Any]:
     """The reading of day, as of its clock: only the fills observed before it, the references
-    public by it, and the stops alerted before the day."""
+    from the quotes observed before it, and the stops alerted before the day. A later quote, one
+    moving a game's start included, never changes it (Codex on #351)."""
     at = clock(day)
     before = found.filter(pl.col("fill_utc") < pl.lit(at, dtype=lf.FILL_SCHEMA["fill_utc"]))
-    rows = lf.referenced(before, lf.references(odds, at), teams, at) if before.height else empty()
+    known = odds.filter(pl.col("snapshot_utc") < at)
+    rows = lf.referenced(before, lf.references(known, at), teams, at) if before.height else empty()
     stops = sorted(each for each in stopped_days if each < day)
     found_figures = figures(rows)
     result: dict[str, Any] = {
@@ -137,6 +140,25 @@ def reading_key(day: date) -> str:
     return f"{placement.PREFIXES[placement.LIVE]}/scale-up/{day.isoformat()}.json"
 
 
+def sealed(store: lb.Store, found: pl.DataFrame) -> bool:
+    """Whether the live exchange's reading has been taken and kept."""
+    day = reading_date(found)
+    scale_up = f"{placement.PREFIXES[placement.LIVE]}/scale-up"
+    return day is not None and reading_key(day) in store.keys(scale_up)
+
+
+def unfinished(store: lb.Store, at: datetime) -> int:
+    """The live orders of games started before at without their final record yet: their fills
+    aren't all recorded, so a reading at at waits for them (Codex on #351)."""
+    return sum(
+        1
+        for record in placement.stored_orders(store, placement.LIVE).values()
+        if "order" in record
+        and "final" not in record
+        and datetime.fromisoformat(record["order"]["start_utc"]) < at
+    )
+
+
 def private(
     store: lb.Store,
     found: pl.DataFrame,
@@ -147,27 +169,42 @@ def private(
     now: datetime,
 ) -> dict[str, Any]:
     """The live exchange's scale-up block for the private fill report: before the reading's
-    clock, the figures now as context, with no verdict; from it, the reading, taken once and
-    written beside the orders, then read back. rows are found referenced now."""
+    clock, the figures now as context, with no verdict; from it, once every live order of a game
+    started before the clock has its final record (unfinished), the reading, taken once and
+    written beside the orders, then read back. Until then the figures now as context again, with
+    the orders waited for. rows are found referenced now."""
     day = reading_date(found)
     if day is None:
         return {"reading_date": None}
-    if now < clock(day):
+    at = clock(day)
+    if now < at:
         return {"reading_date": day.isoformat(), "read": False, "context": figures(rows)}
     key = reading_key(day)
-    if key not in store.keys(f"{placement.PREFIXES[placement.LIVE]}/scale-up"):
+    if not sealed(store, found):
+        waiting = unfinished(store, at)
+        if waiting:
+            return {
+                "reading_date": day.isoformat(),
+                "read": False,
+                "waiting": waiting,
+                "context": figures(rows),
+            }
         taken = take(found, odds, teams, stopped_days, day)
         lb.put_once(store, key, json.dumps(taken, sort_keys=True).encode())
     return {"reading_date": day.isoformat(), "read": True} | json.loads(store.get(key))
 
 
-def public(rows: pl.DataFrame, found: pl.DataFrame, now: datetime) -> dict[str, Any]:
-    """The weekly report's scale-up section: the reading date, whether its clock has passed, and
-    each fill type's sample now, counts only. Never a CLV figure or the verdict (#280)."""
+def public(
+    rows: pl.DataFrame, found: pl.DataFrame, now: datetime, read: bool = False
+) -> dict[str, Any]:
+    """The weekly report's scale-up section: the reading date, whether its clock has passed (due)
+    and whether the reading has been taken (read, sealed), and each fill type's sample now,
+    counts only. Never a CLV figure or the verdict (#280)."""
     day = reading_date(found)
     return {
         "reading_date": day.isoformat() if day is not None else None,
-        "read": day is not None and now >= clock(day),
+        "due": day is not None and now >= clock(day),
+        "read": read,
         "weeks_needed": WEEKS,
         "coverage_needed": COVERAGE,
         "samples": samples(rows),
@@ -180,5 +217,11 @@ def count_line(block: dict[str, Any]) -> str:
         return "real fills live: scale-up (ADR 0047) waits for a first fill"
     sample = block if block["read"] else block["context"]
     weeks = ", ".join(f"{kind} {sample[kind]['weeks']} weeks" for kind in KINDS)
-    state = "read" if block["read"] else "reads"
+    state = (
+        "read"
+        if block["read"]
+        else f"due, waiting for {block['waiting']} orders' fills,"
+        if "waiting" in block
+        else "reads"
+    )
     return f"real fills live: scale-up (ADR 0047) {state} on {block['reading_date']}; {weeks}"

@@ -34,7 +34,14 @@ def test_nothing_observed_at_or_after_the_clock_changes_the_reading(tmp_path: Pa
         start_utc=pl.lit(at + timedelta(hours=13), dtype=lf.FILL_SCHEMA["start_utc"]),
         fill_utc=pl.lit(at, dtype=lf.FILL_SCHEMA["fill_utc"]),
     )
-    # Pinnacle quoting the game again after the clock is no reference either.
+    # Pinnacle quoting the game again after the clock is no reference either, nor does a quote
+    # after the clock moving the game's start past it take its reference away (Codex on #351).
+    moved = ff.odds(ff.PROXY, at + timedelta(hours=1)).with_columns(
+        commence_time_utc=pl.when(pl.col("snapshot_utc") > at)
+        .then(pl.lit(at + timedelta(days=2), dtype=pl.Datetime("us", "UTC")))
+        .otherwise("commence_time_utc")
+    )
+    assert su.take(found, moved, ff.TEAMS, [], day) == taken
     odds = ff.odds(ff.PROXY, at, at + timedelta(days=1))
     # A stop alerted on the reading day or after it isn't one before the reading.
     stops = [day, day + timedelta(days=3)]

@@ -3369,7 +3369,7 @@ def _scale_up_counts(store: Any, odds: Any, now: datetime) -> dict[str, Any]:
         return su.public(su.empty(), found, now)
     teams = rl.alerts(store).select("game_id", "home", "away").unique("game_id")
     rows = lf.referenced(found, lf.references(odds, now), teams, now)
-    return su.public(rows, found, now)
+    return su.public(rows, found, now, su.sealed(store, found))
 
 
 @live_app.command("slate")

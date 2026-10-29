@@ -1373,6 +1373,7 @@ def test_the_scale_up_section_shows_counts_and_the_reading_date_only() -> None:
     sample = {"fills": 30, "weeks": 5, "started": 28, "valued": 26, "coverage": 26 / 28}
     counts = {
         "reading_date": "2027-02-08",
+        "due": False,
         "read": False,
         "weeks_needed": su.WEEKS,
         "coverage_needed": su.COVERAGE,
@@ -1387,8 +1388,11 @@ def test_the_scale_up_section_shows_counts_and_the_reading_date_only() -> None:
     assert "- Taker fills: 30 over 5 weeks; 26 of 28 of started games with a reference" in text
     assert "(93%)" in text and "(none yet)" in text
     assert "over at least 12 weeks of fills with at least 90% of them referenced" in text
-    read = lr.markdown(season.report(scale_up=counts | {"read": True}))
+    read = lr.markdown(season.report(scale_up=counts | {"due": True, "read": True}))
     assert "- Reading: read on 2027-02-08, at the weekly report's clock." in read
+    # Due, but an order of a game before the clock has no fills recorded yet (Codex on #351).
+    due = lr.markdown(season.report(scale_up=counts | {"due": True}))
+    assert "- Reading: due on 2027-02-08: it is taken once every order of a game before" in due
     first = counts | {"reading_date": None}
     assert "no real fill yet: it is read on the Monday 12 weeks after" in lr.markdown(
         season.report(scale_up=first)

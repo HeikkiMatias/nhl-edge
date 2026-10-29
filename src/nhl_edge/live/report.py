@@ -1507,6 +1507,9 @@ def _scale_up_lines(section: dict[str, Any] | None) -> list[str]:
         if day is None
         else f"read on {day}, at the weekly report's clock"
         if section["read"]
+        else f"due on {day}: it is taken once every order of a game before its clock has its "
+        "fills recorded"
+        if section["due"]
         else f"read once, on {day}"
     )
     lines = [

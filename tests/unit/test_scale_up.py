@@ -16,6 +16,8 @@ from nhl_edge.market import closing
 FIRST = date(2026, 11, 18)  # a Wednesday: its week's Monday is 2026-11-16
 READING = date(2027, 2, 8)
 CLOCK = datetime(2027, 2, 8, 10, tzinfo=UTC)
+# The lake's odds, unread: the fixture below gives the references.
+NO_ODDS = pl.DataFrame(schema={"snapshot_utc": pl.Datetime("us", "UTC")})
 
 
 def found(
@@ -128,12 +130,12 @@ def test_the_reading_is_taken_as_of_its_clock(references: dict[str, float]) -> N
     # Fills after the clock aren't read, and a stop alerted on the reading day itself isn't one
     # before it.
     fills = found(13)
-    taken = su.take(fills, pl.DataFrame(), pl.DataFrame(), [READING], READING)
+    taken = su.take(fills, NO_ODDS, pl.DataFrame(), [READING], READING)
     assert taken["clock_utc"] == CLOCK.isoformat() and taken["stopped"] == []
     in_time = found(13).filter(pl.col("fill_utc") < CLOCK)
     assert taken[lf.TAKER]["fills"] == in_time.height // 2
     assert taken[lf.TAKER]["passes"] and taken[lf.MAKER]["passes"]
-    stopped = su.take(fills, pl.DataFrame(), pl.DataFrame(), [date(2026, 12, 1)], READING)
+    stopped = su.take(fills, NO_ODDS, pl.DataFrame(), [date(2026, 12, 1)], READING)
     assert stopped["stopped"] == ["2026-12-01"]
     assert stopped[lf.TAKER]["failing"] == [su.STOPPED]
 
@@ -144,32 +146,26 @@ def test_the_private_block_has_no_verdict_before_the_clock_then_one_reading_kept
     store = lb.LocalStore(tmp_path)
     fills = found(12)
     before = CLOCK - timedelta(minutes=1)
-    early = su.private(
-        store, fills, referenced(fills, before), pl.DataFrame(), pl.DataFrame(), [], before
-    )
+    early = su.private(store, fills, referenced(fills, before), NO_ODDS, pl.DataFrame(), [], before)
     assert early["reading_date"] == READING.isoformat() and not early["read"]
     assert "passes" not in json.dumps(early) and early["context"][lf.TAKER]["weeks"] == 12
     assert not store.keys("real/live/scale-up")
     # From the clock, the reading is taken once and kept; a later run with a worse close repeats
     # it, never reads again.
-    taken = su.private(
-        store, fills, referenced(fills, CLOCK), pl.DataFrame(), pl.DataFrame(), [], CLOCK
-    )
+    taken = su.private(store, fills, referenced(fills, CLOCK), NO_ODDS, pl.DataFrame(), [], CLOCK)
     assert taken["read"] and taken[lf.TAKER]["passes"]
     assert store.keys("real/live/scale-up") == [su.reading_key(READING)]
     references["p_close_home"] = 0.40
     later = CLOCK + timedelta(days=8)
     again = su.private(
-        store, found(14), referenced(found(14), later), pl.DataFrame(), pl.DataFrame(), [], later
+        store, found(14), referenced(found(14), later), NO_ODDS, pl.DataFrame(), [], later
     )
     assert again == taken
 
 
 def test_without_a_fill_nothing_is_read() -> None:
     store = lb.LocalStore(Path("/nonexistent"))
-    none = su.private(
-        store, found(1).head(0), su.empty(), pl.DataFrame(), pl.DataFrame(), [], CLOCK
-    )
+    none = su.private(store, found(1).head(0), su.empty(), NO_ODDS, pl.DataFrame(), [], CLOCK)
     assert none == {"reading_date": None}
     assert su.count_line(none) == "real fills live: scale-up (ADR 0047) waits for a first fill"
 
@@ -177,7 +173,8 @@ def test_without_a_fill_nothing_is_read() -> None:
 def test_the_public_counts_carry_no_clv_and_no_verdict() -> None:
     fills = found(12)
     counts = su.public(referenced(fills, CLOCK), fills, CLOCK)
-    assert counts["reading_date"] == READING.isoformat() and counts["read"]
+    assert counts["reading_date"] == READING.isoformat() and counts["due"]
+    assert not counts["read"] and su.public(referenced(fills, CLOCK), fills, CLOCK, True)["read"]
     # From Wednesday 2026-11-18 to Sunday 2027-02-07: 82 days in 12 weeks.
     assert counts["samples"][lf.MAKER] == {
         "fills": 82,
@@ -195,11 +192,42 @@ def test_the_log_line_has_counts_only(tmp_path: Path, references: dict[str, floa
     store = lb.LocalStore(tmp_path)
     fills = found(3)
     now = datetime(2026, 12, 7, 12, tzinfo=UTC)
-    block = su.private(
-        store, fills, referenced(fills, now), pl.DataFrame(), pl.DataFrame(), [], now
-    )
+    block = su.private(store, fills, referenced(fills, now), NO_ODDS, pl.DataFrame(), [], now)
     line = su.count_line(block)
     assert (
         line
         == "real fills live: scale-up (ADR 0047) reads on 2027-02-08; taker 3 weeks, maker 3 weeks"
     )
+
+
+def test_the_reading_waits_for_every_order_before_its_clock_to_have_its_fills(
+    tmp_path: Path, references: dict[str, float]
+) -> None:
+    # Codex on #351: an expired order not yet reconciled has fills the reading would leave out.
+    from nhl_edge.live import placement as pm
+
+    store = lb.LocalStore(tmp_path)
+    fills = found(12)
+    begins = datetime(2027, 2, 7, 23, tzinfo=UTC)
+    order = {"game_date": "2027-02-07", "game_id": 2026020999, "start_utc": begins.isoformat()}
+    lb.put_once(
+        store, pm.order_key(pm.LIVE, date(2027, 2, 7), 2026020999, ""), json.dumps(order).encode()
+    )
+    assert su.unfinished(store, CLOCK) == 1
+    waiting = su.private(store, fills, referenced(fills, CLOCK), NO_ODDS, pl.DataFrame(), [], CLOCK)
+    assert not waiting["read"] and waiting["waiting"] == 1 and not su.sealed(store, fills)
+    assert su.count_line(waiting).startswith(
+        "real fills live: scale-up (ADR 0047) due, waiting for 1 orders' fills, on 2027-02-08"
+    )
+    # Once it has its final record, the reading is taken, as of the clock still.
+    final = {"status": "not sent", "reason": "the send failed", "read_utc": CLOCK.isoformat()}
+    lb.put_once(
+        store,
+        pm.order_key(pm.LIVE, date(2027, 2, 7), 2026020999, "final"),
+        json.dumps(final).encode(),
+    )
+    later = CLOCK + timedelta(days=1)
+    taken = su.private(store, fills, referenced(fills, later), NO_ODDS, pl.DataFrame(), [], later)
+    assert taken["read"] and taken["clock_utc"] == CLOCK.isoformat() and su.sealed(store, fills)
+    # An order of a game after the clock never holds it.
+    assert su.unfinished(store, CLOCK) == 0
