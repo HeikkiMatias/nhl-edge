@@ -253,23 +253,26 @@ def _out_of_sample(
     )
 
 
-def estimate(frame: pl.DataFrame, value: str, scale: float = 1.0, digits: int = 5) -> str:
+def shown(interval: metrics.Interval, digits: int = 5, sign: bool = True) -> str:
+    f = f"{{:{'+' if sign else ''}.{digits}f}}"
+    return f"{f.format(interval.value)} [{f.format(interval.low)}, {f.format(interval.high)}]"
+
+
+def estimate(frame: pl.DataFrame, value: str, digits: int = 5) -> str:
     e = metrics.bootstrap(frame, value)
-    f = f"{{:+.{digits}f}}"
-    return f"{f.format(e.mean * scale)} [{f.format(e.low * scale)}, {f.format(e.high * scale)}]"
+    return shown(metrics.Interval(value=e.mean, low=e.low, high=e.high), digits)
 
 
-def ratio(frame: pl.DataFrame, num: str, den: str) -> str:
-    """Σnum / Σden over the frame's games, with a weekly block bootstrap interval."""
+def ratio(frame: pl.DataFrame, num: str, den: str) -> metrics.Interval:
+    """Σnum / Σden over the frame's games, with a weekly block bootstrap interval: each draw
+    divides its resampled weeks' sum of num by their sum of den."""
     rng = np.random.default_rng(metrics.SEED)
     weekly = metrics._weeks(frame, pl.col(num).sum().alias("n"), pl.col(den).sum().alias("d"))
     n, d = np.zeros(metrics.DRAWS), np.zeros(metrics.DRAWS)
     for season, picks in metrics._picks(weekly, metrics.DRAWS, rng):
         n += season["n"].to_numpy()[picks].sum(axis=1)
         d += season["d"].to_numpy()[picks].sum(axis=1)
-    value = float(frame[num].sum()) / float(frame[den].sum())
-    low, high = np.percentile(n / d, [2.5, 97.5])
-    return f"{value:.2f} [{low:.2f}, {high:.2f}]"
+    return metrics.interval(float(frame[num].sum()) / float(frame[den].sum()), n / d)
 
 
 def xg_errors(feature: pl.DataFrame, realized: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
@@ -492,9 +495,8 @@ def report(runs: dict[str, Run], lake: Lake, games: pl.DataFrame, version: str) 
                 ).sum(),
                 den=(pl.col("hours") * (pl.col("run") - pl.col("yhat")) ** 2).sum(),
             )
-            mean_hours = float(per_game["hours"].mean())  # type: ignore[arg-type]
-            errors_.append(estimate(per_game, "d", 1 / mean_hours, 4))
-            slopes.append(ratio(per_game, "num", "den"))
+            errors_.append(shown(ratio(per_game, "d", "hours"), 4))
+            slopes.append(shown(ratio(per_game, "num", "den"), 2, sign=False))
         cells = [estimate(loss, "d"), estimate(error, "d", digits=4), *errors_, *slopes]
         name = f"{LABELS[kind]} minus {'base' if other == BASE else 'a1'}"
         out.append(f"| {name} | {' | '.join(cells)} |")
