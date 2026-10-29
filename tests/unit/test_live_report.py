@@ -160,6 +160,7 @@ class Season:
             unfinished_bundles=changes.pop("unfinished_bundles", None),
             goalie_spreads=changes.pop("goalie_spreads", None),
             dailyfaceoff=changes.pop("dailyfaceoff", None),
+            scale_up=changes.pop("scale_up", None),
         )
 
 
@@ -1467,3 +1468,43 @@ def test_a_challenger_forecasting_the_close_is_scored_on_the_move_to_it(
     text = lr.markdown(result)
     assert "- Its forecast of the move to the close, squared error less no move's" in text
     assert "- The policy's own bets its forecast close clears, with a close: " in text
+
+
+def test_the_scale_up_section_shows_counts_and_the_reading_date_only() -> None:
+    # ADR 0047 (#322): the CLV figures and the verdict are Kalshi's fills, kept private (#280).
+    from nhl_edge.betting.selection import POLICY_V1
+    from nhl_edge.live import scale_up as su
+
+    season = Season(n_weeks=2)
+    assert season.report()["scale_up"] is None
+    assert "## Scale-up (ADR 0047)" not in lr.markdown(season.report())
+    sample = {"fills": 30, "weeks": 5, "started": 28, "valued": 26, "coverage": 26 / 28}
+    counts = {
+        "reading_date": "2027-02-08",
+        "due": False,
+        "read": False,
+        "weeks_needed": su.WEEKS,
+        "coverage_needed": su.COVERAGE,
+        "samples": {
+            "taker": sample,
+            "maker": sample | {"fills": 0, "weeks": 0, "started": 0, "valued": 0, "coverage": None},
+        },
+    }
+    text = lr.markdown(season.report(scale_up=counts))
+    assert "## Scale-up (ADR 0047)" in text
+    assert "- Reading: read once, on 2027-02-08." in text
+    assert "- Taker fills: 30 over 5 weeks; 26 of 28 of started games with a reference" in text
+    assert "(93%)" in text and "(none yet)" in text
+    assert "over at least 12 weeks of fills with at least 90% of them referenced" in text
+    read = lr.markdown(season.report(scale_up=counts | {"due": True, "read": True}))
+    assert "- Reading: read on 2027-02-08, at the weekly report's clock." in read
+    # Due, but an order of a game before the clock has no fills recorded yet (Codex on #351).
+    due = lr.markdown(season.report(scale_up=counts | {"due": True}))
+    assert "- Reading: due on 2027-02-08: it is taken once every order of a game before" in due
+    first = counts | {"reading_date": None}
+    assert "no real fill yet: it is read on the Monday 12 weeks after" in lr.markdown(
+        season.report(scale_up=first)
+    )
+    # An earlier policy's report doesn't carry it.
+    older = season.ledger.with_columns(policy_version=pl.lit(POLICY_V1))
+    assert season.report(ledger=older, policy=POLICY_V1, scale_up=counts)["scale_up"] is None

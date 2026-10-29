@@ -624,6 +624,12 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - **Never an earlier quote:** a fill at or after the proxy, which a resting order can make until 5 minutes before the start, gets no CLV and is counted as `after the reference`. Every fill of a started game without a proxy is `no reference`, and one of a game not yet started is `pending`.
   - **The figures:** for taker and maker apart, CLV per bid with its weekly block bootstrap interval (counts only under 4 weeks), overall and by the delay from the order's placement to the bid's first fill (under 1 minute, to 1 hour, to 4 hours, beyond).
   - **Private (#280):** they go to `real/<env>/fill-reports/<run time>.json` beside the orders, never to the repository or the public weekly report. The log has counts only.
+  - **The scale-up reading** (ADR 0047, #322, `live/scale_up.py`), in the live exchange's figures only:
+    - **Its date:** the Monday 12 weeks after the Monday of the first real fill's week. Its clock is the weekly report's, once Sunday's results are public (10:00 UTC).
+    - **Before the clock:** each fill type's weeks of fills, coverage and CLV per bid as context, with no verdict.
+    - **From the clock:** the reading, taken as of the clock whenever the run comes. It reads only the fills observed before the clock, the references from the quotes observed before it and the stops alerted before the day. It waits until every live order of a game started before the clock has its final record, so no fill is left out; until then the run and the weekly report say it is due.
+    - **Each fill type passes** with at least 12 weeks of fills, at least 90% of its fills of started games valued, CLV per bid with its interval's lower bound above 0, and no stop. The reading is written once to `real/live/scale-up/<date>.json` and repeated after, never read again.
+    - **The weekly report** shows only the reading date and each fill type's counts. The log shows the date and the weeks.
   - Point in time: `tests/leakage/test_fill_reference.py`.
 - **`nhl real shadow --r2`, nightly after the challengers:** shadow `kalshi_prices` (#320, ADR 0046, `live/kalshi_shadow.py`). It is paper only: no paper bet, real bet or policy reads it.
   - **The days:** each game date from 2026-10-24 (the ADR's) before today, not kept yet, is computed once.
