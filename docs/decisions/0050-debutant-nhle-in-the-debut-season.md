@@ -32,7 +32,7 @@ The game-level gain is small. The win log loss doesn't move detectably, as expec
 
 ## Backtest evidence
 
-`reports/ratings/debut-nhle-20261029-cc6307f.md`, from `scripts/debut_nhle.py`.
+`reports/ratings/debut-nhle-20261029-643cc58.md`, from `scripts/debut_nhle.py`.
 - **The fits:** RAPM's 5v5 model, fitted three times with the frozen settings on the training seasons.
 - **The scoring:** 2012-13 to 2017-18 (ADR 0011), with 95% weekly block bootstrap intervals. Each figure below is the run's minus base's.
 - **The check:** the base fit reproduces the lake's `player_ratings` exactly.
@@ -45,8 +45,8 @@ The game-level gain is small. The win log loss doesn't move detectably, as expec
 | The same, rows with a debutant on the ice | −0.0025 [−0.0043, −0.0007] | −0.0025 [−0.0046, −0.0004] |
 | Slope of base's stint residual on the change | 0.92 [0.65, 1.18] | 0.93 [0.67, 1.19] |
 
-- **Who moves:** 132 to 169 debutants a season get an NHLe in their debut season. They hold 5.2% to 7.0% of the projected 5v5 minutes.
-- **Which way:** their 5v5 offense prior falls by 0.04 to 0.10 xG per hour on average. Today's prior treats a debutant like the reference skater without a recent minor-league season, and the NHLe effects put most debutants below that.
+- **Who moves:** 113 to 151 skaters a season get an NHLe in their debut season, nearly every debutant (114 to 152). Their games after their lines turn public hold 5.2% to 7.0% of the projected 5v5 minutes.
+- **Which way:** their 5v5 offense prior falls by 0.03 to 0.08 xG per hour on average. Today's prior treats a debutant like the reference skater without a recent minor-league season, and the NHLe effects put most debutants below that.
 - **a2 against a1:** on the stints, a2 minus a1 is −0.0004 [−0.0011, +0.0001].
 
 The training seasons are in-sample for the frozen settings, which were tuned with today's priors (ADR 0011). The development seasons stay unread until the next version's own evaluation.
