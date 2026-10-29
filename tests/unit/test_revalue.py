@@ -479,11 +479,12 @@ def test_nothing_rests_once_the_expiry_is_near(tmp_path: Path) -> None:
 
 def test_every_run_that_amends_bids_shares_one_concurrency_group() -> None:
     # The slot's re-valuation and the 15-minute one never amend the same bids at once, and the
-    # snapshot job stays out of the group, so a re-valuation never cancels a pending snapshot.
+    # snapshot and orders jobs stay out of the group, so a re-valuation never cancels a pending
+    # snapshot or placement.
     workflows = Path(__file__).parents[2] / ".github" / "workflows"
-    snapshot, slot = (workflows / "odds-snapshots.yml").read_text().split("\n  revalue:\n")
+    before, slot = (workflows / "odds-snapshots.yml").read_text().split("\n  revalue:\n")
     assert "group: kalshi-orders" in slot and "nhl real revalue --r2 --slot" in slot
-    assert "kalshi-orders" not in snapshot and "nhl real revalue" not in snapshot
+    assert "kalshi-orders" not in before and "nhl real revalue" not in before
     triggered = (workflows / "kalshi-revalue.yml").read_text()
     assert "group: kalshi-orders" in triggered
     # the UTC fallback cron runs only inside the Eastern window

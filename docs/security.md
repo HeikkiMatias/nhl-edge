@@ -12,6 +12,9 @@ The repository is public, and the owner's card pays for Cloudflare (R2) and Kals
   - The workflows that hold secrets run only on their schedule or by dispatch, and dispatch needs write access.
   - A pull request from a fork runs only `ci.yml` and `web.yml`, with no secrets and a read-only token.
   - No workflow uses `pull_request_target`, `workflow_run` or comment triggers.
+- **Run code on the Kalshi runner,** the owner's machine in Finland that sends the trading requests (#347, `infra/runner/README.md`).
+  - Only the jobs that create, amend or cancel an order name its label, and only in workflows run on their schedule or by dispatch.
+  - A fork's pull request needs the owner's approval to run any workflow (item 4 below), and its workflows run on GitHub's runners.
 - **Reach the timer.** The Cloudflare Worker (`infra/timer`) has no public URL and runs only on its cron.
 - **Reach R2.** No public bucket URL is in the repository. The endpoint is built from the secret account ID.
 - **Move money out of Kalshi.** Kalshi's API has no withdrawal, bank or card endpoint for a retail account. Its transfers stay between the account's own subaccounts.
@@ -72,3 +75,8 @@ Done once, in this order. Each can be checked again at any time.
     - make a new key;
     - put it in the `kalshi-live` environment;
     - set `KALSHI_TRADING` to `off` meanwhile.
+
+### The Kalshi runner
+
+12. **Set it up as `infra/runner/README.md` says** (#347): a machine in Finland that is the owner's alone, the runner under a user of its own with no admin rights, and SSH by key only.
+13. **Never approve a fork's workflow run without reading it.** An approved run could change `.github/workflows/` to name the runner's label, and would then run on the owner's machine.

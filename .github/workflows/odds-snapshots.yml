@@ -27,7 +27,6 @@ on:
         description: Skip the Odds API call when the slot has no NHL games
         type: boolean
         default: true
-concurrency: odds
 permissions:
   contents: read
 jobs:
@@ -36,6 +35,9 @@ jobs:
     # repository variable TIMER_ACTIVE is true and only its on-time dispatches start this job.
     if: github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true'
     runs-on: ubuntu-latest
+    # The job's own group, not the workflow's: a later job waiting for the Kalshi runner never
+    # holds back the next slot's snapshot (#347).
+    concurrency: odds
     # The midday slot's decisions pull the lake and fit B2 and B3 (#164).
     timeout-minutes: 40
     # The live Kalshi key is the kalshi-live environment's secret, which the owner restricts to
@@ -140,18 +142,56 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
           if [ "$SUPABASE_REAL" = "true" ]; then sb=(--supabase); else sb=(); fi
           uv run nhl real alert --r2 "${sb[@]}" "${pick[@]}"
-      - name: Kalshi orders (#281)
-        # The day's alerted bets placed on Kalshi as the repository variable KALSHI_TRADING says
-        # (ADR 0040): off, or unset, places nothing and cancels our resting orders; demo sends
-        # every alerted bet to Kalshi's demo exchange (mock funds), kept apart from the record;
-        # live sends the real days' bets to the live exchange. Orders go at the midday slot, right
-        # after the alert, each written to R2 before it is sent and expiring 5 minutes before its
-        # game. Every slot then tracks them: once one has expired its fills are recorded, with
-        # the bet's entry on the live exchange. An environment without its key is skipped, and so
-        # is one whose key can't be read, with a warning, while the switch doesn't name it and no
-        # order of it waits (#300). The step prints counts only, since run logs are public; the
-        # orders and fills go to the owner's Telegram.
+      - name: Kalshi books (#282)
+        # Kalshi's public order book of both teams' markets of each game in the day's real bets
+        # alert, stored raw in R2 and rebuilt into the lake's kalshi_books, for the owner's own
+        # resting orders (#281). It runs at every slot, whatever the steps before did: at midday
+        # right after the alert, and at the pre-game slots for the same day's bets until each
+        # game's start; without the day's alert (the morning slot) it fetches nothing. Kalshi's
+        # Developer Agreement limits its API to a member's own trading (3.1), so only the
+        # alerted bets' markets are fetched, the data stays in R2, and the step prints counts
+        # only, since run logs are public. The odds cron lines of the other half of the DST year
+        # skip.
         if: always()
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
+          uv run nhl kalshi books --mirror-raw "${pick[@]}"
+  orders:
+    # The day's alerted bets placed on Kalshi as the repository variable KALSHI_TRADING says
+    # (ADR 0040): off, or unset, places nothing and cancels our resting orders; demo sends
+    # every alerted bet to Kalshi's demo exchange (mock funds), kept apart from the record;
+    # live sends the real days' bets to the live exchange. Orders go at the midday slot once the
+    # snapshot job, with its alert, has ended, each written to R2 before it is sent and expiring
+    # 5 minutes before its game. Every slot then tracks them: once one has expired its fills are
+    # recorded, with the bet's entry on the live exchange. An environment without its key is
+    # skipped, and so is one whose key can't be read, with a warning, while the switch doesn't
+    # name it and no order of it waits (#300). The job prints counts only, since run logs are
+    # public; the orders and fills go to the owner's Telegram. It runs whatever the snapshot job
+    # did, unless a later run replaced that job, on the runner the repository variable
+    # KALSHI_RUNNER names (#347): self-hosted, the owner's machine in Finland, since Kalshi
+    # refuses trading from cloud machines in some US states, or otherwise GitHub's. Its own
+    # concurrency group keeps two slots' orders apart.
+    needs: snapshot
+    if: >-
+      always() && needs.snapshot.result != 'cancelled'
+      && (github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true')
+    runs-on: ${{ vars.KALSHI_RUNNER == 'self-hosted' && fromJSON('["self-hosted", "kalshi"]') || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    environment: kalshi-live
+    concurrency:
+      group: kalshi-place
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
+      - run: uv sync --frozen
+      - name: Kalshi orders (#281)
         env:
           KALSHI_TRADING: ${{ vars.KALSHI_TRADING || 'off' }}
           KALSHI_DEMO_KEY_ID: ${{ secrets.KALSHI_DEMO_KEY_ID }}
@@ -174,39 +214,22 @@ jobs:
           fi
           uv run nhl real orders --r2 || status=1
           exit $status
-      - name: Kalshi books (#282)
-        # Kalshi's public order book of both teams' markets of each game in the day's real bets
-        # alert, stored raw in R2 and rebuilt into the lake's kalshi_books, for the owner's own
-        # resting orders (#281). It runs at every slot, whatever the steps before did: at midday
-        # right after the alert, and at the pre-game slots for the same day's bets until each
-        # game's start; without the day's alert (the morning slot) it fetches nothing. Kalshi's
-        # Developer Agreement limits its API to a member's own trading (3.1), so only the
-        # alerted bets' markets are fetched, the data stays in R2, and the step prints counts
-        # only, since run logs are public. The odds cron lines of the other half of the DST year
-        # skip.
-        if: always()
-        env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          CRON: ${{ github.event.schedule }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
-          uv run nhl kalshi books --mirror-raw "${pick[@]}"
   revalue:
     # Each resting maker part re-valued with this slot's own Pinnacle snapshot (ADR 0045 item 2):
     # its bid lowered, or cancelled when no cent clears the hurdle, never raised, and cancelled on
     # a change in Daily Faceoff's named starter since the decision, from the goalie poll in the
     # snapshot job. No Odds API call: kalshi-revalue.yml makes the triggered ones. At midday the
-    # orders go after the snapshot, so nothing is valued with it. It runs once the snapshot job
-    # ends, whatever it did, in the kalshi-orders concurrency group it shares with
-    # kalshi-revalue.yml, so no two runs amend the same bids at once (Codex on #327); the
-    # snapshot job stays out of that group, so a re-valuation never cancels a pending snapshot.
+    # orders go after the snapshot, so nothing is valued with it. It runs once the orders job
+    # ends, whatever it did, on the same runner (#347), in the kalshi-orders concurrency group it
+    # shares with kalshi-revalue.yml, so no two runs amend the same bids at once (Codex on #327);
+    # the snapshot and orders jobs stay out of that group, so a re-valuation never cancels a
+    # pending snapshot or placement.
     # Counts only in the log; the bids lowered or cancelled go to the owner's Telegram.
-    needs: snapshot
-    if: always() && (github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true')
-    runs-on: ubuntu-latest
+    needs: [snapshot, orders]
+    if: >-
+      always() && needs.snapshot.result != 'cancelled'
+      && (github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true')
+    runs-on: ${{ vars.KALSHI_RUNNER == 'self-hosted' && fromJSON('["self-hosted", "kalshi"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     environment: kalshi-live
     concurrency:
