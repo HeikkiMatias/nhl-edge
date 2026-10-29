@@ -338,15 +338,19 @@ def report(runs: dict[str, Run], lake: Lake, games: pl.DataFrame, version: str) 
             for s in range(FIRST_LINEUPS, max(SEASONS) + 1, 10_001)
         ]
     )
-    debuts = (
+    first = (
         lineups_all.filter(pl.col("role").is_in(rapm.SKATER_ROLES))
         .group_by("player_id")
         .agg(season=pl.col("season").min())
-        .group_by("season")
-        .agg(debutants=pl.len())
     )
+    debuts = first.group_by("season").agg(debutants=pl.len())
     ends = ratings[BASE].group_by("season").agg(end=pl.col("as_of_utc").max())
-    changed = late.join(ends, on="season").filter(pl.col("public_utc") < pl.col("end"))
+    # A goalie debutant's lines turn public too, but goalies are no RAPM column.
+    changed = (
+        late.join(ends, on="season")
+        .filter(pl.col("public_utc") < pl.col("end"))
+        .join(first, on=["player_id", "season"], how="semi")
+    )
     pair = (
         ratings[BASE]
         .join(
@@ -388,7 +392,7 @@ def report(runs: dict[str, Run], lake: Lake, games: pl.DataFrame, version: str) 
     )
     out += [
         "Each season's debutants (skaters whose first boxscore in the lake is that season's), "
-        "those whose NHLe turns public in the season, their candidate games after it, the "
+        "those of them whose NHLe turns public in the season, their candidate games after it, the "
         "share of the season's projected 5v5 minutes those games hold, and the change in their "
         "5v5 offense prior (xG per hour) under a1.",
         "",
