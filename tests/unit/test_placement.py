@@ -255,12 +255,12 @@ def test_a_create_that_reached_kalshi_before_failing_is_found_on_the_rerun(tmp_p
 REFUSED = {"error": {"code": "trading_not_allowed_here", "message": "synthetic"}}
 
 
-def refusing(exchange: Exchange, refuse: Any) -> None:
-    """Kalshi refuses, with 403 and its error code, each create refuse(body) picks."""
+def refusing(exchange: Exchange, refuse: Any, status: int = 403) -> None:
+    """Kalshi refuses, with the status and its error code, each create refuse(body) picks."""
     create = exchange._create
 
     def send(body: dict[str, Any]) -> Any:
-        return httpx.Response(403, json=REFUSED) if refuse(body) else create(body)
+        return httpx.Response(status, json=REFUSED) if refuse(body) else create(body)
 
     exchange._create = send  # type: ignore[method-assign]
 
@@ -296,6 +296,9 @@ def test_a_refused_taker_part_keeps_its_status_privately_and_its_order_says_why(
     pm.reconcile(record, client, clock, STARTS)
     final = json.loads(record.get(pm.order_key("live", pf.DAY, 2026020053, "final")))
     assert final["status"] == "not sent" and final["reason"] == "refused by Kalshi (status 403)"
+    # the lake's orders table says so too (Codex on #348)
+    row = pm.table(record).filter(pl.col("game_id") == 2026020053).row(0, named=True)
+    assert row["status"] == "not sent" and row["reason"] == "refused by Kalshi (status 403)"
 
 
 def test_a_refused_maker_part_keeps_its_status_privately(tmp_path: Path) -> None:
@@ -307,6 +310,20 @@ def test_a_refused_maker_part_keeps_its_status_privately(tmp_path: Path) -> None
     [failure] = failures(record, 2026020053, pm.MAKER)
     assert failure["part"] == pm.MAKER and failure["status"] == 403
     assert not failures(record, 2026020053, pm.TAKER)
+    # its taker part went, so its order isn't a refused one
+    assert pm.table(record).filter(pl.col("game_id") == 2026020053)["reason"].item() is None
+
+
+def test_a_create_that_runs_out_of_tries_keeps_kalshis_last_status(tmp_path: Path) -> None:
+    # Codex on #348: Kalshi answered every try, so the failure isn't "no answer".
+    record, exchange, clock = store(), Exchange(), Clock()
+    refusing(exchange, lambda body: body["ticker"] == WSH, status=503)
+    client, _ = trade(tmp_path, exchange, env=pm.LIVE, now=clock)
+    report = pm.place(record, client, pm.plans(real_rows(), pm.LIVE), clock, rf.CODE, STARTS)
+    assert report.failed == 1 and report.statuses == {"status 503": 1}
+    [failure] = failures(record, 2026020053, pm.TAKER)
+    assert failure["error"] == "create-order: failed after 5 tries (status 503)"
+    assert failure["status"] == 503 and failure["code"] == "trading_not_allowed_here"
 
 
 def test_an_order_too_close_to_its_expiry_is_skipped(tmp_path: Path) -> None:

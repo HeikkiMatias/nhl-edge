@@ -1219,9 +1219,9 @@ def _read_parts(
 
 def table(store: lb.Store) -> pl.DataFrame:
     """Every order of both environments (the lake's real_orders): what was planned and sent, why
-    one was skipped, and its final fills. An ADR 0045 order's row is its taker part's, with its
-    maker part's limit, contracts and order id beside it, and each part's contracts filled before
-    the start."""
+    one was skipped or refused, and its final fills. An ADR 0045 order's row is its taker part's,
+    with its maker part's limit, contracts and order id beside it, and each part's contracts filled
+    before the start."""
     rows = []
     for env in (LIVE, DEMO):
         for record in stored_orders(store, env).values():
@@ -1254,8 +1254,11 @@ def table(store: lb.Store) -> pl.DataFrame:
                     "expires_utc": _instant(order["expires_utc"]),
                     "written_utc": _instant(order["written_utc"]),
                     "status": status,
-                    # A skip a later run overcame says nothing of a sent order (Codex on #289).
-                    "reason": skipped["reason"] if skipped and placed is None else None,
+                    # A skip a later run overcame says nothing of a sent order (Codex on #289),
+                    # and an order never sent without a skip says what refused it (Codex on #348).
+                    "reason": (skipped or {}).get("reason") or refusal(record)
+                    if placed is None
+                    else None,
                     "order_id": placed["order_id"] if placed else None,
                     "placed_utc": _instant(placed["placed_utc"]) if placed else None,
                     "filled": float(final["contracts"]) if final and "contracts" in final else None,

@@ -172,9 +172,32 @@ def test_a_call_gives_up_after_its_tries(tmp_path: Path) -> None:
     exchange = Exchange()
     exchange.fail = [500] * 5
     client, waits = trade(tmp_path, exchange)
-    with pytest.raises(KalshiTradeError, match="balance: failed after 5 tries"):
+    with pytest.raises(KalshiTradeError, match="balance: failed after 5 tries") as raised:
         client.balance()
     assert len(exchange.requests) == 5 and waits == [1.0, 2.0, 4.0, 8.0]
+    # Kalshi answered every try: its last status rides on for the private record (Codex on #348)
+    assert raised.value.status == 500
+
+
+def test_a_call_whose_last_try_had_no_answer_gives_up_without_a_status(tmp_path: Path) -> None:
+    exchange = Exchange()
+    exchange.fail = [503] * 4
+    calls = {"n": 0}
+
+    def answered_until_the_last(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 5:
+            raise httpx.ConnectError("synthetic")
+        return exchange(request)
+
+    client, _ = trade(tmp_path, exchange)
+    client.client = httpx.Client(
+        base_url=kt.HOSTS[kt.DEMO] + kt.API_ROOT,
+        transport=httpx.MockTransport(answered_until_the_last),
+    )
+    with pytest.raises(KalshiTradeError, match=r"failed after 5 tries \(ConnectError\)") as raised:
+        client.balance()
+    assert raised.value.status is None and raised.value.code is None
 
 
 def test_another_status_is_an_error_at_once(tmp_path: Path) -> None:
