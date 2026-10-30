@@ -377,8 +377,8 @@ def report(
         "## Who the newcomers are",
         "",
         "The skaters who dressed without being candidates (ADR 0017), whom the replacement rows "
-        "stand for, and the share of them with an NHL rating before their game: most are "
-        "established players, not call-ups.",
+        "stand for, and the share of them with an NHL rating before their game: most had played "
+        "in the NHL before.",
         "",
         "| Season | In-season newcomers | Rated before | Newcomers in first games | Rated before |",
         "| --- | ---: | ---: | ---: | ---: |",
