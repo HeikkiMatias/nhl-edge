@@ -25,7 +25,7 @@
 2. **The sample:**
    - at least 12 Monday-to-Sunday weeks with real fills;
    - and the coverage floor: at least 90% of the real fills have a reference observed after them.
-3. **When it's read:** once, at the weekly report on the Monday 12 weeks after the Monday of the first real fill's week, on the fills and references public at that report's clock. For a first fill in the week of 2026-11-16, that is the report of 2027-02-08. No earlier report states a verdict, only counts and the interval as context.
+3. **When it's read:** once, at the weekly report on the Monday 12 weeks after the Monday of the first real fill's week, on the fills and references public at that report's clock. For a first fill in the week of 2026-11-16, that is the report of 2027-02-08. No earlier reading states a verdict, only counts and the interval as context.
 4. **No stop has fired** since the start (ADR 0039 item 5).
 5. **Each fill type apart:** taker and maker fills are read separately, each needing its own 12 weeks. A policy whose taker fills pass but whose maker fills don't may grow only the taker part's stake base.
 6. **What passing allows:** the owner may grow the real bankroll, up to the code's ceiling of 200 € without a code change. Beyond 200 € needs a commit raising `CEILING_BANKROLL` (`docs/security.md`). Growth stays the owner's decision. A pass permits it, never requires it.
@@ -37,7 +37,8 @@ None, by design: the rule is fixed before the evidence it judges. History has no
 
 ## Consequences
 
-- **The weekly report** gains a "Scale-up (ADR 0047)" section. Until the reading date it gives the weeks of fills, the coverage, the reading date, and the interval as context with no verdict. On the date, it gives the verdict, per fill type.
+- **The weekly report** gains a "Scale-up (ADR 0047)" section with counts only: the reading date, and each fill type's weeks of fills and coverage.
+- **The interval and the verdict stay private,** since they come from Kalshi's fills (#280). They go to the live exchange's private figures (`nhl real fills`, `real/live/scale-up/<date>.json`), and the Monday report task passes them to the owner. Until the reading date the figures give the interval as context with no verdict; on the date, the verdict per fill type. The owner chose this on 2026-10-30, after #322 built it.
 - **The reading is read-only:** nothing in the code grows the bankroll on its own. The owner changes it.
 - **Waiting is the cost:** a first real fill in mid-November is read in February at the earliest.
 
