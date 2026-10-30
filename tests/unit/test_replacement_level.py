@@ -107,7 +107,11 @@ def test_the_report_renders_every_option_and_subset() -> None:
     rows = game_rows(seasons)
     by_season = {s: levels(-0.02) for s in seasons}
     scored = rl.score(rows, rows.select("season", "start_utc"), by_season, seasons[1:])
-    text = rl.report(scored, by_season, rl.shares(rows), "replacement-level-20261030-abc1234")
+    new = rl.newcomers(DRESSED, CANDIDATES, RATED, GAMES)
+    text = rl.report(scored, by_season, rl.shares(rows), new, "replacement-level-20261030-abc1234")
     for kind in rl.LEVELS:
         assert text.count(f"| {kind} |") == 4
     assert "Either team's first game of the season" in text
+    # The hand frames' newcomers: one in a first game (rated last season), two in-season, of
+    # whom neither was rated before his game.
+    assert f"| {SEASON} | 2 | 0% | 1 | 100% |" in text

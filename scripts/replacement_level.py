@@ -170,7 +170,8 @@ def newcomers(
     """The skaters who dressed without being candidates (ADR 0017): season, game_id, team,
     player_id, role, opener (his team's first game of the season), his season prior (prior), and
     his level as known before the game (known: his latest rating with as_of_utc before the
-    game's start, else his season prior, else 0)."""
+    game's start, else his season prior, else 0), and whether he had that earlier rating
+    (rated)."""
     starts = games.select("game_id", "start_utc")
     first = openers(games)
     new = (
@@ -191,7 +192,10 @@ def newcomers(
     return (
         found.join(priors, on=["season", "player_id"], how="left")
         .with_columns(known=pl.coalesce("earlier", "prior", pl.lit(0.0)))
-        .select("season", "game_id", "team", "player_id", "role", "opener", "prior", "known")
+        .with_columns(rated=pl.col("earlier").is_not_null())
+        .select(
+            "season", "game_id", "team", "player_id", "role", "opener", "prior", "known", "rated"
+        )
     )
 
 
@@ -348,6 +352,7 @@ def report(
     scored: pl.DataFrame,
     by_season: Mapping[int, Mapping[str, Mapping[str, float]]],
     share: pl.DataFrame,
+    new: pl.DataFrame,
     version: str,
 ) -> str:
     out = [
@@ -368,6 +373,29 @@ def report(
     for r in share.sort("season").iter_rows(named=True):
         out.append(f"| {r['season']} | {r['all']:.1%} | {r['first']:.1%} |")
     out += [
+        "",
+        "## Who the newcomers are",
+        "",
+        "The skaters who dressed without being candidates (ADR 0017), whom the replacement rows "
+        "stand for, and the share of them with an NHL rating before their game: most are "
+        "established players, not call-ups.",
+        "",
+        "| Season | In-season newcomers | Rated before | Newcomers in first games | Rated before |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        *(
+            f"| {r['season']} | {r['n_in']:,} | {r['rated_in']:.0%} | {r['n_open']:,} "
+            f"| {r['rated_open']:.0%} |"
+            for r in new.filter(pl.col("season").is_in(scored["season"].unique().implode()))
+            .group_by("season")
+            .agg(
+                n_in=(~pl.col("opener")).sum(),
+                rated_in=pl.col("rated").filter(~pl.col("opener")).mean(),
+                n_open=pl.col("opener").sum(),
+                rated_open=pl.col("rated").filter("opener").mean(),
+            )
+            .sort("season")
+            .iter_rows(named=True)
+        ),
         "",
         "## The levels",
         "",
@@ -502,7 +530,7 @@ def main(seasons: Sequence[int] = SEASONS) -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     path = args.out / f"{version}.md"
     path.write_text(
-        report(scored, by_season, shares(rows.filter(pl.col("season").is_in(SCORED))), version)
+        report(scored, by_season, shares(rows.filter(pl.col("season").is_in(SCORED))), new, version)
     )
     print(path)
 
