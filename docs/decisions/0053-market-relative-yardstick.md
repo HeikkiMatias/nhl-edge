@@ -1,6 +1,6 @@
 # 0053. The market-relative yardstick: features scored on the move to the close, on the training seasons
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-10-30, #361): option 1, with the move skill as the primary measure, the explore and confirm halves, the rested games, the training seasons' exception and the finishing part's first season
 - Date: 2026-10-30
 - Part of: #361, from the owner's ask of 2026-10-30, "we need to find a way to develop our model to be better if we're losing to the market"; it extends ADR 0011
 
@@ -28,7 +28,7 @@
 2. **Results only, as now (ADR 0011).** Nothing new to build, but it can't tell small changes apart, and it never asks the market's question.
 3. **Live evidence only:** the morning view (ADR 0052) and the challengers (ADR 0038). Clean, but months pass before a reading, and one test per idea.
 
-## Decision: option 1, with the owner's choices of 2026-10-30 (Proposed)
+## Decision: option 1, with the owner's choices of 2026-10-30
 
 **The code** is `backtest/yardstick.py` and `nhl research yardstick`.
 
