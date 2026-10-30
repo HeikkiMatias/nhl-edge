@@ -84,9 +84,10 @@ def test_nothing_fetched_or_traded_at_or_after_the_start_is_kept() -> None:
 
 def test_no_model_or_feature_code_reads_the_watch() -> None:
     # Only the watch itself, its tables' registration and schemas, the CLI that runs it and the
-    # shadow that simulates executions on them (#320, ADR 0046) name them (#319): Kalshi's data is
-    # for the owner's own orders, never a model input, a fair value or a CLV reference
-    # (tests/leakage/test_kalshi_shadow.py).
+    # shadows that simulate executions on them (#320, ADR 0046; #358) name them (#319): Kalshi's
+    # data is for the owner's own orders, never a model input or a CLV reference. Its mid enters
+    # one fair value only, the quotes shadow's anchored arm, which prices quotes on Kalshi itself
+    # as #358 sets it; the price shadow's arms never read it (tests/leakage/test_kalshi_shadow.py).
     src = Path(__file__).parents[2] / "src" / "nhl_edge"
     names = (
         "kalshi_tops",
@@ -107,5 +108,6 @@ def test_no_model_or_feature_code_reads_the_watch() -> None:
         "ingest/kalshi_watch.py",
         "lake/schemas.py",
         "lake/tables.py",
+        "live/kalshi_quotes.py",
         "live/kalshi_shadow.py",
     }

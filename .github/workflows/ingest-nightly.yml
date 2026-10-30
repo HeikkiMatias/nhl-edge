@@ -161,6 +161,14 @@ jobs:
         # the log prints counts only.
         if: always()
         run: uv run nhl real shadow --r2
+      - name: Kalshi quotes shadow (#358)
+        # Shadow kalshi_quotes (#358 step 1) on each game date from 2026-10-31, before today, not
+        # kept yet: two-sided post-only quotes on both teams' Kalshi markets from three fair values
+        # (the model, the model anchored to Kalshi's mid, Pinnacle's latest), at three
+        # half-spreads, filled on the watch's logs (#319). Paper only. Its days and figures go
+        # privately to R2 (#280); the log prints counts only.
+        if: always()
+        run: uv run nhl real quotes --r2
       - name: Contract test on a golden game
         # One golden game read live must parse as its frozen copy does (issue #6). A failure
         # means the NHL API changed under the parsers.

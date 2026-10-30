@@ -210,11 +210,12 @@ PRIVATE_MODULES = (
     "real",
     "revalue",
     "kalshi_shadow",
+    "kalshi_quotes",
 )
 PRIVATE_TABLES = ("real_orders", "real_bets", "real_settlements", "real_alerts", "kalshi_books")
 # The record's own R2 prefixes, read directly rather than through a module or a lake table: its
 # settlements, Kalshi's settlements kept for its payouts (#290), the demo orders and the Kalshi
-# price shadow's days (#320).
+# shadows' days (#320, #358).
 PRIVATE_PREFIXES = ("real/live", "real/demo", "real/revalue-calls", "odds-revalue", "real/shadow")
 
 
