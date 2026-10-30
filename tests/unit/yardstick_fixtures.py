@@ -20,8 +20,8 @@ GAMES = 48
 
 def lake_stamped(tables: b3.Tables) -> b3.Tables:
     """B3's fixture tables stamped as the lake stamps them: the projected lineups at their game's
-    as-of time (their fits are of earlier seasons), and RAPM's terms with their date's as-of time
-    and observed from the tuning cutoff (ADR 0011)."""
+    as-of time, fitted the spring before, and RAPM's terms with their date's as-of time and
+    observed from the tuning cutoff (ADR 0011)."""
     as_of = tables.games.select(
         "game_id", observed_utc=ts.as_of(pl.col("game_date"), pl.col("start_utc"))
     )
@@ -30,7 +30,14 @@ def lake_stamped(tables: b3.Tables) -> b3.Tables:
     )
 
     def at_as_of(frame: pl.DataFrame) -> pl.DataFrame:
-        return frame.drop("observed_utc").join(as_of, on="game_id").select(frame.columns)
+        # Fitted on the seasons before (the projection's spring refit), observed at the as-of.
+        fitted = pl.datetime(pl.col("season") // 10_000, 4, 29, 10, time_zone="UTC")
+        return (
+            frame.drop("observed_utc")
+            .join(as_of, on="game_id")
+            .with_columns(train_cutoff=fitted)
+            .select(frame.columns)
+        )
 
     return replace(
         tables,

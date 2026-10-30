@@ -15,7 +15,8 @@ were public before the scored season's first game. The explore half (EXPLORE) is
 a claim from it is written down, then scored once on the confirm half (CONFIRM). A run reads no
 season after its half's last. Every figure is also given on the rested games, where neither team
 played the day before: SBR's opener may be from the evening before (ADR 0006), before the results
-that the 10:00 ET features know.
+that the 10:00 ET features know. On a rested game neither team's own last game falls in between,
+though league-wide refits (RAPM's joint fit, the league's rates) still take in the night's others.
 
 **The features** are B2's and B3's inputs at E2's prediction time, a second after the opener's
 assumed 10:00 ET (backtest/market.py), with the goalie part over the start scenarios known then
@@ -104,7 +105,9 @@ def untuned(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def through[T: (b2.Tables, b3.Tables)](tables: T, last: int) -> T:
-    """The tables cut to the seasons to last, each read at its data's time (untuned)."""
+    """The tables cut to the seasons to last, each read at its data's time (untuned). Refused if
+    a row's fit is later than the tuning cutoff, or, in a table without an as-of time, observed
+    before its fit: the tuning cutoff is the only thing set aside."""
     cut = {}
     for item in fields(tables):
         frame = getattr(tables, item.name)
@@ -112,6 +115,12 @@ def through[T: (b2.Tables, b3.Tables)](tables: T, last: int) -> T:
             continue
         if "season" in frame.columns:
             frame = frame.filter(pl.col("season") <= last)
+        if "train_cutoff" in frame.columns:
+            late = pl.col("train_cutoff") > pl.lit(TUNED_CUTOFF, dtype=UTC)
+            if "as_of_utc" not in frame.columns:
+                late = late | (pl.col("train_cutoff") >= pl.col("observed_utc"))
+            if frame.filter(late).height:
+                raise ValueError(f"{item.name} has rows fitted after the tuning cutoff or later")
         cut[item.name] = untuned(frame)
     return replace(tables, **cut)
 
@@ -159,18 +168,34 @@ def _logit(p: pl.Expr) -> pl.Expr:
     return (p / (1 - p)).log()
 
 
+def fold_start(frame: pl.DataFrame, season: int) -> datetime:
+    """The season's fold start, as the backtest's E2 (wf.fold_starts): its first start, or its
+    first prediction at an opener when that comes earlier. frame holds start_utc and, for the
+    priced games, prediction_utc."""
+    start = wf.fold_start(frame.select("season", "start_utc"), season)
+    if "prediction_utc" not in frame.columns:
+        return start
+    first = frame.filter(pl.col("season") == season)["prediction_utc"].min()
+    return min(start, first) if isinstance(first, datetime) else start
+
+
 def market(sbr_odds: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
     """Each game from FIRST_FIT with its opener at E2's prediction time and its close, de-vigged
     under B1_METHOD: o and c, with the openers E2 refuses dropped by its fold's bounds (ADR 0007),
     season by season."""
-    calendar = games.select("season", "start_utc")
     opens = market_prices(sbr_odds, Experiment.E2)
+    calendar = pl.concat(
+        [
+            games.select("season", "start_utc", prediction_utc=pl.lit(None, dtype=UTC)),
+            opens.select("season", "start_utc", "prediction_utc"),
+        ]
+    )
     closes = wf.b0(market_prices(sbr_odds, Experiment.E1), wf.B1_METHOD)
     kept = []
     # Earlier seasons' closes bound FIRST_FIT's openers; their own games are never read.
     for season in sorted(s for s in set(opens["season"].to_list()) if s >= FIRST_FIT):
         rows = opens.filter(pl.col("season") == season)
-        low, high = wf.bounds(closes, wf.fold_start(calendar, season))
+        low, high = wf.bounds(closes, fold_start(calendar, season))
         kept.append(rows.filter(~wf.implausible(rows, low, high)))
     open_p = wf.b0(pl.concat(kept), wf.B1_METHOD)
     return (
@@ -220,14 +245,13 @@ def _logistic(train: pl.DataFrame, test: pl.DataFrame, columns: Sequence[str]) -
 def scored(frame: pl.DataFrame, columns: Sequence[str], seasons: Sequence[int]) -> pl.DataFrame:
     """Each game of the seasons after the columns' first_inputs with its move skill (move) and
     its result beyond the close (result), each season's fits on the games from first_inputs to
-    the season before whose results were public before its first game (wf.fold_start over
-    frame's games). The close is only y's
-    and the result model's: the move's forecast reads o and the features alone."""
-    calendar = frame.select("season", "start_utc")
+    the season before whose results were public before its fold start (fold_start). Each row
+    carries its fit's train_cutoff, the last result it read. The close is only y's and the
+    result model's: the move's forecast reads o and the features alone."""
     first = first_inputs(columns)
     out = []
     for season in sorted(s for s in seasons if s > first):
-        start = wf.fold_start(calendar, season)
+        start = fold_start(frame, season)
         train = frame.filter(
             pl.col("season").is_between(first, season - 1), pl.col("result_utc") < start
         )
@@ -245,6 +269,7 @@ def scored(frame: pl.DataFrame, columns: Sequence[str], seasons: Sequence[int]) 
                 p=pl.Series(p),
                 p_base=pl.Series(p_base),
                 home_win=test["home_win"],
+                train_cutoff=pl.lit(train["result_utc"].max(), dtype=UTC),
             )
         )
     games = pl.concat(out)
@@ -303,6 +328,7 @@ def run(
                 "rested",
                 "move",
                 "result",
+                "train_cutoff",
             )
         )
     return pl.concat(per_game), found
@@ -338,8 +364,8 @@ def markdown(found: Mapping[str, Any], half: str, version: str) -> str:
         "- **Move skill** (in thousandths): the squared error of the forecast of SBR's move from",
         "  the opener to the close, in log-odds, less that of the opener's own drift. Negative",
         "  means the feature anticipates the move.",
-        "- **Rested:** the games where neither team played the day before, which a stale opener",
-        "  can't flatter (ADR 0006).",
+        "- **Rested:** the games where neither team played the day before, so neither team's own",
+        "  last game falls between an opener of the evening before and 10:00 ET (ADR 0006).",
         "- **Beyond the close** (in thousandths): the log loss of the close and the feature, less",
         "  the close alone. Negative means the feature adds to the closing price.",
         "- The features' frozen settings were tuned on these seasons' results (ADR 0011): they",
@@ -411,6 +437,9 @@ def keep(
         lb.put_once(store, f"{key}/{name}", body)
     manifest = dict(identity) | {
         "kept_utc": now.isoformat(),
+        # The features' frozen settings were tuned on results to it (ADR 0011); each row carries
+        # its season fit's own train_cutoff.
+        "tuning_cutoff": TUNED_CUTOFF.isoformat(),
         "files": {name: sha256(body).hexdigest() for name, body in bodies.items()},
     }
     lb.put_once(store, manifest_key, json.dumps(manifest, sort_keys=True).encode())

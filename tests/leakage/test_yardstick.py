@@ -4,6 +4,7 @@ an explore run never reads the confirm half, each feature is as known at the ope
 time, and only the tuning cutoff of the training seasons' frozen settings is set aside (ADR
 0011)."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
@@ -12,6 +13,7 @@ import yardstick_fixtures as yf
 
 from nhl_edge.backtest import yardstick as ys
 from nhl_edge.backtest.seasons import TRAINING_SEASONS
+from nhl_edge.features.team_strength import TUNED_CUTOFF
 
 
 def test_the_close_never_enters_the_moves_forecast() -> None:
@@ -95,12 +97,37 @@ def test_each_feature_is_as_known_at_the_opener_time() -> None:
     assert (joined["prediction_utc"] > joined["assumed_available_utc"]).all()
 
 
+def test_every_fit_is_cut_before_its_seasons_fold_start() -> None:
+    frame = yf.moves()
+    per_game, _ = ys.run(frame, "explore", {"x": ("x",)})
+    starts = {season: ys.fold_start(frame, season) for season in ys.EXPLORE}
+    for season, cutoff in per_game.select("season", "train_cutoff").unique().iter_rows():
+        assert cutoff < starts[season]
+    # E2's fold starts at its first opener when that comes before the first start.
+    early = frame.with_columns(prediction_utc=pl.col("start_utc") - timedelta(hours=9))
+    first = early.filter(pl.col("season") == 20132014)["start_utc"].min()
+    assert isinstance(first, datetime)
+    assert ys.fold_start(early, 20132014) == first - timedelta(hours=9)
+
+
+def test_a_fit_after_the_tuning_cutoff_is_refused() -> None:
+    teams, players, _ = yf.league()
+    late = players.lineups.with_columns(train_cutoff=pl.col("observed_utc") + timedelta(hours=1))
+    with pytest.raises(ValueError, match="fitted after the tuning cutoff"):
+        ys.through(replace(players, lineups=late), 20142015)
+    later = teams.goalie_effects.with_columns(
+        train_cutoff=pl.lit(TUNED_CUTOFF + timedelta(days=1)).cast(ys.UTC)
+    )
+    with pytest.raises(ValueError, match="fitted after the tuning cutoff"):
+        ys.through(replace(teams, goalie_effects=later), 20142015)
+
+
 def test_only_the_tuning_cutoff_is_set_aside() -> None:
     as_of = datetime(2013, 11, 1, 14, tzinfo=UTC)
     lifted = pl.DataFrame({"as_of_utc": [as_of], "observed_utc": [as_of + timedelta(days=3)]})
     with pytest.raises(ValueError, match="neither at their data's time nor the cutoff"):
         ys.untuned(lifted.with_columns(pl.all().cast(ys.UTC)))
-    # A row after the cutoff whose data is newer keeps its own time.
+    # A row observed before its data was known is refused.
     later = datetime(2018, 11, 1, 14, tzinfo=UTC)
     known = pl.DataFrame(
         {"as_of_utc": [later], "known_utc": [later + timedelta(hours=1)], "observed_utc": [later]}
