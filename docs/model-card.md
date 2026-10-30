@@ -291,6 +291,11 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
 - **The fix:** the leakage check caught it. The survey and the zone check were redone on 2010-11 to 2021-22, the design came out the same, and the tables quote only those figures.
 - **The owner's ruling, 2026-10-01:** gate 2's tests on those seasons stay valid, and this note records that their format was seen.
 
+**What the features know before the market (ADR 0053, accepted by the owner on 2026-10-30, #361).** On the training seasons' explore half (2012-13 to 2014-15, `yardstick-20261030-dafedeb`), each feature is fitted to forecast SBR's move from the opener to the close beyond the opener's own drift.
+- **They anticipate a little of it:** B3's split, −0.46 [−0.84, −0.13] thousandths of squared log-odds against a baseline error of 11.9; team strength, −0.20 [−0.35, −0.07]; the 5v5 part, −0.26 [−0.52, −0.02]. Each holds on the rested games.
+- **None adds to the close on the result.** Δĝ's fit costs +0.96 [+0.03, +1.93] thousandths. This is gate 3's finding again.
+- **In-sample in their settings:** the features' settings were tuned on these seasons (ADR 0011).
+
 ## Run history
 
 See `reports/backtest/runs.csv`.

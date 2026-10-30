@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-01
+- Extended by: 0053, the market-relative yardstick (Accepted 2026-10-30), which scores features on the same seasons by the market's move to the close
 
 ## Context
 
