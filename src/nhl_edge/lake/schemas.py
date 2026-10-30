@@ -532,6 +532,87 @@ class PaperLedger(pa.DataFrameModel):
         )
 
 
+class MorningPredictions(pa.DataFrameModel):
+    """One slate game's morning view (nhl live morning, #357, ADR 0052): the decision's models at
+    the 07:05 ET snapshot, with no selection and no bet, or why it has none (status).
+
+    Every row carries the run's instant (prediction_utc, fixed when the run started; one per date)
+    and its publication (published_utc, the clock at the write), the experiment's version and the
+    versions of the live fit, the feature build and the code. Every model input was known before
+    the morning snapshot (morning_snapshot_utc), the input cutoff. A predicted row adds Pinnacle's
+    prices at that snapshot with their last update, B0 to B3, u's parts, u and u_sd, and the
+    blend and its twins, each a full-game home probability (OT and shootout included, hard rule
+    2). Each date is written once to R2 (morning/live/<date>.parquet), beside its run bundle
+    (bundles/morning/<date>/), and every prediction is made and published before its game's start.
+    """
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    prediction_utc: UtcDatetime
+    published_utc: UtcDatetime
+    status: pl.String
+    event_id: pl.String = pa.Field(nullable=True)
+    morning_snapshot_utc: UtcDatetime = pa.Field(nullable=True)
+    home_price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    away_price: pl.Float64 = pa.Field(gt=1, nullable=True)
+    last_update_utc: UtcDatetime = pa.Field(nullable=True)
+    p_b0: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_b1: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_b2: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_b3: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    goalie_doubt: pl.Float64 = pa.Field(nullable=True)
+    availability_doubt: pl.Float64 = pa.Field(nullable=True)
+    rookie_share: pl.Float64 = pa.Field(nullable=True)
+    u: pl.Float64 = pa.Field(nullable=True)
+    u_sd: pl.Float64 = pa.Field(nullable=True)
+    p_blend: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_blend_b2: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    p_blend_market: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    morning_version: pl.String
+    blend_version: pl.String = pa.Field(str_matches=r"^blend-live-\d{8}-")
+    feature_build: pl.String = pa.Field(nullable=True)
+    code_version: pl.String
+    b2_train_cutoff: UtcDatetime = pa.Field(nullable=True)
+    b3_train_cutoff: UtcDatetime = pa.Field(nullable=True)
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def made_and_published_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("status") != "predicted")
+            | (
+                (pl.col("prediction_utc") < pl.col("start_utc"))
+                & (pl.col("published_utc") < pl.col("start_utc"))
+            )
+        )
+
+    @pa.dataframe_check
+    def inputs_before_the_run(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("morning_snapshot_utc").is_null()
+            | (pl.col("morning_snapshot_utc") < pl.col("prediction_utc"))
+        )
+
+    @pa.dataframe_check
+    def published_after_the_run(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("published_utc") >= pl.col("prediction_utc"))
+
+    @pa.dataframe_check
+    def one_run_a_day(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("prediction_utc").n_unique().over("game_date") == 1)
+            & (pl.col("published_utc").n_unique().over("game_date") == 1)
+        )
+
+
 class PaperSettlements(pa.DataFrameModel):
     """One settled paper bet (nhl live settle, #165): a bet of the paper ledger whose game is
     final, with its result on the full game (OT and shootout included, hard rule 2), its profit,

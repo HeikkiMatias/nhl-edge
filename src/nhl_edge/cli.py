@@ -14,10 +14,12 @@ if TYPE_CHECKING:
 
     from nhl_edge.backtest.one_time import Places
     from nhl_edge.backtest.research import Recorded
-    from nhl_edge.game import b2, b3
+    from nhl_edge.game import b2, b3, uncertainty
+    from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.status import TableState
     from nhl_edge.lake.tables import Lake, Reader
     from nhl_edge.live.bundle import Store
+    from nhl_edge.live.predict import Models
 
 app = typer.Typer(
     help="NHL moneyline model that must add information beyond a recalibrated market.",
@@ -592,53 +594,9 @@ def predict(
     read: tuple[b2.Tables, b3.Tables, uncertainty.Tables] | None = None
     calls: dict[str, pl.DataFrame] = {}
     if not problems:
-        tables = b2.Tables(
-            games,
-            *(
-                lake.read(name)
-                for name in (
-                    "team_strength",
-                    "schedule_terms",
-                    "goalie_starts",
-                    "goalie_effects",
-                    "actual_lineups",
-                )
-            ),
+        fitted, read, calls = _day_models(
+            lake, store, slate, games, cutoff, live.fold_start, likely_share, r2
         )
-        b3_tables = _b3_tables(lake, tables)
-        u_tables = uncertainty.Tables(
-            games,
-            tables.goalie_starts,
-            b3_tables.lineups,
-            b3_tables.lineup_replacements,
-            tables.actual_lineups,
-            lake.read("player_league_seasons"),
-        )
-        if likely_share is not None:
-            if r2:
-                for prefix in live_goalies.raw_prefixes(game_date):
-                    store.restore_from_r2(prefix=prefix)
-            polls = live_goalies.day_polls(store, game_date)
-            tables, b3_tables, u_tables, starters = live_goalies.with_starters(
-                tables,
-                b3_tables,
-                u_tables,
-                slate,
-                polls,
-                lake.read("players"),
-                cutoff,
-                likely_share,
-            )
-            seen = [poll.filter(pl.col("observed_utc") < cutoff) for poll in polls]
-            calls = dict(zip(lb.CALL_INPUTS, (starters, *seen), strict=True))
-            for row in starters.iter_rows(named=True):
-                typer.echo(
-                    f"starter {row['team']} ({row['game_id']}): {row['goalie_id']}, "
-                    f"{row['source']}, p {row['p']:.3f}"
-                )
-        moments = slate.select("game_id", prediction_utc=pl.lit(cutoff))
-        fitted = lp.models(tables, b3_tables, u_tables, slate, moments, live.fold_start)
-        read = (tables, b3_tables, u_tables)
     if r2:
         # The ledgers in R2 are the record: the lake's copy is rebuilt from them first, so a day
         # whose lake copy failed after its R2 write still counts in the bankroll.
@@ -1257,6 +1215,89 @@ def _check_blend_gaps(
             uncertainty.parts(u_tables, moments).select(named, "game_id", *uncertainty.PARTS)
         )
     b3_gaps.blend_check(rows, pl.concat(markets), pl.concat(doubts), fits)
+
+
+def _day_models(
+    lake: "Reader",
+    store: "RawStore",
+    slate: "pl.DataFrame",
+    games: "pl.DataFrame",
+    cutoff: datetime,
+    fold_start: datetime,
+    likely_share: float | None,
+    r2: bool,
+    show_starters: bool = True,
+) -> tuple[
+    "Models",
+    tuple["b2.Tables", "b3.Tables", "uncertainty.Tables"],
+    dict[str, "pl.DataFrame"],
+]:
+    """B2, B3 and u's parts for the slate at the input cutoff, as a day's run reads them (#164):
+    from the season's fits trained on results before fold_start and the lake's rows, with each
+    slate team's starter at the cutoff in place under policy v2 (likely_share set, ADR 0037). Also
+    the tables the models read, for the run bundle, and the starters with the polls observed
+    before the cutoff (bundle.CALL_INPUTS); none under v1. show_starters logs each starter;
+    otherwise only their count by source."""
+    import polars as pl
+
+    from nhl_edge.game import b2, uncertainty
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import goalies as live_goalies
+    from nhl_edge.live import predict as lp
+
+    (game_date,) = slate["game_date"].unique().to_list()
+    tables = b2.Tables(
+        games,
+        *(
+            lake.read(name)
+            for name in (
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        ),
+    )
+    b3_tables = _b3_tables(lake, tables)
+    u_tables = uncertainty.Tables(
+        games,
+        tables.goalie_starts,
+        b3_tables.lineups,
+        b3_tables.lineup_replacements,
+        tables.actual_lineups,
+        lake.read("player_league_seasons"),
+    )
+    calls: dict[str, pl.DataFrame] = {}
+    if likely_share is not None:
+        if r2:
+            for prefix in live_goalies.raw_prefixes(game_date):
+                store.restore_from_r2(prefix=prefix)
+        polls = live_goalies.day_polls(store, game_date)
+        tables, b3_tables, u_tables, starters = live_goalies.with_starters(
+            tables,
+            b3_tables,
+            u_tables,
+            slate,
+            polls,
+            lake.read("players"),
+            cutoff,
+            likely_share,
+        )
+        seen = [poll.filter(pl.col("observed_utc") < cutoff) for poll in polls]
+        calls = dict(zip(lb.CALL_INPUTS, (starters, *seen), strict=True))
+        if show_starters:
+            for row in starters.iter_rows(named=True):
+                typer.echo(
+                    f"starter {row['team']} ({row['game_id']}): {row['goalie_id']}, "
+                    f"{row['source']}, p {row['p']:.3f}"
+                )
+        else:
+            by = starters.group_by("source").len().sort("source").iter_rows()
+            typer.echo("starters: " + (", ".join(f"{n} {s}" for s, n in by) or "none"))
+    moments = slate.select("game_id", prediction_utc=pl.lit(cutoff))
+    fitted = lp.models(tables, b3_tables, u_tables, slate, moments, fold_start)
+    return fitted, (tables, b3_tables, u_tables), calls
 
 
 def _b3_tables(lake: "Reader", tables: "b2.Tables") -> "b3.Tables":
@@ -2927,6 +2968,295 @@ def live_bundle(
     typer.echo(f"{where}: finished, its manifest rebuilt from what is stored")
 
 
+@live_app.command("morning")
+def live_morning(
+    day: Annotated[
+        datetime | None,
+        typer.Option("--date", formats=["%Y-%m-%d"], help="The game date (default: today, ET)."),
+    ] = None,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="Pull the lake's tables and the day's odds and polls from R2 first; without "
+            "--dry-run, write the day's rows and run bundle to R2, once.",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Write the rows and bundle locally only, never to R2.")
+    ] = False,
+    at: Annotated[
+        datetime | None,
+        typer.Option(
+            formats=["%Y-%m-%dT%H:%M:%S%z"],
+            help="A dry run's instant, such as 2026-10-29T11:08:00+00:00 (default: now).",
+        ),
+    ] = None,
+    fit: Annotated[
+        Path | None,
+        typer.Option(help="The live fit to read (default: the season's under reports/live/)."),
+    ] = None,
+    out: Annotated[
+        Path, typer.Option(help="Where a dry run writes the rows and their run bundle, once.")
+    ] = Path("data/live/morning-dry"),
+    cron: Annotated[
+        str | None,
+        typer.Option(
+            help="The odds workflow's fallback cron line: run only if it is today's morning slot, "
+            "and otherwise do nothing."
+        ),
+    ] = None,
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check",
+            help="Rebuild the lake's morning_predictions from the stored days and replay the "
+            "latest ones from their bundles, exiting 1 if any differs.",
+        ),
+    ] = False,
+    recent: Annotated[
+        int, typer.Option(help="How many of the latest stored days --check replays.")
+    ] = 3,
+) -> None:
+    """The morning view (#357, ADR 0052): the decision's models at the 07:05 ET snapshot, with no
+    bet. Every slate game gets one row, its probabilities or why it has none, with every input
+    known before the morning snapshot. A real run (--r2) writes the day once to R2
+    (morning/live/<date>.parquet) beside its run bundle (bundles/morning/<date>/), and to the
+    lake's morning_predictions; after the window it writes the day as skipped, so no late run can
+    reconstruct it. The log shows counts only."""
+    import json
+    import time
+    from datetime import UTC
+    from zoneinfo import ZoneInfo
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.betting import selection
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import blend_fit
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import features as lf
+    from nhl_edge.live import goalies as live_goalies
+    from nhl_edge.live import morning as lm
+    from nhl_edge.live import predict as lp
+    from nhl_edge.live.slate import of_day
+    from nhl_edge.settings import load_env
+
+    started = datetime.now(UTC)
+    paths = [fit] if fit is not None else sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
+    if check:
+        if not r2 and not dry_run:
+            raise typer.BadParameter("--check reads R2 (--r2) or a dry run's --out (--dry-run)")
+        load_env()
+        lake = Lake.from_env(mirror=r2)
+        if r2:
+            assert lake.objects is not None and lake.bucket is not None
+            records: lb.Store = lb.R2Store(lake.objects, lake.bucket)
+        else:
+            records = lb.LocalStore(out)
+        synced = lm.sync(records)
+        if r2 and synced.height:
+            lake.replace_dates(
+                "morning_predictions", synced, synced["game_date"].unique().to_list()
+            )
+        if len(paths) != 1:
+            typer.echo(f"expected the season's one live fit, found {len(paths)}", err=True)
+            raise typer.Exit(code=1)
+        live = blend_fit.load(json.loads(paths[0].read_text()))
+        days = lm.stored_days(records)[-recent:] if recent > 0 else []
+        problems = [problem for each in days for problem in lm.check(records, each, live)]
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo(
+            f"{synced['game_date'].n_unique()} morning days in the lake; {len(days)} replayed, "
+            f"{len(problems)} problems"
+        )
+        if problems:
+            raise typer.Exit(code=1)
+        return
+    if cron is not None:
+        from nhl_edge.ingest.odds import resolve_slot
+
+        today = started.astimezone(ZoneInfo("America/New_York")).date()
+        slot = resolve_slot("free-tier", cron, today)
+        if slot is None or slot.name != "morning":
+            typer.echo(f"{cron!r} is not today's morning slot: no morning view")
+            return
+    if at is not None and not dry_run:
+        raise typer.BadParameter("only a dry run takes an instant", param_hint="--at")
+    if not dry_run and not r2:
+        raise typer.BadParameter("a real run writes to R2: pass --r2, or --dry-run")
+    run = at.astimezone(UTC) if at is not None else started
+    game_date = day.date() if day is not None else run.astimezone(ET).date()
+    code_version = reports.version("morning", started)
+    if not dry_run:
+        if code_version.endswith("-dirty"):
+            raise typer.BadParameter("commit first: a stored morning names its commit")
+        if game_date != run.astimezone(ET).date():
+            raise typer.BadParameter(
+                "a real run takes today's slate only; check another day with --dry-run --at",
+                param_hint="--date",
+            )
+        if fit is not None:
+            raise typer.BadParameter(
+                "a real run reads the season's committed fit only", param_hint="--fit"
+            )
+        if not lm.in_window(run) and not lm.after_window(run):
+            raise typer.BadParameter(
+                "the morning window opens at 07:00 ET: a run before it writes nothing"
+            )
+    elif (out / lb.prefix(game_date, lm.BUNDLES)).exists():
+        raise typer.BadParameter(
+            f"{out} already holds {game_date}'s morning bundle: pass a fresh --out",
+            param_hint="--out",
+        )
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    likely_share = selection.LIKELY_STARTS
+    if r2:
+        # The decision's tables, without the earlier ledgers: no bankroll is read.
+        wanted = [t for t in lp.LAKE_TABLES if t != "paper_ledger"]
+        pulled = sum(
+            lake.pull(table) for table in (*wanted, *(live_goalies.TABLES if likely_share else ()))
+        )
+        restored = store.restore_from_r2(prefix=f"odds/{game_date.isoformat()}/")
+        typer.echo(f"pulled {pulled:,} table files and the day's odds ({restored}) from R2")
+    if len(paths) != 1:
+        typer.echo(f"expected the season's one live fit, found {len(paths)}", err=True)
+        raise typer.Exit(code=1)
+    try:
+        live = blend_fit.load(json.loads(paths[0].read_text()))
+    except ValueError as exc:
+        typer.echo(f"{paths[0]}: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    slate = of_day(lake.read("slate"), game_date)
+    if slate.is_empty():
+        marker = lake.read("feature_builds").filter(
+            pl.col("game_date") == game_date, pl.col("table") == "slate"
+        )
+        if marker.height and marker["slate_games"].max() == 0:
+            typer.echo(f"{game_date}: no games scheduled, no morning view")
+            return
+        typer.echo(f"{game_date}: no slate and no record of a build that found no games", err=True)
+        raise typer.Exit(code=1)
+    (season,) = slate["season"].unique().to_list()
+    record = lake.read("feature_builds", seasons=[season]).filter(pl.col("game_date") == game_date)
+    target_rows = {
+        name: lake.read(name, seasons=[season]).filter(pl.col("game_date") == game_date)
+        for name in lf.TARGET_TABLES
+    }
+    quotes, failed = lp.day_quotes(store, run.date())
+    for problem in failed:
+        typer.echo(f"odds snapshot left out, it did not parse: {problem}", err=True)
+    # Model inputs are cut at the morning snapshot (ADR 0052).
+    cutoff = lm.input_cutoff(quotes, run)
+    problems = lp.build_problems(record, slate, cutoff, target_rows, committed=not dry_run)
+    for problem in problems:
+        typer.echo(problem, err=True)
+    fitted = None
+    read = None
+    calls: dict[str, pl.DataFrame] = {}
+    if not problems:
+        # The day's feature rows count as observed when their build had them (ADR 0052).
+        fitted, read, calls = _day_models(
+            lm.AtBuild(lake, record, game_date),
+            store,
+            slate,
+            lake.read("games"),
+            cutoff,
+            live.fold_start,
+            likely_share,
+            r2,
+            show_starters=False,
+        )
+    inputs = lp.Day(
+        day=game_date,
+        decision_utc=run,
+        slate=slate,
+        quotes=quotes,
+        fitted=fitted,
+        live=live,
+        bankroll=0.0,
+        versions={
+            "blend_version": live.version,
+            "feature_build": record["build_id"].first() if record.height else None,
+            "code_version": code_version,
+            "b2_train_cutoff": fitted.b2_cutoff if fitted else None,
+            "b3_train_cutoff": fitted.b3_cutoff if fitted else None,
+        },
+    )
+
+    def clock() -> datetime:
+        """The publication clock: the actual one in a real run; a dry run with --at shifts it by
+        the run's own time since its start."""
+        return run + (datetime.now(UTC) - started)
+
+    fits = {}
+    if fitted is not None and fitted.b2_model is not None and fitted.b3_model is not None:
+        fits = {"b2": fitted.b2_model, "b3": fitted.b3_model}
+    rows = lb.inputs(slate, record, quotes, read) | calls
+    if dry_run:
+        records = lb.LocalStore(out)
+    else:
+        assert lake.objects is not None and lake.bucket is not None
+        records = lb.R2Store(lake.objects, lake.bucket)
+    # The bundle's rows and fits first, each written once, as the decision's are (#188).
+    try:
+        not_written = lb.write_files_first(records, game_date, rows, fits, lm.BUNDLES)
+    except lb.Conflict as exc:
+        typer.echo(
+            f"{exc}: an earlier run wrote {game_date}'s morning bundle from other inputs, so "
+            "nothing is stored",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    if not_written is not None:
+        typer.echo(f"morning bundle files not written before the rows ({not_written})", err=True)
+    try:
+        written, key = lm.write_published(records, inputs, clock)
+    except Exception as exc:
+        typer.echo(f"the {game_date} morning was not written ({exc}): never rewritten", err=True)
+        raise typer.Exit(code=1) from None
+    if not dry_run:
+        lake.replace_dates("morning_predictions", written, [game_date])
+    typer.echo(f"{key}: {lm.counts(written)}")
+    try:
+        lock = Path("uv.lock")
+        identity = lm.identity(
+            inputs,
+            cutoff,
+            written["published_utc"][0],
+            paths[0].name,
+            lb.sha256(paths[0].read_bytes()),
+        ) | {
+            "uv_lock_sha256": lb.sha256(lock.read_bytes()) if lock.exists() else None,
+            "predictions": key,
+        }
+        raw = lp.raw_responses(store, run.date(), by=written["published_utc"][0])
+        where = ""
+        for attempt in range(4):
+            try:
+                where = lb.write_once(records, game_date, rows, fits, identity, raw, lm.BUNDLES)
+                break
+            except lb.Conflict:
+                raise
+            except Exception as exc:
+                if attempt == 3:
+                    raise
+                typer.echo(f"morning bundle write failed ({exc}); trying again", err=True)
+                time.sleep(15 * (attempt + 1))
+    except Exception as exc:
+        typer.echo(
+            f"the {game_date} morning bundle was not written ({exc}); the rows stand", err=True
+        )
+        raise typer.Exit(code=1) from None
+    typer.echo(f"morning bundle: {where}")
+
+
 @live_app.command("replay")
 def live_replay(
     day: Annotated[
@@ -3279,6 +3609,7 @@ def live_report(
     from nhl_edge.live import blend_fit
     from nhl_edge.live import bundle as lb
     from nhl_edge.live import challengers as lc
+    from nhl_edge.live import morning as lm
     from nhl_edge.live import predict as lp
     from nhl_edge.live import report as lr
     from nhl_edge.settings import load_env
@@ -3305,6 +3636,7 @@ def live_report(
         store = lb.R2Store(lake.objects, lake.bucket)
         outputs = lc.sync(store)
         spreads = lc.sync_spreads(store)
+        mornings = lm.sync(store)
         # ADR 0039's start rule reads whether every decision day's run bundle is complete.
         unfinished = lb.unfinished(store, sorted(set(ledger["game_date"].to_list())))
         real_record = store
@@ -3312,6 +3644,7 @@ def live_report(
         ledger = lake.read("paper_ledger", seasons=[blend_fit.LIVE_SEASON])
         outputs = lake.read("challenger_predictions")
         spreads = lake.read("goalie_spreads")
+        mornings = lake.read("morning_predictions")
         unfinished = None
         real_record = None
     paths = sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
@@ -3339,6 +3672,7 @@ def live_report(
         goalie_spreads=spreads,
         dailyfaceoff=lake.read("dailyfaceoff_goalies", seasons=[blend_fit.LIVE_SEASON]),
         scale_up=scale_up,
+        morning=mornings,
     )
     json_path, md_path = lr.write(result, out)
     if supabase:

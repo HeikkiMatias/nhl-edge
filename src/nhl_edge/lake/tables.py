@@ -53,6 +53,7 @@ from nhl_edge.lake.schemas import (
     LakeOddsSnapshots,
     LineupReplacements,
     Lineups,
+    MorningPredictions,
     PaperLedger,
     PaperSettlements,
     Penalties,
@@ -140,6 +141,9 @@ TABLES: dict[str, Table] = {
     "paper_ledger": Table(PaperLedger, ("game_date", "game_id"), BY_DATE),
     # Its bets settled, with their CLV against Pinnacle's closing proxy (#165).
     "paper_settlements": Table(PaperSettlements, ("game_date", "game_id"), BY_DATE),
+    # The decision's models at the 07:05 ET snapshot, with no bet (#357, ADR 0052), as written
+    # once to R2.
+    "morning_predictions": Table(MorningPredictions, ("game_date", "game_id"), BY_DATE),
     # Registered challengers' probabilities, scored on each day's run bundle (#255, ADR 0038).
     "challenger_predictions": Table(
         ChallengerPredictions,

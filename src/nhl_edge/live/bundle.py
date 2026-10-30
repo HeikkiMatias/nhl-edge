@@ -112,8 +112,10 @@ def sha256(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
-def prefix(day: date) -> str:
-    return f"{PREFIX}/{day.isoformat()}"
+def prefix(day: date, root: str = PREFIX) -> str:
+    """The day's bundle under root: the decision's (PREFIX), or another run's of the same shape,
+    such as the morning view's (live/morning.py)."""
+    return f"{root}/{day.isoformat()}"
 
 
 # The rows every decision saves, and those it adds when its models were read (inputs()).
@@ -224,13 +226,14 @@ def write_files(
     day: date,
     rows: Mapping[str, pl.DataFrame],
     fits: Mapping[str, B2Model | B3Model],
+    root: str = PREFIX,
 ) -> dict[str, bytes]:
     """Write the rows the decision read and its fits once, before its ledger (#188), so they
     survive a run that stops after it; and return them by name. Written again, the same bytes
     count as written."""
     files = {f"inputs/{name}.parquet": parquet(frame) for name, frame in rows.items()}
     files[FITS] = json.dumps({k: fit_record(v) for k, v in fits.items()}, indent=1).encode()
-    where = prefix(day)
+    where = prefix(day, root)
     for name, body in files.items():
         put_once(store, f"{where}/{name}", body)
     return files
@@ -241,13 +244,14 @@ def write_files_first(
     day: date,
     rows: Mapping[str, pl.DataFrame],
     fits: Mapping[str, B2Model | B3Model],
+    root: str = PREFIX,
 ) -> str | None:
     """write_files before the ledger, in one try, so a slow store never holds up the ledger: a
     failure comes back as its message, for the run to log and the write after the ledger to try
     again. A Conflict raises: an earlier run wrote the day's files from other inputs, and a ledger
     published over them could never be finished (Codex on #204)."""
     try:
-        write_files(store, day, rows, fits)
+        write_files(store, day, rows, fits, root)
     except Conflict:
         raise
     except Exception as exc:
@@ -273,9 +277,9 @@ def manifest_of(
     }
 
 
-def write_manifest(store: Store, day: date, manifest: Mapping[str, Any]) -> str:
+def write_manifest(store: Store, day: date, manifest: Mapping[str, Any], root: str = PREFIX) -> str:
     """Write the manifest, the bundle's completion mark, once; and return the bundle's prefix."""
-    where = prefix(day)
+    where = prefix(day, root)
     put_once(store, f"{where}/{MANIFEST}", json.dumps(manifest, indent=1, default=str).encode())
     return where
 
@@ -287,11 +291,12 @@ def write_once(
     fits: Mapping[str, B2Model | B3Model],
     identity: Mapping[str, Any],
     raw: Mapping[str, bytes],
+    root: str = PREFIX,
 ) -> str:
     """Write the day's bundle once, the manifest last, and return its prefix. raw maps each raw
     response the decision read to its bytes, recorded by sha256."""
-    files = write_files(store, day, rows, fits)
-    return write_manifest(store, day, manifest_of(identity, files, raw))
+    files = write_files(store, day, rows, fits, root)
+    return write_manifest(store, day, manifest_of(identity, files, raw), root)
 
 
 def finish(
@@ -369,9 +374,13 @@ def finish(
     return write_manifest(store, day, manifest)
 
 
-def unfinished(store: Store, days: list[date]) -> list[date]:
-    """The decision days among days whose bundle has no manifest."""
-    return [day for day in days if f"{prefix(day)}/{MANIFEST}" not in store.keys(prefix(day))]
+def unfinished(store: Store, days: list[date], root: str = PREFIX) -> list[date]:
+    """The days among days whose bundle under root has no manifest."""
+    return [
+        day
+        for day in days
+        if f"{prefix(day, root)}/{MANIFEST}" not in store.keys(prefix(day, root))
+    ]
 
 
 def put_once(store: Store, key: str, body: bytes) -> None:
@@ -408,10 +417,10 @@ def verified(store: Store, where: str) -> tuple[dict[str, Any], dict[str, bytes]
     return manifest, bodies
 
 
-def read(store: Store, day: date) -> Bundle:
-    """The day's bundle, refused without its manifest (an unfinished write) or with any file
-    missing or not matching its hash."""
-    return _bundle(*verified(store, prefix(day)))
+def read(store: Store, day: date, root: str = PREFIX) -> Bundle:
+    """The day's bundle under root, refused without its manifest (an unfinished write) or with any
+    file missing or not matching its hash."""
+    return _bundle(*verified(store, prefix(day, root)))
 
 
 def _bundle(manifest: Mapping[str, Any], bodies: Mapping[str, bytes]) -> Bundle:

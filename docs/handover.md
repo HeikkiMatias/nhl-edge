@@ -35,6 +35,7 @@ This file says where the build stands after the cloud sessions of 2026-09-29 to 
 | #121 step 3, Daily Faceoff's injury statuses | **2026-11-05** | As the Routine's prompt says. Any use needs an ADR and a later policy version. |
 | #67, `EXPECTED_GAMES` for 2026-27 | The regular season's end, about **2027-04-17** | See "Keep an eye on". |
 | Real money (ADR 0039) | The first decision day from **2026-11-16 to 2026-11-30** on which the start rule held at the latest weekly report | Before then: the venue (#266), and the build issues ADR 0039 lists. Check the start rule at each weekly report from 2026-11-16 on. |
+| The morning view (#357, ADR 0052, accepted by the owner on 2026-10-30) | Registered on 2026-10-30, the day its code merged: the first counted morning is the next game day | The morning slot then writes `morning/live/<date>.parquet` and `bundles/morning/<date>/` at about 07:15 ET, and the nightly's "Morning view check" step replays the latest three days. The first morning's log should show its rows by status; a day skipped for the window means the timer's 07:05 dispatch ran late. Counts only in the report under 4 weeks. It is #358's fair value, if it shows information. |
 | The formal review | **2027-04-12** | ADR 0032 judges v2 on its own games. v1's record is reported beside it. |
 
 ### Gate 1: done (ADR 0014, 2026-10-21)

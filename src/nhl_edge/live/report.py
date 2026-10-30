@@ -79,13 +79,16 @@ from nhl_edge.backtest.metrics import (
     log_loss,
     p_value,
     slope,
+    slope_p_value,
     week_of,
 )
 from nhl_edge.backtest.walk_forward import B1_METHOD, b0, bounds, implausible, outcomes
-from nhl_edge.betting.selection import FROZEN_ON, POLICY, POLICY_VERSION
+from nhl_edge.betting import staking
+from nhl_edge.betting.selection import FROZEN_ON, POLICY, POLICY_VERSION, select
 from nhl_edge.game.uncertainty import PARTS
 from nhl_edge.ingest.games import result_public_utc
 from nhl_edge.live import challengers as lc
+from nhl_edge.live import morning as lm
 from nhl_edge.live import movement, real, shadow
 from nhl_edge.live import predict as lp
 from nhl_edge.live import settle as ls
@@ -930,6 +933,108 @@ def review(entries: dict[str, Any], registry: tuple[lc.Challenger, ...]) -> dict
     return {"family": len(family), "alpha": REVIEW_ALPHA, "challengers": tested}
 
 
+def _morning_bets(started: pl.DataFrame) -> pl.DataFrame:
+    """The bets the frozen selection and staking would make at 07:05 on the morning blend, at
+    Pinnacle's morning price and the season's opening bankroll, without the guard: no earlier pair
+    gives it a move to read (ADR 0052)."""
+    chosen = select(started.with_columns(p_home=pl.col("p_blend")), POLICY).drop("p_home")
+    bets = chosen.filter(pl.col("picked"))
+    return staking.fractions(bets, POLICY).with_columns(
+        bankroll=pl.lit(POLICY.bankroll), stake=pl.col("fraction") * POLICY.bankroll
+    )
+
+
+def _logit_of(column: str) -> pl.Expr:
+    return (pl.col(column) / (1 - pl.col(column))).log()
+
+
+def morning_view(
+    morning: pl.DataFrame,
+    rows: pl.DataFrame,
+    games: pl.DataFrame,
+    odds: pl.DataFrame,
+    as_of: date,
+    now: datetime,
+    formal: bool = False,
+) -> dict[str, Any]:
+    """The morning view (ADR 0052) over its stored regular-season days after its registration up
+    to as_of, with no verdict before the formal review. Its primary measure: the slope of
+    Pinnacle's move from the morning snapshot to the close on B3's disagreement with it there,
+    over the predicted games started by now with a valid close (movement.table, as #251 takes the
+    decision's), with its p-value at the formal review. Beside it, entry_to_close's other figures
+    from the morning; the move split at the decision (rows, the counted ledger), each leg's slope
+    on B3's morning disagreement; paired log loss at 07:05 against B0 and against the decision's
+    blend; and the shadow bets at 07:05 (_morning_bets), valued at the close. A game day of the
+    ledger without its morning is listed, never withheld: the run ends before any move or
+    result exists, so its failures can't choose its sample."""
+    keys = ["game_date", "game_id"]
+    counted_days = (pl.col("game_date") > lm.REGISTERED_ON) & (pl.col("game_date") <= as_of)
+    stored = morning.filter(
+        pl.col("morning_version") == lm.VERSION,
+        (pl.col("game_id") // 10_000 % 100) == REGULAR_SEASON,
+        counted_days,
+    )
+    days = set(stored["game_date"].to_list())
+    game_days = sorted(set(rows.filter(counted_days)["game_date"].to_list()))
+    section: dict[str, Any] = {
+        "version": lm.VERSION,
+        "registered_on": lm.REGISTERED_ON.isoformat(),
+        "days": len(days),
+        "games": stored.height,
+        "predicted": stored.filter(pl.col("status") == lm.PREDICTED).height,
+        "not_predicted": _counts(stored.filter(pl.col("status") != lm.PREDICTED), "status"),
+        "missing_days": [d.isoformat() for d in game_days if d not in days],
+    }
+    started = scoreable(stored, games).filter(pl.col("start_utc") <= now)
+    moves = movement.table(
+        started.rename({"morning_snapshot_utc": "decision_snapshot_utc"}), ls.closes(odds, now)
+    )
+    entry = entry_to_close(moves)
+    valid = moves.filter(pl.col("move").is_not_null())
+    primary = dict(entry["models"]["B3"]["slope"])
+    if formal and "value" in primary:
+        primary["p_value"] = slope_p_value(valid, "d_B3", "move")
+    decided = scoreable(rows, games).select(
+        *keys, "decision_snapshot_utc", p_at_decision="p_b0", p_decision_blend="p_blend"
+    )
+    # Both legs on the same games: those whose close came after the decision's own snapshot, as
+    # the decision's entry to close takes it, so neither leg counts a close it never moved to.
+    both = valid.join(decided, on=keys, suffix="_decision").filter(
+        pl.col("close_snapshot_utc") > pl.col("decision_snapshot_utc_decision")
+    )
+    legs = {
+        "07:05 to the decision": both.with_columns(
+            move=_logit_of("p_at_decision") - _logit_of("p_decision"),
+            p_close=pl.col("p_at_decision"),
+        ),
+        "the decision to the close": both.with_columns(
+            move=_logit_of("p_close") - _logit_of("p_at_decision"),
+            p_decision=pl.col("p_at_decision"),
+        ),
+    }
+    scored = with_results(stored, games).join(decided, on=keys, how="left")
+    pairs = {
+        "B3 against B0, both at 07:05": ("p_b3", "p_b0"),
+        "The blend against B0, both at 07:05": ("p_blend", "p_b0"),
+        "The blend at 07:05 against the decision's": ("p_blend", "p_decision_blend"),
+    }
+    compared = {}
+    for name, (mine, other) in pairs.items():
+        paired = scored.filter(pl.col(other).is_not_null()).with_columns(
+            difference=log_loss(pl.col(mine), pl.col("home_win"))
+            - log_loss(pl.col(other), pl.col("home_win"))
+        )
+        compared[name] = estimate(paired, "difference")
+    bets = shadow.valued(_morning_bets(started), moves)
+    return section | {
+        "primary": primary,
+        "entry_to_close": entry,
+        "split": {name: _toward(leg, "d_B3") for name, leg in legs.items()},
+        "comparisons": compared,
+        "shadow": {"bets": bets.height, "clv_per_bet": estimate(bets, "clv")},
+    }
+
+
 def real_stakes(
     bets: pl.DataFrame,
     season_bets: pl.DataFrame,
@@ -1030,6 +1135,7 @@ def report(
     goalie_spreads: pl.DataFrame | None = None,
     dailyfaceoff: pl.DataFrame | None = None,
     scale_up: dict[str, Any] | None = None,
+    morning: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
     """The live report of one policy, the frozen one by default, as of as_of: ledger and
     settlements as written, games' results, the odds' Pinnacle quotes, SBR's history
@@ -1039,7 +1145,8 @@ def report(
     unfinished_bundles are the decision days whose run bundle has no manifest, None when not
     checked, which ADR 0039's start rule reads. dailyfaceoff is Daily Faceoff's goalie polls,
     which #308's edge bids read for the share of fills after a starter changed. scale_up is ADR
-    0047's public counts (live/scale_up.public), None when not read."""
+    0047's public counts (live/scale_up.public), None when not read. morning is the stored
+    morning views (morning_predictions, ADR 0052), none by default."""
     now = now or datetime.combine(as_of + timedelta(days=1), time(12), UTC)
     rows = counted(ledger, as_of, policy)
     bets = bets_of(rows, settlements)
@@ -1102,6 +1209,15 @@ def report(
             lc.REGISTRY,
             now,
             goalie_spreads,
+            formal,
+        ),
+        "morning_view": morning_view(
+            morning if morning is not None else lm.empty(),
+            rows,
+            games,
+            odds,
+            as_of,
+            now,
             formal,
         ),
         "verdicts": {
@@ -1430,6 +1546,8 @@ def markdown(result: dict[str, Any]) -> str:
     ]
     lines += _edge_bid_lines(result["shadows"]["edge_bids"])
     lines += _challenger_lines(result["challengers"])
+    if "morning_view" in result:
+        lines += _morning_lines(result["morning_view"])
     if "returns" in result:
         ret = result["returns"]
         lines += [
@@ -1694,6 +1812,68 @@ def _challenger_lines(section: dict[str, Any]) -> list[str]:
             )
     if "review" in section:
         lines += _review_lines(section["review"])
+    return lines
+
+
+def _morning_lines(section: dict[str, Any]) -> list[str]:
+    """The morning view's section (ADR 0052) as markdown lines."""
+    lines = [
+        "",
+        "## The morning view (ADR 0052)",
+        "",
+        f"Version {section['version']}, registered {section['registered_on']}: the decision's "
+        "models at the 07:05 ET snapshot, with no bet, from inputs known before it, with no "
+        "verdict before the formal review. Its primary measure is the slope of Pinnacle's move "
+        "from that snapshot to the close on B3's disagreement with it there, in log-odds: above "
+        "0 when the market later prices in what B3 sees in the morning. A game day without its "
+        "morning is listed, not withheld: the run ends before any move or result exists.",
+        "",
+    ]
+    if not section["games"] and not section["missing_days"]:
+        return [*lines, "No game day after its registration yet."]
+    not_predicted = ", ".join(f"{reason} {n}" for reason, n in section["not_predicted"].items())
+    lines.append(
+        f"- Days: {section['days']}, {section['games']} games, {section['predicted']} predicted"
+        + (f"; not predicted: {not_predicted}" if not_predicted else "")
+        + "."
+    )
+    if section["missing_days"]:
+        lines.append(
+            f"- Without a stored morning: {len(section['missing_days'])} game days "
+            f"({', '.join(section['missing_days'])})."
+        )
+    primary = section["primary"]
+    lines.append(
+        f"- **The slope on B3's disagreement (primary):** {_fmt(primary)}"
+        + (f", p = {primary['p_value']:.4f}" if "p_value" in primary else "")
+    )
+    moved = section["entry_to_close"]
+    groups = {"B3": moved["models"]["B3"], "Blend": moved["models"]["BLEND"]} | {
+        f"B3, {name}": group for name, group in moved["b3_by_u"].items()
+    }
+    lines += [
+        f"- Games with a close: {moved['games']}; mean size of the move "
+        f"{_fmt(moved['move_points'], digits=2)} points.",
+        "",
+        "| Disagreement at 07:05 | Slope of the move on it | Moves toward it | "
+        "Mean move toward it, points |",
+        "| --- | --- | --- | --- |",
+        *(
+            f"| {name} | {_cell(g['slope'])} | {_cell(g['share_toward'], 1, 100, '%')} | "
+            f"{_cell(g['points_toward'])} |"
+            for name, g in groups.items()
+        ),
+        "",
+        "The move split at the decision, each leg's slope on B3's disagreement at 07:05:",
+        *(f"- {name}: {_fmt(leg['slope'])}" for name, leg in section["split"].items()),
+        "",
+        "Paired log loss on the results, the first model's less the second's (negative "
+        "favours the first):",
+        *(f"- {name}: {_fmt(figure)}" for name, figure in section["comparisons"].items()),
+        "",
+        f"- Shadow bets at 07:05 with a close: {section['shadow']['bets']}; CLV per bet: "
+        f"{_fmt(section['shadow']['clv_per_bet'], 'bets')}",
+    ]
     return lines
 
 

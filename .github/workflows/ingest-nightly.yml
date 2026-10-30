@@ -147,6 +147,12 @@ jobs:
         # report above reads what is stored, so a day's challengers show a night later.
         if: always()
         run: uv run nhl live challengers --r2
+      - name: Morning view check (#357)
+        # Every stored morning view (ADR 0052) rebuilt into the lake's morning_predictions, and
+        # the latest three replayed from their run bundles: a stored day its bundle no longer
+        # reproduces fails the step. Never part of a decision; the log prints counts only.
+        if: always()
+        run: uv run nhl live morning --check --r2
       - name: Kalshi price shadow (#320)
         # Shadow kalshi_prices (ADR 0046) on each game date since its registration, before today,
         # not kept yet: two fair values, the market's and conservative_blend's, selecting on

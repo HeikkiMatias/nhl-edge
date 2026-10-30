@@ -144,6 +144,22 @@ def slope(frame: pl.DataFrame, x: str, y: str, draws: int = DRAWS, seed: int = S
     """The least-squares slope of y on x, with an intercept, over the frame's games, with a
     weekly block bootstrap interval: each draw refits the slope on the resampled weeks' sums. The
     frame needs season and game_date."""
+    return interval(*_slope_draws(frame, x, y, draws, seed))
+
+
+def slope_p_value(
+    frame: pl.DataFrame, x: str, y: str, draws: int = DRAWS, seed: int = SEED
+) -> float:
+    """The two-sided p-value of the slope of y on x against 0 from the same weekly block
+    bootstrap that gives its interval (slope), as p_value takes a mean's (ADR 0052)."""
+    _, resampled = _slope_draws(frame, x, y, draws, seed)
+    return float(min(1.0, 2 * min(np.mean(resampled <= 0), np.mean(resampled >= 0))))
+
+
+def _slope_draws(
+    frame: pl.DataFrame, x: str, y: str, draws: int, seed: int
+) -> tuple[float, np.ndarray]:
+    """slope's estimate on the whole frame, and its finite resampled draws."""
     if frame.height < 2:
         raise ValueError(f"too few games to estimate the slope of {y} on {x}")
     sums = {
@@ -171,7 +187,7 @@ def slope(frame: pl.DataFrame, x: str, y: str, draws: int = DRAWS, seed: int = S
     finite = resampled[np.isfinite(resampled)]
     if finite.size == 0:
         raise ValueError(f"no resample of {x} has the spread to estimate the slope of {y} on")
-    return interval(fit(**whole), finite)
+    return float(fit(**whole)), finite
 
 
 def difference(

@@ -161,6 +161,7 @@ class Season:
             goalie_spreads=changes.pop("goalie_spreads", None),
             dailyfaceoff=changes.pop("dailyfaceoff", None),
             scale_up=changes.pop("scale_up", None),
+            morning=changes.pop("morning", None),
         )
 
 
@@ -817,6 +818,7 @@ def test_nhl_live_report_and_slate(tmp_path: Any, monkeypatch: pytest.MonkeyPatc
         "challenger_predictions": TABLES["challenger_predictions"].empty(),
         "goalie_spreads": TABLES["goalie_spreads"].empty(),
         "dailyfaceoff_goalies": TABLES["dailyfaceoff_goalies"].empty(),
+        "morning_predictions": TABLES["morning_predictions"].empty(),
     }
 
     def read(self: Lake, table: str, seasons: Any = None) -> pl.DataFrame:
@@ -860,6 +862,7 @@ def test_nhl_live_report_upserts_the_report_into_supabase(
         "challenger_predictions": TABLES["challenger_predictions"].empty(),
         "goalie_spreads": TABLES["goalie_spreads"].empty(),
         "dailyfaceoff_goalies": TABLES["dailyfaceoff_goalies"].empty(),
+        "morning_predictions": TABLES["morning_predictions"].empty(),
     }
     monkeypatch.setattr(Lake, "read", lambda self, table, seasons=None: tables[table])
     monkeypatch.setattr(lr, "sbr_history", lambda sbr, games: pl.DataFrame(schema=HISTORY))
@@ -1585,3 +1588,127 @@ def test_the_formal_review_tests_the_candidates_under_holms_step_down(
     assert "**The review's test (ADR 0048):** Holm's step-down over the 3 registered" in text
     assert "- silent/1: p = 1.0000, threshold 0.0500: does not pass." in text
     assert "passes, but its difference doesn't favour it" in text
+
+
+def eastern(day: date, hour: int, minute: int) -> datetime:
+    from nhl_edge.ingest.odds import ET
+
+    return datetime.combine(day, time(hour, minute), ET).astimezone(UTC)
+
+
+def mornings(season: "Season", shift: float = 0.8) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Each predicted game's morning view (ADR 0052) at Pinnacle's 07:06 ET pair of 1.9 and 2.0,
+    with B3 and the blend shift in log-odds from it by game, and Pinnacle's odds: that pair, and
+    a proxy before the start, with a 2% margin in proportion, that moves half way to B3, so the
+    move's slope on B3's disagreement is 0.5."""
+    from nhl_edge.lake.schemas import MorningPredictions
+    from nhl_edge.live import morning as lm
+    from nhl_edge.market.devig import fair_probabilities
+
+    p_m = float(fair_probabilities(np.array([[1.9, 2.0]]))[0, 0])
+    logit_m = np.log(p_m / (1 - p_m))
+    rows = season.ledger.filter(pl.col("status") == lp.PREDICTED)
+    d = np.where(rows["game_id"].to_numpy() % 3 == 0, -shift, shift) * (
+        1 + (rows["game_id"].to_numpy() % 5) / 5
+    )
+    p_b3 = 1 / (1 + np.exp(-(logit_m + d)))
+    days = rows["game_date"].to_list()
+    morning = rows.with_columns(
+        prediction_utc=pl.Series([eastern(d, 7, 8) for d in days]),
+        published_utc=pl.Series([eastern(d, 7, 10) for d in days]),
+        morning_snapshot_utc=pl.Series([eastern(d, 7, 6) for d in days]),
+        last_update_utc=pl.Series([eastern(d, 7, 6) for d in days]),
+        p_b0=pl.lit(p_m),
+        p_b3=pl.Series(p_b3),
+        p_blend=pl.Series(p_b3),
+        morning_version=pl.lit(lm.VERSION),
+    ).select(list(dtypes(MorningPredictions)))
+    p_close = 1 / (1 + np.exp(-(logit_m + 0.5 * d)))
+    quotes = []
+    # A close counts only after the day's decision snapshot (market/closing.py), so the
+    # ledger's midday pair is there too, at 12:46 ET.
+    for row, close in zip(rows.iter_rows(named=True), p_close, strict=True):
+        midday = (row["home_price"], row["away_price"])
+        closing_pair = (1 / (1.02 * close), 1 / (1.02 * (1 - close)))
+        for when, slot, prices, proxy in (
+            (eastern(row["game_date"], 7, 6), "morning", (1.9, 2.0), False),
+            (eastern(row["game_date"], 12, 46), "midday", midday, False),
+            (row["start_utc"] - timedelta(minutes=15), "pre7", closing_pair, True),
+        ):
+            for side, price in zip(("home", "away"), prices, strict=True):
+                quotes.append(
+                    {
+                        "snapshot_utc": when,
+                        "last_update_utc": when,
+                        "event_id": row["event_id"],
+                        "commence_time_utc": row["start_utc"],
+                        "home": row["home"],
+                        "away": row["away"],
+                        "book": "pinnacle",
+                        "market": "h2h",
+                        "side": side,
+                        "line": None,
+                        "price_decimal": price,
+                        "is_closing_proxy": proxy,
+                        "slot": slot,
+                        "raw_key": "k",
+                        "game_id": row["game_id"],
+                    }
+                )
+    odds = pl.DataFrame(quotes, schema=ODDS_FRAME_SCHEMA | {"game_id": pl.Int64})
+    return MorningPredictions.validate(morning), odds  # type: ignore[return-value]
+
+
+def test_the_morning_view_gives_counts_under_four_weeks_and_lists_a_missing_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nhl_edge.live import morning as lm
+
+    monkeypatch.setattr(lm, "REGISTERED_ON", FIRST - timedelta(days=1))
+    season = Season(n_weeks=3)
+    morning, odds = mornings(season)
+    missing = FIRST + timedelta(days=1)
+    result = season.report(morning=morning.filter(pl.col("game_date") != missing), odds=odds)
+    section = result["morning_view"]
+    assert section["missing_days"] == [missing.isoformat()]
+    assert section["primary"] == {"games": section["entry_to_close"]["games"], "weeks": 3}
+    assert section["shadow"]["clv_per_bet"]["weeks"] == 3
+    text = lr.markdown(result)
+    assert "## The morning view (ADR 0052)" in text
+    assert f"- Without a stored morning: 1 game days ({missing.isoformat()})." in text
+    # Before its registration nothing counts, and a day of another version is not its own.
+    monkeypatch.setattr(lm, "REGISTERED_ON", date(2027, 1, 1))
+    later = season.report(morning=morning, odds=odds)["morning_view"]
+    assert later["days"] == 0 and later["missing_days"] == []
+    assert "No game day after its registration yet." in lr.markdown(
+        season.report(morning=morning, odds=odds)
+    )
+
+
+def test_the_morning_view_s_slope_on_b3_s_disagreement_from_four_weeks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nhl_edge.live import morning as lm
+
+    monkeypatch.setattr(lm, "REGISTERED_ON", FIRST - timedelta(days=1))
+    season = Season(n_weeks=5)
+    # Starts at 21:00 EDT and 20:00 EST, so a pre-game slot is due on either side of DST's end,
+    # and every game gets a close.
+    later = pl.col("start_utc") + timedelta(hours=2)
+    season.ledger = season.ledger.with_columns(start_utc=later)
+    season.games = season.games.with_columns(start_utc=later)
+    morning, odds = mornings(season)
+    section = season.report(morning=morning, odds=odds)["morning_view"]
+    assert section["entry_to_close"]["without_close"] == {}
+    assert section["days"] == morning["game_date"].n_unique() and section["missing_days"] == []
+    primary = section["primary"]
+    # The close moves half way to B3 on every game with one, so the slope is 0.5 exactly.
+    assert primary["games"] > 0 and "p_value" not in primary
+    assert primary["value"] == pytest.approx(0.5) and primary["low"] == pytest.approx(0.5)
+    assert section["entry_to_close"]["models"]["B3"]["share_toward"]["mean"] == 1.0
+    assert set(section["split"]) == {"07:05 to the decision", "the decision to the close"}
+    assert "mean" in section["comparisons"]["B3 against B0, both at 07:05"]
+    assert section["shadow"]["bets"] > 0
+    # At the formal review, its p-value from the same bootstrap.
+    formal = season.report(as_of=date(2027, 4, 12), morning=morning, odds=odds)["morning_view"]
+    assert formal["primary"]["p_value"] == pytest.approx(0.0)
