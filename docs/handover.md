@@ -78,6 +78,7 @@ Every deliverable merged under its own task issue:
   - **Openers, for skaters who did dress in the team's last game:** the gap is +0.013 [−0.009, +0.033]. That interval includes zero, so it was recorded and not pursued.
 - **#125 and #134 are parked for the next model version** (label `next-model-version`, milestone P6). #125 is a debutant's NHLe in his debut season; #134 is replacement skaters rated at RAPM's reference. They are decided after the formal review on 2027-04-12, each through its own ADR.
   - #125's is ADR 0050, Proposed on 2026-10-29: it recommends a1, refreshing a debutant's prior once his lines are public, with the training-season evidence in `reports/ratings/debut-nhle-20261029-0087fbc.md` (`scripts/debut_nhle.py`).
+  - #134's is ADR 0051, Proposed on 2026-10-30: it recommends keeping replacement skaters at 0, since no level helps, with the evidence in `reports/lineups/replacement-level-20261030-bc2e843.md` (`scripts/replacement_level.py`). The replacements' minutes sit mostly in teams' first games, where they stand for summer arrivals rated about average (ADR 0017's limit).
 
 Done since: #117 and #199, the yearly landing refresh (#200, #205); #130 (#185); #131 (#201); #132 (#202).
 
