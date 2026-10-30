@@ -38,7 +38,8 @@ jobs:
     # The job's own group, not the workflow's: a later job waiting for the Kalshi runner never
     # holds back the next slot's snapshot (#347).
     concurrency: odds
-    # The midday slot's decisions pull the lake and fit B2 and B3 (#164).
+    # The midday slot's decisions, and the morning view (#357), pull the lake and fit B2 and
+    # B3 (#164).
     timeout-minutes: 40
     # The live Kalshi key is the kalshi-live environment's secret, which the owner restricts to
     # main (#294): a workflow pushed on any other branch can't read it.
@@ -81,6 +82,23 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(--slot "$SLOT"); fi
           if [ "$SKIP" = "true" ]; then skip=--skip-if-no-games; else skip=--no-skip-if-no-games; fi
           uv run nhl odds snapshot --regions eu --slot-plan free-tier "$skip" --mirror-raw "${pick[@]}"
+      - name: Morning view (#357)
+        # The decision's models at the morning snapshot, with no bet (ADR 0052): each slate game's
+        # probabilities, or why it has none, from inputs known before that snapshot (the feature
+        # build, and the goalie poll above), written once to R2 with its run bundle. It runs after
+        # the snapshot whatever its outcome, so a morning without one is written as skipped.
+        # Outside 07:00 to 07:35 ET the day is skipped, never reconstructed. A fallback cron line
+        # runs it only when it is today's morning slot. The log prints counts only.
+        if: always() && (github.event_name == 'schedule' || inputs.slot == 'morning')
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
+          uv run nhl live morning --r2 "${pick[@]}"
       - name: Predict
         # The day's paper decisions at the midday slot (#164, docs/plans/phase-5.md task 3, ADRs
         # 0028, 0030 and 0033). It runs after the snapshot whatever its outcome, so a day without
