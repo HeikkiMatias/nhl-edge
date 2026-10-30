@@ -221,6 +221,11 @@ Every deliverable merged under its own task issue:
 
 **Research run bundles (#186).** Every `nhl backtest` run keeps its per-game rows in `bundles/research/<run id>/` (pass `--r2` so a session's run outlives its container). The bundle is sealed only once they reproduce the report. `nhl research compare` pairs two kept runs' models game by game, with intervals, and names the inputs they read differently (docs/data-sources.md). Runs before 2026-10-21 have no bundle, and spent tests are never run again to make one.
 
+**The market-relative yardstick (#361, ADR 0053, Proposed).** `nhl research yardstick` scores B2's and B3's features on the training seasons by how well they forecast SBR's move from the opener to the close, and by what they add to the close on the result. Each season is fitted on the earlier ones, with weekly block bootstrap intervals.
+- **The halves:** explore on 2012-13 to 2014-15; confirm on 2015-16 to 2017-18, once per claim committed to `reports/yardstick/claims/` and kept in R2.
+- **The first explore run** (`reports/yardstick/explore-yardstick-20261030-dafedeb.md`): B3's split anticipates about 4% of the move beyond the opener's drift, −0.46 [−0.84, −0.13] thousandths, and holds on the rested games. No feature adds to the close.
+- **Next:** step 2's diagnostics on the explore half, then a close forecaster (step 3, its own ADR).
+
 **Challengers (#255, ADR 0038).** New models are judged only on decision days after their registration, never on history again.
 - **Where:**
   - each challenger is an entry in `live/challengers.py`;
