@@ -1,6 +1,6 @@
 # 0052. The morning view: the model at 07:05 ET, scored on where the market goes
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-10-30, #357): option 1, with B3's slope as the primary measure, a family of its own, the day's feature rows counted as observed when their build had them, and the ruling below on the live games that prompted it
 - Date: 2026-10-30
 - Part of: #357, from the owner's decision of 2026-10-30 to post earlier, from the model's own view; it feeds #358
 
@@ -18,13 +18,15 @@
 
 **Where the idea came from, and why that doesn't touch its evidence:** these figures are the live games' to 2026-10-29, from the owner's performance review. So are B1's home lean below and the choice of B3 for the measure. Under ADR 0038's rules none of those games counts. The evidence is only the games after registration, against a measure fixed here, and no model, fit or frozen policy changes.
 
+**The owner's ruling (2026-10-30):** a pre-registered experiment judged only on games after its registration may take its idea, and the choice of its measure, from earlier live games. The leakage review's rule against designs informed by live games doesn't apply to it.
+
 ## Options
 
 1. **A morning run at the 07:05 slot.** The decision's models are computed at the morning snapshot, then written once with their own run bundle, and no bet is made. It costs a second model run each game day, of about 8 minutes.
 2. **A challenger from the midday bundle (ADR 0038).** This is cheap, but the bundle no longer holds the morning's goalie rows, so the result would not be the 07:05 view.
 3. **Wait for #361's history harness.** It is free, but SBR's opener has no time and no goalie state, and it never gives #358 a fair value at 07:05.
 
-## Decision (proposed): option 1, as `morning_view` version 1, registered on the day its code merges
+## Decision: option 1 (the owner, 2026-10-30), as `morning_view` version 1, registered on the day its code merges
 
 - **What runs:** at the morning slot, the decision's own code, with no selection and no bet:
   - B2, B3 and u's parts from the season's fits;
