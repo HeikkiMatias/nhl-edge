@@ -1,20 +1,22 @@
 name: kalshi-watch
-# Every game's Kalshi markets watched from the morning to the start (#319), for choosing the
-# owner's own orders (the owner's decision of 2026-10-23): the top of book each minute, the full
-# books and the trades every 5 minutes, stored raw in R2 and rebuilt into the lake's private
-# kalshi_tops, kalshi_depth and kalshi_trades. The Cloudflare timer in infra/timer dispatches it at
-# 07:05, 11:05, 15:05 and 19:05 US Eastern, since GitHub's schedule started runs hours late (#50);
-# each run stops a minute before the next window, or after 5 h 45 for the last, inside GitHub's
-# 6-hour job limit, and a day without games ends at once. Kalshi's Developer Agreement limits its
+# Every game's Kalshi markets watched from the evening before to the start (#319), for choosing
+# the owner's own orders (the owner's decisions of 2026-10-23 and 2026-10-30): each winner market's
+# top of book every minute and its full book and trades every 5 minutes within 12 hours of the
+# start (every 15 and 30 minutes before), and the listings of every game market, the totals and
+# spreads near the start and the player props, stored raw in R2 and rebuilt into the lake's private
+# kalshi_tops, kalshi_depth, kalshi_trades and kalshi_lines. The Cloudflare timer in infra/timer
+# dispatches it every 4 hours, at 03:05, 07:05, 11:05, 15:05, 19:05 and 23:05 US Eastern, since
+# GitHub's schedule started runs hours late (#50); each run stops a minute before the next window,
+# inside GitHub's 6-hour job limit, and a day without games ends at once. Kalshi's Developer Agreement limits its
 # API to a member's own trading (3.1): the data stays in R2, and the job prints counts only, since
 # run logs are public. Public REST only: no Kalshi key is read.
 on:
   schedule:
     # The fallback while the timer is off, one line per UTC offset: the CLI skips the other half
-    # of the year's line (ingest/kalshi_watch.FALLBACK_CRONS), a late run only watches until the
-    # next window, and one started after midnight US Eastern watches nothing.
-    - cron: "5 11,15,19,23 * * *"   # EDT
-    - cron: "5 12,16,20,0 * * *"    # EST
+    # of the year's line (ingest/kalshi_watch.FALLBACK_CRONS), and a late run only watches until
+    # the next window.
+    - cron: "5 3,7,11,15,19,23 * * *"   # EDT
+    - cron: "5 0,4,8,12,16,20 * * *"    # EST
   workflow_dispatch:
 concurrency:
   group: kalshi-watch

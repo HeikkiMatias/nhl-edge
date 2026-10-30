@@ -1,9 +1,9 @@
-"""#319: every game's Kalshi markets watched from the morning to the start, on synthetic responses
-only: the public repository holds no Kalshi response (Developer Agreement 3.1), and no test calls
-Kalshi."""
+"""#319: every game's Kalshi markets watched from the evening before to the start, and the listings,
+lines and props, on synthetic responses only: the public repository holds no Kalshi response
+(Developer Agreement 3.1), and no test calls Kalshi."""
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -18,8 +18,9 @@ from nhl_edge.ingest import kalshi_watch as kw
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import Lake
 
-# The fixture day's first window, 07:05 EDT: a run's first trades poll reaches back to it.
-MORNING = datetime(2026, 10, 7, 11, 5, tzinfo=UTC)
+# 19:05 EDT the evening before the fixture day: a run's first trades poll of a market reaches back
+# to it.
+WATCH_FROM = datetime(2026, 10, 6, 23, 5, tzinfo=UTC)
 
 
 def test_a_run_ends_a_minute_before_the_next_window_and_never_after_its_longest() -> None:
@@ -29,8 +30,11 @@ def test_a_run_ends_a_minute_before_the_next_window_and_never_after_its_longest(
     assert kw.window_end(datetime(2026, 12, 1, 16, 5, tzinfo=UTC)) == datetime(
         2026, 12, 1, 20, 4, tzinfo=UTC
     )  # 11:05 EST to 15:04 EST
-    last = datetime(2026, 10, 23, 23, 5, tzinfo=UTC)  # 19:05 EDT
-    assert kw.window_end(last) == last + kw.LONGEST
+    evening = datetime(2026, 10, 23, 23, 5, tzinfo=UTC)  # 19:05 EDT to 23:04 EDT
+    assert kw.window_end(evening) == datetime(2026, 10, 24, 3, 4, tzinfo=UTC)
+    # The day's last window runs to a minute before the next day's first, 03:04 EDT.
+    last = datetime(2026, 10, 24, 3, 5, tzinfo=UTC)
+    assert kw.window_end(last) == datetime(2026, 10, 24, 7, 4, tzinfo=UTC)
     late = datetime(2026, 10, 23, 13, 30, tzinfo=UTC)  # a late fallback run at 09:30 EDT
     assert kw.window_end(late) == datetime(2026, 10, 23, 15, 4, tzinfo=UTC)
 
@@ -57,7 +61,7 @@ def test_tops_every_minute_and_books_and_trades_every_five(tmp_path: Path) -> No
 def test_trades_reach_back_over_the_last_poll_with_an_overlap(tmp_path: Path) -> None:
     _, served, _, _ = run(tmp_path, 7)
     asked = sorted({int(r.url.params["min_ts"]) for _, r in served.of(kw.TRADES)})
-    first = MORNING - kw.OVERLAP
+    first = WATCH_FROM - kw.OVERLAP
     second = START - kw.OVERLAP
     assert asked == [int(first.timestamp()), int(second.timestamp())]
 
@@ -251,7 +255,7 @@ def test_a_failed_trades_request_keeps_that_markets_watermark(tmp_path: Path) ->
     assert report.failed == 1
     second = [r for at, r in served.of(kw.TRADES) if at >= START + kw.BOOK_EVERY]
     marks = {r.url.params["ticker"]: int(r.url.params["min_ts"]) for r in second}
-    first_start = MORNING - kw.OVERLAP
+    first_start = WATCH_FROM - kw.OVERLAP
     assert marks[wsh] == int(first_start.timestamp())
     others = {t: m for t, m in marks.items() if t != wsh}
     assert set(others.values()) == {int((START - kw.OVERLAP).timestamp())}
@@ -263,7 +267,7 @@ def test_a_cut_short_page_run_keeps_the_watermark(tmp_path: Path) -> None:
     _, served, _, _ = run(tmp_path, 7, fake=lambda clock: Fake(clock, pages=pages))
     second = [r for at, r in served.of(kw.TRADES) if at >= START + kw.BOOK_EVERY]
     assert {int(r.url.params["min_ts"]) for r in second} == {
-        int((MORNING - kw.OVERLAP).timestamp())
+        int((WATCH_FROM - kw.OVERLAP).timestamp())
     }
 
 
@@ -307,13 +311,7 @@ def test_a_replay_with_an_unreadable_poll_replaces_nothing(tmp_path: Path) -> No
     assert lake.read("kalshi_tops").height == before
 
 
-def test_a_run_started_before_the_first_window_or_on_the_other_offsets_line_watches_nothing() -> (
-    None
-):
-    assert not kw.watch_hours(datetime(2026, 10, 23, 10, 59, tzinfo=UTC))  # 06:59 EDT
-    assert kw.watch_hours(datetime(2026, 10, 23, 11, 5, tzinfo=UTC))  # 07:05 EDT
-    assert kw.watch_hours(datetime(2026, 10, 24, 3, 59, tzinfo=UTC))  # 23:59 EDT
-    assert not kw.watch_hours(datetime(2026, 10, 24, 6, 5, tzinfo=UTC))  # 02:05 EDT
+def test_a_run_on_the_other_offsets_line_watches_nothing() -> None:
     october, december = (
         datetime(2026, 10, 23, 15, 5, tzinfo=UTC),
         datetime(2026, 12, 1, 16, 5, tzinfo=UTC),
@@ -324,7 +322,7 @@ def test_a_run_started_before_the_first_window_or_on_the_other_offsets_line_watc
     assert not kw.cron_due("0 3 * * *", october)
 
 
-def test_nhl_kalshi_watch_skips_the_other_offsets_line_and_an_early_start(
+def test_nhl_kalshi_watch_skips_the_other_offsets_line(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from typer.testing import CliRunner
@@ -341,20 +339,15 @@ def test_nhl_kalshi_watch_skips_the_other_offsets_line_and_an_early_start(
     skipped = CliRunner().invoke(app, ["kalshi", "watch", "--cron", est])
     assert skipped.exit_code == 0, skipped.output
     assert "is not this time of year's line, skipped" in skipped.output
-    early = kf.Clock(datetime(2026, 10, 24, 6, 5, tzinfo=UTC))  # 02:05 EDT, a late fallback
-    monkeypatch.setattr(nhl_api, "utc_now", early.now)
-    nothing = CliRunner().invoke(app, ["kalshi", "watch"])
-    assert nothing.exit_code == 0, nothing.output
-    assert "started before the first window (07:05 ET), nothing watched" in nothing.output
 
 
-def test_a_runs_first_trades_poll_reaches_back_to_the_days_first_window(tmp_path: Path) -> None:
-    # A 15:05 EDT run: its first poll of each market asks from 07:04 EDT, so a trades poll that
-    # failed at the end of the 11:05 run leaves no gap (Codex on #325).
+def test_a_runs_first_trades_poll_reaches_back_to_the_markets_watch_start(tmp_path: Path) -> None:
+    # A 15:05 EDT run: its first poll of each market asks from 19:04 EDT the evening before, so a
+    # trades poll that failed at the end of an earlier run leaves no gap (Codex on #325).
     afternoon = datetime(2026, 10, 7, 19, 5, tzinfo=UTC)
     _, served, _, _ = run(tmp_path, 1, start=afternoon)
     asked = {int(r.url.params["min_ts"]) for _, r in served.of(kw.TRADES)}
-    assert asked == {int((MORNING - kw.OVERLAP).timestamp())}
+    assert asked == {int((WATCH_FROM - kw.OVERLAP).timestamp())}
 
 
 def test_a_trades_page_without_its_list_is_kept_raw_marked_invalid_and_counted(
@@ -375,7 +368,7 @@ def test_a_trades_page_without_its_list_is_kept_raw_marked_invalid_and_counted(
     assert report.failed == 2 * 6 and "12 failed" in lines[0]
     second = [r for at, r in served.of(kw.TRADES) if at >= START + kw.BOOK_EVERY]
     assert {int(r.url.params["min_ts"]) for r in second} == {
-        int((MORNING - kw.OVERLAP).timestamp())
+        int((WATCH_FROM - kw.OVERLAP).timestamp())
     }
     # The replay skips them, as the poll marked them, and rebuilds the rest.
     tables, replayed = kw.stored_watch(store)
@@ -400,3 +393,183 @@ def test_no_request_starts_after_the_window_ends(tmp_path: Path) -> None:
     report = kw.watch(client=client, slate=pf.slate, until=until, echo=print)
     assert served.requests and max(at for at, _ in served.requests) < until
     assert report.failed == 0 and report.started == 0
+
+
+def test_from_the_evening_a_run_watches_the_next_days_games_too() -> None:
+    before = datetime(2026, 10, 23, 22, 59, tzinfo=UTC)  # 18:59 EDT
+    assert kw.watched_days(before) == [date(2026, 10, 23)]
+    evening = datetime(2026, 10, 23, 23, 5, tzinfo=UTC)  # 19:05 EDT
+    assert kw.watched_days(evening) == [date(2026, 10, 23), date(2026, 10, 24)]
+    after_midnight = datetime(2026, 10, 24, 4, 30, tzinfo=UTC)  # 00:30 EDT
+    assert kw.watched_days(after_midnight) == [date(2026, 10, 24)]
+
+
+def tomorrow() -> pl.DataFrame:
+    """The fixture slate and a game of the next day, 20 hours after the watch's start."""
+    later = pf.slate({2026020060: ("DAL", "CHI", START + timedelta(hours=20))}).with_columns(
+        game_date=pl.lit(pf.DAY + timedelta(days=1))
+    )
+    return pl.concat([pf.slate(), later])
+
+
+def test_a_market_far_from_its_start_is_polled_less_often_and_on_its_own_date(
+    tmp_path: Path,
+) -> None:
+    report, served, store, _ = run(tmp_path, 61, games=tomorrow())
+    far = "KXNHLGAME-26OCT08CHIDAL-DAL"
+    asked = [at for at, r in served.of(kw.TOPS) if far in r.url.params["tickers"]]
+    assert asked == [START + timedelta(minutes=m) for m in (0, 15, 30, 45, 60)]
+    books = sorted({at for at, r in served.of(kw.BOOKS) if far in r.url.path})
+    assert books == [START + timedelta(minutes=m) for m in (0, 30, 60)]
+    # The near games keep their minute: their tops never share a request with the next day's.
+    near = [r for _, r in served.of(kw.TOPS) if "26OCT07" in r.url.params["tickers"]]
+    assert len(near) == 61 and all("26OCT08" not in r.url.params["tickers"] for r in near)
+    days = {p.parent.name for p in (tmp_path / "raw/kalshi/watch/tops").rglob("*.json.gz")}
+    assert days == {"2026-10-07", "2026-10-08"} and report.dates == {pf.DAY, pf.DAY + timedelta(1)}
+    tables, _ = kw.stored_watch(store)
+    # Both teams' markets at each of its 5 polls.
+    assert tables[kw.TOPS].filter(pl.col("game_id") == 2026020060).height == 2 * 5
+
+
+def test_the_listings_lines_and_props_at_their_own_cadence(tmp_path: Path) -> None:
+    report, served, _, lines = run(tmp_path, 31, lines=True)
+    assert report.line_polls == {kw.LISTING: 2, kw.LINES: 7, kw.PROPS: 3}
+    # One listing request per series and poll, one lines request per game and poll.
+    assert len(served.of(kw.LISTING)) == 2 * len(kw.GAME_SERIES)
+    assert len(served.of(kw.PROPS)) == 3 * len(kw.PROP_SERIES)
+    asked = served.of(kw.LINES)
+    assert len(asked) == 7 * 3
+    assert all(
+        t.split("-")[0] in kw.LINE_SERIES
+        for _, r in asked
+        for t in r.url.params["tickers"].split(",")
+    )
+    # The winner's polls are as they were, and the log has counts only.
+    assert report.polls == {kw.TOPS: 31, kw.BOOKS: 7, kw.TRADES: 7}
+    assert lines[0].endswith("; 2 listing, 7 line and 3 prop polls")
+    assert "KXNHL" not in lines[0]
+
+
+def test_the_line_polls_replay_into_kalshi_lines(tmp_path: Path) -> None:
+    _, _, store, _ = run(tmp_path, 31, lines=True)
+    table, report = kw.stored_lines(store)
+    assert report.objects == {kw.LISTING: 2, kw.LINES: 7, kw.PROPS: 3}
+    assert report.unparsed == [] and report.incomplete == []
+    # 3 games: a listing has the winner's 2 markets and one of each line a game; a lines poll one
+    # of each line; a props poll one of each prop series.
+    assert report.rows == {kw.LISTING: 2 * 3 * 5, kw.LINES: 7 * 3 * 3, kw.PROPS: 3 * 3 * 5}
+    game = table.filter(pl.col("game_id") == 2026020053)
+    spread = game.filter(pl.col("series") == "KXNHLSPREAD").row(0, named=True)
+    assert (spread["away"], spread["home"], spread["team"]) == ("PIT", "WSH", "WSH")
+    assert spread["floor_strike"] == 5.5 and spread["player_tag"] is None
+    total = game.filter(pl.col("series") == "KXNHLTOTAL").row(0, named=True)
+    assert total["team"] is None and total["start_utc"] == pf.START
+    prop = game.filter(pl.col("series") == "KXNHLGOAL").row(0, named=True)
+    assert (prop["team"], prop["player_tag"], prop["kind"]) == ("WSH", "PLAYER1", kw.PROPS)
+    assert set(table["observed_date"]) == {pf.DAY}
+    lake = Lake(tmp_path / "lake")
+    kw.replay_lines(store, lake, [pf.DAY])
+    assert lake.read("kalshi_lines").height == table.height
+
+
+def test_an_event_ticker_is_read_back_to_its_date_and_teams() -> None:
+    total = kw.parse_event("KXNHLTOTAL-26NOV01OTTANA")
+    assert total == kw.Event("KXNHLTOTAL", date(2026, 11, 1), "OTT", "ANA")
+    assert kw.parse_event("KXNHLGOAL-26OCT30NJVGK") == kw.Event(
+        "KXNHLGOAL", date(2026, 10, 30), "NJD", "VGK"
+    )
+    # Teams it can't read are left unknown; a date it can't read is no event.
+    assert kw.parse_event("KXNHLGAME-26OCT30XXYYY") == kw.Event(
+        "KXNHLGAME", date(2026, 10, 30), None, None
+    )
+    assert kw.parse_event("KXNHLGAME-26XYZ30NJVGK") is None
+
+
+def listing_of(*markets: dict[str, object]) -> bytes:
+    return json.dumps({"markets": list(markets)}).encode()
+
+
+GAME = {
+    "game_id": 2026020053,
+    "season": 20262027,
+    "game_date": pf.DAY.isoformat(),
+    "start_utc": pf.START.isoformat(),
+    "away": "PIT",
+    "home": "WSH",
+}
+
+
+def test_a_listed_game_off_the_slate_is_kept_only_on_a_later_date() -> None:
+    later = top("KXNHLTOTAL-26OCT09PITWSH-6")
+    unknown = top("KXNHLTOTAL-26OCT07NYRBOS-6")
+    rows = kw.parse_lines(listing_of(later, unknown), kw.LISTING, [GAME], [pf.DAY], START, "k")
+    # The later date's game is kept without a game; one on the slate's date it lacks is not.
+    assert rows["ticker"].to_list() == ["KXNHLTOTAL-26OCT09PITWSH-6"]
+    assert rows["game_id"].to_list() == [None] and rows["start_utc"].to_list() == [None]
+
+
+def test_nhl_kalshi_watch_builds_kalshi_lines_too(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+    from nhl_edge.ingest import nhl_api
+    from nhl_edge.live import slate as live_slate
+
+    for name in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    monkeypatch.chdir(tmp_path)
+    clock = kf.Clock(START)
+    served = Fake(clock)
+    monkeypatch.setattr(nhl_api, "utc_now", clock.now)
+    monkeypatch.setattr(kalshi, "Kalshi", lambda store: kf.make(store, served, clock))
+    fetched = live_slate.Fetched(pf.slate(), "nhl/schedule/x", START)
+    monkeypatch.setattr(live_slate, "fetch", lambda api, day: fetched)
+    result = CliRunner().invoke(app, ["kalshi", "watch", "--until", "2026-10-07T17:01"])
+    assert result.exit_code == 0, result.output
+    assert "; 1 listing, 2 line and 1 prop polls" in result.output
+    assert result.output.count("kalshi watch 2026-10-07: rebuilt from") == 2
+    assert "KXNHL" not in result.output
+    rows = Lake().read("kalshi_lines")
+    # The fake clock stands still between requests, so the first lines poll sees the listing's 9
+    # line markets at the same instant: one observation, kept once.
+    assert rows.height == 3 * 5 + 2 * 3 * 3 + 3 * 5 - 3 * 3
+    replayed = CliRunner().invoke(app, ["kalshi", "replay"])
+    assert replayed.exit_code == 0, replayed.output
+    assert "kalshi lines replay 2026-10-07..2026-10-07: 1 listing polls, 2 lines polls, " in (
+        replayed.output
+    )
+
+
+def test_a_failed_next_day_slate_never_stops_todays_watch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+    from nhl_edge.ingest import nhl_api
+    from nhl_edge.live import slate as live_slate
+
+    for name in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    monkeypatch.chdir(tmp_path)
+    evening = datetime(2026, 10, 7, 23, 10, tzinfo=UTC)  # 19:10 EDT: the next day is watched
+    clock = kf.Clock(evening)
+    served = Fake(clock)
+    monkeypatch.setattr(nhl_api, "utc_now", clock.now)
+    monkeypatch.setattr(kalshi, "Kalshi", lambda store: kf.make(store, served, clock))
+    fetched = live_slate.Fetched(pf.slate(), "nhl/schedule/x", START)
+
+    def fetch(api: object, day: date) -> live_slate.Fetched:
+        if day != pf.DAY:
+            raise ConnectionError("down")
+        return fetched
+
+    monkeypatch.setattr(live_slate, "fetch", fetch)
+    result = CliRunner().invoke(app, ["kalshi", "watch", "--until", "2026-10-07T23:13"])
+    assert result.exit_code == 0, result.output
+    assert "the next day's slate fetch failed (ConnectionError)" in result.output
+    assert "kalshi watch: 3 top" in result.output

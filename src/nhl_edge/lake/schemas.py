@@ -2675,6 +2675,66 @@ class KalshiTrades(pa.DataFrameModel):
         )
 
 
+KALSHI_LINES_KEY = ("observed_utc", "ticker")
+# Any NHL game market's ticker: its series, the game's event key and what the market pays on.
+KALSHI_LINE_TICKER = r"^KXNHL[A-Z0-9]+-\d{2}[A-Z]{3}\d{2}[A-Z]{4,6}(-[A-Z0-9.]+)+$"
+KALSHI_LINE_KINDS = ("listing", "lines", "props")
+
+
+class KalshiLines(pa.DataFrameModel):
+    """The top of book of one Kalshi market of an NHL game at one poll (#319, the owner's
+    decision of 2026-10-30): the winner, the total, the spread and the team totals from each
+    market's open (kind listing), those lines near the start (lines), and the player props on the
+    game day (props), for choosing the owner's own orders.
+
+    series and event_ticker name the market's kind of bet and its game; game_date, away and home
+    are read from the event ticker (US Eastern date, NHL triCodes; null when its teams can't be
+    read). game_id and start_utc are the slate's game when the poll's slate holds it, and null for
+    a game on a later date. subject, strike_type and floor_strike say what Yes pays on, team and
+    player_tag what the ticker names; the rest is the listing's top of book as in KalshiTops.
+    observed_utc is the response's fetch time and observed_date its US Eastern date, which
+    partitions the table. A row of a game of the slate is kept only before its start. Private
+    under Kalshi's Developer Agreement (3.1), as KalshiTops: never published and never a model
+    input."""
+
+    observed_utc: UtcDatetime
+    observed_date: pl.Date
+    kind: pl.String = pa.Field(isin=KALSHI_LINE_KINDS)
+    series: pl.String = pa.Field(str_startswith="KXNHL")
+    event_ticker: pl.String
+    ticker: pl.String = pa.Field(str_matches=KALSHI_LINE_TICKER)
+    game_date: pl.Date
+    away: pl.String = pa.Field(str_matches=TRI_CODE, nullable=True)
+    home: pl.String = pa.Field(str_matches=TRI_CODE, nullable=True)
+    game_id: pl.Int64 = pa.Field(nullable=True)
+    start_utc: UtcDatetime = pa.Field(nullable=True)
+    team: pl.String = pa.Field(str_matches=TRI_CODE, nullable=True)
+    player_tag: pl.String = pa.Field(nullable=True)
+    subject: pl.String = pa.Field(nullable=True)
+    strike_type: pl.String = pa.Field(nullable=True)
+    floor_strike: pl.Float64 = pa.Field(nullable=True)
+    status: pl.String = pa.Field(nullable=True)
+    yes_bid: pl.Float64 = pa.Field(nullable=True, ge=0, le=1)
+    yes_bid_size: pl.Float64 = pa.Field(nullable=True, ge=0)
+    yes_ask: pl.Float64 = pa.Field(nullable=True, ge=0, le=1)
+    yes_ask_size: pl.Float64 = pa.Field(nullable=True, ge=0)
+    last_price: pl.Float64 = pa.Field(nullable=True, ge=0, le=1)
+    volume: pl.Float64 = pa.Field(nullable=True, ge=0)
+    open_interest: pl.Float64 = pa.Field(nullable=True, ge=0)
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(KALSHI_LINES_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def before_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("start_utc").is_null() | (pl.col("observed_utc") < pl.col("start_utc"))
+        )
+
+
 KALSHI_ENVS = ("live", "demo")
 REAL_ORDER_STATES = ("planned", "skipped", "placed", "not sent", "canceled", "executed")
 # ADR 0040's one resting order, or ADR 0045's taker and maker parts.

@@ -21,9 +21,9 @@ export const GOALIE_HOURS_UTC = [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 // results count as public (ADR 0003).
 export const NIGHTLY_UTC = "09:00";
 
-// The Kalshi watch's windows in US Eastern wall time (#319): each run polls every game's markets
-// until a minute before the next, inside GitHub's 6-hour job limit.
-export const KALSHI_WATCH_ET = ["07:05", "11:05", "15:05", "19:05"];
+// The Kalshi watch's windows in US Eastern wall time (#319), every 4 hours: each run polls every
+// game's markets until a minute before the next, inside GitHub's 6-hour job limit.
+export const KALSHI_WATCH_ET = ["03:05", "07:05", "11:05", "15:05", "19:05", "23:05"];
 
 // The Kalshi re-valuation's checks in US Eastern wall time (#321): every 15 minutes from 13:05,
 // after the midday decision's orders, to 22:50, clear of the odds slots at :45, which re-value at
