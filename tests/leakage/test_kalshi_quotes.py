@@ -98,6 +98,26 @@ def test_a_later_daily_faceoff_poll_never_changes_an_earlier_quote() -> None:
     assert after.filter(early).sort(pl.all()).equals(before.filter(early).sort(pl.all()))
 
 
+def test_a_later_nearer_listing_never_undoes_an_earlier_starter_change() -> None:
+    # Two polls of a listing 5 minutes off the start name different goalies; a later poll of the
+    # exact start's listing, nearer the game, must not remove that change after the fact.
+    off = qf.START + timedelta(minutes=5)
+    early = qf.dailyfaceoff(
+        [(qf.at(-60), qf.HOME, "Logan Thompson"), (qf.at(5), qf.HOME, "Charlie Lindgren")]
+    ).with_columns(start_utc=pl.lit(off).cast(qf.UTC_TYPE))
+    later = pl.concat([early, qf.dailyfaceoff([(qf.at(30), qf.HOME, "Logan Thompson")])])
+    games = kq.slate_of(qf.ledger())
+    assert kq.change_times(games, early)[qf.GAME] == [qf.at(5)]
+    assert kq.change_times(games, later)[qf.GAME] == [qf.at(5), qf.at(30)]
+    trades = qf.trades([(10, qf.HOME, 0.51, 20.0), (35, qf.HOME, 0.51, 20.0)])
+    before, after = day(trades=trades, dailyfaceoff=early), day(trades=trades, dailyfaceoff=later)
+    assert before.counts["model-2c"]["pulled_starter"] == 1
+    upto = pl.col("fill_utc") < qf.at(30)
+    assert (
+        quoted(after).filter(upto).sort(pl.all()).equals(quoted(before).filter(upto).sort(pl.all()))
+    )
+
+
 def test_no_day_it_reads_informed_its_rules() -> None:
     # The half-spreads were chosen from the watch's tops of 2026-10-28 to 10-30.
     assert kq.FIRST_DAY > kq.RULES_FIXED == date(2026, 10, 30)

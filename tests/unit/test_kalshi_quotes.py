@@ -118,6 +118,16 @@ def test_a_partial_fill_never_takes_the_team_past_the_net_cap() -> None:
     assert result.counts["model-2c"]["largest_inventory"] == float(kq.NET_CAP)
 
 
+def test_the_inventory_is_measured_after_each_fill_in_time_order() -> None:
+    # 20 away contracts unmatched, then within one step an away fill of 10 and a home fill of 10:
+    # the net reaches 30 between them.
+    rows = [(m, qf.AWAY, 0.43, 10.0) for m in (3, 6, 10.2)] + [(10.5, qf.HOME, 0.51, 15.0)]
+    result = day(trades=qf.trades(rows))
+    zero = of(result, "model-0c")
+    assert zero["contracts"].sum() == 40.0
+    assert result.counts["model-0c"]["largest_inventory"] == 30.0
+
+
 def test_the_days_cost_cap_stops_new_quotes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kq, "DAY_CAP", Decimal(12))
     big = [(m, qf.HOME, 0.51, 100.0) for m in range(10, 40, 5)]
@@ -216,6 +226,42 @@ def test_the_indexed_advance_is_kalshi_shadows() -> None:
         assert (mine.left, mine.queue, mine.since) == (theirs.left, theirs.queue, theirs.since)
 
 
+def test_a_per_contract_figure_weighs_each_fill_by_its_contracts() -> None:
+    def frame(sizes: list[tuple[float, float]]) -> pl.DataFrame:
+        days = [qf.DAY + timedelta(weeks=w) for w in range(4)]
+        return pl.DataFrame(
+            {
+                "season": [20262027] * 4 * len(sizes),
+                "game_date": [d for d in days for _ in sizes],
+                "contracts": [c for _ in days for c, _ in sizes],
+                "profit": [v for _ in days for _, v in sizes],
+            }
+        )
+
+    whole = kq.per_contract_estimate(frame([(10.0, 0.02), (1.0, -0.10)]), "profit")
+    split = kq.per_contract_estimate(frame([(5.0, 0.02), (5.0, 0.02), (1.0, -0.10)]), "profit")
+    assert whole["mean"] == pytest.approx((10 * 0.02 - 0.10) / 11)
+    assert (whole["mean"], whole["low"], whole["high"]) == pytest.approx(
+        (split["mean"], split["low"], split["high"])
+    )
+
+
+def test_a_day_kept_before_its_results_gets_them_at_a_later_report(tmp_path: object) -> None:
+    from pathlib import Path
+
+    from nhl_edge.live import bundle as lb
+
+    store = lb.LocalStore(Path(str(tmp_path)))
+    early = day(games=qf.games().clear())
+    assert early.fills["won"].is_null().all()
+    kq.keep(store, qf.DAY, early, "kalshi-quotes-20261103-abc1234", NOW)
+    found, metas = kq.kept(store)
+    assert found["won"].is_null().all()
+    assert kq.summary(found, metas, qf.games().clear())["model-2c"]["profit"] is None
+    later = kq.summary(found, metas, qf.games())["model-2c"]
+    assert later["profit"] == {"games": 1, "weeks": 1} and later["profit_usd"] > 0
+
+
 def test_the_summary_and_the_log_line(tmp_path: object) -> None:
     from pathlib import Path
 
@@ -225,7 +271,7 @@ def test_the_summary_and_the_log_line(tmp_path: object) -> None:
     result = day()
     kq.keep(store, qf.DAY, result, "kalshi-quotes-20261103-abc1234", NOW)
     found, metas = kq.kept(store)
-    figures = kq.summary(found, metas)
+    figures = kq.summary(found, metas, qf.games())
     two = figures["model-2c"]
     assert two["fills"] == 1 and two["contracts"] == 10.0 and two["matched_contracts"] == 0.0
     # Under 4 weeks a measure has counts only.

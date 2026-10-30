@@ -58,8 +58,10 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_FLOOR, Decimal
 from typing import Any
 
+import numpy as np
 import polars as pl
 
+from nhl_edge.backtest import metrics
 from nhl_edge.backtest.walk_forward import outcomes
 from nhl_edge.ingest import kalshi_watch as kw
 from nhl_edge.lineup import confirmed
@@ -280,30 +282,35 @@ def mid_of(top: tuple[datetime, Decimal | None, Decimal | None] | None) -> Decim
 
 
 def change_times(games: Sequence[Game], dailyfaceoff: pl.DataFrame) -> dict[int, list[datetime]]:
-    """Each game's moments its Daily Faceoff starter changed for either team: the polls (of the
-    team's listing nearest the game's start) naming another goalie, by name key, than the poll
-    before that named one."""
+    """Each game's moments its Daily Faceoff starter changed for either team: the polls at which
+    the goalie named for the team differs, by name key, from the one named before. The goalie
+    named at a poll is read from the polls observed by then alone: the latest naming one of the
+    team's listing whose start is nearest the game's among them, as shadow._named reads it, so a
+    later poll never changes an earlier change."""
     found: dict[int, list[datetime]] = {}
     if dailyfaceoff.is_empty():
         return found
     for game in games:
         for team in (game.home, game.away):
-            polls = dailyfaceoff.filter(
-                pl.col("game_date") == game.game_date, pl.col("team") == team
-            ).with_columns(gap=(pl.col("start_utc") - pl.lit(game.start_utc)).abs())
-            if polls.is_empty():
-                continue
-            nearest = polls.filter(pl.col("gap") == pl.col("gap").min())
-            named = (
-                nearest.with_columns(name=confirmed.key("goalie_name"))
-                .drop_nulls("name")
+            polls = (
+                dailyfaceoff.filter(pl.col("game_date") == game.game_date, pl.col("team") == team)
+                .with_columns(
+                    gap=(pl.col("start_utc") - pl.lit(game.start_utc)).abs(),
+                    name=confirmed.key("goalie_name"),
+                )
                 .sort("observed_utc")
             )
-            names = named["name"].to_list()
-            times = named["observed_utc"].to_list()
-            for k in range(1, len(names)):
-                if names[k] != names[k - 1]:
-                    found.setdefault(game.game_id, []).append(times[k].astimezone(UTC))
+            rows = list(polls.select("observed_utc", "gap", "name").iter_rows())
+            before = None
+            for t in sorted({r[0] for r in rows}):
+                known = [r for r in rows if r[0] <= t]
+                nearest = min(r[1] for r in known)
+                named = [r[2] for r in known if r[1] == nearest and r[2] is not None]
+                if not named:
+                    continue
+                if before is not None and named[-1] != before:
+                    found.setdefault(game.game_id, []).append(t.astimezone(UTC))
+                before = named[-1]
     return {k: sorted(v) for k, v in found.items()}
 
 
@@ -470,29 +477,30 @@ def _quote_price(fair: float, h: Decimal, best_ask: Decimal | None) -> Decimal |
 def step_game(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules: Exchange) -> None:
     """One step of one game at at: its bids' fills to then, its pulls, and its quotes."""
     keys = [(game.game_id, team) for team in (game.home, game.away)]
+    filled = []
     for key in keys:
         bid = state.bids.get(key)
-        if bid is None:
-            continue
-        for t, q, k in advance(bid, at, inputs.logs.get(key, EMPTY_LOGS), rules):
-            state.bought[key] = state.bought.get(key, Decimal(0)) + q
-            state.filled_cost += k
-            state.counts["fills"] += 1
-            state.fills.append(
-                {
-                    "game_id": game.game_id,
-                    "team": key[1],
-                    "posted_utc": bid.placed_utc,
-                    "fill_utc": t,
-                    "contracts": q,
-                    "price": bid.price,
-                    "cost_usd": k,
-                    "fair_at_post": bid.p_side,
-                }
-            )
-        net = state.bought.get(key, Decimal(0)) - state.bought.get(
-            (game.game_id, game.other(key[1])), Decimal(0)
+        if bid is not None:
+            logs = inputs.logs.get(key, EMPTY_LOGS)
+            filled += [(t, key, bid, q, k) for t, q, k in advance(bid, at, logs, rules)]
+    # Both teams' fills in the order they came, so the inventory is measured after each.
+    for t, key, bid, q, k in sorted(filled, key=lambda fill: (fill[0], fill[1][1])):
+        state.bought[key] = state.bought.get(key, Decimal(0)) + q
+        state.filled_cost += k
+        state.counts["fills"] += 1
+        state.fills.append(
+            {
+                "game_id": game.game_id,
+                "team": key[1],
+                "posted_utc": bid.placed_utc,
+                "fill_utc": t,
+                "contracts": q,
+                "price": bid.price,
+                "cost_usd": k,
+                "fair_at_post": bid.p_side,
+            }
         )
+        net = state.bought[key] - state.bought.get((game.game_id, game.other(key[1])), Decimal(0))
         state.largest_inventory = max(state.largest_inventory, abs(net))
     if at >= game.start_utc - STOP_BEFORE:
         _released(state, game, at, None)
@@ -796,10 +804,45 @@ def pairs(fills: pl.DataFrame) -> pl.DataFrame:
 MEASURES = ("spread", "markout_5m", "markout_30m", "markout_last", "markout_close", "profit")
 
 
-def summary(fills: pl.DataFrame, metas: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def settled(fills: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
+    """The kept fills with their teams' full-game results as games holds them now: a day kept
+    before its results were public gets them at a later report. The kept files never change."""
+    results = outcomes(games).join(games.select("game_id", "home"), on="game_id")
+    home_win = pl.col("home_win")
+    return (
+        fills.drop("won")
+        .join(results.select("game_id", "home", "home_win"), on="game_id", how="left")
+        .with_columns(
+            won=pl.when(pl.col("team") == pl.col("home"))
+            .then(home_win)
+            .otherwise(1 - home_win)
+            .cast(pl.Int8)
+        )
+        .select(list(FILL_SCHEMA))
+    )
+
+
+def per_contract_estimate(frame: pl.DataFrame, value: str) -> dict[str, Any]:
+    """value per contract, each fill weighted by its contracts, with its weekly block bootstrap
+    interval (hard rule 7), or only the counts over fewer than the live report's MIN_WEEKS. The
+    same weeks are drawn for the contracts and their total, so each draw is a ratio of the two:
+    splitting a fill in two changes nothing."""
+    if not lr.enough(frame):
+        return lr.counts(frame)
+    weighted = frame.with_columns(total=pl.col(value) * pl.col("contracts"))
+    totals = metrics.resampled_means(weighted, "total", np.random.default_rng(metrics.SEED))
+    sizes = metrics.resampled_means(weighted, "contracts", np.random.default_rng(metrics.SEED))
+    whole = float(weighted["total"].sum()) / float(weighted["contracts"].sum())
+    spread = metrics.interval(whole, totals / sizes)
+    return {"mean": spread.value, "low": spread.low, "high": spread.high} | lr.counts(frame)
+
+
+def summary(
+    fills: pl.DataFrame, metas: Sequence[Mapping[str, Any]], games: pl.DataFrame
+) -> dict[str, Any]:
     """The private figures over every kept day, per variant: its counts, and each measure per
-    fill (per contract) through the live report's estimate."""
-    rows = per_contract(fills)
+    contract, with the results games holds now (settled)."""
+    rows = per_contract(settled(fills, games))
     matched = pairs(rows)
     result: dict[str, Any] = {
         "shadow": SHADOW,
@@ -827,7 +870,7 @@ def summary(fills: pl.DataFrame, metas: Sequence[Mapping[str, Any]]) -> dict[str
         }
         for measure in MEASURES:
             known = of_variant.filter(pl.col(measure).is_not_null())
-            figures[measure] = lr.estimate(known, measure) if known.height else None
+            figures[measure] = per_contract_estimate(known, measure) if known.height else None
         result[name] = figures
     return result
 

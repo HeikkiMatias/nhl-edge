@@ -189,6 +189,8 @@ def games(home_win: bool = True) -> pl.DataFrame:
     return pl.DataFrame(
         {
             "game_id": [GAME],
+            "home": [HOME],
+            "away": [AWAY],
             "home_score": [3 if home_win else 1],
             "away_score": [1 if home_win else 3],
             "observed_utc": [START + timedelta(hours=12)],

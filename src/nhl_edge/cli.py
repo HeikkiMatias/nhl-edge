@@ -6130,7 +6130,7 @@ def real_quotes(
         kq.keep(store, day, result, version, now)
     found, metas = kq.kept(store)
     figures = {"as_of_utc": now.isoformat(), "code_version": version}
-    figures |= kq.summary(found, metas)
+    figures |= kq.summary(found, metas, read["games"])
     store.put(kq.report_key(now), json.dumps(figures, sort_keys=True).encode())
     typer.echo(kq.count_line(metas, len(days)))
 
