@@ -2,6 +2,7 @@
 the result beyond the close, the rested games, a feature's first season, SBR's market, B2's and
 B3's features at the opener's time, the report, and a run kept once."""
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -144,6 +145,8 @@ def test_a_run_is_kept_once(tmp_path: Path) -> None:
 def test_a_confirm_run_needs_its_claim_and_r2() -> None:
     result = CliRunner().invoke(app, ["research", "yardstick", "--half", "confirm"])
     assert result.exit_code == 2
-    assert "needs --claim and --r2" in " ".join(result.output.split())
+    # Without the ANSI styling Rich adds on CI runners (as test_cli.plain).
+    output = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", result.output).split())
+    assert "needs --claim and --r2" in output
     result = CliRunner().invoke(app, ["research", "yardstick", "--claim", "five"])
     assert result.exit_code == 2
