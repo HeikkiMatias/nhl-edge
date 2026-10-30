@@ -6310,19 +6310,19 @@ def kalshi_watch(
         ),
     ] = None,
 ) -> None:
-    """Watch every game of today's slate on Kalshi (#319), for choosing the owner's own orders:
-    each market's top of book every minute, its full book and its trades every 5 minutes, until
-    the next window or every game's start, never a game at or after its start. Then rebuild the
-    day's kalshi_tops, kalshi_depth and kalshi_trades from the stored polls. A run started before
-    the first window (US Eastern) watches nothing, unless --until is given. Only counts are
-    printed: Kalshi's data stays private (its Developer Agreement, 3.1), and run logs are
-    public."""
+    """Watch every game of today's slate on Kalshi (#319), and from 19:05 ET tomorrow's, for
+    choosing the owner's own orders: each winner market's top of book every minute and its full
+    book and trades every 5 minutes within 12 hours of its start, every 15 and 30 minutes
+    before; and the listings of every game market, the totals and spreads near the start and the
+    player props (kalshi_lines). Until the next window or every game's start, never a game at or
+    after its start. Then rebuild the polled dates' kalshi_tops, kalshi_depth, kalshi_trades and
+    kalshi_lines from the stored polls. Only counts are printed: Kalshi's data stays private (its
+    Developer Agreement, 3.1), and run logs are public."""
     from datetime import UTC
 
     from nhl_edge.ingest import kalshi
     from nhl_edge.ingest import kalshi_watch as kw
     from nhl_edge.ingest.nhl_api import NhlApi, utc_now
-    from nhl_edge.ingest.odds import ET
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.tables import Lake
     from nhl_edge.live import slate as live_slate
@@ -6333,32 +6333,51 @@ def kalshi_watch(
     if cron is not None and not kw.cron_due(cron, now):
         typer.echo(f"kalshi watch: cron {cron!r} is not this time of year's line, skipped")
         return
-    if until is None and not kw.watch_hours(now):
-        typer.echo("kalshi watch: started before the first window (07:05 ET), nothing watched")
-        return
-    day = now.astimezone(ET).date()
     store = RawStore.from_env(mirror=mirror_raw)
     api = NhlApi(store)
 
-    def todays() -> "pl.DataFrame":
-        return live_slate.fetch(api, day).games
+    def watched() -> "pl.DataFrame":
+        """The slates of the dates watched now: today's, and from 19:05 ET tomorrow's. Tomorrow's
+        failing never stops today's watch: it is asked again at the next refresh."""
+        import polars as pl
+
+        today, *later = kw.watched_days(utc_now())
+        slates = [live_slate.fetch(api, today).games]
+        for day in later:
+            try:
+                slates.append(live_slate.fetch(api, day).games)
+            except Exception as exc:
+                typer.echo(
+                    f"::warning::kalshi watch: the next day's slate fetch failed "
+                    f"({type(exc).__name__})"
+                )
+        return pl.concat(slates, how="vertical_relaxed")
 
     end = until.replace(tzinfo=UTC) if until is not None else kw.window_end(now)
-    report = kw.watch(client=kalshi.Kalshi(store), slate=todays, until=end, echo=typer.echo)
+    report = kw.watch(
+        client=kalshi.Kalshi(store), slate=watched, until=end, echo=typer.echo, lines=True
+    )
     if report.stored:
         lake = Lake.from_env(mirror=mirror_raw, flag="--mirror-raw")
+        game_dates, poll_dates = sorted(report.dates), sorted(report.line_dates)
         if mirror_raw:
-            # The day's earlier windows' polls, so the rebuilt partitions keep all of them.
-            for kind in kw.KINDS:
-                store.restore_from_r2(f"{kalshi.SOURCE}/{kw.WATCH}/{kind}/{day.isoformat()}/")
+            # The dates' earlier windows' polls, so the rebuilt partitions keep all of them.
+            for kinds, dates in ((kw.KINDS, game_dates), (kw.LINE_KINDS, poll_dates)):
+                for kind in kinds:
+                    for d in dates:
+                        store.restore_from_r2(f"{kalshi.SOURCE}/{kw.WATCH}/{kind}/{d.isoformat()}/")
         try:
-            replayed = kw.replay(store, lake, [day])
+            replayed = kw.replay(store, lake, game_dates) if game_dates else None
+            lined = kw.replay_lines(store, lake, poll_dates) if poll_dates else None
         except kw.ReplayError as exc:
-            typer.echo(f"kalshi watch {day}: {exc}", err=True)
+            typer.echo(f"kalshi watch: {exc}", err=True)
             raise typer.Exit(code=1) from None
-        typer.echo(
-            f"kalshi watch {day}: rebuilt from {sum(replayed.objects.values())} stored polls"
-        )
+        for dates, done in ((game_dates, replayed), (poll_dates, lined)):
+            if done is not None:
+                span = ", ".join(d.isoformat() for d in dates)
+                typer.echo(
+                    f"kalshi watch {span}: rebuilt from {sum(done.objects.values())} stored polls"
+                )
     if report.failed:
         raise typer.Exit(code=1)
 
@@ -6377,7 +6396,8 @@ def kalshi_replay(
     ] = False,
 ) -> None:
     """Rebuild the lake's kalshi_books from the stored order books (#282), and kalshi_tops,
-    kalshi_depth and kalshi_trades from the stored watch polls (#319), never calling Kalshi.
+    kalshi_depth, kalshi_trades and kalshi_lines from the stored watch polls (#319), never
+    calling Kalshi.
     Without --recent, every stored date is replayed. Its counts come from Kalshi's data, so it is
     for the owner's own terminal: no workflow runs it."""
     from datetime import timedelta
@@ -6397,7 +6417,8 @@ def kalshi_replay(
     load_env()
     store = RawStore.from_env(mirror=r2, flag="--r2")
     if r2:
-        roots = [kalshi.PREFIX, *(f"{kalshi.SOURCE}/{kw.WATCH}/{kind}" for kind in kw.KINDS)]
+        kinds = (*kw.KINDS, *kw.LINE_KINDS)
+        roots = [kalshi.PREFIX, *(f"{kalshi.SOURCE}/{kw.WATCH}/{kind}" for kind in kinds)]
         prefixes = (
             [f"{root}/" for root in roots]
             if dates is None
@@ -6425,6 +6446,19 @@ def kalshi_replay(
         + ", ".join(f"{watched.objects[k]} {k} polls, {watched.rows[k]} rows" for k in kw.KINDS)
         + f"; {watched.not_found} not found, {len(watched.unparsed)} unparsed, "
         f"{len(watched.incomplete)} incomplete"
+    )
+    # The line polls are partitioned by their own date, which --recent's dates name too.
+    try:
+        lined = kw.replay_lines(store, lake, dates)
+    except kw.ReplayError as exc:
+        typer.echo(f"kalshi lines replay: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    window = f"{lined.dates[0]}..{lined.dates[-1]}" if lined.dates else "no stored polls"
+    typer.echo(
+        f"kalshi lines replay {window}: "
+        + ", ".join(f"{lined.objects[k]} {k} polls" for k in kw.LINE_KINDS)
+        + f", {sum(lined.rows.values())} rows; {len(lined.unparsed)} unparsed, "
+        f"{len(lined.incomplete)} incomplete"
     )
 
 

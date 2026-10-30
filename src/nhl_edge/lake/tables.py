@@ -27,6 +27,7 @@ from nhl_edge.lake.schemas import (
     DAILYFACEOFF_GOALIES_KEY,
     DAILYFACEOFF_LINES_KEY,
     KALSHI_BOOKS_KEY,
+    KALSHI_LINES_KEY,
     KALSHI_TOPS_KEY,
     KALSHI_TRADES_KEY,
     ODDS_KEY,
@@ -48,6 +49,7 @@ from nhl_edge.lake.schemas import (
     GoalMultipliers,
     KalshiBooks,
     KalshiDepth,
+    KalshiLines,
     KalshiTops,
     KalshiTrades,
     LakeOddsSnapshots,
@@ -167,9 +169,11 @@ TABLES: dict[str, Table] = {
     "kalshi_tops": Table(KalshiTops, KALSHI_TOPS_KEY, BY_DATE),
     "kalshi_depth": Table(KalshiDepth, KALSHI_BOOKS_KEY, BY_DATE),
     "kalshi_trades": Table(KalshiTrades, KALSHI_TRADES_KEY, BY_DATE),
+    # Every other market of a game, its winner too, from the listings (#319): by the poll's date.
+    "kalshi_lines": Table(KalshiLines, KALSHI_LINES_KEY, ("observed_date",)),
 }
 # Partition columns replace_dates can replace a date at a time.
-DATE_PARTITIONS = ("game_date", "snapshot_date")
+DATE_PARTITIONS = ("game_date", "snapshot_date", "observed_date")
 # The tables parsed from each game's play-by-play, boxscore and shift chart.
 FEED_TABLES = (
     "shots",

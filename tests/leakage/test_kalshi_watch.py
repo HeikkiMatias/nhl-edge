@@ -88,7 +88,15 @@ def test_no_model_or_feature_code_reads_the_watch() -> None:
     # for the owner's own orders, never a model input, a fair value or a CLV reference
     # (tests/leakage/test_kalshi_shadow.py).
     src = Path(__file__).parents[2] / "src" / "nhl_edge"
-    names = ("kalshi_tops", "kalshi_depth", "kalshi_trades", "KalshiTops", "KalshiDepth")
+    names = (
+        "kalshi_tops",
+        "kalshi_depth",
+        "kalshi_trades",
+        "kalshi_lines",
+        "KalshiTops",
+        "KalshiDepth",
+        "KalshiLines",
+    )
     naming = {
         path.relative_to(src).as_posix()
         for path in src.rglob("*.py")

@@ -1,7 +1,13 @@
-"""Every game's Kalshi markets, watched from the morning to the start (#319), for choosing the
-owner's own orders. The owner decided on 2026-10-23 to log every game's books and trades, not only
-the alerted bets' markets (#282), as the real-time source for re-valuing resting orders (#321)
-and for the shadow that selects on Kalshi's own prices (#320).
+"""Every game's Kalshi markets, watched from the evening before to the start (#319), for choosing
+the owner's own orders. The owner decided on 2026-10-23 to log every game's books and trades, not
+only the alerted bets' markets (#282), as the real-time source for re-valuing resting orders
+(#321) and for the shadow that selects on Kalshi's own prices (#320); and on 2026-10-30 to watch
+earlier, and Kalshi's goal totals and player props beside the winner (#357, #358, #359).
+
+**When.** The timer starts a run at each of WINDOWS_ET, every 4 hours, and each stops a minute
+before the next, so the watch runs all day. A run watches its US Eastern date's games, and from
+EVENING the next date's too. A market within NEAR of its start is polled at the full cadence
+(TOP_EVERY, BOOK_EVERY), one further out at FAR_TOP_EVERY and FAR_BOOK_EVERY.
 
 **Terms.** As #282 (ingest/kalshi.py), within the Developer Agreement's own-trading use (3.1):
 - both teams' markets of each game of the day's slate, never a game at or after its start;
@@ -24,6 +30,20 @@ each response with its own fetch time, so a parse never dates a response before 
 rule 1). The slate is fetched again every REFRESH, so a game moved or postponed is followed.
 replay rebuilds kalshi_tops, kalshi_depth and kalshi_trades from the raw objects, never calling
 Kalshi.
+
+**Lines and props** (kalshi_lines, with lines=True). The top of every other market of a game,
+read from Kalshi's listings, never a book or a trade:
+- LISTING every LISTING_EVERY: every open market of GAME_SERIES (the winner, the total, the
+  spread and the team totals), one `GET /markets?series_ticker=…&status=open` each, so a line is
+  seen from its market's open;
+- LINES every LINES_EVERY: the LINE_SERIES markets of the games within NEAR, from the latest
+  listing, `tickers=` in requests of CHUNK;
+- PROPS every PROPS_EVERY while a game within NEAR is still to start: every open market of
+  PROP_SERIES, which Kalshi lists on the game day only.
+
+Each is stored as `kalshi/watch/<kind>/<poll's US Eastern date>/<stamp>`, with the slate's games
+in the sidecar. A listing holds the markets of games already under way too: parse_lines keeps a
+row only for a game of the slate before its start, or one on a later date than the slate's.
 """
 
 import json
@@ -40,7 +60,14 @@ from nhl_edge.ingest.kalshi import KalshiError, Market, Started
 from nhl_edge.ingest.nhl_api import parse_utc
 from nhl_edge.ingest.odds import ET
 from nhl_edge.lake.raw import SUFFIX, RawStore
-from nhl_edge.lake.schemas import KalshiDepth, KalshiTops, KalshiTrades, dtypes
+from nhl_edge.lake.schemas import (
+    KALSHI_LINES_KEY,
+    KalshiDepth,
+    KalshiLines,
+    KalshiTops,
+    KalshiTrades,
+    dtypes,
+)
 from nhl_edge.lake.tables import Lake
 
 WATCH = "watch"
@@ -55,29 +82,43 @@ ORDER = {
 }
 TOP_EVERY = timedelta(minutes=1)
 BOOK_EVERY = timedelta(minutes=5)
+# A market further than NEAR from its start, as the next day's are in the evening.
+NEAR = timedelta(hours=12)
+FAR_TOP_EVERY = timedelta(minutes=15)
+FAR_BOOK_EVERY = timedelta(minutes=30)
 OVERLAP = timedelta(minutes=1)
 REFRESH = timedelta(minutes=30)
 PAGE = 1000
 MAX_PAGES = 20
-# The windows the timer dispatches a run at, in US Eastern time (infra/timer): a run ends a minute
-# before the next one starts, and the last after LONGEST, inside GitHub's 6-hour job limit.
-WINDOWS_ET = (time(7, 5), time(11, 5), time(15, 5), time(19, 5))
+# The windows the timer dispatches a run at, in US Eastern time (infra/timer), every 4 hours: a
+# run ends a minute before the next one starts, and never after LONGEST, inside GitHub's 6-hour
+# job limit.
+WINDOWS_ET = (time(3, 5), time(7, 5), time(11, 5), time(15, 5), time(19, 5), time(23, 5))
 LONGEST = timedelta(hours=5, minutes=45)
+# From this window on, a run watches the next US Eastern date's games too.
+EVENING = time(19, 5)
+
+LISTING, LINES, PROPS = "listing", "lines", "props"
+LINE_KINDS = (LISTING, LINES, PROPS)
+LINES_TABLE = "kalshi_lines"
+# The game-level series a listing reads, from each market's open; LINE_SERIES are polled at the
+# lines' cadence near the start. PROP_SERIES are listed on the game day only.
+LINE_SERIES = ("KXNHLTOTAL", "KXNHLSPREAD", "KXNHLTEAMTOTAL")
+GAME_SERIES = (kalshi.SERIES, *LINE_SERIES)
+PROP_SERIES = ("KXNHLGOAL", "KXNHLPTS", "KXNHLAST", "KXNHLFIRSTGOAL", "KXNHLSAVES")
+LISTING_EVERY = timedelta(minutes=30)
+LINES_EVERY = timedelta(minutes=5)
+PROPS_EVERY = timedelta(minutes=15)
+# Tickers per tops request: a request's URL stays short.
+CHUNK = 100
 
 
 # GitHub's fallback cron lines (kalshi-watch.yml), one per UTC offset of US Eastern time: a line
 # fires all year, so a run checks that its line is the one of today's offset.
 FALLBACK_CRONS = {
-    "5 11,15,19,23 * * *": timedelta(hours=-4),  # EDT
-    "5 12,16,20,0 * * *": timedelta(hours=-5),  # EST
+    "5 3,7,11,15,19,23 * * *": timedelta(hours=-4),  # EDT
+    "5 0,4,8,12,16,20 * * *": timedelta(hours=-5),  # EST
 }
-
-
-def watch_hours(now: datetime) -> bool:
-    """Whether a run started at now may watch: from the first window's start to midnight, US
-    Eastern. A run started after midnight is a late fallback whose day is over, and the next one
-    starts at the first window (Codex on #325)."""
-    return now.astimezone(ET).time() >= WINDOWS_ET[0]
 
 
 def cron_due(cron: str, now: datetime) -> bool:
@@ -87,15 +128,32 @@ def cron_due(cron: str, now: datetime) -> bool:
 
 
 def window_end(now: datetime) -> datetime:
-    """When a run started at now stops: a minute before the next window of now's US Eastern
-    day, and never more than LONGEST after now."""
+    """When a run started at now stops: a minute before the next window, the next US Eastern
+    day's first after the day's last, and never more than LONGEST after now."""
     local = now.astimezone(ET)
-    later = [start for start in WINDOWS_ET if start > local.time()]
-    cap = now + LONGEST
-    if not later:
-        return cap
-    end = datetime.combine(local.date(), later[0], tzinfo=ET) - timedelta(minutes=1)
-    return min(end.astimezone(UTC), cap)
+    starts = [
+        datetime.combine(local.date() + timedelta(days=d), at, tzinfo=ET)
+        for d in (0, 1)
+        for at in WINDOWS_ET
+    ]
+    following = min(start for start in starts if start > local)
+    return min((following - timedelta(minutes=1)).astimezone(UTC), now + LONGEST)
+
+
+def watched_days(now: datetime) -> list[date]:
+    """The US Eastern dates whose games a run watches at now: its own, and from EVENING the
+    next."""
+    local = now.astimezone(ET)
+    later = [local.date() + timedelta(days=1)] if local.time() >= EVENING else []
+    return [local.date(), *later]
+
+
+def watch_from(market: Market) -> datetime:
+    """When a market's watch begins: EVENING of the US Eastern day before its game. Its first
+    trades poll of each run reaches back to it, so a poll that failed at the end of an earlier
+    run leaves no gap (Codex on #325)."""
+    evening = datetime.combine(market.game_date - timedelta(days=1), EVENING, tzinfo=ET)
+    return evening.astimezone(UTC)
 
 
 def markets_of(games: pl.DataFrame) -> list[Market]:
@@ -171,15 +229,18 @@ class WatchReport:
     skipped as started. Kalshi's data never shows in them."""
 
     polls: dict[str, int] = field(default_factory=lambda: dict.fromkeys(KINDS, 0))
+    line_polls: dict[str, int] = field(default_factory=lambda: dict.fromkeys(LINE_KINDS, 0))
     not_found: int = 0
     failed: int = 0
     started: int = 0
     refresh_failed: int = 0
     dates: set[date] = field(default_factory=set)
+    # The US Eastern dates of the line polls stored.
+    line_dates: set[date] = field(default_factory=set)
 
     @property
     def stored(self) -> int:
-        return sum(self.polls.values())
+        return sum(self.polls.values()) + sum(self.line_polls.values())
 
 
 def store_poll(
@@ -344,12 +405,174 @@ def poll_trades(
     return done
 
 
+def _game_meta(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "game_id": row["game_id"],
+        "season": row["season"],
+        "game_date": row["game_date"].isoformat(),
+        "start_utc": row["start_utc"].isoformat(),
+        "away": row["away"],
+        "home": row["home"],
+    }
+
+
+def store_lines(
+    store: RawStore,
+    kind: str,
+    games: pl.DataFrame,
+    days: Sequence[date],
+    responses: Sequence[Response],
+    polled_utc: datetime,
+) -> str | None:
+    """One line poll's responses as one raw object, each body untouched with its fetch time, and
+    the slate's games and the dates they cover in the sidecar, which parse_lines reads; None when
+    the poll got no response."""
+    if not responses:
+        return None
+    body = json.dumps(
+        {
+            "responses": [
+                {
+                    "asked": r.ticker,
+                    "status": r.status,
+                    "fetched_utc": r.fetched_utc.isoformat(),
+                    "attempts": r.attempts,
+                    "body": r.body.decode(errors="replace"),
+                    **({} if r.valid else {"invalid": True}),
+                }
+                for r in responses
+            ]
+        }
+    ).encode()
+    day = polled_utc.astimezone(ET).date()
+    meta = {
+        "kind": kind,
+        "observed_date": day.isoformat(),
+        "polled_utc": polled_utc.isoformat(),
+        "days": [d.isoformat() for d in days],
+        "games": [_game_meta(row) for row in games.iter_rows(named=True)],
+    }
+    key = f"{WATCH}/{kind}/{day.isoformat()}/{polled_utc:%Y%m%dT%H%M%SZ}"
+    return store.put(kalshi.SOURCE, key, body, meta)
+
+
+def _listed(
+    client: kalshi.Kalshi, series: Sequence[str], until: datetime, report: WatchReport
+) -> list[Response]:
+    """Every open market of each series, every page of it by its cursor: the responses, each
+    with its series as what was asked. Nothing is asked at or after until."""
+    found: list[Response] = []
+    for name in series:
+        cursor: str | None = None
+        for _ in range(MAX_PAGES):
+            params: dict[str, str | int] = {"series_ticker": name, "status": "open", "limit": PAGE}
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                response, attempts = client.request("/markets", params, deadline=until)
+            except Started:
+                return found
+            except KalshiError:
+                report.failed += 1
+                break
+            answer = _answer(TOPS, name, response, attempts, client)
+            found.append(answer)
+            if not answer.valid or response.status_code != kalshi.OK:
+                break
+            cursor = json.loads(response.content).get("cursor") or None
+            if not cursor:
+                break
+    return found
+
+
+def line_tickers(responses: Sequence[Response]) -> dict[str, list[str]]:
+    """The LINE_SERIES markets of a listing's responses, by event ticker."""
+    events: dict[str, list[str]] = {}
+    for response in responses:
+        if response.ticker not in LINE_SERIES or not response.valid or response.status != 200:
+            continue
+        for item in json.loads(response.body).get("markets", []):
+            if isinstance(item, dict) and item.get("event_ticker") and item.get("ticker"):
+                events.setdefault(str(item["event_ticker"]), []).append(str(item["ticker"]))
+    return events
+
+
+def event_tickers(game: Mapping[str, Any], series: Sequence[str]) -> list[str]:
+    """A game's event ticker in each series."""
+    key = kalshi.event_key(game["game_date"], game["away"], game["home"])
+    return [f"{name}-{key}" for name in series]
+
+
+def poll_lines(
+    client: kalshi.Kalshi,
+    games: pl.DataFrame,
+    days: Sequence[date],
+    events: Mapping[str, Sequence[str]],
+    until: datetime,
+    report: WatchReport,
+) -> None:
+    """The top of book of every LINE_SERIES market of the games (those within NEAR, not yet
+    started), from the latest listing's events, CHUNK tickers a request, stored as one poll. A
+    request's deadline is the first start among its games."""
+    polled, found = client.now(), []
+    for game in games.sort("start_utc").iter_rows(named=True):
+        tickers = [t for e in event_tickers(game, LINE_SERIES) for t in events.get(e, [])]
+        for at in range(0, len(tickers), CHUNK):
+            chunk = tickers[at : at + CHUNK]
+            try:
+                response, attempts = client.request(
+                    "/markets",
+                    {"tickers": ",".join(chunk), "limit": PAGE},
+                    deadline=min(game["start_utc"], until),
+                )
+            except Started:
+                if client.now() < until:
+                    report.started += 1
+                break
+            except KalshiError:
+                report.failed += 1
+                continue
+            found.append(_answer(TOPS, None, response, attempts, client))
+    _count(report, found)
+    if store_lines(client.store, LINES, games, days, found, polled) is not None:
+        report.line_polls[LINES] += 1
+        report.line_dates.add(polled.astimezone(ET).date())
+
+
+def poll_listing(
+    client: kalshi.Kalshi,
+    kind: str,
+    series: Sequence[str],
+    games: pl.DataFrame,
+    days: Sequence[date],
+    until: datetime,
+    report: WatchReport,
+) -> list[Response]:
+    """Every open market of each series (kind LISTING or PROPS), stored as one poll; the
+    responses, for the lines' tickers."""
+    polled = client.now()
+    found = _listed(client, series, until, report)
+    _count(report, found)
+    if store_lines(client.store, kind, games, days, found, polled) is not None:
+        report.line_polls[kind] += 1
+        report.line_dates.add(polled.astimezone(ET).date())
+    return found
+
+
 def _next(due: datetime, every: timedelta, now: datetime) -> datetime:
     """The first time after now on due's grid of every: a poll that overran skips the times it
     missed rather than catching them up in a burst."""
     while due <= now:
         due += every
     return due
+
+
+def _by_date(markets: Sequence[Market]) -> list[list[Market]]:
+    """The markets split by game date, each poll's own, soonest first."""
+    days: dict[date, list[Market]] = {}
+    for market in sorted(markets, key=lambda m: (m.game_date, m.start_utc, m.ticker)):
+        days.setdefault(market.game_date, []).append(market)
+    return list(days.values())
 
 
 def watch(
@@ -360,23 +583,30 @@ def watch(
     echo: Callable[[str], None],
     top_every: timedelta = TOP_EVERY,
     book_every: timedelta = BOOK_EVERY,
+    far_top_every: timedelta = FAR_TOP_EVERY,
+    far_book_every: timedelta = FAR_BOOK_EVERY,
     refresh: timedelta = REFRESH,
+    lines: bool = False,
 ) -> WatchReport:
-    """Poll the slate's markets until `until` or every game's start, whichever comes first: the
-    tops every top_every, the books and trades every book_every. The slate is fetched again every
-    refresh; a failed refetch keeps the last one. Only counts are echoed."""
+    """Poll the slate's markets until `until` or every game's start, whichever comes first. A
+    market within NEAR of its start has its top every top_every and its book and trades every
+    book_every; one further out every far_top_every and far_book_every. Each game date's markets
+    are a poll of their own. With lines, also the listings, the lines and the props
+    (kalshi_lines). The slate is fetched again every refresh; a failed refetch keeps the last
+    one. Only counts are echoed."""
     report = WatchReport()
     start = client.now()
     games, refreshed = slate(), start
     # Each market's trades watermark: the start of its last trades poll whose every page came
-    # back. A run's first poll of a market reaches back to the day's first window, so a trades
-    # poll that failed at the end of the run before leaves no gap (Codex on #325); the trades
-    # seen twice are kept once, by trade_id.
+    # back. A run's first poll of a market reaches back to the start of its watch (watch_from),
+    # so a trades poll that failed at the end of the run before leaves no gap (Codex on #325);
+    # the trades seen twice are kept once, by trade_id.
     since: dict[str, datetime] = {}
-    local = start.astimezone(ET)
-    morning = datetime.combine(local.date(), WINDOWS_ET[0], tzinfo=ET).astimezone(UTC)
-    first = min(start - book_every, morning)
-    next_top = next_book = start
+    cadence = {"near": (top_every, book_every), "far": (far_top_every, far_book_every)}
+    next_top = dict.fromkeys(cadence, start)
+    next_book = dict.fromkeys(cadence, start)
+    next_listing = next_lines = next_props = start
+    events: dict[str, list[str]] = {}
     while True:
         now = client.now()
         if now - refreshed >= refresh:
@@ -389,24 +619,60 @@ def watch(
         live = [m for m in markets_of(games) if m.start_utc > now]
         if not live or now >= until:
             break
-        if now >= next_top:
-            poll_tops(client, live, until, report)
-            next_top = _next(next_top, top_every, client.now())
-        if now >= next_book:
-            began = client.now()
-            poll_books(client, live, until, report)
-            marks = {m.ticker: since.get(m.ticker, first) for m in live}
-            for ticker in poll_trades(client, live, marks, until, report):
-                since[ticker] = began
-            next_book = _next(next_book, book_every, client.now())
-        wait = min(next_top, next_book, until) - client.now()
+        tiers = {
+            "near": [m for m in live if m.start_utc - now <= NEAR],
+            "far": [m for m in live if m.start_utc - now > NEAR],
+        }
+        for tier, group in tiers.items():
+            if not group:
+                continue
+            tops_every, books_every = cadence[tier]
+            if now >= next_top[tier]:
+                for same_day in _by_date(group):
+                    poll_tops(client, same_day, until, report)
+                next_top[tier] = _next(next_top[tier], tops_every, client.now())
+            if now >= next_book[tier]:
+                began = client.now()
+                for same_day in _by_date(group):
+                    poll_books(client, same_day, until, report)
+                    marks = {
+                        m.ticker: since.get(m.ticker, min(start - books_every, watch_from(m)))
+                        for m in same_day
+                    }
+                    for ticker in poll_trades(client, same_day, marks, until, report):
+                        since[ticker] = began
+                next_book[tier] = _next(next_book[tier], books_every, client.now())
+        wake = [until, *(m.start_utc - NEAR for m in tiers["far"])]
+        wake += [due[t] for due in (next_top, next_book) for t, g in tiers.items() if g]
+        if lines:
+            days = watched_days(now)
+            upcoming = games.filter(pl.col("start_utc") > now)
+            near = upcoming.filter(pl.col("start_utc") - now <= NEAR)
+            if now >= next_listing:
+                listed = poll_listing(client, LISTING, GAME_SERIES, upcoming, days, until, report)
+                events = line_tickers(listed) or events
+                next_listing = _next(next_listing, LISTING_EVERY, client.now())
+            if near.height and now >= next_lines:
+                poll_lines(client, near, days, events, until, report)
+                next_lines = _next(next_lines, LINES_EVERY, client.now())
+            if near.height and now >= next_props:
+                poll_listing(client, PROPS, PROP_SERIES, upcoming, days, until, report)
+                next_props = _next(next_props, PROPS_EVERY, client.now())
+            wake += [next_listing, *((next_lines, next_props) if near.height else ())]
+        wait = min(wake) - client.now()
         if wait > timedelta(0):
             client.sleep(wait.total_seconds())
+    tail = ""
+    if lines:
+        tail = (
+            f"; {report.line_polls[LISTING]} listing, {report.line_polls[LINES]} line and "
+            f"{report.line_polls[PROPS]} prop polls"
+        )
     echo(
         f"kalshi watch: {report.polls[TOPS]} top, {report.polls[BOOKS]} book and "
         f"{report.polls[TRADES]} trade polls stored in {client.requests} requests; "
         f"{report.not_found} not found, {report.failed} failed, {report.started} skipped as "
-        f"started"
+        f"started{tail}"
     )
     return report
 
@@ -488,6 +754,123 @@ def parse_trades(body: bytes, market: Market, observed_utc: datetime, raw_key: s
         )
     frame = pl.DataFrame(rows, schema=columns).unique("trade_id", keep="first")
     return KalshiTrades.validate(frame)  # type: ignore[return-value]
+
+
+# Every NHL team's triCode, for reading an event ticker's teams back.
+NHL_TEAMS = (
+    "ANA", "BOS", "BUF", "CAR", "CBJ", "CGY", "CHI", "COL", "DAL", "DET", "EDM", "FLA", "LAK",
+    "MIN", "MTL", "NJD", "NSH", "NYI", "NYR", "OTT", "PHI", "PIT", "SEA", "SJS", "STL", "TBL",
+    "TOR", "UTA", "VAN", "VGK", "WPG", "WSH",
+)  # fmt: skip
+FROM_KALSHI = {kalshi.kalshi_code(team): team for team in NHL_TEAMS}
+
+
+@dataclass(frozen=True)
+class Event:
+    """What an event ticker names: its series, its game's US Eastern date and its teams (None
+    when they can't be read)."""
+
+    series: str
+    game_date: date
+    away: str | None
+    home: str | None
+
+
+def parse_event(event_ticker: str) -> Event | None:
+    """An event ticker such as KXNHLTOTAL-26NOV01OTTANA read back: the date is its first seven
+    characters after the series, and the teams the one split of the rest into two known codes.
+    None when the date can't be read."""
+    series, _, rest = event_ticker.partition("-")
+    day, teams = rest[:7], rest[7:]
+    try:
+        month = kalshi.MONTHS.index(day[2:5]) + 1
+        game_date = date(2000 + int(day[:2]), month, int(day[5:7]))
+    except ValueError:
+        return None
+    splits = [
+        (FROM_KALSHI[teams[:i]], FROM_KALSHI[teams[i:]])
+        for i in (2, 3)
+        if teams[:i] in FROM_KALSHI and teams[i:] in FROM_KALSHI
+    ]
+    away, home = splits[0] if len(splits) == 1 else (None, None)
+    return Event(series, game_date, away, home)
+
+
+def _named(suffix: str, event: Event, series: str) -> tuple[str | None, str | None]:
+    """The team and, for a prop, the player tag a market's ticker suffix names: the event's team
+    whose code it starts with, and what follows it, without the prop's threshold."""
+    for team in (event.away, event.home):
+        code = kalshi.kalshi_code(team) if team else None
+        if code and suffix.startswith(code):
+            rest = suffix[len(code) :].split("-")[0]
+            return team, (rest or None) if series in PROP_SERIES else None
+    return None, None
+
+
+def parse_lines(
+    body: bytes,
+    kind: str,
+    games: Sequence[Mapping[str, Any]],
+    days: Collection[date],
+    observed_utc: datetime,
+    raw_key: str,
+) -> pl.DataFrame:
+    """One row per listed market of an NHL game before its start (KalshiLines): a game of the
+    poll's slate (games, the sidecar's) only before its start, one on a date after the slate's
+    dates (days) always, and one on the slate's dates the slate lacks never, since its start
+    isn't known."""
+    data = json.loads(body)
+    listed = data.get("markets") if isinstance(data, dict) else None
+    if not isinstance(listed, list):
+        raise KalshiError("no markets list in the response")
+    by_teams = {(g["game_date"], g["away"], g["home"]): g for g in games}
+    last = max(days)
+    rows = []
+    for item in listed:
+        if not isinstance(item, dict):
+            continue
+        ticker, event_ticker = str(item.get("ticker")), str(item.get("event_ticker"))
+        event = parse_event(event_ticker)
+        if event is None or not ticker.startswith(f"{event_ticker}-"):
+            continue
+        game = by_teams.get((event.game_date.isoformat(), event.away, event.home))
+        start = parse_utc(game["start_utc"]) if game else None
+        if start is not None and observed_utc >= start:
+            continue
+        if start is None and event.game_date <= last:
+            continue
+        team, player = _named(ticker[len(event_ticker) + 1 :], event, event.series)
+        rows.append(
+            {
+                "observed_utc": observed_utc,
+                "observed_date": observed_utc.astimezone(ET).date(),
+                "kind": kind,
+                "series": event.series,
+                "event_ticker": event_ticker,
+                "ticker": ticker,
+                "game_date": event.game_date,
+                "away": event.away,
+                "home": event.home,
+                "game_id": game["game_id"] if game else None,
+                "start_utc": start,
+                "team": team,
+                "player_tag": player,
+                "subject": item.get("yes_sub_title"),
+                "strike_type": item.get("strike_type"),
+                "floor_strike": _number(item.get("floor_strike")),
+                "status": item.get("status"),
+                "yes_bid": _number(item.get("yes_bid_dollars")),
+                "yes_bid_size": _number(item.get("yes_bid_size_fp")),
+                "yes_ask": _number(item.get("yes_ask_dollars")),
+                "yes_ask_size": _number(item.get("yes_ask_size_fp")),
+                "last_price": _number(item.get("last_price_dollars")),
+                "volume": _number(item.get("volume_fp")),
+                "open_interest": _number(item.get("open_interest_fp")),
+                "raw_key": raw_key,
+            }
+        )
+    frame = pl.DataFrame(rows, schema=dtypes(KalshiLines))
+    return KalshiLines.validate(frame)  # type: ignore[return-value]
 
 
 @dataclass
@@ -599,4 +982,75 @@ def replay(store: RawStore, lake: Lake, dates: Collection[date] | None = None) -
     requested = sorted(dates) if dates is not None else report.dates
     for kind in KINDS:
         lake.replace_dates(TABLES[kind], tables[kind], requested)
+    return report
+
+
+def stored_lines(
+    store: RawStore, dates: Collection[date] | None = None
+) -> tuple[pl.DataFrame, ReplayReport]:
+    """kalshi_lines' rows for the given poll dates (US Eastern; every stored date when None),
+    parsed from the raw line polls without writing the lake. Never calls Kalshi."""
+    report = ReplayReport(objects=dict.fromkeys(LINE_KINDS, 0), rows=dict.fromkeys(LINE_KINDS, 0))
+    frames: list[pl.DataFrame] = []
+    seen: set[date] = set()
+    for kind in LINE_KINDS:
+        root = store.base_dir / kalshi.SOURCE / WATCH / kind
+        for day_dir in sorted(root.iterdir()) if root.is_dir() else []:
+            try:
+                day = date.fromisoformat(day_dir.name)
+            except ValueError:
+                continue
+            if dates is not None and day not in dates:
+                continue
+            seen.add(day)
+            for path in sorted(day_dir.glob(f"*{SUFFIX}")):
+                raw_key = path.relative_to(store.base_dir).as_posix().removesuffix(SUFFIX)
+                if not (store.base_dir / f"{raw_key}.meta.json").exists():
+                    report.incomplete.append(raw_key)
+                    continue
+                report.objects[kind] += 1
+                try:
+                    meta = store.meta(raw_key)
+                    days = [date.fromisoformat(d) for d in meta["days"]]
+                    for response in json.loads(store.get(raw_key))["responses"]:
+                        if response.get("invalid"):
+                            report.invalid += 1
+                            continue
+                        if response["status"] != kalshi.OK:
+                            report.not_found += response["status"] == kalshi.NOT_FOUND
+                            continue
+                        parsed = parse_lines(
+                            response["body"].encode(),
+                            kind,
+                            meta["games"],
+                            days,
+                            parse_utc(response["fetched_utc"]),
+                            raw_key,
+                        )
+                        report.rows[kind] += parsed.height
+                        frames.append(parsed)
+                except (KalshiError, KeyError, TypeError, ValueError, SchemaError):
+                    report.unparsed.append(raw_key)
+    report.dates = sorted(seen)
+    columns = dtypes(KalshiLines)
+    table = pl.concat(frames) if frames else pl.DataFrame(schema=columns)
+    # A market a poll's pages listed twice is kept once.
+    table = table.unique(list(KALSHI_LINES_KEY), keep="first").sort(*KALSHI_LINES_KEY)
+    return KalshiLines.validate(table), report  # type: ignore[return-value]
+
+
+def replay_lines(
+    store: RawStore, lake: Lake, dates: Collection[date] | None = None
+) -> ReplayReport:
+    """Rebuild kalshi_lines for the given poll dates (every stored date when None) from the raw
+    line polls, as replay does the three tables: a poll it can't read stops it before any
+    partition is replaced (ReplayError). Never calls Kalshi."""
+    table, report = stored_lines(store, dates)
+    if report.unparsed or report.incomplete:
+        raise ReplayError(
+            f"{len(report.unparsed)} unparsed and {len(report.incomplete)} incomplete stored "
+            "line polls: no partition replaced"
+        )
+    requested = sorted(dates) if dates is not None else report.dates
+    lake.replace_dates(LINES_TABLE, table, requested)
     return report

@@ -51,7 +51,12 @@ test("the Eastern clock uses 00 to 23", () => {
   assert.equal(easternClock(at("2026-09-29T23:45:00Z")), "19:45");
 });
 
-test("the Kalshi watch starts at its four US Eastern windows in EDT and EST (#319)", () => {
+test("the Kalshi watch starts at its six US Eastern windows in EDT and EST (#319)", () => {
+  // 03:05 and 23:05 ET, the windows that keep it running overnight.
+  assert.deepEqual(names("2026-10-23T07:05:00Z"), ["kalshi-watch.yml"]);
+  assert.deepEqual(names("2026-12-01T08:05:00Z"), ["kalshi-watch.yml"]);
+  assert.deepEqual(names("2026-10-24T03:05:00Z"), ["kalshi-watch.yml"]);
+  assert.deepEqual(names("2026-12-02T04:05:00Z"), ["kalshi-watch.yml"]);
   // 07:05 ET is also the morning odds slot.
   assert.deepEqual(names("2026-10-23T11:05:00Z"), ["odds-snapshots.yml:morning", "kalshi-watch.yml"]);
   assert.deepEqual(names("2026-12-01T12:05:00Z"), ["odds-snapshots.yml:morning", "kalshi-watch.yml"]);
@@ -70,7 +75,7 @@ test("the Kalshi re-valuation every 15 minutes from 13:05 to 22:50 US Eastern, c
   assert.deepEqual(names("2026-10-24T02:35:00Z"), ["kalshi-revalue.yml"]);
   // before the decision's orders, after 22:50, and at the slots' :45
   assert.deepEqual(names("2026-10-23T16:50:00Z"), ["pregame-goalies.yml"]);
-  assert.deepEqual(names("2026-10-24T03:05:00Z"), []);
+  assert.deepEqual(names("2026-10-24T03:20:00Z"), []);
   assert.deepEqual(names("2026-10-23T22:45:00Z"), ["odds-snapshots.yml:pre7"]);
   assert.equal(KALSHI_REVALUE_ET.length, 40);
   assert.equal(KALSHI_REVALUE_ET.at(-1), "22:50");

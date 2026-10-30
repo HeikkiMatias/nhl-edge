@@ -109,11 +109,17 @@ def kalshi_code(team: str) -> str:
     return KALSHI_CODES.get(team, team)
 
 
+def event_key(game_date: date, away: str, home: str) -> str:
+    """A game's part of every Kalshi event ticker of it: its US Eastern date and both teams'
+    codes, such as 26OCT17NJWSH."""
+    day = f"{game_date:%y}{MONTHS[game_date.month - 1]}{game_date:%d}"
+    return f"{day}{kalshi_code(away)}{kalshi_code(home)}"
+
+
 def ticker(game_date: date, away: str, home: str, team: str) -> str:
     """The market of team in away at home on game_date (US Eastern), such as
     KXNHLGAME-26OCT17NJWSH-WSH."""
-    day = f"{game_date:%y}{MONTHS[game_date.month - 1]}{game_date:%d}"
-    return f"{SERIES}-{day}{kalshi_code(away)}{kalshi_code(home)}-{kalshi_code(team)}"
+    return f"{SERIES}-{event_key(game_date, away, home)}-{kalshi_code(team)}"
 
 
 def markets(alerts: pl.DataFrame, now: datetime) -> list[Market]:
