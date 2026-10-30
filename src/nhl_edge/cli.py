@@ -69,6 +69,7 @@ DEFAULT_AUDIT_OUT = Path("reports/audit")
 LOCAL_BUNDLES = Path("data")
 DEFAULT_XG_OUT = Path("reports/xg")
 DEFAULT_TUNING_OUT = Path("reports/tuning")
+DEFAULT_YARDSTICK_OUT = Path("reports/yardstick")
 DEFAULT_GOALIE_START_OUT = Path("reports/goalie-start")
 DEFAULT_LINEUPS_OUT = Path("reports/lineups")
 DEFAULT_RATINGS_OUT = Path("reports/ratings")
@@ -1563,6 +1564,113 @@ def research_compare(
     if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(compared, indent=2) + "\n")
+
+
+@research_app.command("yardstick")
+def research_yardstick(
+    half: Annotated[
+        str, typer.Option(help="explore (2012-13 to 2014-15) or confirm (2015-16 to 2017-18).")
+    ] = "explore",
+    candidates: Annotated[
+        str | None,
+        typer.Option(help="Comma-separated candidate names (default: every one)."),
+    ] = None,
+    claim: Annotated[
+        str | None,
+        typer.Option(
+            help=(
+                "A confirm run's claim: reports/yardstick/claims/<claim>.md, committed before the "
+                "run. Each claim is scored once."
+            )
+        ),
+    ] = None,
+    out: Annotated[Path, typer.Option(help="Report directory.")] = DEFAULT_YARDSTICK_OUT,
+    r2: R2Flag = False,
+) -> None:
+    """Score features on the training seasons against the market (#361, ADR 0053): how well each
+    forecasts SBR's move from the opener to the close, and what it adds to the close on the
+    result, each season fitted on the earlier ones, with weekly block bootstrap intervals. An
+    explore run is for looking; a confirm run scores a claim written down from it, once, and
+    needs --r2 so the record of its run is kept. Nothing is read as a pass or fail."""
+    import subprocess
+    from datetime import UTC
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.backtest import yardstick as ys
+    from nhl_edge.game import b2
+    from nhl_edge.lake.tables import Lake
+
+    if half not in ys.HALVES:
+        raise typer.BadParameter(f"half is one of {', '.join(ys.HALVES)}")
+    names = list(ys.CANDIDATES) if candidates is None else candidates.split(",")
+    unknown = [name for name in names if name not in ys.CANDIDATES]
+    if unknown:
+        raise typer.BadParameter(f"unknown candidates: {', '.join(unknown)}")
+    now = datetime.now(UTC)
+    version = reports.version("yardstick", now)
+    if r2 and version.endswith("-dirty"):
+        raise typer.BadParameter("commit first: the run names its commit")
+    if half == "confirm":
+        if claim is None or not r2:
+            raise typer.BadParameter("a confirm run needs --claim and --r2: it is scored once")
+        path = DEFAULT_YARDSTICK_OUT / "claims" / f"{claim}.md"
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", str(path)], capture_output=True, check=False
+        )
+        changed = subprocess.run(
+            ["git", "status", "--porcelain", "--", str(path)], capture_output=True, check=False
+        )
+        if not path.exists() or tracked.returncode or changed.stdout.strip():
+            raise typer.BadParameter(f"commit the claim {path} before its confirm run")
+    elif claim is not None:
+        raise typer.BadParameter("--claim is for a confirm run")
+    lake = Lake()
+    last = max(ys.seasons_of(half))
+    sbr_odds = lake.read("sbr_odds").filter(pl.col("season") <= last)
+    if sbr_odds.is_empty():
+        typer.echo("no SBR prices in the lake: run nhl odds sbr", err=True)
+        raise typer.Exit(code=1)
+    games = lake.read("games").filter(pl.col("season") <= last)
+    tables = b2.Tables(
+        games,
+        *(
+            lake.read(name)
+            for name in (
+                "team_strength",
+                "schedule_terms",
+                "goalie_starts",
+                "goalie_effects",
+                "actual_lineups",
+            )
+        ),
+    )
+    b3_tables = _b3_tables(lake, tables)
+    tables, b3_tables = ys.through(tables, last), ys.through(b3_tables, last)
+    market = ys.market(sbr_odds, games)
+    moments = market.select("game_id", "prediction_utc")
+    frame = ys.rows(market, ys.features(tables, b3_tables, moments), games)
+    per_game, found = ys.run(frame, half, {name: ys.CANDIDATES[name] for name in names})
+    report = ys.markdown(found, half, version)
+    key = ys.run_key(half, version, claim, now)
+    identity = {"version": version, "half": half, "claim": claim, "candidates": names}
+    try:
+        ys.keep(_research_store(r2), key, per_game, found, report, identity, now)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    out.mkdir(parents=True, exist_ok=True)
+    name = f"confirm-{claim}-{version}" if half == "confirm" else f"{half}-{version}"
+    (out / f"{name}.md").write_text(report)
+    typer.echo(f"yardstick {half}: {frame.height:,} games read, kept under {key}")
+    for candidate, row in found.items():
+        move = row["move"]
+        typer.echo(
+            f"  {candidate}: move skill {move['mean'] * 1000:+.3f} "
+            f"[{move['low'] * 1000:+.3f}, {move['high'] * 1000:+.3f}] thousandths "
+            f"over {row['games']:,} games"
+        )
 
 
 @app.command()
