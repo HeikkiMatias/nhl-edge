@@ -224,7 +224,11 @@ Every deliverable merged under its own task issue:
 **The market-relative yardstick (#361, ADR 0053, accepted by the owner on 2026-10-30).** `nhl research yardstick` scores B2's and B3's features on the training seasons by how well they forecast SBR's move from the opener to the close, and by what they add to the close on the result. Each season is fitted on the earlier ones, with weekly block bootstrap intervals.
 - **The halves:** explore on 2012-13 to 2014-15; confirm on 2015-16 to 2017-18, once per claim committed to `reports/yardstick/claims/` and kept in R2.
 - **The first explore run** (`reports/yardstick/explore-yardstick-20261030-dafedeb.md`): B3's split anticipates about 4% of the move beyond the opener's drift, −0.46 [−0.84, −0.13] thousandths, and holds on the rested games. No feature adds to the close.
-- **Next:** step 2's diagnostics on the explore half, then a close forecaster (step 3, its own ADR).
+- **Step 2's diagnostics** (`scripts/yardstick_diagnostics.py`, `reports/yardstick/yardstick-diagnostics-20261031-c700b5b.md`, explore half only):
+  - Of the parts, finishing adds most beyond the others to the move's forecast: −0.40 [−0.55, −0.26] thousandths.
+  - No pocket of games (early season, back-to-backs, long travel, results ahead of xG, goalie surprises) shows more skill than its complement. The edge is spread across the games.
+  - The claims to score once on the confirm half are the owner's choice.
+- **Next:** a close forecaster (step 3, its own ADR) and targeted features (step 4).
 
 **Challengers (#255, ADR 0038).** New models are judged only on decision days after their registration, never on history again.
 - **Where:**

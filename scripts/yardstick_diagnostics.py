@@ -26,7 +26,8 @@ intervals will exclude zero by chance: a finding becomes a claim, written down a
 the confirm half (ADR 0053), before anything rests on it.
 
 It reads the lake as `nhl research yardstick` does (`Lake.pull` brings the tables from R2) and
-writes reports/yardstick/yardstick-diagnostics-<yyyymmdd>-<shortsha>.md. It writes nothing to the lake.
+writes reports/yardstick/yardstick-diagnostics-<yyyymmdd>-<shortsha>.md. It writes nothing to
+the lake.
 """
 
 import argparse
