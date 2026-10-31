@@ -1595,11 +1595,8 @@ def research_yardstick(
     import subprocess
     from datetime import UTC
 
-    import polars as pl
-
     from nhl_edge.backtest import reports
     from nhl_edge.backtest import yardstick as ys
-    from nhl_edge.game import b2
     from nhl_edge.lake.tables import Lake
 
     if half not in ys.HALVES:
@@ -1626,31 +1623,11 @@ def research_yardstick(
             raise typer.BadParameter(f"commit the claim {path} before its confirm run")
     elif claim is not None:
         raise typer.BadParameter("--claim is for a confirm run")
-    lake = Lake()
-    last = max(ys.seasons_of(half))
-    sbr_odds = lake.read("sbr_odds").filter(pl.col("season") <= last)
-    if sbr_odds.is_empty():
-        typer.echo("no SBR prices in the lake: run nhl odds sbr", err=True)
-        raise typer.Exit(code=1)
-    games = lake.read("games").filter(pl.col("season") <= last)
-    tables = b2.Tables(
-        games,
-        *(
-            lake.read(name)
-            for name in (
-                "team_strength",
-                "schedule_terms",
-                "goalie_starts",
-                "goalie_effects",
-                "actual_lineups",
-            )
-        ),
-    )
-    b3_tables = _b3_tables(lake, tables)
-    tables, b3_tables = ys.through(tables, last), ys.through(b3_tables, last)
-    market = ys.market(sbr_odds, games)
-    moments = market.select("game_id", "prediction_utc")
-    frame = ys.rows(market, ys.features(tables, b3_tables, moments), games)
+    try:
+        frame = ys.read(Lake(), max(ys.seasons_of(half))).frame
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
     per_game, found = ys.run(frame, half, {name: ys.CANDIDATES[name] for name in names})
     report = ys.markdown(found, half, version)
     key = ys.run_key(half, version, claim, now)

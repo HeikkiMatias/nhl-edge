@@ -29,7 +29,7 @@ tuning does (b2.tuning_scores), the yardstick reads each row at the time its dat
 import io
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import fields, replace
+from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from hashlib import sha256
 from typing import Any
@@ -44,6 +44,7 @@ from nhl_edge.backtest.metrics import bootstrap, log_loss, slope
 from nhl_edge.backtest.seasons import TRAINING_SEASONS
 from nhl_edge.features.team_strength import TUNED_CUTOFF
 from nhl_edge.game import b2, b3
+from nhl_edge.lake.tables import Reader
 from nhl_edge.live import bundle as lb
 
 # B3's first season with features: fitted on, never scored.
@@ -67,6 +68,15 @@ CANDIDATES: dict[str, tuple[str, ...]] = {
 # features' first such season and its scoring a season later.
 FIRST_INPUTS = {"finishing_diff": 20122013}
 PREFIX = "bundles/yardstick"
+# B3's own tables, beside those it shares with B2.
+PLAYER_TABLES = (
+    "lineups",
+    "lineup_replacements",
+    "player_ratings",
+    "rapm_terms",
+    "expected_power_plays",
+    "goal_multipliers",
+)
 UTC = pl.Datetime("us", "UTC")
 
 
@@ -225,6 +235,45 @@ def rows(
         .drop("home_back_to_back", "away_back_to_back")
         .sort("game_id")
     )
+
+
+@dataclass(frozen=True)
+class Read:
+    """What a run reads from the lake to its half's last season: the games, B2's and B3's tables
+    as through() gives them, and the yardstick's rows (rows)."""
+
+    games: pl.DataFrame
+    b2_tables: b2.Tables
+    b3_tables: b3.Tables
+    frame: pl.DataFrame
+
+
+def read(lake: Reader, last: int) -> Read:
+    """The lake's games, SBR prices and B2's and B3's tables to the season last, and the
+    yardstick's rows from them. Refused without SBR's prices."""
+    sbr_odds = lake.read("sbr_odds").filter(pl.col("season") <= last)
+    if sbr_odds.is_empty():
+        raise ValueError("no SBR prices in the lake: run nhl odds sbr")
+    games = lake.read("games").filter(pl.col("season") <= last)
+    teams = b2.Tables(
+        games=games,
+        team_strength=lake.read("team_strength"),
+        schedule_terms=lake.read("schedule_terms"),
+        goalie_starts=lake.read("goalie_starts"),
+        goalie_effects=lake.read("goalie_effects"),
+        actual_lineups=lake.read("actual_lineups"),
+    )
+    players = b3.Tables(
+        games=games,
+        schedule_terms=teams.schedule_terms,
+        goalie_starts=teams.goalie_starts,
+        actual_lineups=teams.actual_lineups,
+        **{name: lake.read(name) for name in PLAYER_TABLES},
+    )
+    teams, players = through(teams, last), through(players, last)
+    found = market(sbr_odds, games)
+    moments = found.select("game_id", "prediction_utc")
+    return Read(games, teams, players, rows(found, features(teams, players, moments), games))
 
 
 def _least_squares(train: pl.DataFrame, test: pl.DataFrame, columns: Sequence[str]) -> np.ndarray:
