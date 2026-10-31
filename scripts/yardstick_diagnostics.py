@@ -26,7 +26,7 @@ intervals will exclude zero by chance: a finding becomes a claim, written down a
 the confirm half (ADR 0053), before anything rests on it.
 
 It reads the lake as `nhl research yardstick` does (`Lake.pull` brings the tables from R2) and
-writes reports/yardstick/diagnostics-<version>.md. It writes nothing to the lake.
+writes reports/yardstick/yardstick-diagnostics-<yyyymmdd>-<shortsha>.md. It writes nothing to the lake.
 """
 
 import argparse
@@ -256,7 +256,7 @@ def main(seasons: Sequence[int] = ys.EXPLORE) -> None:
     version = reports.version("yardstick-diagnostics", datetime.now(UTC))
     report = markdown(parts(per_game), where(per_game, flags), version)
     args.out.mkdir(parents=True, exist_ok=True)
-    path = args.out / f"diagnostics-{version}.md"
+    path = args.out / f"{version}.md"
     path.write_text(report)
     print(f"wrote {path}")
 
