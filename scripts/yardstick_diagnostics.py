@@ -3,6 +3,16 @@ yardstick's explore half (2012-13 to 2014-15) only. The confirm half stays unrea
 
     uv run python scripts/yardstick_diagnostics.py
 
+**The same fits for every candidate.** Each is fitted from FIT_FROM (2012-13, the finishing
+part's first season with inputs, ADR 0053) and scored on SCORED (2013-14 and 2014-15), so any two
+compare on the same games and the same fits' seasons. A first run let each candidate start at its
+own first season, and its comparisons mixed 2011-12 into some fits and not others: 2011-12's
+features are the first season's, with half the spread of later ones, and a fit that reads it
+scores worse. Section 0 measures that.
+
+0. **2011-12 in the fit:** each candidate that can read it, fitted from 2011-12 less fitted from
+   2012-13, on the same games. Positive means 2011-12 makes the fit worse.
+
 Fixed before any subset was read:
 1. **What each part adds:** the move skill of every feature together (`all`) less that of `all`
    without one of its parts, game by game on the games both scored. Negative means the part adds
@@ -14,7 +24,7 @@ Fixed before any subset was read:
    - **early season:** both teams within their first EARLY games of the season, before the
      market has learned the offseason's rosters;
    - **back-to-back:** either team played the day before (the rested games' complement);
-   - **long travel:** the travel difference in the top quarter of the half's games;
+   - **long travel:** the travel difference in the top quarter of the scored games;
    - **results ahead of xG:** the gap between the teams' season-to-date goal difference and B3's
      expected one, per game, from the results public before the opener, in the top quarter;
    - **goalie surprise:** either team's starter was not its likeliest candidate at the opener.
@@ -45,6 +55,10 @@ from nhl_edge.lake.tables import Lake
 from nhl_edge.lineup.goalie_start import team_goalie_games
 
 EARLY = 20
+FIT_FROM = ys.first_inputs(ys.CANDIDATES["all"])
+SCORED = tuple(season for season in ys.EXPLORE if season > FIT_FROM)
+# The candidates that can read 2011-12: none has the finishing part.
+EARLIER = ("B2 inputs", "delta_g_hat", "delta_s", "five_diff", "special_diff", "goalie_diff")
 TOP = 0.75
 SETS = ("B2 inputs", "B3 split", "all")
 SUBSETS = {
@@ -141,7 +155,7 @@ def surprises(read: ys.Read) -> pl.DataFrame:
 
 def subsets(read: ys.Read) -> pl.DataFrame:
     """Each game of the explore half with a flag per subset (SUBSETS) and its squared move."""
-    frame = read.frame.filter(pl.col("season").is_in(list(ys.EXPLORE)))
+    frame = read.frame.filter(pl.col("season").is_in(list(SCORED)))
     travel = b2.schedule_inputs(read.b2_tables.schedule_terms).select("game_id", "travel_diff")
     flags = (
         frame.select("game_id", "season", "game_date", "rested", moved=pl.col("y") ** 2)
@@ -168,6 +182,32 @@ def subsets(read: ys.Read) -> pl.DataFrame:
 
 def _estimate(frame: pl.DataFrame, value: str) -> dict[str, Any]:
     return metrics.bootstrap(frame, value).to_dict()
+
+
+def scored_together(
+    frame: pl.DataFrame, chosen: Mapping[str, Sequence[str]], fit_from: int = FIT_FROM
+) -> pl.DataFrame:
+    """Every candidate's per-game rows, each fitted from fit_from and scored on SCORED: the same
+    fits' seasons and the same games for all of them."""
+    same = frame.filter(pl.col("season").is_between(fit_from, max(SCORED)))
+    return pl.concat(
+        [
+            ys.scored(same, columns, SCORED).select(
+                pl.lit(name).alias("candidate"), "game_id", "season", "game_date", "move"
+            )
+            for name, columns in chosen.items()
+        ]
+    )
+
+
+def earlier(frame: pl.DataFrame) -> dict[str, dict[str, Any]]:
+    """Each candidate that can read 2011-12, fitted from it less fitted from FIT_FROM, game by
+    game on SCORED: positive means 2011-12 makes the fit worse."""
+    chosen = {name: ys.CANDIDATES[name] for name in EARLIER}
+    first = scored_together(frame, chosen, ys.FIRST_FIT)
+    later = scored_together(frame, chosen, FIT_FROM).with_columns(pl.col("candidate") + " later")
+    both = pl.concat([first, later])
+    return {name: ys.paired(both, name, f"{name} later") for name in EARLIER}
 
 
 def parts(per_game: pl.DataFrame) -> dict[str, dict[str, Any]]:
@@ -205,16 +245,31 @@ def _cell(estimate: Mapping[str, Any]) -> str:
     )
 
 
-def markdown(added: Mapping[str, Any], found: Mapping[str, Any], version: str) -> str:
-    """The diagnostics report: the parts, then the subsets, in thousandths with intervals."""
+def markdown(
+    early: Mapping[str, Any], added: Mapping[str, Any], found: Mapping[str, Any], version: str
+) -> str:
+    """The diagnostics report: 2011-12 in the fit, the parts, then the subsets, in thousandths
+    with intervals."""
     lines = [
         f"# Yardstick diagnostics: explore, {version}",
         "",
-        "Step 2 of #361 (ADR 0053), on the explore half (2012-13 to 2014-15) only. Figures are in",
-        "thousandths of squared log-odds with 95% weekly block bootstrap intervals. Negative move",
-        "skill means a forecast of SBR's move from the opener to the close beats the opener's own",
-        "drift. With this many figures, some intervals exclude zero by chance: a finding is a",
-        "claim to score once on the confirm half, not a result.",
+        "Step 2 of #361 (ADR 0053), on the explore half only. Every candidate is fitted from",
+        "2012-13 and scored on 2013-14 and 2014-15, so all compare on the same games and fits.",
+        "Figures are in thousandths of squared log-odds with 95% weekly block bootstrap intervals.",
+        "Negative move skill means a forecast of SBR's move from the opener to the close beats the",
+        "opener's own drift. With this many figures, some intervals exclude zero by chance: a",
+        "finding is a claim to score once on the confirm half, not a result.",
+        "",
+        "## 2011-12 in the fit",
+        "",
+        "Each candidate that can read 2011-12, fitted from 2011-12 less fitted from 2012-13, on",
+        "the same games. Positive means 2011-12 makes the fit worse.",
+        "",
+        "| Candidate | From 2011-12 less from 2012-13 |",
+        "| --- | --- |",
+    ]
+    lines += [f"| {name} | {_cell(row)} |" for name, row in early.items()]
+    lines += [
         "",
         "## What each part adds",
         "",
@@ -252,10 +307,10 @@ def main(seasons: Sequence[int] = ys.EXPLORE) -> None:
     parser.add_argument("--out", type=Path, default=Path("reports/yardstick"))
     args = parser.parse_args()
     read = ys.read(Lake(), max(seasons))
-    per_game, _ = ys.run(read.frame, "explore", candidates())
+    per_game = scored_together(read.frame, candidates())
     flags = subsets(read)
     version = reports.version("yardstick-diagnostics", datetime.now(UTC))
-    report = markdown(parts(per_game), where(per_game, flags), version)
+    report = markdown(earlier(read.frame), parts(per_game), where(per_game, flags), version)
     args.out.mkdir(parents=True, exist_ok=True)
     path = args.out / f"{version}.md"
     path.write_text(report)

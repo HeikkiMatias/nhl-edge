@@ -104,7 +104,7 @@ def test_the_subsets_and_the_report_on_synthetic_seasons() -> None:
     )
     read = ys.Read(players.games, teams, players, frame)
     flags = yd.subsets(read)
-    assert flags.height == frame.filter(pl.col("season").is_in(list(ys.EXPLORE))).height
+    assert flags.height == frame.filter(pl.col("season").is_in(list(yd.SCORED))).height
     assert set(yd.SUBSETS) <= set(flags.columns)
     # The back-to-back games are the rested games' complement.
     rested = frame.select("game_id", "rested")
@@ -112,6 +112,13 @@ def test_the_subsets_and_the_report_on_synthetic_seasons() -> None:
     assert (joined["back-to-back"] == ~joined["rested"]).all()
     surprised = yd.surprises(read)
     assert surprised.height == frame.height
-    per_game, _ = ys.run(frame, "explore", yd.candidates())
-    report = yd.markdown(yd.parts(per_game), yd.where(per_game, flags), "v")
+    per_game = yd.scored_together(frame, yd.candidates())
+    # Every candidate on the same games.
+    counts = per_game.group_by("candidate").len()["len"].unique().to_list()
+    assert len(counts) == 1
+    assert set(per_game["season"].unique().to_list()) == set(yd.SCORED)
+    early = yd.earlier(frame)
+    assert set(early) == set(yd.EARLIER)
+    report = yd.markdown(early, yd.parts(per_game), yd.where(per_game, flags), "v")
     assert "| finishing_diff |" in report and "| not early season |" in report
+    assert "## 2011-12 in the fit" in report
