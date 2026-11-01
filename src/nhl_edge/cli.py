@@ -1612,6 +1612,9 @@ def research_yardstick(
     unknown = [name for name in names if name not in ys.CANDIDATES]
     if unknown:
         raise typer.BadParameter(f"unknown candidates: {', '.join(unknown)}")
+    # Exactly the claim's own: another candidate scored here would have seen the confirm half.
+    if half == "confirm" and claim is not None and sorted(names) != sorted(own):
+        raise typer.BadParameter(f"a confirm run scores its claim's candidates: {', '.join(own)}")
     now = datetime.now(UTC)
     version = reports.version("yardstick", now)
     if r2 and version.endswith("-dirty"):
@@ -1628,11 +1631,6 @@ def research_yardstick(
         )
         if not path.exists() or tracked.returncode or changed.stdout.strip():
             raise typer.BadParameter(f"commit the claim {path} before its confirm run")
-        # Exactly the claim's own: another candidate scored here would have seen the confirm half.
-        if sorted(names) != sorted(own):
-            raise typer.BadParameter(
-                f"a confirm run scores its claim's candidates: {', '.join(own)}"
-            )
     elif claim is not None:
         raise typer.BadParameter("--claim is for a confirm run")
     try:

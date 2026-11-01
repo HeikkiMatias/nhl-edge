@@ -83,9 +83,9 @@ CANDIDATES: dict[str, tuple[str, ...]] = {
 # test's two-sided weekly block bootstrap p-value goes through Holm's step-down at ALPHA (ADR 0048),
 # and a test holds when it passes and its estimate is negative.
 CLAIMS: dict[str, tuple[tuple[str, str], ...]] = {
-    # On the rested games (the owner's choice of 2026-11-01): the stale opener (ADR 0006) can't
-    # flatter them. A back-to-back test was dropped before any confirm run: there the 10:00 ET
-    # inputs know the night before's game, which an opener of the evening before may not.
+    # On the rested games (the owner's choice of 2026-11-01), where neither team's own last game
+    # falls between an opener of the evening before (ADR 0006) and 10:00 ET. A back-to-back test
+    # was dropped before any confirm run: there the inputs know that game, the opener may not.
     "early-information": (
         ("B3 split", "move_rested"),
         ("delta_s", "move_rested"),

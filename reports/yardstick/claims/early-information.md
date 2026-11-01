@@ -4,7 +4,7 @@ Written down on 2026-11-01 from the explore half (2013-14 and 2014-15), before a
 
 ## The tests
 
-The two tests are one family. Each is on the rested games, where neither team played the day before, so an opener posted the evening before (ADR 0006) can't flatter them (the owner's choice). Every candidate is fitted per season on the earlier seasons from 2012-13. Figures are in thousandths of squared log-odds, explore half, 1,717 rested games.
+The two tests are one family. Each is on the rested games, where neither team played the day before (the owner's choice). There, neither team's own last game falls between an opener posted the evening before (ADR 0006) and 10:00 ET. League-wide refits (team strength's league rates, RAPM's joint fit) still take in the night's other games, so the rested games narrow that gap without closing it. Every candidate is fitted per season on the earlier seasons from 2012-13. Figures are in thousandths of squared log-odds, explore half, 1,717 rested games.
 
 1. `B3 split: move_rested`: B3's split anticipates the move on the rested games. Its move skill there is negative.
    - Explore: −0.554 [−1.061, −0.121], p 0.004.

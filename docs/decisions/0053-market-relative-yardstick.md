@@ -60,6 +60,7 @@
 - **Explore** is for the diagnostics and for choosing features. A run reads no season after its half's last.
 - **Confirm:** a claim from the explore half is written to `reports/yardstick/claims/<claim>.md` and committed. It is then scored once on the confirm half.
   - The confirm half is fresh for the yardstick's claims, but not for the features' settings, which were tuned on 2011-12 to 2017-18.
+  - After the first confirm run, the confirm half is no longer fresh even for claims: its report shows more figures than the claim's tests. A later claim scored on it counts only as development evidence.
   - The command refuses a confirm run without its committed claim, or without `--r2`.
   - It keeps the run under the claim's name in R2, and a second run of that claim is refused.
 - **The claims are code** (`yardstick.CLAIMS`). A confirm run must name one, and its report carries the verdict.

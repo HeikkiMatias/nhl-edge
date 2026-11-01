@@ -209,3 +209,6 @@ def test_a_confirm_run_needs_its_claim_and_r2() -> None:
          "--candidates", "B3 split,delta_s,all"],
     )  # fmt: skip
     assert result.exit_code == 2
+    assert "a confirm run scores its claim's candidates" in " ".join(
+        re.sub(r"\x1b\[[0-9;]*m", "", result.output).split()
+    )
