@@ -106,6 +106,15 @@
 - **No part adds beyond the others.** The 5v5 part is nearest, at −0.122 [−0.272, +0.029].
 - **No pocket of games stands out.** Back-to-backs are the hint the claim tests.
 
+**The confirm run of `early-information`** is `yardstick-20261101-e331828` (`reports/yardstick/confirm-early-information-yardstick-20261101-e331828.md`), run once on 2026-11-01 from main at e331828 and kept in R2 under `bundles/yardstick/confirm-early-information`.
+- **Its games:** 3,731 of 2015-16 to 2017-18, 2,613 of them rested. The baseline's mean squared error is 16.334 thousandths.
+- **Both tests hold:**
+  - B3's split on the rested games: −1.429 [−1.828, −1.089], p below 0.001 against a Holm threshold of 0.025.
+  - Team strength on the rested games: −0.752 [−0.946, −0.569], p below 0.001 against 0.05.
+- **Each season agrees.** The split's move skill is negative in 2015-16, 2016-17 and 2017-18 alike, and so is team strength's.
+- **Neither adds to the close:** B3's split −0.469 [−1.638, +0.708] thousandths, team strength −0.122 [−0.943, +0.713].
+- **How it reads:** the features anticipate part of the move on games where last night's results can't explain it. The features' settings were tuned on these seasons, so this is development evidence; the confirmation that counts is live (ADR 0038). The confirm half is no longer fresh for claims.
+
 **The first run,** `yardstick-20261030-dafedeb`, is superseded.
 - It fitted most candidates from 2011-12 but those with the finishing part from 2012-13, so its comparisons across candidates mixed the two windows.
 - Its line that Δĝ as one number did worse than its parts came from that mix.
