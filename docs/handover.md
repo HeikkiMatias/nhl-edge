@@ -229,6 +229,9 @@ Every deliverable merged under its own task issue:
   - No part adds beyond the others, and no pocket of games stands out. Back-to-backs are a hint for B2's inputs.
 - **The first claim, `early-information`** (the owner's choice of 2026-11-01): on the rested games, B3's split anticipates the move, and team strength alone does. A back-to-back test was dropped as confounded with a stale opener. Its one confirm run follows this PR's merge.
 - **Next:** a close forecaster (step 3, its own ADR) and targeted features (step 4).
+- **Upsets in mismatches (#366, `scripts/upsets.py`, `reports/yardstick/upsets-20261101-642b7e9.md`, explore half):**
+  - There is no sign that favourites lose more than priced. At a close of 0.70 or more they win more often: +0.090 [+0.010, +0.162] on 84 games, as B1's slope above 1 says.
+  - None of the four letdown spots (a big win, a win streak, a slumping underdog, a road trip) makes the favourite lose more than the close says, or adds to it.
 
 **Challengers (#255, ADR 0038).** New models are judged only on decision days after their registration, never on history again.
 - **Where:**

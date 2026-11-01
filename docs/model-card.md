@@ -297,6 +297,10 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
 - **In-sample in their settings:** the features' settings were tuned on these seasons (ADR 0011).
 - **The claim `early-information`** (B3's split and team strength on the rested games) is scored once on 2015-16 to 2017-18.
 
+**Upsets in mismatches (#366, explore half).** Favourites don't lose more often than priced.
+- **The heaviest win more often:** at a close of 0.70 or more, +0.090 [+0.010, +0.162], 84 games. That is the market's under-confidence that B1 recalibrates.
+- **No letdown spot** (a big win, a win streak, a slumping underdog, a road trip) shows favourites losing more than the close says.
+
 ## Run history
 
 See `reports/backtest/runs.csv`.
