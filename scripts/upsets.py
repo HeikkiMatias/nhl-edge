@@ -181,6 +181,8 @@ def model_side(frame: pl.DataFrame, seasons: Sequence[int]) -> pl.DataFrame:
             pl.col("season").is_between(ys.FIRST_FIT, season - 1), pl.col("result_utc") < start
         )
         test = frame.filter(pl.col("season") == season)
+        if train["home_win"].n_unique() < 2:
+            raise ValueError(f"{season}: no results from {ys.FIRST_FIT} on to fit the model on")
         # Unpenalized, as ADR 0011's win model.
         model = LogisticRegression(C=np.inf, max_iter=1000)
         model.fit(train.select(columns).to_numpy(), train["home_win"].to_numpy())
@@ -219,8 +221,8 @@ def calibration(rows: pl.DataFrame, probability: str) -> dict[str, dict[str, Any
 
 def letdowns(frame: pl.DataFrame, flags: pl.DataFrame) -> dict[str, dict[str, Any]]:
     """Per spot: its mismatches' count, the favourite's win rate less its closing probability on
-    them less that on the other mismatches, and as a yardstick feature its move skill and its
-    result beyond the close."""
+    them less that on the other mismatches, and as a yardstick feature its move skill (on every
+    game and on the rested ones) and its result beyond the close."""
     mismatches = flags.filter(pl.col("fav_open") >= MISMATCH).with_columns(
         gap=pl.col("fav_won").cast(pl.Float64) - pl.col("fav_close")
     )
@@ -241,6 +243,9 @@ def letdowns(frame: pl.DataFrame, flags: pl.DataFrame) -> dict[str, dict[str, An
                 metrics.difference(inside, outside, "gap").to_dict() if inside.height else None
             ),
             "move": metrics.bootstrap(games, "move").to_dict(),
+            # On the rested games, where SBR's opener can't predate either team's last result
+            # (ADR 0006), as the yardstick's claims are read.
+            "move_rested": metrics.bootstrap(games.filter(pl.col("rested")), "move").to_dict(),
             "result": metrics.bootstrap(games, "result").to_dict(),
         }
     return found
@@ -270,7 +275,8 @@ def markdown(
         "## Calibration: do favourites win as often as priced?",
         "",
         "Per band of the favourite's probability: its win rate less its probability, game by game.",
-        "Negative means favourites win less often than priced (upsets more common).",
+        "Negative means favourites win less often than priced (upsets more common). The model",
+        "side's features are in-sample in their settings, tuned on these seasons (ADR 0011).",
         "",
     ]
     for name, found in bands.items():
@@ -296,16 +302,18 @@ def markdown(
         f"The favourite by the opener at {MISMATCH:.2f} or more. The calibration gap is the",
         "favourite's win rate less its closing probability; negative means it loses more often",
         "than the close says. The yardstick's move skill and result beyond the close are in",
-        "thousandths; negative means the spot anticipates the move or adds to the close.",
+        "thousandths; negative means the spot anticipates the move or adds to the close. The",
+        "rested games are those where neither team played the day before (ADR 0006).",
         "",
-        "| Spot | Games | Gap | Gap less other mismatches | Move skill | Beyond the close |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Spot | Games | Gap | Gap less other mismatches | Move skill | Move skill, rested "
+        "| Beyond the close |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for spot, row in spots_.items():
         lines.append(
             f"| {spot} | {row['games']:,} | {_cell(row['gap'])} "
             f"| {_cell(row['gap_less_others'], key='value')} | {_cell(row['move'], 1000)} "
-            f"| {_cell(row['result'], 1000)} |"
+            f"| {_cell(row['move_rested'], 1000)} | {_cell(row['result'], 1000)} |"
         )
     lines += [
         "",
