@@ -1,4 +1,4 @@
-# Yardstick diagnostics: explore, yardstick-diagnostics-20261031-31771ec
+# Yardstick diagnostics: explore, yardstick-diagnostics-20261101-c7bfa52
 
 Step 2 of #361 (ADR 0053), on the explore half only. Every candidate is fitted from
 2012-13 and scored on 2013-14 and 2014-15, so all compare on the same games and fits.

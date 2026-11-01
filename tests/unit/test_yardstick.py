@@ -146,18 +146,18 @@ def test_the_back_to_back_figure_is_its_games_less_the_rested_ones() -> None:
 
 def test_a_claims_verdict_is_holms_over_its_family() -> None:
     # The claim's candidates stand in for x, which anticipates the move on every game alike.
-    stand_ins = {"B3 split": ("x",), "delta_s": ("x",)}
+    stand_ins = {"B3 split": ("x",), "delta_s": ("x",), "B2 inputs": ("x",)}
     _, found = ys.run(yf.moves(), "explore", stand_ins)
     tests = ys.verdict(found, "early-information")
     assert [t["test"] for t in tests] == [
         "B3 split: move",
         "delta_s: move",
-        "delta_s: back_to_back_less_rested",
+        "B2 inputs: back_to_back_less_rested",
     ]
     held = {t["test"]: t["holds"] for t in tests}
     assert held["B3 split: move"] and held["delta_s: move"]
     # No pocket in the made-up games: the back-to-back test fails.
-    assert not held["delta_s: back_to_back_less_rested"]
+    assert not held["B2 inputs: back_to_back_less_rested"]
     thresholds = sorted(t["threshold"] for t in tests)
     assert thresholds == pytest.approx([0.05 / 3, 0.05 / 2, 0.05])
     assert "## The claim: early-information" in ys.verdict_markdown("early-information", tests)

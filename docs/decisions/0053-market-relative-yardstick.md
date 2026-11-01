@@ -1,6 +1,6 @@
 # 0053. The market-relative yardstick: features scored on the move to the close, on the training seasons
 
-- Status: Accepted (by the owner, 2026-10-30, #361): option 1, with the move skill as the primary measure, the explore and confirm halves, the rested games, the training seasons' exception and the finishing part's first season
+- Status: Accepted (by the owner, 2026-10-30, #361): option 1, with the move skill as the primary measure, the explore and confirm halves, the rested games and the training seasons' exception. Amended by the owner on 2026-11-01 (#361 step 2): every candidate is fitted from 2012-13, explore is 2013-14 and 2014-15, and the first claim is `early-information`.
 - Date: 2026-10-30
 - Part of: #361, from the owner's ask of 2026-10-30, "we need to find a way to develop our model to be better if we're losing to the market"; it extends ADR 0011
 
@@ -50,15 +50,21 @@
 
 **The fits** follow ADR 0011: each scored season is fitted on the earlier seasons' games whose results were public before its fold start. As in the backtest's E2, that is its first start, or its first opener prediction when that comes earlier.
 - **The checks:** `through` refuses any row fitted after the tuning cutoff, and any row of an untimed table observed before its fit.
-- **The first season fitted on:** 2011-12, B3's first season with features. It is never scored.
-- **A later first season:** ADR 0011 scores a season only once an earlier one has the component's inputs. Every 2011-12 shooter finishes at φ = 1 (ADR 0022), so a candidate with the finishing part is fitted from 2012-13 and scored from 2013-14.
+- **The first season fitted on: 2012-13, for every candidate** (amended on 2026-11-01).
+  - 2011-12 is the features' burn-in season: the first of xG and RAPM, with about half the later spread, and every shooter finishes at φ = 1 (ADR 0022).
+  - A fit that reads 2011-12 scores worse (the diagnostics below).
+  - With one first season, any two candidates compare on the same games and fits.
+  - 2011-12's games are read only to measure that (`FIRST_READ`), never fitted on in a run.
 
-**The halves** (the owner's choice): explore on 2012-13 to 2014-15, confirm on 2015-16 to 2017-18.
+**The halves** (the owner's choice): explore on 2013-14 and 2014-15 (2012-13 until the amendment), confirm on 2015-16 to 2017-18.
 - **Explore** is for the diagnostics and for choosing features. A run reads no season after its half's last.
 - **Confirm:** a claim from the explore half is written to `reports/yardstick/claims/<claim>.md` and committed. It is then scored once on the confirm half.
   - The confirm half is fresh for the yardstick's claims, but not for the features' settings, which were tuned on 2011-12 to 2017-18.
   - The command refuses a confirm run without its committed claim, or without `--r2`.
   - It keeps the run under the claim's name in R2, and a second run of that claim is refused.
+- **The claims are code** (`yardstick.CLAIMS`). A confirm run must name one, and its report carries the verdict.
+  - A claim's tests are one family. Each test's two-sided weekly block bootstrap p-value goes through Holm's step-down at 0.05 (ADR 0048). A test holds when it passes and its estimate is negative.
+  - **The first claim, `early-information`** (the owner's choice of 2026-11-01, `reports/yardstick/claims/early-information.md`), has three tests: B3's split anticipates the move; team strength alone does; B2's inputs do more on back-to-backs than on rested games.
 
 **The stale opener** (the owner's choice): every figure is also given on the rested games, where neither team played the day before.
 - On those games, neither team's own last game falls between an opener of the evening before and 10:00 ET.
@@ -72,26 +78,36 @@
 
 ## Backtest evidence
 
-**The explore run** is `yardstick-20261030-dafedeb` (`reports/yardstick/explore-yardstick-20261030-dafedeb.md`), on 3,165 games of 2012-13 to 2014-15 (2,445 from 2013-14 for the finishing part).
-- **Units:** the move skill is in thousandths of squared log-odds. The baseline's mean squared error is 11.903 thousandths.
+**The explore run, as amended,** is `yardstick-20261101-c7bfa52` (`reports/yardstick/explore-yardstick-20261101-c7bfa52.md`).
+- **Its games:** 2,445, of 2013-14 and 2014-15. Every candidate is fitted from 2012-13 and scored on the same games.
+- **Units:** the move skill is in thousandths of squared log-odds. The baseline's mean squared error is 12.588 thousandths.
 - **Status:** it is the yardstick's baseline reading. It changes no model.
 
 | Candidate | Move skill | Rested games | Beyond the close |
 | --- | --- | --- | --- |
-| ΔS, team strength | −0.203 [−0.348, −0.072] | −0.331 [−0.522, −0.167] | −0.307 [−1.598, +0.999] |
-| 5v5 xG difference | −0.257 [−0.516, −0.017] | −0.432 [−0.754, −0.135] | −0.491 [−2.317, +1.232] |
-| Special teams | −0.058 [−0.130, +0.013] | −0.094 [−0.166, −0.025] | +0.723 [−0.193, +1.726] |
-| ΔG, B2's goalie effect | −0.029 [−0.102, +0.048] | +0.059 [−0.039, +0.156] | +0.612 [−1.044, +2.219] |
-| Δĝ, B3's whole difference | −0.072 [−0.328, +0.176] | −0.121 [−0.411, +0.146] | +0.961 [+0.031, +1.931] |
-| B2's inputs together | −0.138 [−0.359, +0.061] | −0.110 [−0.365, +0.128] | +0.235 [−1.932, +2.321] |
+| ΔS, team strength | −0.256 [−0.397, −0.140] | −0.314 [−0.499, −0.159] | +0.074 [−1.884, +2.039] |
+| 5v5 xG difference | −0.472 [−0.756, −0.245] | −0.592 [−0.950, −0.302] | −0.279 [−2.225, +1.665] |
+| Special teams | −0.070 [−0.147, +0.003] | −0.083 [−0.159, −0.010] | +2.094 [+0.092, +4.316] |
+| ΔG, B2's goalie effect | −0.034 [−0.127, +0.060] | +0.054 [−0.069, +0.179] | +1.401 [−0.305, +3.159] |
+| Δĝ, B3's whole difference | −0.340 [−0.607, −0.099] | −0.425 [−0.781, −0.120] | +1.202 [+0.109, +2.268] |
+| B2's inputs together | −0.311 [−0.498, −0.142] | −0.199 [−0.454, +0.040] | +1.367 [−1.482, +4.169] |
 | B3's split together | −0.464 [−0.842, −0.134] | −0.554 [−1.061, −0.121] | +3.323 [−0.126, +6.690] |
 
-**What it says, as context for the diagnostics, not a verdict:**
-- **The features anticipate a little of the move.** B3's split forecasts about 4% of the move beyond the opener's own drift (0.46 of 11.9). Team strength and the 5v5 part each do so on their own.
+**What it says, as context for the claims, not a verdict:**
+- **The features anticipate a little of the move.** B3's split forecasts about 4% of the move beyond the opener's own drift (0.46 of 12.6). Team strength, Δĝ and the 5v5 part each do so on their own.
   - It holds on the rested games, so last night's results aren't what drives it.
-  - The market moves toward every feature: the slope of the move on the 5v5 part is +0.158 [+0.131, +0.188].
-- **None adds to the close.** No candidate's result interval lies below zero. Δĝ's fit costs +0.96 [+0.03, +1.93]. This is gate 3's finding again, on the training seasons.
-- **Δĝ as one number does worse than its parts.** Its move skill holds zero, while the split's doesn't. That points step 2 at the parts.
+  - The market moves toward every feature: the slope of the move on the 5v5 part is +0.139 [+0.112, +0.170].
+- **None adds to the close.** No candidate's result interval lies below zero. Δĝ's and special teams' fits cost more than nothing. This is gate 3's finding again, on the training seasons.
+- **The split and Δĝ tie on the same fits:** −0.12 [−0.28, +0.02] thousandths, split less Δĝ (step 2's diagnostics).
+
+**The diagnostics** (#361 step 2, `scripts/yardstick_diagnostics.py`, `reports/yardstick/yardstick-diagnostics-20261101-c7bfa52.md`):
+- **2011-12 in a fit makes it worse:** Δĝ +0.445 [+0.327, +0.573] thousandths, the 5v5 part +0.241 [+0.142, +0.345], B2's inputs +0.108 [+0.030, +0.188], fitted from 2011-12 less from 2012-13 on the same games. That finding is the amendment's reason.
+- **No part adds beyond the others.** The 5v5 part is nearest, at −0.122 [−0.272, +0.029].
+- **No pocket of games stands out.** Back-to-backs are the hint the claim tests.
+
+**The first run,** `yardstick-20261030-dafedeb`, is superseded.
+- It fitted most candidates from 2011-12 but those with the finishing part from 2012-13, so its comparisons across candidates mixed the two windows.
+- Its line that Δĝ as one number did worse than its parts came from that mix.
 
 ## Consequences
 

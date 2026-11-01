@@ -86,7 +86,7 @@ CLAIMS: dict[str, tuple[tuple[str, str], ...]] = {
     "early-information": (
         ("B3 split", "move"),
         ("delta_s", "move"),
-        ("delta_s", "back_to_back_less_rested"),
+        ("B2 inputs", "back_to_back_less_rested"),
     ),
 }
 ALPHA = 0.05
