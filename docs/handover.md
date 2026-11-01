@@ -227,7 +227,7 @@ Every deliverable merged under its own task issue:
 - **Step 2's diagnostics** (`scripts/yardstick_diagnostics.py`, `reports/yardstick/yardstick-diagnostics-20261101-c7bfa52.md`):
   - 2011-12 in a fit makes it worse, which is the reason for the amendment.
   - No part adds beyond the others, and no pocket of games stands out. Back-to-backs are a hint for B2's inputs.
-- **The first claim, `early-information`** (the owner's choice of 2026-11-01): B3's split anticipates the move; team strength alone does; B2's inputs do more on back-to-backs. Its one confirm run follows this PR's merge.
+- **The first claim, `early-information`** (the owner's choice of 2026-11-01): on the rested games, B3's split anticipates the move, and team strength alone does. A back-to-back test was dropped as confounded with a stale opener. Its one confirm run follows this PR's merge.
 - **Next:** a close forecaster (step 3, its own ADR) and targeted features (step 4).
 
 **Challengers (#255, ADR 0038).** New models are judged only on decision days after their registration, never on history again.

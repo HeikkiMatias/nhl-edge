@@ -1628,9 +1628,11 @@ def research_yardstick(
         )
         if not path.exists() or tracked.returncode or changed.stdout.strip():
             raise typer.BadParameter(f"commit the claim {path} before its confirm run")
-        missing = [name for name in own if name not in names]
-        if missing:
-            raise typer.BadParameter(f"the claim's candidates are missing: {', '.join(missing)}")
+        # Exactly the claim's own: another candidate scored here would have seen the confirm half.
+        if sorted(names) != sorted(own):
+            raise typer.BadParameter(
+                f"a confirm run scores its claim's candidates: {', '.join(own)}"
+            )
     elif claim is not None:
         raise typer.BadParameter("--claim is for a confirm run")
     try:

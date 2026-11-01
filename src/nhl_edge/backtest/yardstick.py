@@ -83,10 +83,12 @@ CANDIDATES: dict[str, tuple[str, ...]] = {
 # test's two-sided weekly block bootstrap p-value goes through Holm's step-down at ALPHA (ADR 0048),
 # and a test holds when it passes and its estimate is negative.
 CLAIMS: dict[str, tuple[tuple[str, str], ...]] = {
+    # On the rested games (the owner's choice of 2026-11-01): the stale opener (ADR 0006) can't
+    # flatter them. A back-to-back test was dropped before any confirm run: there the 10:00 ET
+    # inputs know the night before's game, which an opener of the evening before may not.
     "early-information": (
-        ("B3 split", "move"),
-        ("delta_s", "move"),
-        ("B2 inputs", "back_to_back_less_rested"),
+        ("B3 split", "move_rested"),
+        ("delta_s", "move_rested"),
     ),
 }
 ALPHA = 0.05
@@ -364,6 +366,7 @@ def figures(games: pl.DataFrame, columns: Sequence[str]) -> dict[str, Any]:
         "move": bootstrap(games, "move").to_dict(),
         "move_p": p_value(games, "move"),
         "move_rested": bootstrap(rested, "move").to_dict(),
+        "move_rested_p": p_value(rested, "move"),
         "move_per_season": {
             str(season): bootstrap(part, "move").to_dict()
             for (season,), part in games.sort("season").group_by("season", maintain_order=True)

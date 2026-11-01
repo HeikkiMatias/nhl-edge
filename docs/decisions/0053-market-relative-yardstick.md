@@ -64,7 +64,7 @@
   - It keeps the run under the claim's name in R2, and a second run of that claim is refused.
 - **The claims are code** (`yardstick.CLAIMS`). A confirm run must name one, and its report carries the verdict.
   - A claim's tests are one family. Each test's two-sided weekly block bootstrap p-value goes through Holm's step-down at 0.05 (ADR 0048). A test holds when it passes and its estimate is negative.
-  - **The first claim, `early-information`** (the owner's choice of 2026-11-01, `reports/yardstick/claims/early-information.md`), has three tests: B3's split anticipates the move; team strength alone does; B2's inputs do more on back-to-backs than on rested games.
+  - **The first claim, `early-information`** (the owner's choice of 2026-11-01, `reports/yardstick/claims/early-information.md`), has two tests on the rested games: B3's split anticipates the move, and team strength alone does. A third test, B2's inputs doing more on back-to-backs, was dropped before any confirm run. On a back-to-back, the 10:00 ET inputs know the night before's game, which an opener of the evening before may not.
 
 **The stale opener** (the owner's choice): every figure is also given on the rested games, where neither team played the day before.
 - On those games, neither team's own last game falls between an opener of the evening before and 10:00 ET.

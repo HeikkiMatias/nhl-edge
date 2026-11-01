@@ -295,7 +295,7 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
 - **They anticipate a little of it.** B3's split scores −0.46 [−0.84, −0.13] thousandths of squared log-odds, against a baseline error of 12.6. Team strength scores −0.26 [−0.40, −0.14] and the 5v5 part −0.47 [−0.76, −0.25]. Each holds on the rested games.
 - **None adds to the close on the result.** Δĝ's fit costs +1.20 [+0.11, +2.27] thousandths. This is gate 3's finding again.
 - **In-sample in their settings:** the features' settings were tuned on these seasons (ADR 0011).
-- **The claim `early-information`** is scored once on 2015-16 to 2017-18.
+- **The claim `early-information`** (B3's split and team strength on the rested games) is scored once on 2015-16 to 2017-18.
 
 ## Run history
 

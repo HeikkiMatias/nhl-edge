@@ -26,7 +26,8 @@ Fixed before any subset was read:
    - **back-to-back:** either team played the day before (the rested games' complement);
    - **long travel:** the travel difference in the top quarter of the scored games;
    - **results ahead of xG:** the gap between the teams' season-to-date goal difference and B3's
-     expected one, per game, from the results public before the opener, in the top quarter;
+     expected one, per game, from the results public before the opener's assumed 10:00 ET (so a
+     back-to-back's includes the night before), in the top quarter of the scored games;
    - **goalie surprise:** either team's starter was not its likeliest candidate at the opener.
      The starter is known only from the boxscore, so this describes where the market moves; it
      is no feature.
@@ -99,7 +100,8 @@ def game_numbers(games: pl.DataFrame) -> pl.DataFrame:
 def luck_gaps(frame: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
     """Each game of frame with gap: the home team's season-to-date goal difference per game less
     B3's expected one (Δĝ), over its earlier games of frame whose results were public before the
-    game's opener, less the away team's. 0 for a team without one."""
+    game's prediction time (the opener's assumed 10:00 ET), less the away team's. 0 for a team
+    without one."""
     played = frame.join(
         games.select("game_id", "home", "away", "home_score", "away_score"), on="game_id"
     ).with_columns(diff=(pl.col("home_score") - pl.col("away_score")) - pl.col("delta_g_hat"))

@@ -146,21 +146,25 @@ def test_the_back_to_back_figure_is_its_games_less_the_rested_ones() -> None:
 
 def test_a_claims_verdict_is_holms_over_its_family() -> None:
     # The claim's candidates stand in for x, which anticipates the move on every game alike.
-    stand_ins = {"B3 split": ("x",), "delta_s": ("x",), "B2 inputs": ("x",)}
+    stand_ins = {"B3 split": ("x",), "delta_s": ("x",)}
     _, found = ys.run(yf.moves(), "explore", stand_ins)
     tests = ys.verdict(found, "early-information")
-    assert [t["test"] for t in tests] == [
-        "B3 split: move",
-        "delta_s: move",
-        "B2 inputs: back_to_back_less_rested",
-    ]
-    held = {t["test"]: t["holds"] for t in tests}
-    assert held["B3 split: move"] and held["delta_s: move"]
-    # No pocket in the made-up games: the back-to-back test fails.
-    assert not held["B2 inputs: back_to_back_less_rested"]
+    assert [t["test"] for t in tests] == ["B3 split: move_rested", "delta_s: move_rested"]
+    assert all(t["holds"] for t in tests)
     thresholds = sorted(t["threshold"] for t in tests)
-    assert thresholds == pytest.approx([0.05 / 3, 0.05 / 2, 0.05])
+    assert thresholds == pytest.approx([0.05 / 2, 0.05])
     assert "## The claim: early-information" in ys.verdict_markdown("early-information", tests)
+    # Noise holds nothing.
+    _, noise = ys.run(yf.moves(), "explore", {"B3 split": ("z",), "delta_s": ("z",)})
+    assert not any(t["holds"] for t in ys.verdict(noise, "early-information"))
+
+
+def test_each_claim_file_names_exactly_its_tests() -> None:
+    claims = Path(__file__).parents[2] / "reports" / "yardstick" / "claims"
+    for claim, tests in ys.CLAIMS.items():
+        text = (claims / f"{claim}.md").read_text()
+        named = re.findall(r"`([^`]+: [a-z_]+)`", text)
+        assert named == [f"{candidate}: {measure}" for candidate, measure in tests]
 
 
 def test_a_paired_difference_favours_the_better_candidate() -> None:
@@ -198,3 +202,10 @@ def test_a_confirm_run_needs_its_claim_and_r2() -> None:
     assert "claim is one of early-information" in " ".join(
         re.sub(r"\x1b\[[0-9;]*m", "", result.output).split()
     )
+    # A confirm run scores exactly its claim's candidates.
+    result = CliRunner().invoke(
+        app,
+        ["research", "yardstick", "--half", "confirm", "--claim", "early-information", "--r2",
+         "--candidates", "B3 split,delta_s,all"],
+    )  # fmt: skip
+    assert result.exit_code == 2
