@@ -299,6 +299,10 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - Neither adds to the close: B3's split −0.47 [−1.64, +0.71] thousandths.
   - It is development evidence, not a holdout, since the features' settings were tuned on these seasons. The confirmation that counts is live (ADR 0038).
 
+**Upsets in mismatches (#366, explore half).** Favourites don't lose more often than priced.
+- **The heaviest win more often:** at a close of 0.70 or more, +0.090 [+0.010, +0.162], 84 games. That is the market's under-confidence that B1 recalibrates.
+- **No letdown spot** (a big win, a win streak, a slumping underdog, a road trip) shows favourites losing more than the close says.
+
 ## Run history
 
 See `reports/backtest/runs.csv`.

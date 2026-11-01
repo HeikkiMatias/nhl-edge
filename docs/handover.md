@@ -231,6 +231,9 @@ Every deliverable merged under its own task issue:
   - **Its one confirm run holds both tests** (`reports/yardstick/confirm-early-information-yardstick-20261101-e331828.md`, 3,731 games of 2015-16 to 2017-18, 2,613 rested): B3's split −1.43 [−1.83, −1.09] thousandths on the rested games, team strength −0.75 [−0.95, −0.57], both p below 0.001 against Holm's thresholds of 0.025 and 0.05. Neither adds to the close.
   - It is development evidence: the features' settings were tuned on these seasons (ADR 0011). The confirm half is no longer fresh for claims.
 - **Next:** a close forecaster (#369, step 3, its own ADR) and targeted features (#370, step 4).
+- **Upsets in mismatches (#366, `scripts/upsets.py`, `reports/yardstick/upsets-20261101-eeb1be8.md`, explore half):**
+  - There is no sign that favourites lose more than priced. At a close of 0.70 or more they win more often: +0.090 [+0.010, +0.162] on 84 games, as B1's slope above 1 says.
+  - None of the four letdown spots (a big win, a win streak, a slumping underdog, a road trip) makes the favourite lose more than the close says, or adds to it.
 
 **Challengers (#255, ADR 0038).** New models are judged only on decision days after their registration, never on history again.
 - **Where:**
