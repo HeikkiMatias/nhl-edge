@@ -1,14 +1,14 @@
 """Step 2 of #361 (ADR 0053): where and what the features know before the market, on the
-yardstick's explore half (2012-13 to 2014-15) only. The confirm half stays unread.
+yardstick's explore half (2013-14 and 2014-15) only. The confirm half stays unread.
 
     uv run python scripts/yardstick_diagnostics.py
 
-**The same fits for every candidate.** Each is fitted from FIT_FROM (2012-13, the finishing
-part's first season with inputs, ADR 0053) and scored on SCORED (2013-14 and 2014-15), so any two
-compare on the same games and the same fits' seasons. A first run let each candidate start at its
-own first season, and its comparisons mixed 2011-12 into some fits and not others: 2011-12's
-features are the first season's, with half the spread of later ones, and a fit that reads it
-scores worse. Section 0 measures that.
+**The same fits for every candidate.** Each is fitted from FIT_FROM (2012-13) and scored on
+SCORED (2013-14 and 2014-15), so any two compare on the same games and the same fits' seasons. A
+first run let each candidate start at its own first season, and its comparisons mixed 2011-12
+into some fits and not others: 2011-12's features are the first season's, with half the spread of
+later ones, and a fit that reads it scores worse. Section 0 measures that; on it the owner amended
+ADR 0053 on 2026-11-01 to fit every candidate from 2012-13.
 
 0. **2011-12 in the fit:** each candidate that can read it, fitted from 2011-12 less fitted from
    2012-13, on the same games. Positive means 2011-12 makes the fit worse.
@@ -55,8 +55,8 @@ from nhl_edge.lake.tables import Lake
 from nhl_edge.lineup.goalie_start import team_goalie_games
 
 EARLY = 20
-FIT_FROM = ys.first_inputs(ys.CANDIDATES["all"])
-SCORED = tuple(season for season in ys.EXPLORE if season > FIT_FROM)
+FIT_FROM = ys.FIRST_FIT
+SCORED = ys.EXPLORE
 # The candidates that can read 2011-12: none has the finishing part.
 EARLIER = ("B2 inputs", "delta_g_hat", "delta_s", "five_diff", "special_diff", "goalie_diff")
 TOP = 0.75
@@ -192,7 +192,7 @@ def scored_together(
     same = frame.filter(pl.col("season").is_between(fit_from, max(SCORED)))
     return pl.concat(
         [
-            ys.scored(same, columns, SCORED).select(
+            ys.scored(same, columns, SCORED, fit_from).select(
                 pl.lit(name).alias("candidate"), "game_id", "season", "game_date", "move"
             )
             for name, columns in chosen.items()
@@ -204,7 +204,7 @@ def earlier(frame: pl.DataFrame) -> dict[str, dict[str, Any]]:
     """Each candidate that can read 2011-12, fitted from it less fitted from FIT_FROM, game by
     game on SCORED: positive means 2011-12 makes the fit worse."""
     chosen = {name: ys.CANDIDATES[name] for name in EARLIER}
-    first = scored_together(frame, chosen, ys.FIRST_FIT)
+    first = scored_together(frame, chosen, ys.FIRST_READ)
     later = scored_together(frame, chosen, FIT_FROM).with_columns(pl.col("candidate") + " later")
     both = pl.concat([first, later])
     return {name: ys.paired(both, name, f"{name} later") for name in EARLIER}

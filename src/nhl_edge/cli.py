@@ -1569,18 +1569,21 @@ def research_compare(
 @research_app.command("yardstick")
 def research_yardstick(
     half: Annotated[
-        str, typer.Option(help="explore (2012-13 to 2014-15) or confirm (2015-16 to 2017-18).")
+        str, typer.Option(help="explore (2013-14 and 2014-15) or confirm (2015-16 to 2017-18).")
     ] = "explore",
     candidates: Annotated[
         str | None,
-        typer.Option(help="Comma-separated candidate names (default: every one)."),
+        typer.Option(
+            help="Comma-separated candidate names (default: every one, or a claim's own)."
+        ),
     ] = None,
     claim: Annotated[
         str | None,
         typer.Option(
             help=(
-                "A confirm run's claim: reports/yardstick/claims/<claim>.md, committed before the "
-                "run. Each claim is scored once."
+                "A confirm run's claim, one of yardstick.CLAIMS, written down in "
+                "reports/yardstick/claims/<claim>.md and committed before the run. Each claim is "
+                "scored once."
             )
         ),
     ] = None,
@@ -1591,7 +1594,8 @@ def research_yardstick(
     forecasts SBR's move from the opener to the close, and what it adds to the close on the
     result, each season fitted on the earlier ones, with weekly block bootstrap intervals. An
     explore run is for looking; a confirm run scores a claim written down from it, once, and
-    needs --r2 so the record of its run is kept. Nothing is read as a pass or fail."""
+    needs --r2 so the record of its run is kept. Only a claim's own tests get a verdict, under
+    Holm's step-down over its family (ADR 0048)."""
     import subprocess
     from datetime import UTC
 
@@ -1601,7 +1605,10 @@ def research_yardstick(
 
     if half not in ys.HALVES:
         raise typer.BadParameter(f"half is one of {', '.join(ys.HALVES)}")
-    names = list(ys.CANDIDATES) if candidates is None else candidates.split(",")
+    if claim is not None and claim not in ys.CLAIMS:
+        raise typer.BadParameter(f"claim is one of {', '.join(ys.CLAIMS)}")
+    own = list(dict.fromkeys(c for c, _ in ys.CLAIMS[claim])) if claim else list(ys.CANDIDATES)
+    names = own if candidates is None else candidates.split(",")
     unknown = [name for name in names if name not in ys.CANDIDATES]
     if unknown:
         raise typer.BadParameter(f"unknown candidates: {', '.join(unknown)}")
@@ -1621,6 +1628,9 @@ def research_yardstick(
         )
         if not path.exists() or tracked.returncode or changed.stdout.strip():
             raise typer.BadParameter(f"commit the claim {path} before its confirm run")
+        missing = [name for name in own if name not in names]
+        if missing:
+            raise typer.BadParameter(f"the claim's candidates are missing: {', '.join(missing)}")
     elif claim is not None:
         raise typer.BadParameter("--claim is for a confirm run")
     try:
@@ -1630,6 +1640,10 @@ def research_yardstick(
         raise typer.Exit(code=1) from None
     per_game, found = ys.run(frame, half, {name: ys.CANDIDATES[name] for name in names})
     report = ys.markdown(found, half, version)
+    tests = ys.verdict(found, claim) if claim else []
+    if claim:
+        report += ys.verdict_markdown(claim, tests)
+        found = {**found, "verdict": tests}
     key = ys.run_key(half, version, claim, now)
     identity = {"version": version, "half": half, "claim": claim, "candidates": names}
     try:
@@ -1641,7 +1655,11 @@ def research_yardstick(
     name = f"confirm-{claim}-{version}" if half == "confirm" else f"{half}-{version}"
     (out / f"{name}.md").write_text(report)
     typer.echo(f"yardstick {half}: {frame.height:,} games read, kept under {key}")
+    for test in tests:
+        typer.echo(f"  claim {test['test']}: {'holds' if test['holds'] else 'does not hold'}")
     for candidate, row in found.items():
+        if candidate == "verdict":
+            continue
         move = row["move"]
         typer.echo(
             f"  {candidate}: move skill {move['mean'] * 1000:+.3f} "
