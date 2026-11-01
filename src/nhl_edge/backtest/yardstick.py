@@ -11,8 +11,9 @@ Two targets, in the home side's log-odds, from SBR's opener and close de-vigged 
   win (hard rule 2) on c and x, less that of c alone, each fitted the same way: gate 3's question.
 
 **Where.** The training seasons (ADR 0011): every fit reads the games from FIRST_FIT whose results
-were public before the scored season's first game. The explore half (EXPLORE) is for looking;
-a claim from it is written down, then scored once on the confirm half (CONFIRM). A run reads no
+were public before the scored season's fold start, the same seasons for every candidate. The
+explore half (EXPLORE) is for looking; a claim from it is written down in CLAIMS, then scored once
+on the confirm half (CONFIRM), its tests a family under Holm's step-down (ADR 0048). A run reads no
 season after its half's last. Every figure is also given on the rested games, where neither team
 played the day before: SBR's opener may be from the evening before (ADR 0006), before the results
 that the 10:00 ET features know. On a rested game neither team's own last game falls in between,
@@ -29,7 +30,7 @@ tuning does (b2.tuning_scores), the yardstick reads each row at the time its dat
 import io
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import fields, replace
+from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from hashlib import sha256
 from typing import Any
@@ -40,15 +41,31 @@ from sklearn.linear_model import LogisticRegression
 
 from nhl_edge.backtest import walk_forward as wf
 from nhl_edge.backtest.market import Experiment, market_prices
-from nhl_edge.backtest.metrics import bootstrap, log_loss, slope
+from nhl_edge.backtest.metrics import (
+    SEED,
+    bootstrap,
+    difference,
+    holm,
+    log_loss,
+    p_value,
+    resampled_means,
+    slope,
+)
 from nhl_edge.backtest.seasons import TRAINING_SEASONS
 from nhl_edge.features.team_strength import TUNED_CUTOFF
 from nhl_edge.game import b2, b3
+from nhl_edge.lake.tables import Reader
 from nhl_edge.live import bundle as lb
 
-# B3's first season with features: fitted on, never scored.
-FIRST_FIT = 20112012
-EXPLORE = (20122013, 20132014, 20142015)
+# B3's first season with features: read only to measure what it does to a fit
+# (scripts/yardstick_diagnostics.py), never fitted on in a run.
+FIRST_READ = 20112012
+# The first season fitted on (ADR 0053, as amended by the owner on 2026-11-01): 2011-12 is the
+# features' burn-in, the first season of xG and RAPM with about half the later spread, where every
+# shooter finishes at φ = 1 (ADR 0022), and a fit that reads it scores worse. Every candidate is
+# fitted from here, so any two compare on the same games and fits.
+FIRST_FIT = 20122013
+EXPLORE = (20132014, 20142015)
 CONFIRM = (20152016, 20162017, 20172018)
 HALVES = {"explore": EXPLORE, "confirm": CONFIRM}
 # B2's inputs, B3's expected goal difference and its four parts (ADR 0044), which sum to it.
@@ -61,12 +78,30 @@ CANDIDATES: dict[str, tuple[str, ...]] = {
     # Δĝ is left out: it is the split's sum.
     "all": (*B2_INPUTS, *b3.SPLIT),
 }
-# The first season a feature has its inputs, when later than FIRST_FIT: every 2011-12 shooter
-# finishes at φ = 1, with no earlier season of xG to measure on (ADR 0022). As ADR 0011 scores a
-# season only once an earlier one has the component's inputs, a candidate's fits start at its
-# features' first such season and its scoring a season later.
-FIRST_INPUTS = {"finishing_diff": 20122013}
+# The claims written down from the explore half, each scored once on the confirm half (ADR 0053,
+# the owner's choice of 2026-11-01): a claim's tests, (candidate, measure), are one family. Each
+# test's two-sided weekly block bootstrap p-value goes through Holm's step-down at ALPHA (ADR 0048),
+# and a test holds when it passes and its estimate is negative.
+CLAIMS: dict[str, tuple[tuple[str, str], ...]] = {
+    # On the rested games (the owner's choice of 2026-11-01), where neither team's own last game
+    # falls between an opener of the evening before (ADR 0006) and 10:00 ET. A back-to-back test
+    # was dropped before any confirm run: there the inputs know that game, the opener may not.
+    "early-information": (
+        ("B3 split", "move_rested"),
+        ("delta_s", "move_rested"),
+    ),
+}
+ALPHA = 0.05
 PREFIX = "bundles/yardstick"
+# B3's own tables, beside those it shares with B2.
+PLAYER_TABLES = (
+    "lineups",
+    "lineup_replacements",
+    "player_ratings",
+    "rapm_terms",
+    "expected_power_plays",
+    "goal_multipliers",
+)
 UTC = pl.Datetime("us", "UTC")
 
 
@@ -75,12 +110,6 @@ def seasons_of(half: str) -> tuple[int, ...]:
     seasons = HALVES[half]
     assert set(seasons) <= set(TRAINING_SEASONS)
     return seasons
-
-
-def first_inputs(columns: Sequence[str]) -> int:
-    """The first season all the columns have their inputs (FIRST_INPUTS): a candidate's fits
-    start there and its scoring a season later."""
-    return max(FIRST_INPUTS.get(name, FIRST_FIT) for name in columns)
 
 
 def untuned(frame: pl.DataFrame) -> pl.DataFrame:
@@ -180,7 +209,7 @@ def fold_start(frame: pl.DataFrame, season: int) -> datetime:
 
 
 def market(sbr_odds: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
-    """Each game from FIRST_FIT with its opener at E2's prediction time and its close, de-vigged
+    """Each game from FIRST_READ with its opener at E2's prediction time and its close, de-vigged
     under B1_METHOD: o and c, with the openers E2 refuses dropped by its fold's bounds (ADR 0007),
     season by season."""
     opens = market_prices(sbr_odds, Experiment.E2)
@@ -192,8 +221,8 @@ def market(sbr_odds: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
     )
     closes = wf.b0(market_prices(sbr_odds, Experiment.E1), wf.B1_METHOD)
     kept = []
-    # Earlier seasons' closes bound FIRST_FIT's openers; their own games are never read.
-    for season in sorted(s for s in set(opens["season"].to_list()) if s >= FIRST_FIT):
+    # Earlier seasons' closes bound FIRST_READ's openers; their own games are never read.
+    for season in sorted(s for s in set(opens["season"].to_list()) if s >= FIRST_READ):
         rows = opens.filter(pl.col("season") == season)
         low, high = wf.bounds(closes, fold_start(calendar, season))
         kept.append(rows.filter(~wf.implausible(rows, low, high)))
@@ -227,6 +256,45 @@ def rows(
     )
 
 
+@dataclass(frozen=True)
+class Read:
+    """What a run reads from the lake to its half's last season: the games, B2's and B3's tables
+    as through() gives them, and the yardstick's rows (rows)."""
+
+    games: pl.DataFrame
+    b2_tables: b2.Tables
+    b3_tables: b3.Tables
+    frame: pl.DataFrame
+
+
+def read(lake: Reader, last: int) -> Read:
+    """The lake's games, SBR prices and B2's and B3's tables to the season last, and the
+    yardstick's rows from them. Refused without SBR's prices."""
+    sbr_odds = lake.read("sbr_odds").filter(pl.col("season") <= last)
+    if sbr_odds.is_empty():
+        raise ValueError("no SBR prices in the lake: run nhl odds sbr")
+    games = lake.read("games").filter(pl.col("season") <= last)
+    teams = b2.Tables(
+        games=games,
+        team_strength=lake.read("team_strength"),
+        schedule_terms=lake.read("schedule_terms"),
+        goalie_starts=lake.read("goalie_starts"),
+        goalie_effects=lake.read("goalie_effects"),
+        actual_lineups=lake.read("actual_lineups"),
+    )
+    players = b3.Tables(
+        games=games,
+        schedule_terms=teams.schedule_terms,
+        goalie_starts=teams.goalie_starts,
+        actual_lineups=teams.actual_lineups,
+        **{name: lake.read(name) for name in PLAYER_TABLES},
+    )
+    teams, players = through(teams, last), through(players, last)
+    found = market(sbr_odds, games)
+    moments = found.select("game_id", "prediction_utc")
+    return Read(games, teams, players, rows(found, features(teams, players, moments), games))
+
+
 def _least_squares(train: pl.DataFrame, test: pl.DataFrame, columns: Sequence[str]) -> np.ndarray:
     def design(frame: pl.DataFrame) -> np.ndarray:
         return np.column_stack([np.ones(frame.height), frame.select(columns).to_numpy()])
@@ -242,18 +310,23 @@ def _logistic(train: pl.DataFrame, test: pl.DataFrame, columns: Sequence[str]) -
     return model.predict_proba(test.select(columns).to_numpy())[:, 1]
 
 
-def scored(frame: pl.DataFrame, columns: Sequence[str], seasons: Sequence[int]) -> pl.DataFrame:
-    """Each game of the seasons after the columns' first_inputs with its move skill (move) and
-    its result beyond the close (result), each season's fits on the games from first_inputs to
-    the season before whose results were public before its fold start (fold_start). Each row
-    carries its fit's train_cutoff, the last result it read. The close is only y's and the
-    result model's: the move's forecast reads o and the features alone."""
-    first = first_inputs(columns)
+def scored(
+    frame: pl.DataFrame,
+    columns: Sequence[str],
+    seasons: Sequence[int],
+    fit_from: int = FIRST_FIT,
+) -> pl.DataFrame:
+    """Each game of the seasons after fit_from with its move skill (move) and its result beyond
+    the close (result), each season's fits on the games from fit_from to the season before whose
+    results were public before its fold start (fold_start). Each row carries its fit's
+    train_cutoff, the last result it read. The close is only y's and the result model's: the
+    move's forecast reads o and the features alone. fit_from is other than FIRST_FIT only to
+    measure what an earlier season does to a fit (scripts/yardstick_diagnostics.py)."""
     out = []
-    for season in sorted(s for s in seasons if s > first):
+    for season in sorted(s for s in seasons if s > fit_from):
         start = fold_start(frame, season)
         train = frame.filter(
-            pl.col("season").is_between(first, season - 1), pl.col("result_utc") < start
+            pl.col("season").is_between(fit_from, season - 1), pl.col("result_utc") < start
         )
         if train.height < 2:
             raise ValueError(f"no earlier games to fit on before {season}")
@@ -282,14 +355,18 @@ def scored(frame: pl.DataFrame, columns: Sequence[str], seasons: Sequence[int]) 
 
 def figures(games: pl.DataFrame, columns: Sequence[str]) -> dict[str, Any]:
     """A candidate's figures over its scored games, each with its weekly block bootstrap interval
-    (hard rule 7): the move skill, pooled, per season and on the rested games, the result beyond
-    the close, and for a single feature the slope of the move on it."""
+    (hard rule 7): the move skill, pooled with its p-value, per season, on the rested games and
+    on the back-to-back games less the rested ones, the result beyond the close, and for a single
+    feature the slope of the move on it."""
     rested = games.filter(pl.col("rested"))
+    back = games.filter(~pl.col("rested"))
     out: dict[str, Any] = {
         "games": games.height,
         "rested_games": rested.height,
         "move": bootstrap(games, "move").to_dict(),
+        "move_p": p_value(games, "move"),
         "move_rested": bootstrap(rested, "move").to_dict(),
+        "move_rested_p": p_value(rested, "move"),
         "move_per_season": {
             str(season): bootstrap(part, "move").to_dict()
             for (season,), part in games.sort("season").group_by("season", maintain_order=True)
@@ -299,12 +376,71 @@ def figures(games: pl.DataFrame, columns: Sequence[str]) -> dict[str, Any]:
         # The baseline's squared error, to scale the move skill by.
         "baseline_error": float(((games["y"] - games["y_base"]) ** 2).mean()),  # type: ignore[arg-type]
     }
+    if back.height and rested.height:
+        gap = difference(back, rested, "move")
+        out["move_back_to_back"] = bootstrap(back, "move").to_dict()
+        out["back_to_back_less_rested"] = {"mean": gap.value, "low": gap.low, "high": gap.high}
+        out["back_to_back_less_rested_p"] = _difference_p(back, rested, "move")
     if len(columns) == 1:
         # A feature with no spread over the games, but float noise, has no slope to estimate.
         spread = games[columns[0]].std()
         varies = isinstance(spread, float) and spread > 1e-12
         out["slope"] = slope(games, columns[0], "y").to_dict() if varies else None
     return out
+
+
+def _difference_p(a: pl.DataFrame, b: pl.DataFrame, value: str) -> float:
+    """The two-sided p-value of a's mean less b's against 0, from the draws that give
+    difference()'s interval (two independent groups, each resampled by its weeks)."""
+    rng = np.random.default_rng(SEED)
+    draws = resampled_means(a, value, rng) - resampled_means(b, value, rng)
+    return float(min(1.0, 2 * min(np.mean(draws <= 0), np.mean(draws >= 0))))
+
+
+def verdict(found: Mapping[str, Any], claim: str) -> list[dict[str, Any]]:
+    """A claim's tests on a confirm run's figures: each estimate with its interval and p-value,
+    Holm's step-down over the family at ALPHA (ADR 0048), and whether it holds: it passes and
+    its estimate is negative."""
+    tests = [
+        (f"{candidate}: {measure}", candidate, measure) for candidate, measure in CLAIMS[claim]
+    ]
+    steps = holm({name: found[c][f"{m}_p"] for name, c, m in tests}, ALPHA)
+    out = []
+    for name, candidate, measure in tests:
+        estimate, step = found[candidate][measure], steps[name]
+        out.append(
+            {
+                "test": name,
+                "mean": estimate["mean"],
+                "low": estimate["low"],
+                "high": estimate["high"],
+                "p_value": step["p_value"],
+                "threshold": step["threshold"],
+                "passes": step["passes"],
+                "holds": step["passes"] and estimate["mean"] < 0,
+            }
+        )
+    return out
+
+
+def verdict_markdown(claim: str, tests: Sequence[Mapping[str, Any]]) -> str:
+    """A confirm run's verdict on its claim, for its report."""
+    lines = [
+        "",
+        f"## The claim: {claim}",
+        "",
+        f"Its tests are one family: Holm's step-down at {ALPHA} over their two-sided p-values",
+        "(ADR 0048). A test holds when it passes and its estimate is negative.",
+        "",
+        "| Test | Estimate (thousandths) | p-value | Holm threshold | Holds |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for test in tests:
+        lines.append(
+            f"| {test['test']} | {_cell(test, 1000)} | {test['p_value']:.4f} "
+            f"| {test['threshold']:.4f} | {'yes' if test['holds'] else 'no'} |"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def run(
@@ -357,9 +493,9 @@ def markdown(found: Mapping[str, Any], half: str, version: str) -> str:
         f"# Yardstick: {half}, {version}",
         "",
         f"The market-relative yardstick (ADR 0053) on {seasons[0]} to {seasons[-1]}, each season",
-        "fitted on the earlier ones from 2011-12, or from a feature's first season with its",
-        "inputs (2012-13 for finishing, ADR 0022), and scored only after it. Intervals are 95%",
-        "weekly block bootstrap.",
+        "fitted on the earlier ones from 2012-13, the same for every candidate (ADR 0053, as",
+        "amended: 2011-12 is the features' burn-in season). Intervals are 95% weekly block",
+        "bootstrap.",
         "",
         "- **Move skill** (in thousandths): the squared error of the forecast of SBR's move from",
         "  the opener to the close, in log-odds, less that of the opener's own drift. Negative",

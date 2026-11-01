@@ -45,20 +45,30 @@ def test_each_season_is_fitted_on_the_earlier_ones() -> None:
     frame = yf.moves()
     games = ys.scored(frame, ("x",), ys.EXPLORE)
     assert sorted(games["season"].unique().to_list()) == list(ys.EXPLORE)
-    # 2012-13 is fitted on 2011-12 alone: the fit on that season gives the same forecast.
-    first = frame.filter(pl.col("season") <= 20122013)
-    alone = ys.scored(first, ("x",), (20122013,))
-    both = games.filter(pl.col("season") == 20122013)
+    # 2013-14 is fitted on 2012-13 alone: the fit on that season gives the same forecast.
+    first = frame.filter(pl.col("season").is_between(20122013, 20132014))
+    alone = ys.scored(first, ("x",), (20132014,))
+    both = games.filter(pl.col("season") == 20132014)
     assert np.allclose(alone["y_hat"].to_numpy(), both["y_hat"].to_numpy())
 
 
-def test_a_candidate_is_scored_from_a_season_after_its_features_first_inputs() -> None:
+def test_every_candidate_is_fitted_from_2012_13_on_the_same_games() -> None:
+    # ADR 0053 as amended: 2011-12, the features' burn-in season, is never fitted on in a run.
     frame = yf.moves().with_columns(finishing_diff=pl.col("x"))
-    per_game, found = ys.run(frame, "explore", {"finishing_diff": ("finishing_diff",), "x": ("x",)})
+    per_game, _ = ys.run(frame, "explore", {"finishing_diff": ("finishing_diff",), "x": ("x",)})
     seasons = per_game.group_by("candidate").agg(pl.col("season").min()).sort("candidate")
-    assert seasons.rows() == [("finishing_diff", 20132014), ("x", 20122013)]
-    assert "20122013" not in found["finishing_diff"]["move_per_season"]
-    assert ys.first_inputs(ys.CANDIDATES["all"]) == 20122013
+    assert seasons.rows() == [("finishing_diff", 20132014), ("x", 20132014)]
+    noisy = frame.with_columns(
+        y=pl.when(pl.col("season") == ys.FIRST_READ).then(pl.col("y") * 10).otherwise(pl.col("y"))
+    )
+    assert ys.run(noisy, "explore", {"x": ("x",)})[0].equals(
+        ys.run(frame, "explore", {"x": ("x",)})[0]
+    )
+    # Only the diagnostics fit from an earlier season, to measure what it does.
+    earlier = ys.scored(frame, ("x",), ys.EXPLORE, ys.FIRST_READ)
+    assert not np.allclose(
+        earlier["y_hat"].to_numpy(), ys.scored(frame, ("x",), ys.EXPLORE)["y_hat"].to_numpy()
+    )
 
 
 def test_the_rested_figures_read_only_the_rested_games() -> None:
@@ -115,12 +125,46 @@ def test_untuned_reads_a_row_at_its_datas_time() -> None:
     assert ys.untuned(frame)["observed_utc"].to_list() == frame["as_of_utc"].to_list()
 
 
-def test_the_report_names_every_candidate_and_each_unscored_season() -> None:
+def test_the_report_names_every_candidate() -> None:
     frame = yf.moves().with_columns(finishing_diff=pl.col("x"))
     _, found = ys.run(frame, "explore", {"x": ("x",), "finishing_diff": ("finishing_diff",)})
     report = ys.markdown(found, "explore", "yardstick-20261030-abc1234")
     assert "| x |" in report and "| finishing_diff |" in report
-    assert "not scored" in report
+    assert "from 2012-13" in report
+
+
+def test_the_back_to_back_figure_is_its_games_less_the_rested_ones() -> None:
+    _, found = ys.run(yf.moves(), "explore", {"x": ("x",)})
+    games = ys.scored(yf.moves(), ("x",), ys.EXPLORE)
+    back = games.filter(~pl.col("rested"))["move"].mean()
+    rested = games.filter(pl.col("rested"))["move"].mean()
+    assert isinstance(back, float) and isinstance(rested, float)
+    assert found["x"]["back_to_back_less_rested"]["mean"] == pytest.approx(back - rested)
+    assert 0 <= found["x"]["back_to_back_less_rested_p"] <= 1
+    assert found["x"]["move_p"] < 0.05
+
+
+def test_a_claims_verdict_is_holms_over_its_family() -> None:
+    # The claim's candidates stand in for x, which anticipates the move on every game alike.
+    stand_ins = {"B3 split": ("x",), "delta_s": ("x",)}
+    _, found = ys.run(yf.moves(), "explore", stand_ins)
+    tests = ys.verdict(found, "early-information")
+    assert [t["test"] for t in tests] == ["B3 split: move_rested", "delta_s: move_rested"]
+    assert all(t["holds"] for t in tests)
+    thresholds = sorted(t["threshold"] for t in tests)
+    assert thresholds == pytest.approx([0.05 / 2, 0.05])
+    assert "## The claim: early-information" in ys.verdict_markdown("early-information", tests)
+    # Noise holds nothing.
+    _, noise = ys.run(yf.moves(), "explore", {"B3 split": ("z",), "delta_s": ("z",)})
+    assert not any(t["holds"] for t in ys.verdict(noise, "early-information"))
+
+
+def test_each_claim_file_names_exactly_its_tests() -> None:
+    claims = Path(__file__).parents[2] / "reports" / "yardstick" / "claims"
+    for claim, tests in ys.CLAIMS.items():
+        text = (claims / f"{claim}.md").read_text()
+        named = re.findall(r"`([^`]+: [a-z_]+)`", text)
+        assert named == [f"{candidate}: {measure}" for candidate, measure in tests]
 
 
 def test_a_paired_difference_favours_the_better_candidate() -> None:
@@ -148,5 +192,23 @@ def test_a_confirm_run_needs_its_claim_and_r2() -> None:
     # Without the ANSI styling Rich adds on CI runners (as test_cli.plain).
     output = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", result.output).split())
     assert "needs --claim and --r2" in output
-    result = CliRunner().invoke(app, ["research", "yardstick", "--claim", "five"])
+    result = CliRunner().invoke(app, ["research", "yardstick", "--claim", "early-information"])
     assert result.exit_code == 2
+    # Only a claim written down in CLAIMS can be scored.
+    result = CliRunner().invoke(
+        app, ["research", "yardstick", "--half", "confirm", "--claim", "five", "--r2"]
+    )
+    assert result.exit_code == 2
+    assert "claim is one of early-information" in " ".join(
+        re.sub(r"\x1b\[[0-9;]*m", "", result.output).split()
+    )
+    # A confirm run scores exactly its claim's candidates.
+    result = CliRunner().invoke(
+        app,
+        ["research", "yardstick", "--half", "confirm", "--claim", "early-information", "--r2",
+         "--candidates", "B3 split,delta_s,all"],
+    )  # fmt: skip
+    assert result.exit_code == 2
+    assert "a confirm run scores its claim's candidates" in " ".join(
+        re.sub(r"\x1b\[[0-9;]*m", "", result.output).split()
+    )

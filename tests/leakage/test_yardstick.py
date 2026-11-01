@@ -6,6 +6,7 @@ time, and only the tuning cutoff of the training seasons' frozen settings is set
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -138,3 +139,31 @@ def test_only_the_tuning_cutoff_is_set_aside() -> None:
     _, players, _ = yf.league()
     cut = ys.through(players, 20122013)
     assert cut.player_ratings["season"].max() == 20122013
+
+
+def test_the_diagnostics_fits_from_2011_12_are_cut_before_each_fold_start() -> None:
+    frame = yf.moves()
+    games = ys.scored(frame, ("x",), ys.EXPLORE, ys.FIRST_READ)
+    for season, cutoff in games.select("season", "train_cutoff").unique().iter_rows():
+        assert cutoff < ys.fold_start(frame, season)
+    assert ys.FIRST_READ not in ys.EXPLORE and ys.FIRST_READ not in ys.CONFIRM
+    assert ys.FIRST_READ < ys.FIRST_FIT
+
+
+def test_the_diagnostics_never_read_the_confirm_half() -> None:
+    import importlib.util
+
+    path = Path(__file__).parents[2] / "scripts" / "yardstick_diagnostics.py"
+    spec = importlib.util.spec_from_file_location("yardstick_diagnostics", path)
+    assert spec is not None and spec.loader is not None
+    yd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(yd)
+    frame = yf.moves((*yf.SEASONS, *ys.CONFIRM))
+    noisy = frame.with_columns(
+        y=pl.when(pl.col("season").is_in(list(ys.CONFIRM)))
+        .then(pl.col("y") * 10)
+        .otherwise(pl.col("y"))
+    )
+    chosen = {"x": ("x",), "z": ("z",)}
+    assert yd.scored_together(frame, chosen).equals(yd.scored_together(noisy, chosen))
+    assert set(yd.scored_together(frame, chosen)["season"].unique().to_list()) == set(ys.EXPLORE)
