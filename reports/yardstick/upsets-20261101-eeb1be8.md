@@ -1,4 +1,4 @@
-# Upsets in mismatches: explore, upsets-20261101-642b7e9
+# Upsets in mismatches: explore, upsets-20261101-eeb1be8
 
 #366, on the yardstick's explore half (2013-14 and 2014-15) only. Win rates are on the
 full game, overtime and shootout included. Intervals are 95% weekly block bootstrap.
@@ -8,7 +8,8 @@ keeps it (ADR 0053).
 ## Calibration: do favourites win as often as priced?
 
 Per band of the favourite's probability: its win rate less its probability, game by game.
-Negative means favourites win less often than priced (upsets more common).
+Negative means favourites win less often than priced (upsets more common). The model
+side's features are in-sample in their settings, tuned on these seasons (ADR 0011).
 
 ### The close
 
@@ -42,14 +43,15 @@ Negative means favourites win less often than priced (upsets more common).
 The favourite by the opener at 0.60 or more. The calibration gap is the
 favourite's win rate less its closing probability; negative means it loses more often
 than the close says. The yardstick's move skill and result beyond the close are in
-thousandths; negative means the spot anticipates the move or adds to the close.
+thousandths; negative means the spot anticipates the move or adds to the close. The
+rested games are those where neither team played the day before (ADR 0006).
 
-| Spot | Games | Gap | Gap less other mismatches | Move skill | Beyond the close |
-| --- | --- | --- | --- | --- | --- |
-| big win | 155 | +0.030 [-0.042, +0.099] | +0.036 [-0.043, +0.110] | -0.010 [-0.027, +0.009] | +1.528 [-0.954, +4.129] |
-| win streak | 76 | -0.002 [-0.120, +0.111] | -0.004 [-0.123, +0.110] | +0.049 [+0.020, +0.078] | +0.702 [-0.787, +2.105] |
-| slumping underdog | 110 | +0.015 [-0.084, +0.104] | +0.016 [-0.089, +0.111] | +0.020 [-0.014, +0.051] | +1.521 [-0.749, +3.891] |
-| road trip | 13 | +0.138 [-0.095, +0.311] | +0.139 [-0.100, +0.327] | +0.022 [-0.013, +0.058] | +3.073 [-1.052, +8.306] |
+| Spot | Games | Gap | Gap less other mismatches | Move skill | Move skill, rested | Beyond the close |
+| --- | --- | --- | --- | --- | --- | --- |
+| big win | 155 | +0.030 [-0.042, +0.099] | +0.036 [-0.043, +0.110] | -0.010 [-0.027, +0.009] | -0.009 [-0.033, +0.016] | +1.528 [-0.954, +4.129] |
+| win streak | 76 | -0.002 [-0.120, +0.111] | -0.004 [-0.123, +0.110] | +0.049 [+0.020, +0.078] | +0.054 [+0.021, +0.087] | +0.702 [-0.787, +2.105] |
+| slumping underdog | 110 | +0.015 [-0.084, +0.104] | +0.016 [-0.089, +0.111] | +0.020 [-0.014, +0.051] | +0.015 [-0.020, +0.047] | +1.521 [-0.749, +3.891] |
+| road trip | 13 | +0.138 [-0.095, +0.311] | +0.139 [-0.100, +0.327] | +0.022 [-0.013, +0.058] | +0.039 [-0.005, +0.086] | +3.073 [-1.052, +8.306] |
 
 A look-ahead spot (the favourite plays again the next day) is left out: under ADR 0005
 another game shows only once its result is public.
