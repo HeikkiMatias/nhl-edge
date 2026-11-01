@@ -29,3 +29,7 @@ The two tests are one family. Each is on the rested games, where neither team pl
 
 - **The tests together** decide whether the model's features are worth a fair value for quoting early: #358, and step 3's close forecaster.
 - **A failed test stays failed:** the confirm half is not read again for it.
+
+## The verdict
+
+Scored once on 2026-11-01 (`reports/yardstick/confirm-early-information-yardstick-20261101-e331828.md`, main at e331828). Both tests hold: B3's split −1.429 [−1.828, −1.089] and team strength −0.752 [−0.946, −0.569] thousandths on the rested games, each p below 0.001. As written above, a hold is development evidence.
