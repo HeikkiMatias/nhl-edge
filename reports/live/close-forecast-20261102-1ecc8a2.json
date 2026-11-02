@@ -1,0 +1,33 @@
+{
+  "adr": "0054",
+  "component": "close-forecast",
+  "games": 6896,
+  "inputs": [
+    "1",
+    "o",
+    "five_diff",
+    "special_diff",
+    "finishing_diff",
+    "goalie_diff"
+  ],
+  "seasons": [
+    20122013,
+    20132014,
+    20142015,
+    20152016,
+    20162017,
+    20172018
+  ],
+  "source": "scripts/close_forecast_history.py",
+  "target": "SBR's move from the opener to the close, home log-odds",
+  "train_cutoff": "2018-04-09T10:00:00+00:00",
+  "version": "close-forecast-20261102-1ecc8a2",
+  "weights": {
+    "a": 0.021892088640691035,
+    "b_o": -0.12866060894724987,
+    "finishing_diff": 0.08126725397323122,
+    "five_diff": 0.3073540514192906,
+    "goalie_diff": 0.0781299124469764,
+    "special_diff": 0.1496189365696892
+  }
+}

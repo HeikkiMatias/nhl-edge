@@ -613,6 +613,84 @@ class MorningPredictions(pa.DataFrameModel):
         )
 
 
+class CloseForecasts(pa.DataFrameModel):
+    """One slate game's close forecast (nhl live forecast, #369, ADR 0054): Pinnacle's close
+    forecast at the morning snapshot from its morning pair and B3's split, or why it has none
+    (status).
+
+    The forecast is p_close_hat = sigmoid(o + lam * y_hat_hist), with o the morning pair's home
+    log-odds (p_morning, the morning view's p_b0) and y_hat_hist the frozen weights' move
+    (weights_version) on B3's four parts. lam is its week's size, fitted on earlier weeks' games
+    (lam_week, lam_games). Every input is the morning view's (morning_version), known before its
+    snapshot (morning_snapshot_utc); prediction_utc is the morning run's instant and
+    published_utc the forecast's write. Each date is written once to R2
+    (forecast/live/<date>.parquet), and every forecast is published before its game's start."""
+
+    game_date: pl.Date
+    season: pl.Int32
+    game_id: pl.Int64
+    start_utc: UtcDatetime
+    home: pl.String = pa.Field(str_matches=TRI_CODE)
+    away: pl.String = pa.Field(str_matches=TRI_CODE)
+    prediction_utc: UtcDatetime
+    published_utc: UtcDatetime
+    status: pl.String
+    morning_snapshot_utc: UtcDatetime = pa.Field(nullable=True)
+    p_morning: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    five_diff: pl.Float64 = pa.Field(nullable=True)
+    special_diff: pl.Float64 = pa.Field(nullable=True)
+    finishing_diff: pl.Float64 = pa.Field(nullable=True)
+    goalie_diff: pl.Float64 = pa.Field(nullable=True)
+    y_hat_hist: pl.Float64 = pa.Field(nullable=True)
+    lam: pl.Float64
+    lam_week: pl.Date
+    lam_games: pl.Int64 = pa.Field(ge=0)
+    y_hat: pl.Float64 = pa.Field(nullable=True)
+    p_close_hat: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
+    forecast_version: pl.String
+    weights_version: pl.String = pa.Field(str_matches=r"^close-forecast-\d{8}-")
+    morning_version: pl.String
+    code_version: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def published_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("status") != "predicted") | (pl.col("published_utc") < pl.col("start_utc"))
+        )
+
+    @pa.dataframe_check
+    def forecast_after_the_morning(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("published_utc") >= pl.col("prediction_utc"))
+            & (
+                pl.col("morning_snapshot_utc").is_null()
+                | (pl.col("morning_snapshot_utc") < pl.col("prediction_utc"))
+            )
+        )
+
+    @pa.dataframe_check
+    def predicted_rows_are_whole(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("status") != "predicted")
+            | pl.all_horizontal(
+                pl.col("p_morning", "y_hat_hist", "y_hat", "p_close_hat").is_not_null()
+            )
+        )
+
+    @pa.dataframe_check
+    def fitted_on_earlier_weeks(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("lam_week") <= pl.col("game_date"))
+
+    @pa.dataframe_check
+    def one_forecast_a_day(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("published_utc").n_unique().over("game_date") == 1)
+
+
 class PaperSettlements(pa.DataFrameModel):
     """One settled paper bet (nhl live settle, #165): a bet of the paper ledger whose game is
     final, with its result on the full game (OT and shootout included, hard rule 2), its profit,
