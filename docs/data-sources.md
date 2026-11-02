@@ -433,6 +433,14 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
 - **The check:** the nightly step `nhl live forecast --check --r2` rebuilds `close_forecasts` from R2 and replays the latest three days from their mornings and their week's kept size. It also refits each week's size from its kept rows, and exits 1 on any difference.
 - **The log** prints counts only: the rows by status, and the games the week's size was fitted on.
 - **The live report** scores it on Pinnacle's move from the morning snapshot to the close, from the day after its registration. The quoting simulator (#358) quotes at it as its fourth fair value, `forecast`.
+## Demo quotes (#375, ADR 0055)
+
+`nhl real quote --r2` runs as the `quote` job of `kalshi-watch.yml`, in the timer's windows, on GitHub's runners. It runs only while `KALSHI_TRADING` is `demo` (`live/demo_quotes.py`).
+- **What it quotes:** each step (a minute) it reads each game's two demo markets, the model's fair value and Daily Faceoff's starters, each published by then. It then posts, replaces or pulls post-only bids by the paper simulator's rules at a 1 cent half-spread.
+- **Its orders:** each carries a `q-` client order id, apart from the practice orders, and expires 10 minutes before its game's start.
+- **The record:** each run's events are written once to `real/demo/quotes/<date>/<run>.json` (private), with every response kept raw by `live/kalshi_trade.py`. The next run reads them back for its holds, and the fills come back from Kalshi's own orders.
+- **The kill switch:** `nhl real quote --r2 --cancel`, in `kalshi-cancel.yml`, writes `real/demo/quotes/<date>/day.stop` and cancels every resting quote.
+- **The log** prints counts only.
 
 ## Research run bundles (#186)
 
