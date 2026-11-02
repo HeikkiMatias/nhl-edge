@@ -13,6 +13,7 @@ import polars as pl
 import pytest
 
 from nhl_edge.ingest.kalshi import ticker
+from nhl_edge.ingest.odds import ET
 from nhl_edge.live import bundle as lb
 from nhl_edge.live import demo_quotes as dq
 from nhl_edge.live import kalshi_quotes as kq
@@ -223,7 +224,7 @@ def test_the_record_carries_holds_and_starters_to_the_next_run(tmp_path: Path) -
     fake, state = Fake(), day()
     step(state, fake, named={"BOS": 1, "NYR": 2})
     step(state, fake, AT + dq.STEP, named={"BOS": 3, "NYR": 2})
-    dq.cancel_all(state, fake, AT + 2 * dq.STEP)
+    dq.cancel_all(state, fake, AT + 2 * dq.STEP, DEMO_EXCHANGE)
     key = dq.keep(store, state, AT + 2 * dq.STEP)
     assert key == "real/demo/quotes/2026-11-04/130000.json"
     later = dq.resumed(store, DAY, "150500")
@@ -290,3 +291,77 @@ def test_the_command_quotes_only_on_the_demo_exchange(monkeypatch: pytest.Monkey
         result = CliRunner().invoke(app, ["real", "quote"])
         assert result.exit_code == 0
         assert f"KALSHI_TRADING is {setting}, not demo: nothing quoted" in result.output
+
+
+def test_a_bid_whose_cancel_is_refused_still_counts_and_blocks_its_replacement() -> None:
+    fake, state = Fake(), day()
+    step(state, fake)
+    fake.refuse_cancel = True
+    # A new fair value would replace both bids, but their cancels are refused.
+    step(state, fake, AT + dq.STEP, p_home=0.6, published=AT)
+    assert len(state.stuck) == 2 and state.bids == {}
+    assert len(fake.sent) == 2 and state.counts["waiting_on_cancel"] == 2
+    assert state.resting_cost(DEMO_EXCHANGE) > Decimal(9)
+    # A stuck bid's fills are still read, and once it is no longer resting it is let go.
+    fake.fill("o1", "10.00")
+    fake.orders_by_id["o1"]["status"] = "executed"
+    step(state, fake, AT + 2 * dq.STEP, p_home=0.6, published=AT)
+    assert state.bought[(GAME.game_id, "BOS")] == Decimal(10)
+    assert [b.order_id for b in state.stuck] == ["o2"]
+
+
+def test_a_fill_just_before_a_cancel_counts() -> None:
+    fake, state = Fake(), day()
+    step(state, fake)
+    # Filled after the step's read, then cancelled at the stop: the cancel's last read counts it.
+    original = fake.cancel
+
+    def fill_then_cancel(order_id: str, ticker: str) -> dict[str, Any] | None:
+        if order_id == "o1":
+            fake.fill("o1", "3.00")
+        return original(order_id, ticker)
+
+    fake.cancel = fill_then_cancel  # type: ignore[method-assign]
+    step(state, fake, START - dq.STOP_BEFORE)
+    assert state.bought[(GAME.game_id, "BOS")] == Decimal(3)
+    assert state.counts["filled"] == 1
+
+
+def test_a_poll_naming_no_starter_keeps_the_last_one_named() -> None:
+    fake, state = Fake(), day()
+    step(state, fake, named={"BOS": 1, "NYR": 2})
+    step(state, fake, AT + dq.STEP, named={"BOS": None, "NYR": 2})
+    assert state.named[GAME.game_id] == {"BOS": 1, "NYR": 2} and state.counts["pulled"] == 0
+    step(state, fake, AT + 2 * dq.STEP, named={"BOS": 3, "NYR": 2})
+    assert state.counts["pulled"] == 1 and state.held[GAME.game_id][1] == dq.STARTER
+
+
+def test_the_days_runs_read_back_in_order_across_utc_midnight(tmp_path: Path) -> None:
+    store = lb.LocalStore(tmp_path)
+    for run, game_id, goalie in (("20261105T000500Z", 2, 9), ("20261104T200500Z", 2, 5)):
+        state = dq.Day(DAY, run)
+        state.named[game_id] = {"BOS": goalie, "NYR": None}
+        dq.keep(store, state, AT)
+    # The run after UTC midnight is the later one: its starters stand.
+    assert [r["run"] for r in dq.runs(store, DAY)] == ["20261104T200500Z", "20261105T000500Z"]
+    assert dq.resumed(store, DAY, "x").named[2] == {"BOS": 9, "NYR": None}
+
+
+def test_the_kill_switch_works_with_trading_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from nhl_edge import cli
+    from nhl_edge.live import kalshi_trade as kt
+
+    store = lb.LocalStore(tmp_path)
+    fake = Fake()
+    monkeypatch.setenv("KALSHI_TRADING", "off")
+    monkeypatch.setattr(cli, "_real_record", lambda r2: (None, store))
+    monkeypatch.setattr(kt.KalshiTrade, "from_env", classmethod(lambda cls, env, raw: fake))
+    result = CliRunner().invoke(cli.app, ["real", "quote", "--cancel"])
+    assert result.exit_code == 0, result.output
+    today = datetime.now(UTC).astimezone(ET).date()
+    assert dq.stopped(store, today)
+    assert "stopped; 0 bids cancelled, 0 calls refused" in result.output

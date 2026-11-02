@@ -6428,6 +6428,24 @@ def real_quote(
     from nhl_edge.settings import MissingSettingError, optional
 
     _, store = _real_record(r2)
+    started = datetime.now(UTC)
+    day = started.astimezone(ET).date()
+    if cancel:
+        # The kill switch works whatever the switch says: the owner may have turned trading off
+        # first, and a running job keeps the setting it started with (Codex on #377).
+        raw = RawStore.from_env(mirror=r2, flag="--r2")
+        try:
+            trade = kt.KalshiTrade.from_env(placement.DEMO, raw)
+        except (MissingSettingError, kt.KalshiTradeError) as exc:
+            dq.stop(store, day, started)
+            typer.echo(f"demo quotes {day}: stopped, but nothing cancelled ({exc})", err=True)
+            raise typer.Exit(code=1) from None
+        dq.stop(store, day, started)
+        done, refused = dq.cancel_resting(trade, dq.games_of(store, day), day, started)
+        typer.echo(f"demo quotes {day}: stopped; {done} bids cancelled, {refused} calls refused")
+        if refused:
+            raise typer.Exit(code=1)
+        return
     try:
         setting = placement.switch_of(optional("KALSHI_TRADING"))
     except ValueError as exc:
@@ -6435,7 +6453,6 @@ def real_quote(
     if setting != placement.DEMO:
         typer.echo(f"demo quotes: KALSHI_TRADING is {setting}, not demo: nothing quoted")
         return
-    started = datetime.now(UTC)
     end = kw.window_end(started)
     if minutes is not None:
         end = min(end, started + timedelta(minutes=minutes))
@@ -6449,18 +6466,11 @@ def real_quote(
     except (MissingSettingError, kt.KalshiTradeError) as exc:
         typer.echo(f"demo quotes: failed ({exc})", err=True)
         raise typer.Exit(code=1) from None
-    day = started.astimezone(ET).date()
-    if cancel:
-        dq.stop(store, day, started)
-        done, refused = dq.cancel_resting(trade, dq.games_of(store, day), day, started)
-        typer.echo(f"demo quotes {day}: stopped; {done} bids cancelled, {refused} calls refused")
-        if refused:
-            raise typer.Exit(code=1)
-        return
     if dq.stopped(store, day):
         typer.echo(f"demo quotes {day}: stopped by the kill switch, nothing quoted")
         return
-    state = dq.resumed(store, day, f"{started:%H%M%S}")
+    # The run's full UTC stamp, so the day's runs sort in order across UTC midnight (Codex on #377).
+    state = dq.resumed(store, day, f"{started:%Y%m%dT%H%M%SZ}")
     sources = dq.Sources(dq.fair_reader(store, day), dq.starters_reader(raw))
     daily = dfo.DailyFaceoff(raw)
     polled: datetime | None = None
@@ -6495,7 +6505,7 @@ def real_quote(
             if wait > 0:
                 time.sleep(min(wait, max((end - datetime.now(UTC)).total_seconds(), 0)))
     finally:
-        dq.cancel_all(state, trade, datetime.now(UTC))
+        dq.cancel_all(state, trade, datetime.now(UTC), rules)
         key = dq.keep(store, state, datetime.now(UTC))
         typer.echo(f"{dq.count_line(state)}; {key}")
 

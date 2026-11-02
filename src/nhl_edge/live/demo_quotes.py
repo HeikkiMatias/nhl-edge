@@ -138,15 +138,15 @@ class Day:
         self.counts[kind] += 1
         self.events.append({"at": at.isoformat(), "kind": kind, **values})
 
-    def resting_cost(self, rules: Exchange, but: tuple[int, str] | None = None) -> Decimal:
-        return sum(
-            (
-                ex.cost(b.left, b.price, rules, maker=True)
-                for key, b in self.bids.items()
-                if key != but
-            ),
-            Decimal(0),
-        )
+    def resting_cost(self, rules: Exchange) -> Decimal:
+        """The cost of every bid that can still fill: the resting ones, and those whose cancel
+        was refused (Codex on #377)."""
+        bids = [*self.bids.values(), *self.stuck]
+        return sum((ex.cost(b.left, b.price, rules, maker=True) for b in bids), Decimal(0))
+
+    def unresolved(self, key: tuple[int, str]) -> bool:
+        """Whether a bid on the market waits for its cancel: no replacement goes up beside it."""
+        return any((b.game_id, b.team) == key for b in self.stuck)
 
 
 def _decimal(value: Any) -> Decimal:
@@ -180,8 +180,10 @@ def client_id(day: Day, game: kq.Game, team: str) -> str:
     return f"{CLIENT}-{day.day:%Y%m%d}-{game.game_id}-{team}-{day.run}-{day.serial}"
 
 
-def cancel(day: Day, trading: Trading, bid: Bid, at: datetime, why: str) -> None:
-    """Cancel a bid; a refused cancel is kept to try again at the next step."""
+def cancel(day: Day, trading: Trading, bid: Bid, at: datetime, why: str, rules: Exchange) -> None:
+    """Cancel a bid, then read its fills once more, so a fill since the last read counts before
+    the bid is forgotten (Codex on #377). A refused cancel is kept to try again at the next
+    step, and its bid still counts as one that can fill."""
     try:
         trading.cancel(bid.order_id, bid.ticker)
     except KalshiTradeError as exc:
@@ -191,12 +193,15 @@ def cancel(day: Day, trading: Trading, bid: Bid, at: datetime, why: str) -> None
         return
     day.refused_in_a_row = 0
     day.event(at, "cancelled", ticker=bid.ticker, order_id=bid.order_id, why=why)
+    _read_fills(day, trading, bid, at, rules)
 
 
-def _drop(day: Day, trading: Trading, key: tuple[int, str], at: datetime, why: str) -> None:
+def _drop(
+    day: Day, trading: Trading, key: tuple[int, str], at: datetime, why: str, rules: Exchange
+) -> None:
     bid = day.bids.pop(key, None)
     if bid is not None:
-        cancel(day, trading, bid, at, why)
+        cancel(day, trading, bid, at, why, rules)
 
 
 def _read_fills(day: Day, trading: Trading, bid: Bid, at: datetime, rules: Exchange) -> bool:
@@ -236,10 +241,12 @@ def step(
     trading: Trading,
     rules: Exchange,
 ) -> None:
-    """One step of every game at at: fills, pulls and quotes, soonest game first."""
+    """One step of every game at at: fills, pulls and quotes, soonest game first. A bid whose
+    cancel was refused has its fills read first, and is cancelled again if it still rests."""
     for bid in list(day.stuck):
         day.stuck.remove(bid)
-        cancel(day, trading, bid, at, "retry")
+        if _read_fills(day, trading, bid, at, rules):
+            cancel(day, trading, bid, at, "retry", rules)
     for game in sorted(games, key=lambda g: (g.start_utc, g.game_id)):
         keys = [(game.game_id, team) for team in (game.home, game.away)]
         for key in keys:
@@ -248,16 +255,21 @@ def step(
                 del day.bids[key]
         if at >= game.start_utc - STOP_BEFORE:
             for key in keys:
-                _drop(day, trading, key, at, "stop")
+                _drop(day, trading, key, at, "stop", rules)
             continue
         named = sources.named(game, at)
-        if changed(day.named.get(game.game_id), named):
+        before = day.named.get(game.game_id)
+        if changed(before, named):
             for key in keys:
-                _drop(day, trading, key, at, STARTER)
+                _drop(day, trading, key, at, STARTER, rules)
             day.held[game.game_id] = (at, STARTER)
             day.event(at, "pulled", game_id=game.game_id, why=STARTER)
         if named is not None:
-            day.named[game.game_id] = named
+            # A poll naming no starter for a team keeps the last one named, as the simulator's
+            # change_times does, so a later change still pulls (Codex on #377).
+            kept = dict(before or {})
+            kept.update({team: goalie for team, goalie in named.items() if goalie is not None})
+            day.named[game.game_id] = {team: kept.get(team) for team in (game.home, game.away)}
         tops = {
             key: top(trading, ticker(game.game_date, game.away, game.home, key[1])) for key in keys
         }
@@ -267,7 +279,7 @@ def step(
             before = bid.mid if bid is not None else None
             if before is not None and now_mid is not None and abs(now_mid - before) >= PULL_MOVE:
                 for each in keys:
-                    _drop(day, trading, each, at, MOVE)
+                    _drop(day, trading, each, at, MOVE, rules)
                 day.held[game.game_id] = (at, MOVE)
                 day.event(at, "pulled", game_id=game.game_id, why=MOVE)
                 break
@@ -279,7 +291,7 @@ def step(
         for key in keys:
             team = key[1]
             if fair is None or hold is not None or tops[key] is None:
-                _drop(day, trading, key, at, "no quote")
+                _drop(day, trading, key, at, "no quote", rules)
                 continue
             found = tops[key]
             assert found is not None
@@ -289,11 +301,14 @@ def step(
             size = min(SIZE, NET_CAP - net)
             bid = day.bids.get(key)
             if price is None or size <= 0:
-                _drop(day, trading, key, at, "no quote")
+                _drop(day, trading, key, at, "no quote", rules)
                 continue
             if bid is not None and bid.price == price and bid.left == size:
                 continue
-            _drop(day, trading, key, at, "replaced")
+            _drop(day, trading, key, at, "replaced", rules)
+            if day.unresolved(key):
+                day.counts["waiting_on_cancel"] += 1
+                continue
             planned = ex.cost(size, price, rules, maker=True)
             if day.filled_cost + day.resting_cost(rules) + planned > DAY_CAP:
                 day.counts["capped"] += 1
@@ -320,13 +335,14 @@ def step(
                       contracts=str(size), fair=fair[0], fair_utc=fair[1].isoformat())  # fmt: skip
 
 
-def cancel_all(day: Day, trading: Trading, at: datetime) -> None:
-    """Every resting bid cancelled, as a run ends."""
+def cancel_all(day: Day, trading: Trading, at: datetime, rules: Exchange) -> None:
+    """Every resting bid cancelled, as a run ends, its last fills read."""
     for key in list(day.bids):
-        _drop(day, trading, key, at, "end of run")
+        _drop(day, trading, key, at, "end of run", rules)
     for bid in list(day.stuck):
         day.stuck.remove(bid)
-        cancel(day, trading, bid, at, "end of run")
+        if _read_fills(day, trading, bid, at, rules):
+            cancel(day, trading, bid, at, "end of run", rules)
 
 
 def recover(
@@ -347,16 +363,17 @@ def recover(
                 if not str(order.get("client_order_id", "")).startswith(prefix):
                     continue
                 filled = _decimal(order.get("fill_count_fp"))
+                price = _decimal(order.get("yes_price_dollars"))
                 if filled > 0:
                     key = (game.game_id, team)
-                    price = _decimal(order.get("yes_price_dollars"))
                     day.bought[key] = day.bought.get(key, Decimal(0)) + filled
                     day.filled_cost += ex.cost(filled, price, rules, maker=True)
                 if order.get("status") == RESTING:
+                    # Its fills so far are counted: the cancel's last read adds only later ones.
                     left = Bid(game.game_id, team, market, order["order_id"],
-                               order["client_order_id"], Decimal(0), Decimal(0), Decimal(0), at,
+                               order["client_order_id"], price, filled, filled, at,
                                None)  # fmt: skip
-                    cancel(day, trading, left, at, "earlier run")
+                    cancel(day, trading, left, at, "earlier run", rules)
 
 
 # The sources, from R2
