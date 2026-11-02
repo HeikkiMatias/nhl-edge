@@ -365,3 +365,41 @@ def test_the_kill_switch_works_with_trading_off(
     today = datetime.now(UTC).astimezone(ET).date()
     assert dq.stopped(store, today)
     assert "stopped; 0 bids cancelled, 0 calls refused" in result.output
+
+
+def test_a_fill_during_the_cancel_shrinks_or_stops_the_replacement() -> None:
+    fake, state = Fake(), day()
+    state.bought[(GAME.game_id, "BOS")] = Decimal(25)
+    step(state, fake)
+    assert fake.sent[0].ticker == HOME and fake.sent[0].count == Decimal(5)
+    original = fake.cancel
+
+    def fill_then_cancel(order_id: str, ticker: str) -> dict[str, Any] | None:
+        if order_id == "o1":
+            fake.fill("o1", "5.00")
+        return original(order_id, ticker)
+
+    fake.cancel = fill_then_cancel  # type: ignore[method-assign]
+    # A newer fair value moves the price: the old BOS bid fills as it is cancelled, which takes
+    # the net to 30, so no BOS replacement goes up.
+    step(state, fake, AT + dq.STEP, p_home=0.6, published=AT)
+    assert state.bought[(GAME.game_id, "BOS")] == Decimal(30)
+    assert [o.ticker for o in fake.sent[2:]] == [AWAY]
+
+
+def test_a_recovered_bid_whose_cancel_is_refused_keeps_what_still_rests() -> None:
+    fake = Fake(refuse_cancel=True)
+    fake.orders_by_id["o9"] = {
+        "order_id": "o9",
+        "client_order_id": "q-20261104-2026020150-BOS-20261104T120000Z-1",
+        "ticker": HOME,
+        "status": "resting",
+        "fill_count_fp": "4.00",
+        "remaining_count_fp": "6.00",
+        "yes_price_dollars": "0.5400",
+    }
+    state = dq.Day(DAY, "20261104T160500Z")
+    dq.recover(state, fake, [GAME], AT, DEMO_EXCHANGE)
+    assert state.bought == {(GAME.game_id, "BOS"): Decimal(4)}
+    (stuck,) = state.stuck
+    assert stuck.left == Decimal(6) and state.resting_cost(DEMO_EXCHANGE) > Decimal(3)

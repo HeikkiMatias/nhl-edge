@@ -223,6 +223,13 @@ def _read_fills(day: Day, trading: Trading, bid: Bid, at: datetime, rules: Excha
     return order.get("status") == RESTING
 
 
+def _size(day: Day, game: kq.Game, team: str) -> Decimal:
+    """A team's next bid: SIZE, or what is left to NET_CAP of its net contracts."""
+    bought = day.bought.get((game.game_id, team), Decimal(0))
+    net = bought - day.bought.get((game.game_id, game.other(team)), Decimal(0))
+    return min(SIZE, NET_CAP - net)
+
+
 def changed(before: Mapping[str, int | None] | None, now: Mapping[str, int | None] | None) -> bool:
     """Whether Daily Faceoff names another starter for either team than before."""
     if before is None or now is None:
@@ -296,9 +303,7 @@ def step(
             found = tops[key]
             assert found is not None
             price = kq._quote_price(game.side(team, fair[0]), HALF_SPREAD, found[1])
-            bought = day.bought.get(key, Decimal(0))
-            net = bought - day.bought.get((game.game_id, game.other(team)), Decimal(0))
-            size = min(SIZE, NET_CAP - net)
+            size = _size(day, game, team)
             bid = day.bids.get(key)
             if price is None or size <= 0:
                 _drop(day, trading, key, at, "no quote", rules)
@@ -308,6 +313,11 @@ def step(
             _drop(day, trading, key, at, "replaced", rules)
             if day.unresolved(key):
                 day.counts["waiting_on_cancel"] += 1
+                continue
+            # The cancel's last read may have added fills: the size is what is left now (Codex
+            # on #377).
+            size = _size(day, game, team)
+            if size <= 0:
                 continue
             planned = ex.cost(size, price, rules, maker=True)
             if day.filled_cost + day.resting_cost(rules) + planned > DAY_CAP:
@@ -370,8 +380,11 @@ def recover(
                     day.filled_cost += ex.cost(filled, price, rules, maker=True)
                 if order.get("status") == RESTING:
                     # Its fills so far are counted: the cancel's last read adds only later ones.
+                    # Its size is those and what still rests, so a refused cancel counts what can
+                    # still fill (Codex on #377).
+                    size = filled + _decimal(order.get("remaining_count_fp"))
                     left = Bid(game.game_id, team, market, order["order_id"],
-                               order["client_order_id"], price, filled, filled, at,
+                               order["client_order_id"], price, size, filled, at,
                                None)  # fmt: skip
                     cancel(day, trading, left, at, "earlier run", rules)
 
