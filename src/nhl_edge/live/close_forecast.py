@@ -24,7 +24,7 @@ view (ADR 0052) and from its bundle:
   rows and the week's stored fit.
 
 The report (live/report.py) scores it on the move from the morning snapshot to the close, with no
-verdict before the formal review; #358's simulator quotes at it (live/kalshi_quotes.py).
+verdict before the formal review, and #358's quoting simulator quotes at it.
 """
 
 import io

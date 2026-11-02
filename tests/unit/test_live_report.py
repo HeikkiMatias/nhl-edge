@@ -1775,6 +1775,10 @@ def test_the_close_forecaster_scores_its_forecast_of_the_move(
     takes = section["takes"]
     assert takes["sides"] > 0 and takes["with_close"] == takes["sides"]
     assert takes["clv_per_take"]["mean"] > 0
+    # A forecast published long after the morning snapshot takes no stale price.
+    late = kept.with_columns(published_utc=pl.col("published_utc") + timedelta(hours=2))
+    stale = season.report(morning=morning, odds=odds, forecasts=late)["close_forecast"]["takes"]
+    assert stale["sides"] == 0
     text = lr.markdown(result)
     assert "## The close forecaster (ADR 0054)" in text
     assert f"- Without a stored forecast: 1 game days ({missing.isoformat()})." in text

@@ -588,9 +588,11 @@ def step_game(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules
         state.counts["posted"] += 1
 
 
-def steps(game: Game, inputs: Inputs) -> list[datetime]:
-    """A game's steps: every top of either team's market and every update of its fair values,
-    before STOP_BEFORE its start, and that moment itself."""
+def steps(game: Game, inputs: Inputs, fair: str | None = None) -> list[datetime]:
+    """A game's steps for the variant of fair: every top of either team's market and every update
+    of its fair values, before STOP_BEFORE its start, and that moment itself. The close forecast's
+    publications are steps of the forecast variant only, so the other fair values step as before
+    it (ADR 0054)."""
     end = game.start_utc - STOP_BEFORE
     times = {
         t
@@ -599,7 +601,8 @@ def steps(game: Game, inputs: Inputs) -> list[datetime]:
     }
     times |= {t for t, _ in inputs.models.get(game.game_id, [])}
     times |= {t for t, _ in inputs.pinnacle.get(game.game_id, [])}
-    times |= {t for t, _ in inputs.forecasts.get(game.game_id, [])}
+    if fair == FORECAST:
+        times |= {t for t, _ in inputs.forecasts.get(game.game_id, [])}
     times |= set(inputs.changes.get(game.game_id, []))
     # A source published at t is known just after it (latest() reads strictly before).
     return sorted({t + timedelta(microseconds=1) for t in times if t < end} | {end})
@@ -610,7 +613,7 @@ def run_variant(fair: str, h: Decimal, inputs: Inputs, rules: Exchange) -> Varia
     game's bids and fills as they came."""
     state = VariantDay(fair, h)
     events = sorted(
-        ((t, g) for g in inputs.games for t in steps(g, inputs)),
+        ((t, g) for g in inputs.games for t in steps(g, inputs, fair)),
         key=lambda event: (event[0], event[1].game_id),
     )
     for at, game in events:

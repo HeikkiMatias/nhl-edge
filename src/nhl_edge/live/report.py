@@ -1060,18 +1060,25 @@ def _forecast_takes(
     """The shadow takes at 07:05 (ADR 0054): each side whose expected return on the forecast close
     at its best price at the morning snapshot is above 0 (hard rule 4), one unit each. The best
     price is Pinnacle's or the best fresh bookmaker's (shadow.best_quotes), the exchanges left out:
-    their prices are before commission. Each with its return on the full game where the result is
-    known (results: game_id, home_win)."""
+    their prices are before commission. A price is fresh only if its last update is at most
+    MAX_PUBLISHED_AGE before the forecast's publication, as at the decision, so a late forecast
+    takes no stale price. Each with its return on the full game where the result is known
+    (results: game_id, home_win)."""
+    fresh = pl.col("published_utc") - pl.col("last_update_utc") <= lp.MAX_PUBLISHED_AGE
     sides = []
     for side, pinnacle, p_side in (
         (HOME, "home_price", pl.col("p_close_hat")),
         (AWAY, "away_price", 1 - pl.col("p_close_hat")),
     ):
-        candidates = started.with_columns(side=pl.lit(side), p_side=p_side, pinnacle=pinnacle)
+        candidates = started.with_columns(
+            side=pl.lit(side), p_side=p_side, pinnacle=pl.when(fresh).then(pl.col(pinnacle))
+        )
         best = shadow.best_quotes(candidates, odds)
         sides.append(
             best.with_columns(
-                price=pl.max_horizontal(pl.col("pinnacle"), pl.col("best_bookmaker").fill_null(0.0))
+                price=pl.max_horizontal(
+                    pl.col("pinnacle").fill_null(0.0), pl.col("best_bookmaker").fill_null(0.0)
+                )
             ).with_columns(ev=pl.col("p_side") * pl.col("price") - 1)
         )
     taken = pl.concat(sides, how="diagonal_relaxed").filter(pl.col("ev") > 0)
@@ -1139,6 +1146,7 @@ def close_forecast_view(
             "p_blend",
             "u_sd",
             "prediction_utc",
+            "last_update_utc",
             decision_snapshot_utc="morning_snapshot_utc",
         ),
         on=keys,
