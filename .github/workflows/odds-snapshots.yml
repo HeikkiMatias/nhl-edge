@@ -99,6 +99,22 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
           uv run nhl live morning --r2 "${pick[@]}"
+      - name: Close forecast (#369)
+        # Pinnacle's close forecast at the morning snapshot (ADR 0054), from the morning view just
+        # written and its bundle: B3's split through the frozen weights and the week's size, which
+        # the week's first forecast fits on earlier weeks and keeps. Written once to R2; no bet or
+        # order reads it. A fallback cron line runs it only when it is today's morning slot. The
+        # log prints counts only.
+        if: always() && (github.event_name == 'schedule' || inputs.slot == 'morning')
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
+          uv run nhl live forecast --r2 "${pick[@]}"
       - name: Predict
         # The day's paper decisions at the midday slot (#164, docs/plans/phase-5.md task 3, ADRs
         # 0028, 0030 and 0033). It runs after the snapshot whatever its outcome, so a day without

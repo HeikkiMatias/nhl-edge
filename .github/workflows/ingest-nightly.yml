@@ -153,6 +153,12 @@ jobs:
         # reproduces fails the step. Never part of a decision; the log prints counts only.
         if: always()
         run: uv run nhl live morning --check --r2
+      - name: Close forecast check (#369)
+        # Every stored close forecast (ADR 0054) rebuilt into the lake's close_forecasts, and the
+        # latest three replayed from their mornings and their week's kept size: a stored day that
+        # no longer reproduces fails the step. Never part of a decision; counts only.
+        if: always()
+        run: uv run nhl live forecast --check --r2
       - name: Kalshi price shadow (#320)
         # Shadow kalshi_prices (ADR 0046) on each game date since its registration, before today,
         # not kept yet: two fair values, the market's and conservative_blend's, selecting on

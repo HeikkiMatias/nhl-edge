@@ -162,6 +162,7 @@ class Season:
             dailyfaceoff=changes.pop("dailyfaceoff", None),
             scale_up=changes.pop("scale_up", None),
             morning=changes.pop("morning", None),
+            forecasts=changes.pop("forecasts", None),
         )
 
 
@@ -819,6 +820,7 @@ def test_nhl_live_report_and_slate(tmp_path: Any, monkeypatch: pytest.MonkeyPatc
         "goalie_spreads": TABLES["goalie_spreads"].empty(),
         "dailyfaceoff_goalies": TABLES["dailyfaceoff_goalies"].empty(),
         "morning_predictions": TABLES["morning_predictions"].empty(),
+        "close_forecasts": TABLES["close_forecasts"].empty(),
     }
 
     def read(self: Lake, table: str, seasons: Any = None) -> pl.DataFrame:
@@ -863,6 +865,7 @@ def test_nhl_live_report_upserts_the_report_into_supabase(
         "goalie_spreads": TABLES["goalie_spreads"].empty(),
         "dailyfaceoff_goalies": TABLES["dailyfaceoff_goalies"].empty(),
         "morning_predictions": TABLES["morning_predictions"].empty(),
+        "close_forecasts": TABLES["close_forecasts"].empty(),
     }
     monkeypatch.setattr(Lake, "read", lambda self, table, seasons=None: tables[table])
     monkeypatch.setattr(lr, "sbr_history", lambda sbr, games: pl.DataFrame(schema=HISTORY))
@@ -1712,3 +1715,87 @@ def test_the_morning_view_s_slope_on_b3_s_disagreement_from_four_weeks(
     # At the formal review, its p-value from the same bootstrap.
     formal = season.report(as_of=date(2027, 4, 12), morning=morning, odds=odds)["morning_view"]
     assert formal["primary"]["p_value"] == pytest.approx(0.0)
+
+
+def forecasts_of(morning: pl.DataFrame, lam: float = 1.0) -> pl.DataFrame:
+    """Each morning row's close forecast (ADR 0054), its move exactly half B3's disagreement with
+    the morning pair: the move mornings() closes with, at lam 1."""
+    from nhl_edge.lake.schemas import CloseForecasts
+    from nhl_edge.live import close_forecast as cf
+
+    logit = (pl.col("p_b0") / (1 - pl.col("p_b0"))).log()
+    half = 0.5 * ((pl.col("p_b3") / (1 - pl.col("p_b3"))).log() - logit)
+    frame = morning.with_columns(
+        published_utc=pl.col("published_utc") + timedelta(minutes=5),
+        p_morning=pl.col("p_b0"),
+        **dict.fromkeys(("five_diff", "special_diff", "finishing_diff", "goalie_diff"), 0.0),
+        y_hat_hist=half,
+        lam=pl.lit(lam),
+        lam_week=pl.col("game_date") - pl.duration(days=pl.col("game_date").dt.weekday() - 1),
+        lam_games=pl.lit(0),
+        y_hat=lam * half,
+        p_close_hat=1 / (1 + (-(logit + lam * half)).exp()),
+        forecast_version=pl.lit(cf.VERSION),
+        weights_version=pl.lit("close-forecast-20261102-1ecc8a2"),
+        code_version=pl.lit("close-forecast-20261103-abc1234"),
+    )
+    columns = dtypes(CloseForecasts)
+    return CloseForecasts.validate(frame.select(list(columns)).cast(columns))  # type: ignore[arg-type]
+
+
+def test_the_close_forecaster_scores_its_forecast_of_the_move(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nhl_edge.live import close_forecast as cf
+    from nhl_edge.live import morning as lm
+
+    monkeypatch.setattr(lm, "REGISTERED_ON", FIRST - timedelta(days=1))
+    monkeypatch.setattr(cf, "REGISTERED_ON", FIRST - timedelta(days=1))
+    season = Season(n_weeks=5)
+    later = pl.col("start_utc") + timedelta(hours=2)
+    season.ledger = season.ledger.with_columns(start_utc=later)
+    season.games = season.games.with_columns(
+        start_utc=later, home=pl.lit("WSH"), away=pl.lit("PIT")
+    )
+    morning, odds = mornings(season)
+    forecasts = forecasts_of(morning)
+    missing = FIRST + timedelta(days=1)
+    kept = forecasts.filter(pl.col("game_date") != missing)
+    result = season.report(morning=morning, odds=odds, forecasts=kept)
+    section = result["close_forecast"]
+    assert section["missing_days"] == [missing.isoformat()]
+    # The forecast is the move itself: its error is 0, so it beats no move by the move's square.
+    primary = section["primary"]
+    assert primary["mean"] < 0 and primary["high"] < 0 and "p_value" not in primary
+    assert section["size"]["slope"]["value"] == pytest.approx(1.0)
+    assert section["size"]["share_toward"]["mean"] == 1.0
+    assert section["weeks"] and section["weeks"][0]["lam"] == 1.0
+    assert "mean" in section["comparisons"]["The forecast against the morning pair, both at 07:05"]
+    # Every forecast move clears Pinnacle's morning margin, and the close goes its way.
+    takes = section["takes"]
+    assert takes["sides"] > 0 and takes["with_close"] == takes["sides"]
+    assert takes["clv_per_take"]["mean"] > 0
+    text = lr.markdown(result)
+    assert "## The close forecaster (ADR 0054)" in text
+    assert f"- Without a stored forecast: 1 game days ({missing.isoformat()})." in text
+    # At the formal review, its p-value from the same bootstrap.
+    formal = season.report(as_of=date(2027, 4, 12), morning=morning, odds=odds, forecasts=forecasts)
+    assert formal["close_forecast"]["primary"]["p_value"] == pytest.approx(0.0)
+    # Before its registration nothing counts.
+    monkeypatch.setattr(cf, "REGISTERED_ON", date(2027, 1, 1))
+    assert (
+        season.report(morning=morning, odds=odds, forecasts=forecasts)["close_forecast"]["days"]
+        == 0
+    )
+
+
+def test_the_rested_games_are_those_neither_team_played_the_day_before() -> None:
+    games = pl.DataFrame(
+        {
+            "game_date": [date(2026, 11, 3), date(2026, 11, 4), date(2026, 11, 4)],
+            "home": ["BOS", "BOS", "TOR"],
+            "away": ["NYR", "MTL", "OTT"],
+        }
+    )
+    frame = games.filter(pl.col("game_date") == date(2026, 11, 4))
+    assert lr._rested(frame, games)["rested"].to_list() == [False, True]

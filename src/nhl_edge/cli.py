@@ -3855,6 +3855,7 @@ def live_report(
     from nhl_edge.live import blend_fit
     from nhl_edge.live import bundle as lb
     from nhl_edge.live import challengers as lc
+    from nhl_edge.live import close_forecast as cf
     from nhl_edge.live import morning as lm
     from nhl_edge.live import predict as lp
     from nhl_edge.live import report as lr
@@ -3883,6 +3884,7 @@ def live_report(
         outputs = lc.sync(store)
         spreads = lc.sync_spreads(store)
         mornings = lm.sync(store)
+        forecasts = cf.sync(store)
         # ADR 0039's start rule reads whether every decision day's run bundle is complete.
         unfinished = lb.unfinished(store, sorted(set(ledger["game_date"].to_list())))
         real_record = store
@@ -3891,6 +3893,7 @@ def live_report(
         outputs = lake.read("challenger_predictions")
         spreads = lake.read("goalie_spreads")
         mornings = lake.read("morning_predictions")
+        forecasts = lake.read("close_forecasts")
         unfinished = None
         real_record = None
     paths = sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
@@ -3919,6 +3922,7 @@ def live_report(
         dailyfaceoff=lake.read("dailyfaceoff_goalies", seasons=[blend_fit.LIVE_SEASON]),
         scale_up=scale_up,
         morning=mornings,
+        forecasts=forecasts,
     )
     json_path, md_path = lr.write(result, out)
     if supabase:
