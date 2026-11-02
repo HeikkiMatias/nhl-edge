@@ -6358,6 +6358,7 @@ def real_quotes(
             for table in (
                 "paper_ledger",
                 "morning_predictions",
+                "close_forecasts",
                 "kalshi_depth",
                 "kalshi_trades",
                 "kalshi_tops",
@@ -6376,6 +6377,7 @@ def real_quotes(
             read["games"],
             rules,
             now,
+            dated["close_forecasts"],
         )
         kq.keep(store, day, result, version, now)
     found, metas = kq.kept(store)

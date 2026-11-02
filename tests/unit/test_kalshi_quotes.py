@@ -3,7 +3,7 @@ the quote's price, its fills by the queue rule, the limits, the pulls, the end b
 and the figures with counts only in the log."""
 
 import random
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import polars as pl
@@ -100,6 +100,34 @@ def test_pinnacle_and_anchored_quote_from_their_own_fair_values() -> None:
     assert 0.52 < fair < 0.55
     price = kq._quote_price(fair, Decimal("0.02"), None)
     assert price is not None and anchored["price"].to_list() == [float(price)]
+
+
+def forecasts(p_close_hat: float = 0.53, day: date = qf.DAY) -> pl.DataFrame:
+    """The day's close forecast for the game (ADR 0054), published before the first top."""
+    return pl.DataFrame(
+        {
+            "game_date": [day],
+            "game_id": [qf.GAME],
+            "status": ["predicted"],
+            "p_close_hat": [p_close_hat],
+            "published_utc": [qf.PUBLISHED - timedelta(minutes=5)],
+        }
+    ).with_columns(pl.col("published_utc").cast(qf.UTC_TYPE))
+
+
+def test_the_forecast_quotes_from_its_published_close_forecast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(kq, "FORECAST_FIRST_DAY", qf.DAY)
+    result = day(forecasts=forecasts())
+    home = of(result, "forecast-2c").filter(pl.col("team") == qf.HOME)
+    assert home["fair_at_post"].to_list()[0] == pytest.approx(0.53)
+    assert home["price"].to_list() == [0.51]
+    # The model's arm is unchanged by it, and before its first day the forecast quotes nothing.
+    assert of(result, "model-2c").equals(of(day(), "model-2c"))
+    monkeypatch.setattr(kq, "FORECAST_FIRST_DAY", qf.DAY + timedelta(days=1))
+    assert of(day(forecasts=forecasts()), "forecast-2c").is_empty()
+    assert result.counts["forecast-2c"]["posted"] > 0
 
 
 def test_a_team_is_quoted_only_to_the_net_cap() -> None:
@@ -279,8 +307,8 @@ def test_the_summary_and_the_log_line(tmp_path: object) -> None:
     # Without Pinnacle's pair: the model and anchored arms each fill at every half-spread.
     line = kq.count_line(metas, 1)
     assert (
-        line
-        == "kalshi quotes: 1 days computed now, 1 kept (1 with watch logs), 6 fills over 9 variants"
+        line == "kalshi quotes: 1 days computed now, 1 kept (1 with watch logs), 6 fills over "
+        "12 variants"
     )
     assert kq.due(qf.DAY + timedelta(days=2), kq.stored_days(store)) == [
         d for d in kq.due(qf.DAY + timedelta(days=2), []) if d != qf.DAY

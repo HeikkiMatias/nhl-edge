@@ -17,6 +17,9 @@ the first day it reads; the readings are design evidence for the ADR that comes 
   old, with both a bid and an ask.
 - **pinnacle:** Pinnacle's latest h2h pair before the moment, fresh at its snapshot, de-vigged
   multiplicatively (market/devig.py, hard rule 3): a reference only.
+- **forecast:** the close forecaster's p_close_hat (close_forecasts, ADR 0054) from its
+  publication, on game dates from FORECAST_FIRST_DAY, the first after its registration: its rules
+  were fixed before then, and the other fair values' are unchanged.
 
 **Quotes.** At each step (a top of book of either team's market, or a fair value's update), each
 team's Yes market gets a post-only bid of SIZE contracts at the fair value less the half-spread h,
@@ -66,6 +69,7 @@ from nhl_edge.backtest.walk_forward import outcomes
 from nhl_edge.ingest import kalshi_watch as kw
 from nhl_edge.lineup import confirmed
 from nhl_edge.live import bundle as lb
+from nhl_edge.live import close_forecast as cf
 from nhl_edge.live import exchange as ex
 from nhl_edge.live import fills as lf
 from nhl_edge.live import kalshi_shadow as ks
@@ -82,8 +86,9 @@ PREFIX = f"real/shadow/{SHADOW}/{VERSION}"
 # one, so no day it scores informed a rule.
 RULES_FIXED = date(2026, 10, 30)
 FIRST_DAY = date(2026, 10, 31)
-MODEL, ANCHORED, PINNACLE = "model", "anchored", "pinnacle"
-FAIRS = (MODEL, ANCHORED, PINNACLE)
+MODEL, ANCHORED, PINNACLE, FORECAST = "model", "anchored", "pinnacle", "forecast"
+FAIRS = (MODEL, ANCHORED, PINNACLE, FORECAST)
+FORECAST_FIRST_DAY = cf.REGISTERED_ON + timedelta(days=1)
 # Kalshi's NHL winner markets quote a cent wide nearly always (measured 2026-10-30 on the watch's
 # tops): at 0 a quote joins the best bid when the fair value allows, at 1 and 2 it sits behind it.
 # The owner's choice of 2026-10-30, over 2, 4 and 6 cents, which a cent-wide market never fills.
@@ -108,6 +113,7 @@ TABLES = (
     "kalshi_depth",
     "kalshi_trades",
     "morning_predictions",
+    "close_forecasts",
     "paper_ledger",
     "odds_snapshots",
     "dailyfaceoff_goalies",
@@ -194,6 +200,22 @@ def model_sources(ledger: pl.DataFrame, morning: pl.DataFrame) -> Sources:
             found.setdefault(r["game_id"], []).append(
                 (r["published_utc"].astimezone(UTC), float(r["p_blend"]))
             )
+    return {k: sorted(v) for k, v in found.items()}
+
+
+def forecast_sources(forecasts: pl.DataFrame) -> Sources:
+    """Each game's close forecast (home side) by when it was published, only where forecast and
+    on game dates from FORECAST_FIRST_DAY."""
+    found: Sources = {}
+    forecast = forecasts.filter(
+        pl.col("status") == PREDICTED,
+        pl.col("p_close_hat").is_not_null(),
+        pl.col("game_date") >= FORECAST_FIRST_DAY,
+    )
+    for r in forecast.iter_rows(named=True):
+        found.setdefault(r["game_id"], []).append(
+            (r["published_utc"].astimezone(UTC), float(r["p_close_hat"]))
+        )
     return {k: sorted(v) for k, v in found.items()}
 
 
@@ -416,6 +438,7 @@ class Inputs:
     logs: Mapping[tuple[int, str], Logs]
     books: Mapping[tuple[int, str], ks.Market]
     changes: Mapping[int, list[datetime]]
+    forecasts: Sources = field(default_factory=dict)
 
 
 def fair_at(
@@ -423,8 +446,9 @@ def fair_at(
 ) -> tuple[float, datetime, datetime | None] | None:
     """The team's fair value at at, with its model or Pinnacle source's time and, for anchored,
     its mid's: None without one."""
-    if kind == PINNACLE:
-        found = latest(inputs.pinnacle.get(game.game_id, []), at)
+    if kind in (PINNACLE, FORECAST):
+        source = inputs.pinnacle if kind == PINNACLE else inputs.forecasts
+        found = latest(source.get(game.game_id, []), at)
         return (game.side(team, found[1]), found[0], None) if found else None
     model = latest(inputs.models.get(game.game_id, []), at)
     if model is None:
@@ -575,6 +599,7 @@ def steps(game: Game, inputs: Inputs) -> list[datetime]:
     }
     times |= {t for t, _ in inputs.models.get(game.game_id, [])}
     times |= {t for t, _ in inputs.pinnacle.get(game.game_id, [])}
+    times |= {t for t, _ in inputs.forecasts.get(game.game_id, [])}
     times |= set(inputs.changes.get(game.game_id, []))
     # A source published at t is known just after it (latest() reads strictly before).
     return sorted({t + timedelta(microseconds=1) for t in times if t < end} | {end})
@@ -610,6 +635,7 @@ def inputs_of(
     trades: pl.DataFrame,
     tops: pl.DataFrame,
     dailyfaceoff: pl.DataFrame,
+    forecasts: pl.DataFrame | None = None,
 ) -> Inputs:
     games = tuple(slate_of(ledger))
     books = ks.markets(depth, trades, tops)
@@ -621,6 +647,7 @@ def inputs_of(
         {key: Logs.of(market) for key, market in books.items()},
         books,
         change_times(games, dailyfaceoff),
+        forecast_sources(forecasts) if forecasts is not None else {},
     )
 
 
@@ -685,10 +712,12 @@ def run_day(
     games: pl.DataFrame,
     rules: Exchange,
     now: datetime,
+    forecasts: pl.DataFrame | None = None,
 ) -> DayResult:
-    """Every variant's day from the day's ledger, morning view, odds, Kalshi logs and Daily
-    Faceoff polls; the fills valued with the results and the closing proxies known by now."""
-    inputs = inputs_of(ledger, morning, odds, depth, trades, tops, dailyfaceoff)
+    """Every variant's day from the day's ledger, morning view, close forecasts, odds, Kalshi
+    logs and Daily Faceoff polls; the fills valued with the results and the closing proxies known
+    by now."""
+    inputs = inputs_of(ledger, morning, odds, depth, trades, tops, dailyfaceoff, forecasts)
     references = lf.references(odds, now) if odds.height else pl.DataFrame()
     results = outcomes(games.filter(pl.col("game_id").is_in([g.game_id for g in inputs.games])))
     rows, counts = [], {}
