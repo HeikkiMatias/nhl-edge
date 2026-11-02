@@ -420,6 +420,20 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
 - **The log** prints counts only: the rows by status, and the starters by source.
 - **The live report** scores it on Pinnacle's move from the morning snapshot to the close, from the day after its registration, with no verdict before the formal review. Its primary measure is the slope of that move on B3's disagreement there. A game day without its morning is listed, never withheld.
 
+## Close forecaster (#369, ADR 0054)
+
+`nhl live forecast --r2` runs in the morning slot right after the morning view, from the day's stored morning rows and its bundle (`live/close_forecast.py`). It never feeds a decision.
+
+- **The inputs (hard rule 1):** the morning view's own.
+  - o is the home log-odds of its Pinnacle pair, de-vigged multiplicatively (its `p_b0`).
+  - B3's four parts (ADR 0044) come from the bundle's B3 rows at its input cutoff (`bundle.b3_scenarios`), the goalie part mixed over the goalie pairs as B3 mixes it.
+- **The weights:** frozen, from `scripts/close_forecast_history.py --artifact`, in `reports/live/close-forecast-20261102-1ecc8a2.json`, pinned by its sha256.
+- **The week's size:** fitted once per ET week by the week's first forecast and kept, with its rows, under `forecast/live/weeks/<monday>.json` and `-rows.parquet`. Its rows are earlier weeks' forecasts with Pinnacle's closing proxy after their morning snapshot, every row and close public before Monday 07:00 ET. Without rows, the size is 1.
+- **The record:** one row per slate game (`CloseForecasts`), written once to R2 as `forecast/live/<date>.parquet`, and every forecast is published before its game's start. The lake's `close_forecasts` is rebuilt from the R2 objects, which stay the record.
+- **The check:** the nightly step `nhl live forecast --check --r2` rebuilds `close_forecasts` from R2 and replays the latest three days from their mornings and their week's kept size. It also refits each week's size from its kept rows, and exits 1 on any difference.
+- **The log** prints counts only: the rows by status, and the games the week's size was fitted on.
+- **The live report** scores it on Pinnacle's move from the morning snapshot to the close, from the day after its registration. The quoting simulator (#358) quotes at it as its fourth fair value, `forecast`.
+
 ## Research run bundles (#186)
 
 Every `nhl backtest` run, the development run and the hockey-only mode alike, keeps its per-game rows in a write-once bundle (`backtest/research.py`), as a decision day keeps its run bundle.

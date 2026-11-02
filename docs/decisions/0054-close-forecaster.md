@@ -1,6 +1,6 @@
 # 0054. The close forecaster: B3's split at 07:05 ET forecasts Pinnacle's close, as a fair value for early quotes
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-11-02, #369): option 2
 - Date: 2026-11-02
 - Part of: #369, step 3 of #361. From the owner on 2026-11-02: take every edge we can find, and aim with all of them to beat the market.
 
@@ -32,7 +32,7 @@
 3. **All six weights refitted live,** with history's as priors. It adapts most, but six weights on a few hundred games are noisy, with six prior widths to choose.
 4. **One weight toward the morning view's stored B3,** fitted live. It needs no new inputs, but on history it keeps about half the skill (above).
 
-## Decision (proposed): option 2, as `close_forecast` version 1, registered on the day its code merges
+## Decision: option 2 (the owner, 2026-11-02), as `close_forecast` version 1, registered on the day its code merges
 
 **The time and inputs:** the morning run's bundle (`bundles/morning/<date>/`, ADR 0052), at its input cutoff, the morning snapshot.
 - **o:** logit of Pinnacle's morning pair, de-vigged multiplicatively (the morning view's p_b0, hard rule 3).
@@ -62,7 +62,8 @@
 - **The same measure on the rested games.**
 - **On results:** p̂_close's log loss on the full-game result (hard rule 2), against the morning pair and against the decision's blend.
 - **Shadow takes at 07:05,** so every edge stays measured.
-  - **The rule:** a side where p̂_close · its price − 1 > 0, at the best logged price of the morning snapshot (hard rule 4), one unit each.
+  - **The rule:** a side where p̂_close · its price − 1 > 0, at the best price of the morning snapshot (hard rule 4), one unit each.
+  - **The best price** is Pinnacle's or the best fresh bookmaker's there. The exchanges are left out, as their prices are before commission. This was set in the build, before registration.
   - **The value:** at the closing proxy (CLV) and at settlement.
 
 **In #358's simulator:**

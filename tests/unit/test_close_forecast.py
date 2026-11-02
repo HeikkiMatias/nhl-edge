@@ -170,3 +170,14 @@ def test_a_stored_day_replays_and_a_change_shows(
     assert len(cf.check(store, date(2026, 11, 10))) == 1
     (tmp_path / cf.week_keys(date(2026, 11, 2))[0]).unlink()
     assert "fit is not kept" in cf.check(store, DAY)[0]
+
+
+def test_a_week_without_earlier_forecasts_reads_no_mornings_or_odds(tmp_path: Path) -> None:
+    store = lb.LocalStore(tmp_path)
+
+    def refused() -> pl.DataFrame:
+        raise AssertionError("read without an earlier forecast")
+
+    first = cf.week_fit(store, date(2026, 11, 2), cf.empty, refused, refused, "w")
+    assert first.lam == cf.PRIOR_MEAN and first.rows.height == 0
+    assert cf.kept_week(store, date(2026, 11, 2)) is not None

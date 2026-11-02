@@ -271,11 +271,17 @@ def week_fit(
     odds: Callable[[], pl.DataFrame],
     weights_version: str,
 ) -> Fit:
-    """The week's kept fit, or the week's first: fitted and kept once."""
+    """The week's kept fit, or the week's first: fitted and kept once. The mornings and the odds
+    are read only when an earlier week has a forecast."""
     found = kept_week(store, week)
     if found is not None:
         return found
-    fit = fit_week(week, forecasts(), mornings(), odds())
+    stored = forecasts()
+    earlier = stored.filter(pl.col("game_date") < week, pl.col("status") == PREDICTED)
+    if earlier.is_empty():
+        fit = fit_week(week, stored, lm.empty(), pl.DataFrame())
+    else:
+        fit = fit_week(week, stored, mornings(), odds())
     keep_week(store, fit, weights_version)
     return fit
 
