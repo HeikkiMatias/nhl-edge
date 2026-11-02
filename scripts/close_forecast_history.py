@@ -26,6 +26,7 @@ these seasons (ADR 0011), so the figures are development evidence; the confirmat
 """
 
 import argparse
+import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -158,6 +159,35 @@ def takes(games: pl.DataFrame, prices: pl.DataFrame, threshold: float) -> pl.Dat
     return pl.concat(sides).filter(pl.col("ev") > threshold)
 
 
+def artifact(weights: Mapping[str, float], fitted: pl.DataFrame, version: str) -> dict[str, Any]:
+    """The live forecaster's frozen weights (ADR 0054): the fit on fitted, with its games, seasons
+    and train_cutoff, the last result it read."""
+    cutoff = fitted["result_utc"].max()
+    assert isinstance(cutoff, datetime)
+    return {
+        "component": "close-forecast",
+        "version": version,
+        "adr": "0054",
+        "source": "scripts/close_forecast_history.py",
+        "target": "SBR's move from the opener to the close, home log-odds",
+        "inputs": ["1", "o", *PARTS],
+        "weights": dict(weights),
+        "games": fitted.height,
+        "seasons": sorted(fitted["season"].unique().to_list()),
+        "train_cutoff": cutoff.isoformat(),
+    }
+
+
+def write_artifact(
+    directory: Path, weights: Mapping[str, float], fitted: pl.DataFrame, version: str
+) -> Path:
+    """The artifact as JSON under directory, named by its version."""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{version}.json"
+    path.write_text(json.dumps(artifact(weights, fitted, version), indent=2, sort_keys=True) + "\n")
+    return path
+
+
 def opener_prices(lake: Lake, last: int) -> pl.DataFrame:
     """SBR's opener per game of the seasons to last: its home and away decimal prices."""
     openers = lake.read("sbr_odds").filter(
@@ -244,6 +274,13 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="The close forecaster on history (#369).")
     parser.add_argument("--out", type=Path, default=Path("reports/yardstick"))
+    parser.add_argument(
+        "--artifact",
+        type=Path,
+        default=None,
+        help="Also write the frozen fit, the live forecaster's weights (ADR 0054), as "
+        "close-forecast-<yyyymmdd>-<shortsha>.json in this directory (reports/live).",
+    )
     args = parser.parse_args()
     lake = Lake()
     frame = ys.read(lake, max(ys.CONFIRM)).frame.drop_nulls(["y", "o", *PARTS, "h_s"])
@@ -307,6 +344,11 @@ def main() -> None:
     path = args.out / f"{version}.md"
     path.write_text(markdown(found, version))
     print(f"wrote {path}")
+    if args.artifact is not None:
+        written = write_artifact(
+            args.artifact, weights, fitted, reports.version("close-forecast", datetime.now(UTC))
+        )
+        print(f"wrote {written}")
 
 
 if __name__ == "__main__":

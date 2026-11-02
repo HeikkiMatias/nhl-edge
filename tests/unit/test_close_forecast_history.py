@@ -2,6 +2,10 @@
 move, the size of the forecast moves, taking at the opener, and the simpler form, on rows built by
 hand."""
 
+import json
+from datetime import datetime
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 import pytest
@@ -77,3 +81,17 @@ def test_the_simpler_form_is_scored_beside_the_split_on_the_same_games() -> None
     # A season needs an earlier one with an out-of-sample model gap.
     with pytest.raises(ValueError, match="no earlier season"):
         cf.shrink(frame, (ys.EXPLORE[0],))
+
+
+def test_the_artifact_carries_the_weights_and_their_train_cutoff(tmp_path: Path) -> None:
+    frame = with_parts(yf.moves((*yf.SEASONS, 20152016))).filter(pl.col("season") >= ys.FIRST_FIT)
+    weights = cf.frozen_fit(frame)
+    path = cf.write_artifact(tmp_path, weights, frame, "close-forecast-20261102-abc1234")
+    assert path.name == "close-forecast-20261102-abc1234.json"
+    found = json.loads(path.read_text())
+    assert found["weights"] == pytest.approx(weights)
+    assert found["inputs"] == ["1", "o", *cf.PARTS]
+    assert found["games"] == frame.height
+    cutoff = frame["result_utc"].max()
+    assert isinstance(cutoff, datetime)
+    assert found["train_cutoff"] == cutoff.isoformat()
