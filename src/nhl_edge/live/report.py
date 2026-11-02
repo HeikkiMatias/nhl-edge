@@ -84,10 +84,11 @@ from nhl_edge.backtest.metrics import (
 )
 from nhl_edge.backtest.walk_forward import B1_METHOD, b0, bounds, implausible, outcomes
 from nhl_edge.betting import staking
-from nhl_edge.betting.selection import FROZEN_ON, POLICY, POLICY_VERSION, select
+from nhl_edge.betting.selection import AWAY, FROZEN_ON, HOME, POLICY, POLICY_VERSION, select
 from nhl_edge.game.uncertainty import PARTS
 from nhl_edge.ingest.games import result_public_utc
 from nhl_edge.live import challengers as lc
+from nhl_edge.live import close_forecast as cf
 from nhl_edge.live import morning as lm
 from nhl_edge.live import movement, real, shadow
 from nhl_edge.live import predict as lp
@@ -1035,6 +1036,167 @@ def morning_view(
     }
 
 
+def _rested(frame: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
+    """frame (game_date, home, away) with rested: neither team played the day before, by the
+    schedule (games: game_date, home, away)."""
+    if frame.is_empty():
+        return frame.with_columns(rested=pl.lit(None, pl.Boolean))
+    played = pl.concat([games.select("game_date", team=side) for side in ("home", "away")]).unique()
+    before = played.with_columns(game_date=pl.col("game_date") + timedelta(days=1), played=True)
+    out = frame
+    for side in ("home", "away"):
+        out = out.join(
+            before.rename({"team": side, "played": f"{side}_played"}),
+            on=["game_date", side],
+            how="left",
+        )
+    tired = pl.col("home_played").fill_null(False) | pl.col("away_played").fill_null(False)
+    return out.with_columns(rested=~tired).drop("home_played", "away_played")
+
+
+def _forecast_takes(
+    started: pl.DataFrame, odds: pl.DataFrame, results: pl.DataFrame
+) -> pl.DataFrame:
+    """The shadow takes at 07:05 (ADR 0054): each side whose expected return on the forecast close
+    at its best price at the morning snapshot is above 0 (hard rule 4), one unit each. The best
+    price is Pinnacle's or the best fresh bookmaker's (shadow.best_quotes), the exchanges left out:
+    their prices are before commission. A price is fresh only if its last update is at most
+    MAX_PUBLISHED_AGE before the forecast's publication, as at the decision, so a late forecast
+    takes no stale price. Each with its return on the full game where the result is known
+    (results: game_id, home_win)."""
+    fresh = pl.col("published_utc") - pl.col("last_update_utc") <= lp.MAX_PUBLISHED_AGE
+    sides = []
+    for side, pinnacle, p_side in (
+        (HOME, "home_price", pl.col("p_close_hat")),
+        (AWAY, "away_price", 1 - pl.col("p_close_hat")),
+    ):
+        candidates = started.with_columns(
+            side=pl.lit(side), p_side=p_side, pinnacle=pl.when(fresh).then(pl.col(pinnacle))
+        )
+        best = shadow.best_quotes(candidates, odds)
+        sides.append(
+            best.with_columns(
+                price=pl.max_horizontal(
+                    pl.col("pinnacle").fill_null(0.0), pl.col("best_bookmaker").fill_null(0.0)
+                )
+            ).with_columns(ev=pl.col("p_side") * pl.col("price") - 1)
+        )
+    taken = pl.concat(sides, how="diagonal_relaxed").filter(pl.col("ev") > 0)
+    won = pl.when(pl.col("side") == HOME).then(pl.col("home_win")).otherwise(1 - pl.col("home_win"))
+    return (
+        taken.join(results.select("game_id", "home_win"), on="game_id", how="left")
+        .with_columns(ret=won * pl.col("price") - 1)
+        .select("season", "game_date", "game_id", "side", "price", "ev", "ret")
+    )
+
+
+def close_forecast_view(
+    forecasts: pl.DataFrame,
+    morning: pl.DataFrame,
+    rows: pl.DataFrame,
+    games: pl.DataFrame,
+    odds: pl.DataFrame,
+    as_of: date,
+    now: datetime,
+    formal: bool = False,
+) -> dict[str, Any]:
+    """The close forecaster (ADR 0054) over its stored regular-season days after its
+    registration up to as_of, with no verdict before the formal review. Its primary measure, per
+    game: (y - y_hat)^2 - y^2, its forecast's squared error less no move's, y Pinnacle's move from
+    the morning snapshot to its closing proxy (movement.table on the morning rows, a proxy after
+    the snapshot only), over the predicted games started by now, with its p-value at the formal
+    review. Beside it: the slope of the move on the forecast move (1 when its size is right) and
+    the share toward it, the same measure on the rested games, each week's size, paired log loss
+    on the results against the morning pair and the decision's blend, and the shadow takes at
+    07:05 (_forecast_takes), valued at the close and at settlement. A game day of the ledger
+    without its forecast is listed, never withheld: the forecast is written before any move or
+    result exists."""
+    keys = ["game_date", "game_id"]
+    counted_days = (pl.col("game_date") > cf.REGISTERED_ON) & (pl.col("game_date") <= as_of)
+    stored = forecasts.filter(
+        pl.col("forecast_version") == cf.VERSION,
+        (pl.col("game_id") // 10_000 % 100) == REGULAR_SEASON,
+        counted_days,
+    )
+    days = set(stored["game_date"].to_list())
+    game_days = sorted(set(rows.filter(counted_days)["game_date"].to_list()))
+    weeks_seen = stored.select("lam_week", "lam", "lam_games").unique().sort("lam_week").iter_rows()
+    section: dict[str, Any] = {
+        "version": cf.VERSION,
+        "registered_on": cf.REGISTERED_ON.isoformat(),
+        "days": len(days),
+        "games": stored.height,
+        "predicted": stored.filter(pl.col("status") == cf.PREDICTED).height,
+        "not_predicted": _counts(stored.filter(pl.col("status") != cf.PREDICTED), "status"),
+        "missing_days": [d.isoformat() for d in game_days if d not in days],
+        "weeks": [
+            {"week": week.isoformat(), "lam": lam, "games": n} for week, lam, n in weeks_seen
+        ],
+    }
+    started = scoreable(stored, games).filter(pl.col("start_utc") <= now)
+    priced = started.select(
+        *keys, "season", "start_utc", "home", "away", "y_hat", "p_close_hat", "published_utc"
+    ).join(
+        morning.select(
+            *keys,
+            "event_id",
+            "home_price",
+            "away_price",
+            "p_b3",
+            "p_blend",
+            "u_sd",
+            "prediction_utc",
+            "last_update_utc",
+            decision_snapshot_utc="morning_snapshot_utc",
+        ),
+        on=keys,
+    )
+    moves = movement.table(priced, ls.closes(odds, now))
+    valid = _rested(
+        moves.filter(pl.col("move").is_not_null()).join(
+            priced.select(*keys, "home", "away", "y_hat"), on=keys
+        ),
+        games,
+    ).with_columns(
+        # In thousandths of squared log-odds, as the yardstick's (ADR 0053).
+        s=1000 * ((pl.col("move") - pl.col("y_hat")) ** 2 - pl.col("move") ** 2)
+    )
+    primary = estimate(valid, "s")
+    if formal and "mean" in primary:
+        primary["p_value"] = p_value(valid, "s")
+    scored = with_results(stored, games).join(
+        rows.select(*keys, p_decision_blend="p_blend"), on=keys, how="left"
+    )
+    pairs = {
+        "The forecast against the morning pair, both at 07:05": ("p_close_hat", "p_morning"),
+        "The forecast at 07:05 against the decision's blend": ("p_close_hat", "p_decision_blend"),
+    }
+    compared = {}
+    for name, (mine, other) in pairs.items():
+        paired = scored.filter(pl.col(other).is_not_null()).with_columns(
+            difference=log_loss(pl.col(mine), pl.col("home_win"))
+            - log_loss(pl.col(other), pl.col("home_win"))
+        )
+        compared[name] = estimate(paired, "difference")
+    takes = _forecast_takes(priced, odds, outcomes(games))
+    valued = shadow.valued(takes, moves)
+    settled = takes.filter(pl.col("ret").is_not_null())
+    return section | {
+        "primary": primary,
+        "closes": valid.height,
+        "rested": estimate(valid.filter(pl.col("rested")), "s"),
+        "size": _toward(valid, "y_hat"),
+        "comparisons": compared,
+        "takes": {
+            "sides": takes.height,
+            "with_close": valued.height,
+            "clv_per_take": estimate(valued, "clv"),
+            "settled": settled.height,
+            "return_per_take": estimate(settled, "ret"),
+        },
+    }
+
+
 def real_stakes(
     bets: pl.DataFrame,
     season_bets: pl.DataFrame,
@@ -1136,6 +1298,7 @@ def report(
     dailyfaceoff: pl.DataFrame | None = None,
     scale_up: dict[str, Any] | None = None,
     morning: pl.DataFrame | None = None,
+    forecasts: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
     """The live report of one policy, the frozen one by default, as of as_of: ledger and
     settlements as written, games' results, the odds' Pinnacle quotes, SBR's history
@@ -1146,7 +1309,8 @@ def report(
     checked, which ADR 0039's start rule reads. dailyfaceoff is Daily Faceoff's goalie polls,
     which #308's edge bids read for the share of fills after a starter changed. scale_up is ADR
     0047's public counts (live/scale_up.public), None when not read. morning is the stored
-    morning views (morning_predictions, ADR 0052), none by default."""
+    morning views (morning_predictions, ADR 0052), and forecasts the stored close forecasts
+    (close_forecasts, ADR 0054), none by default."""
     now = now or datetime.combine(as_of + timedelta(days=1), time(12), UTC)
     rows = counted(ledger, as_of, policy)
     bets = bets_of(rows, settlements)
@@ -1212,6 +1376,16 @@ def report(
             formal,
         ),
         "morning_view": morning_view(
+            morning if morning is not None else lm.empty(),
+            rows,
+            games,
+            odds,
+            as_of,
+            now,
+            formal,
+        ),
+        "close_forecast": close_forecast_view(
+            forecasts if forecasts is not None else cf.empty(),
             morning if morning is not None else lm.empty(),
             rows,
             games,
@@ -1548,6 +1722,8 @@ def markdown(result: dict[str, Any]) -> str:
     lines += _challenger_lines(result["challengers"])
     if "morning_view" in result:
         lines += _morning_lines(result["morning_view"])
+    if "close_forecast" in result:
+        lines += _forecast_lines(result["close_forecast"])
     if "returns" in result:
         ret = result["returns"]
         lines += [
@@ -1873,6 +2049,64 @@ def _morning_lines(section: dict[str, Any]) -> list[str]:
         "",
         f"- Shadow bets at 07:05 with a close: {section['shadow']['bets']}; CLV per bet: "
         f"{_fmt(section['shadow']['clv_per_bet'], 'bets')}",
+    ]
+    return lines
+
+
+def _forecast_lines(section: dict[str, Any]) -> list[str]:
+    """The close forecaster's section (ADR 0054) as markdown lines."""
+    lines = [
+        "",
+        "## The close forecaster (ADR 0054)",
+        "",
+        f"Version {section['version']}, registered {section['registered_on']}: Pinnacle's close "
+        "forecast at the 07:05 ET snapshot from its pair there and B3's split, with history's "
+        "weights and the week's size, with no bet and no verdict before the formal review. Its "
+        "primary measure is its forecast's squared error less that of no move, in thousandths of "
+        "squared log-odds: below 0 when it forecasts the move. A game day without its forecast "
+        "is listed, not withheld: it is written before any move or result exists.",
+        "",
+    ]
+    if not section["games"] and not section["missing_days"]:
+        return [*lines, "No game day after its registration yet."]
+    not_predicted = ", ".join(f"{reason} {n}" for reason, n in section["not_predicted"].items())
+    lines.append(
+        f"- Days: {section['days']}, {section['games']} games, {section['predicted']} forecast"
+        + (f"; not forecast: {not_predicted}" if not_predicted else "")
+        + "."
+    )
+    if section["missing_days"]:
+        lines.append(
+            f"- Without a stored forecast: {len(section['missing_days'])} game days "
+            f"({', '.join(section['missing_days'])})."
+        )
+    if section["weeks"]:
+        lines.append(
+            "- The week's size: "
+            + "; ".join(
+                f"{w['week']} {w['lam']:.3f} on {w['games']} games" for w in section["weeks"]
+            )
+            + "."
+        )
+    primary = section["primary"]
+    size = section["size"]
+    takes = section["takes"]
+    lines += [
+        f"- **Squared error less no move's (primary):** {_fmt(primary)}"
+        + (f", p = {primary['p_value']:.4f}" if "p_value" in primary else ""),
+        f"- The same on the rested games: {_fmt(section['rested'])}",
+        f"- Games with a close: {section['closes']}. The slope of the move on the forecast "
+        f"move (1 when its size is right): {_fmt(size['slope'])}; moves toward it: "
+        f"{_fmt(size['share_toward'])}",
+        "",
+        "Paired log loss on the results, the first's less the second's (negative favours the "
+        "first):",
+        *(f"- {name}: {_fmt(figure)}" for name, figure in section["comparisons"].items()),
+        "",
+        f"- Shadow takes at 07:05 (expected return above 0 at the best price, one unit each): "
+        f"{takes['sides']}; with a close {takes['with_close']}, CLV per take "
+        f"{_fmt(takes['clv_per_take'], 'takes')}; settled {takes['settled']}, return per take "
+        f"{_fmt(takes['return_per_take'], 'takes')}",
     ]
     return lines
 

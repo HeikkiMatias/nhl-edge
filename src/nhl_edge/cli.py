@@ -3360,6 +3360,149 @@ def live_morning(
     typer.echo(f"morning bundle: {where}")
 
 
+@live_app.command("forecast")
+def live_forecast(
+    day: Annotated[
+        datetime | None,
+        typer.Option("--date", formats=["%Y-%m-%d"], help="The game date (default: today, ET)."),
+    ] = None,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="Read the day's morning view and its bundle from R2, and write the day's "
+            "forecasts there, once.",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run", help="Read a morning dry run's --out and write the forecasts there only."
+        ),
+    ] = False,
+    out: Annotated[
+        Path, typer.Option(help="A morning dry run's directory, which a dry run writes into.")
+    ] = Path("data/live/morning-dry"),
+    cron: Annotated[
+        str | None,
+        typer.Option(
+            help="The odds workflow's fallback cron line: run only if it is today's morning slot, "
+            "and otherwise do nothing."
+        ),
+    ] = None,
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check",
+            help="Rebuild the lake's close_forecasts from the stored days and replay the latest "
+            "ones, exiting 1 if any differs.",
+        ),
+    ] = False,
+    recent: Annotated[
+        int, typer.Option(help="How many of the latest stored days --check replays.")
+    ] = 3,
+) -> None:
+    """The close forecaster (#369, ADR 0054): Pinnacle's close forecast at the morning snapshot,
+    from the morning view's Pinnacle pair and B3's split in its bundle, with the frozen weights and
+    the week's size. It runs after the morning view, and writes the day once (forecast/live/
+    <date>.parquet) and to the lake's close_forecasts; the week's size is fitted and kept once, by
+    the week's first forecast. No bet or order reads it. The log shows counts only."""
+    from datetime import UTC
+    from zoneinfo import ZoneInfo
+
+    import polars as pl
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import close_forecast as cf
+    from nhl_edge.live import morning as lm
+    from nhl_edge.live.slate import of_day
+    from nhl_edge.settings import load_env
+
+    if not r2 and not dry_run:
+        raise typer.BadParameter("a real run reads and writes R2: pass --r2, or --dry-run")
+    if r2 and dry_run:
+        raise typer.BadParameter("--r2 and --dry-run are apart: pick one")
+    started = datetime.now(UTC)
+    load_env()
+    lake = Lake.from_env(mirror=r2)
+    if r2:
+        assert lake.objects is not None and lake.bucket is not None
+        records: lb.Store = lb.R2Store(lake.objects, lake.bucket)
+    else:
+        records = lb.LocalStore(out)
+    if check:
+        synced = cf.sync(records)
+        if r2 and synced.height:
+            lake.replace_dates("close_forecasts", synced, synced["game_date"].unique().to_list())
+        days = cf.stored_days(records)[-recent:] if recent > 0 else []
+        problems = [problem for each in days for problem in cf.check(records, each)]
+        for problem in problems:
+            typer.echo(problem, err=True)
+        typer.echo(
+            f"{synced['game_date'].n_unique()} forecast days in the lake; {len(days)} replayed, "
+            f"{len(problems)} problems"
+        )
+        if problems:
+            raise typer.Exit(code=1)
+        return
+    if cron is not None:
+        from nhl_edge.ingest.odds import resolve_slot
+
+        today = started.astimezone(ZoneInfo("America/New_York")).date()
+        slot = resolve_slot("free-tier", cron, today)
+        if slot is None or slot.name != "morning":
+            typer.echo(f"{cron!r} is not today's morning slot: no forecast")
+            return
+    game_date = day.date() if day is not None else started.astimezone(ET).date()
+    code_version = reports.version("close-forecast", started)
+    if r2:
+        if code_version.endswith("-dirty"):
+            raise typer.BadParameter("commit first: a stored forecast names its commit")
+        if game_date != started.astimezone(ET).date():
+            raise typer.BadParameter("a real run forecasts today's slate only", param_hint="--date")
+    if lm.key(game_date) not in records.keys(lm.PREFIX):
+        if r2:
+            lake.pull("slate")
+        if of_day(lake.read("slate"), game_date).is_empty():
+            typer.echo(f"{game_date}: no games scheduled, no forecast")
+            return
+        typer.echo(f"{game_date}: no morning view stored, so no forecast", err=True)
+        raise typer.Exit(code=1)
+    morning = lm.stored(records, game_date)
+    try:
+        found = cf.parts(lb.read(records, game_date, lm.BUNDLES))
+    except Exception as exc:
+        typer.echo(f"{game_date}: the morning bundle can't be read ({exc})", err=True)
+        raise typer.Exit(code=1) from None
+    w = cf.weights()
+
+    def odds() -> pl.DataFrame:
+        if r2:
+            lake.pull("odds_snapshots")
+        return lake.read("odds_snapshots")
+
+    fit = cf.week_fit(
+        records,
+        cf.week_of(game_date),
+        lambda: cf.sync(records),
+        lambda: lm.sync(records),
+        odds,
+        w.version,
+    )
+    rows = cf.forecast(morning, found, w, fit, datetime.now(UTC), code_version)
+    try:
+        where = cf.write_once(records, game_date, rows)
+    except Exception as exc:
+        typer.echo(f"the {game_date} forecast was not written ({exc}): never rewritten", err=True)
+        raise typer.Exit(code=1) from None
+    if r2:
+        lake.replace_dates("close_forecasts", rows, [game_date])
+    typer.echo(f"{where}: {cf.counts(rows)}; the week's size on {fit.rows.height} games")
+
+
 @live_app.command("replay")
 def live_replay(
     day: Annotated[
@@ -3712,6 +3855,7 @@ def live_report(
     from nhl_edge.live import blend_fit
     from nhl_edge.live import bundle as lb
     from nhl_edge.live import challengers as lc
+    from nhl_edge.live import close_forecast as cf
     from nhl_edge.live import morning as lm
     from nhl_edge.live import predict as lp
     from nhl_edge.live import report as lr
@@ -3740,6 +3884,7 @@ def live_report(
         outputs = lc.sync(store)
         spreads = lc.sync_spreads(store)
         mornings = lm.sync(store)
+        forecasts = cf.sync(store)
         # ADR 0039's start rule reads whether every decision day's run bundle is complete.
         unfinished = lb.unfinished(store, sorted(set(ledger["game_date"].to_list())))
         real_record = store
@@ -3748,6 +3893,7 @@ def live_report(
         outputs = lake.read("challenger_predictions")
         spreads = lake.read("goalie_spreads")
         mornings = lake.read("morning_predictions")
+        forecasts = lake.read("close_forecasts")
         unfinished = None
         real_record = None
     paths = sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
@@ -3776,6 +3922,7 @@ def live_report(
         dailyfaceoff=lake.read("dailyfaceoff_goalies", seasons=[blend_fit.LIVE_SEASON]),
         scale_up=scale_up,
         morning=mornings,
+        forecasts=forecasts,
     )
     json_path, md_path = lr.write(result, out)
     if supabase:
@@ -6211,6 +6358,7 @@ def real_quotes(
             for table in (
                 "paper_ledger",
                 "morning_predictions",
+                "close_forecasts",
                 "kalshi_depth",
                 "kalshi_trades",
                 "kalshi_tops",
@@ -6229,6 +6377,7 @@ def real_quotes(
             read["games"],
             rules,
             now,
+            dated["close_forecasts"],
         )
         kq.keep(store, day, result, version, now)
     found, metas = kq.kept(store)

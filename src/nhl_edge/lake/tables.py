@@ -36,6 +36,7 @@ from nhl_edge.lake.schemas import (
     SBR_KEY,
     ActualLineups,
     ChallengerPredictions,
+    CloseForecasts,
     DailyFaceoffGoalies,
     DailyFaceoffLines,
     ExpectedPowerPlays,
@@ -146,6 +147,8 @@ TABLES: dict[str, Table] = {
     # The decision's models at the 07:05 ET snapshot, with no bet (#357, ADR 0052), as written
     # once to R2.
     "morning_predictions": Table(MorningPredictions, ("game_date", "game_id"), BY_DATE),
+    # The close forecast at the morning snapshot (#369, ADR 0054), as written once to R2.
+    "close_forecasts": Table(CloseForecasts, ("game_date", "game_id"), BY_DATE),
     # Registered challengers' probabilities, scored on each day's run bundle (#255, ADR 0038).
     "challenger_predictions": Table(
         ChallengerPredictions,
