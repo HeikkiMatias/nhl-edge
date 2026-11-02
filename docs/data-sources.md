@@ -420,6 +420,15 @@ Every feature table lists final games only. `nhl live features --date D [--r2]` 
 - **The log** prints counts only: the rows by status, and the starters by source.
 - **The live report** scores it on Pinnacle's move from the morning snapshot to the close, from the day after its registration, with no verdict before the formal review. Its primary measure is the slope of that move on B3's disagreement there. A game day without its morning is listed, never withheld.
 
+## Demo quotes (#375, ADR 0055)
+
+`nhl real quote --r2` runs as the `quote` job of `kalshi-watch.yml`, in the timer's windows, on GitHub's runners. It runs only while `KALSHI_TRADING` is `demo` (`live/demo_quotes.py`).
+- **What it quotes:** each step (a minute) it reads each game's two demo markets, the model's fair value and Daily Faceoff's starters, each published by then. It then posts, replaces or pulls post-only bids by the paper simulator's rules at a 1 cent half-spread.
+- **Its orders:** each carries a `q-` client order id, apart from the practice orders, and expires 10 minutes before its game's start.
+- **The record:** each run's events are written once to `real/demo/quotes/<date>/<run>.json` (private), with every response kept raw by `live/kalshi_trade.py`. The next run reads them back for its holds, and the fills come back from Kalshi's own orders.
+- **The kill switch:** `nhl real quote --r2 --cancel`, in `kalshi-cancel.yml`, writes `real/demo/quotes/<date>/day.stop` and cancels every resting quote.
+- **The log** prints counts only.
+
 ## Research run bundles (#186)
 
 Every `nhl backtest` run, the development run and the hockey-only mode alike, keeps its per-game rows in a write-once bundle (`backtest/research.py`), as a decision day keeps its run bundle.

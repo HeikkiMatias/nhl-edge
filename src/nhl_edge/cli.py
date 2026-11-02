@@ -6238,6 +6238,119 @@ def real_quotes(
     typer.echo(kq.count_line(metas, len(days)))
 
 
+@real_app.command("quote")
+def real_quote(
+    r2: Annotated[
+        bool,
+        typer.Option("--r2", help="The morning view, the ledger, the polls and the record in R2."),
+    ] = False,
+    minutes: Annotated[
+        int | None,
+        typer.Option(
+            help="Stop after this many minutes (default: a minute before the next window)."
+        ),
+    ] = None,
+    cancel: Annotated[
+        bool,
+        typer.Option(
+            "--cancel",
+            help="The kill switch: stop today's quoting (a marker every run checks at each step) "
+            "and cancel every resting demo quote of today's games.",
+        ),
+    ] = False,
+) -> None:
+    """Two-sided quoting on Kalshi's demo exchange (#375, ADR 0055), with mock funds: the paper
+    simulator's rules at the model's fair value and a 1 cent half-spread, a step each minute from
+    the morning view's publication until each game's start less 10 minutes, and until a minute
+    before the watch's next window. Each run cancels its resting bids at its end and writes its
+    events once to real/demo/quotes/<date>/. It runs only while KALSHI_TRADING is demo. The log
+    prints counts only."""
+    import time
+    from datetime import UTC, timedelta
+
+    from nhl_edge.ingest import dailyfaceoff as dfo
+    from nhl_edge.ingest import kalshi_watch as kw
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.live import demo_quotes as dq
+    from nhl_edge.live import kalshi_quotes as kq
+    from nhl_edge.live import kalshi_trade as kt
+    from nhl_edge.live import placement
+    from nhl_edge.settings import MissingSettingError, optional
+
+    _, store = _real_record(r2)
+    try:
+        setting = placement.switch_of(optional("KALSHI_TRADING"))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    if setting != placement.DEMO:
+        typer.echo(f"demo quotes: KALSHI_TRADING is {setting}, not demo: nothing quoted")
+        return
+    started = datetime.now(UTC)
+    end = kw.window_end(started)
+    if minutes is not None:
+        end = min(end, started + timedelta(minutes=minutes))
+    rules = placement.code_exchange(setting)
+    if rules is None:
+        typer.echo("demo quotes: the code has no demo exchange", err=True)
+        raise typer.Exit(code=1)
+    raw = RawStore.from_env(mirror=r2, flag="--r2")
+    try:
+        trade = kt.KalshiTrade.from_env(setting, raw)
+    except (MissingSettingError, kt.KalshiTradeError) as exc:
+        typer.echo(f"demo quotes: failed ({exc})", err=True)
+        raise typer.Exit(code=1) from None
+    day = started.astimezone(ET).date()
+    if cancel:
+        dq.stop(store, day, started)
+        done, refused = dq.cancel_resting(trade, dq.games_of(store, day), day, started)
+        typer.echo(f"demo quotes {day}: stopped; {done} bids cancelled, {refused} calls refused")
+        if refused:
+            raise typer.Exit(code=1)
+        return
+    if dq.stopped(store, day):
+        typer.echo(f"demo quotes {day}: stopped by the kill switch, nothing quoted")
+        return
+    state = dq.resumed(store, day, f"{started:%H%M%S}")
+    sources = dq.Sources(dq.fair_reader(store, day), dq.starters_reader(raw))
+    daily = dfo.DailyFaceoff(raw)
+    polled: datetime | None = None
+    games: list[kq.Game] = []
+    alerted = False
+    try:
+        while (now := datetime.now(UTC)) < end:
+            if dq.stopped(store, day):
+                typer.echo(f"demo quotes {day}: stopped by the kill switch")
+                break
+            if not games:
+                games = dq.games_of(store, day)
+                if games:
+                    dq.recover(state, trade, games, now, rules)
+            if games:
+                if all(now >= g.start_utc - dq.STOP_BEFORE for g in games):
+                    break
+                if polled is None or now - polled >= dq.POLL_EVERY:
+                    try:
+                        daily.starting_goalies(day)
+                    except dfo.DailyFaceoffError as exc:
+                        typer.echo(f"::warning::daily faceoff {day}: {exc}")
+                    polled = now
+                dq.step(state, games, now, sources, trade, rules)
+                if state.refused_in_a_row >= dq.REFUSED_ALERT and not alerted:
+                    alerted = not _send_quietly(
+                        f"Demo quotes {day}: {state.refused_in_a_row} cancels refused in a row. "
+                        "The bids expire 10 minutes before their starts; kalshi-cancel.yml "
+                        "cancels them now."
+                    )
+            wait = (now + dq.STEP - datetime.now(UTC)).total_seconds()
+            if wait > 0:
+                time.sleep(min(wait, max((end - datetime.now(UTC)).total_seconds(), 0)))
+    finally:
+        dq.cancel_all(state, trade, datetime.now(UTC))
+        key = dq.keep(store, state, datetime.now(UTC))
+        typer.echo(f"{dq.count_line(state)}; {key}")
+
+
 @real_app.command("revalue")
 def real_revalue(
     r2: Annotated[

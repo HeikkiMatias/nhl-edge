@@ -1,6 +1,6 @@
 # 0055. Two-sided demo quoting on Kalshi, from GitHub runners
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-11-02, #375): option 1, the model at a 1 cent half-spread, on GitHub's runners
 - Date: 2026-11-02
 - Part of: #375, #358 step 5 brought forward for the demo exchange only. From the owner on 2026-11-02: "do that now and use github runners for now", with paper two-sided quoting the priority.
 
@@ -20,9 +20,9 @@
 2. **Several fair values or half-spreads at once.** One account's bids on the same market at several prices would mix their fills, and the demo gives no economics to compare anyway.
 3. **Wait for #347's runner.** Cancels would be reliable, but nothing is learned until the owner's machine is up.
 
-## Decision (proposed): option 1, as `demo_quotes` version 1
+## Decision: option 1 (the owner, 2026-11-02), as `demo_quotes` version 1
 
-**The fair value (the owner's pick):** the model, the owner's choice in #358. It is the morning view's blend from its publication, then the decision's from its own.
+**The fair value (the owner's pick of 2026-11-02):** the model, as in #358. It is the morning view's blend from its publication, then the decision's from its own.
 - **The alternatives:** the model anchored to Kalshi's mid, or the close forecast (ADR 0054) from its first day.
 
 **The rules,** the simulator's (`live/kalshi_quotes.py`) at one half-spread:
@@ -43,6 +43,8 @@
 
 **Safety:**
 - **Demo only:** the job refuses to run unless `KALSHI_TRADING` is `demo`.
+- **The kill switch:** `kalshi-cancel.yml` also runs `nhl real quote --r2 --cancel`. It writes the day's stop marker, which every run checks at each step, and cancels every resting quote of the day's games.
+- **Expiry:** every bid expires 10 minutes before its game's start on Kalshi's side, so a refused cancel can't leave one resting into the game.
 - **Kept apart from the practice orders:** its orders carry a `q-` client_order_id prefix and their own record, which the practice orders' reconcile ignores. `kalshi-cancel.yml` still cancels everything.
 - **Refusals:** a refused call is recorded by its status. A refused cancel is retried at the next step, and two in a row send a Telegram alert.
 
@@ -66,9 +68,9 @@ None, by design: the job tests mechanics on mock funds. Its evidence is a demo w
 
 - **The code:**
   - `live/demo_quotes.py`: the step, the orders' record and the summary;
-  - `nhl real quote --demo`;
+  - `nhl real quote --r2`, with `--cancel` for the kill switch;
   - the job in `kalshi-watch.yml`, with the demo secrets;
-  - the summary in the nightly;
+  - each run's events, and their summary per day (`demo_quotes.summary`); the comparison with the simulator's day follows once a demo week has run;
   - tests with a synthetic exchange, since the repository holds no Kalshi response (#280).
 - **The leakage tests:** the fair value and the polls are read only after their publication.
 - **Requests:** about two markets' tops a game each minute, inside Kalshi's limits.

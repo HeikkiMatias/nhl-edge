@@ -9,7 +9,8 @@ name: kalshi-watch
 # GitHub's schedule started runs hours late (#50); each run stops a minute before the next window,
 # inside GitHub's 6-hour job limit, and a day without games ends at once. Kalshi's Developer Agreement limits its
 # API to a member's own trading (3.1): the data stays in R2, and the job prints counts only, since
-# run logs are public. Public REST only: no Kalshi key is read.
+# run logs are public. The watch is public REST only: no Kalshi key is read. The quote job beside it
+# places the owner's own demo orders (#375), with the demo key.
 on:
   schedule:
     # The fallback while the timer is off, one line per UTC offset: the CLI skips the other half
@@ -44,3 +45,29 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
           uv run nhl kalshi watch --mirror-raw "${pick[@]}"
+  quote:
+    # Two-sided quoting on Kalshi's demo exchange (#375, ADR 0055), mock funds only: the paper
+    # simulator's rules at the model's fair value, a step each minute from the morning view's
+    # publication to each game's start less 10 minutes, ending with this window like the watch.
+    # GitHub's runners for now, the owner's choice: a location refusal (#347) is recorded, and
+    # every bid expires 10 minutes before its start on Kalshi's side. It runs only while the
+    # repository variable KALSHI_TRADING is demo, with the demo key; the log prints counts only.
+    if: (github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true') && vars.KALSHI_TRADING == 'demo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 358
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
+      - run: uv sync --frozen
+      - name: Demo quotes (#375)
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          KALSHI_TRADING: ${{ vars.KALSHI_TRADING }}
+          KALSHI_DEMO_KEY_ID: ${{ secrets.KALSHI_DEMO_KEY_ID }}
+          KALSHI_DEMO_PRIVATE_KEY: ${{ secrets.KALSHI_DEMO_PRIVATE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: uv run nhl real quote --r2
