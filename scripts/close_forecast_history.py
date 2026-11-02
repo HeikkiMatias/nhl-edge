@@ -12,8 +12,10 @@ parts of the expected goal difference as known at the opener (ADR 0044). Four re
 2. **Out of sample:** each season from 2013-14 fitted on the earlier ones (ys.scored), with the
    size of the forecast moves in probability points.
 3. **A simpler form, against it:** the move as k of the way from the opener toward an outcome
-   model's log-odds, the model a logistic fit of the home win on the same parts and the home edge,
-   each on the earlier seasons. Scored on the games both forecast, as a paired difference.
+   model's log-odds, the model a logistic fit of the home win on B3's whole difference and the
+   home edge, as live B3 weighs them, each on the earlier seasons. It is what the morning view's
+   stored disagreement with B3 could forecast alone. Scored on the games both forecast, as a
+   paired difference.
 4. **Taking at the opener:** a side is taken where p_hat_close * its opener price - 1 > 0 (hard
    rule 4, the executable price), and valued at the de-vigged close (CLV). Beside it, the same
    without the games whose price moved more than REVIEW points from the opener to the close: a
@@ -46,7 +48,9 @@ THRESHOLDS = (0.0, 0.01)
 # The opener-to-close move, in probability points, above which a game is set aside in the
 # diagnosis (hard rule 8's review size).
 REVIEW = 0.08
-OUTCOME_INPUTS = (*PARTS, "h_s")
+# The simpler form's outcome model: B3's whole difference and the home edge, as live B3 weighs
+# them, so its gap stands for the morning view's stored disagreement with B3.
+OUTCOME_INPUTS = ("delta_g_hat", "h_s")
 
 
 def _logistic(z: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -154,9 +158,11 @@ def takes(games: pl.DataFrame, prices: pl.DataFrame, threshold: float) -> pl.Dat
     return pl.concat(sides).filter(pl.col("ev") > threshold)
 
 
-def opener_prices(lake: Lake) -> pl.DataFrame:
-    """SBR's opener per game: its home and away decimal prices."""
-    openers = lake.read("sbr_odds").filter(pl.col("market") == "h2h", pl.col("quote") == "open")
+def opener_prices(lake: Lake, last: int) -> pl.DataFrame:
+    """SBR's opener per game of the seasons to last: its home and away decimal prices."""
+    openers = lake.read("sbr_odds").filter(
+        pl.col("season") <= last, pl.col("market") == "h2h", pl.col("quote") == "open"
+    )
     return openers.pivot(on="side", index="game_id", values="price_decimal").select(
         "game_id", "home", "away"
     )
@@ -204,7 +210,7 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
         f"{found['sizes']['at_1']:.0%} of games",
         f"have one of 1 point or more, and {found['sizes']['at_2']:.0%} of 2 points or more.",
         "",
-        "## 3. A simpler form: k of the way toward an outcome model",
+        "## 3. A simpler form: k of the way toward B3's whole difference",
         "",
         "| Seasons | Games | k by season | Its move skill | Split's on the same games "
         "| Simpler less split |",
@@ -252,7 +258,7 @@ def main() -> None:
         frame.select("game_id", "o", "p_close"), on="game_id"
     )
     compared = shrink(frame, seasons[1:])
-    prices = opener_prices(lake)
+    prices = opener_prices(lake, max(ys.CONFIRM))
     margin = games.join(prices, on="game_id").select(1 / pl.col("home") + 1 / pl.col("away") - 1)
     found: dict[str, Any] = {
         "weights": weights,
