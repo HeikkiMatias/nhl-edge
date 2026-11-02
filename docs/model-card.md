@@ -299,6 +299,11 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
   - Neither adds to the close: B3's split −0.47 [−1.64, +0.71] thousandths.
   - It is development evidence, not a holdout, since the features' settings were tuned on these seasons. The confirmation that counts is live (ADR 0038).
 
+**The close forecaster (#369, ADR 0054, accepted 2026-11-02).** A fair value for early quotes, never an input to the decision.
+- **What it is:** at the 07:05 ET snapshot, p̂_close = sigmoid(o + λ·(a + b_o·o + b·x)). o is Pinnacle's pair there, x B3's four parts, (a, b_o, b) frozen from SBR's 2012-13 to 2017-18 (`reports/live/close-forecast-20261102-1ecc8a2.json`), and λ the week's size, refitted on earlier mornings under N(1, 0.5²).
+- **On history** (`reports/yardstick/close-forecast-history-20261102-21a7cba.md`): it beats no move out of sample, −0.510 [−0.825, −0.207] thousandths, with moves averaging 0.66 points. Taking at the opener doesn't beat the close.
+- **Live:** its primary measure is its squared error less no move's, a family of its own, with counts only under 4 weeks and no verdict before the formal review.
+
 **Upsets in mismatches (#366, explore half).** Favourites don't lose more often than priced.
 - **The heaviest win more often:** at a close of 0.70 or more, +0.090 [+0.010, +0.162], 84 games. That is the market's under-confidence that B1 recalibrates.
 - **No letdown spot** (a big win, a win streak, a slumping underdog, a road trip) shows favourites losing more than the close says.
