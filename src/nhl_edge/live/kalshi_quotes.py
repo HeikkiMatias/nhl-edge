@@ -50,6 +50,21 @@ interval, counts only under 4 weeks, hard rule 7).
 
 **Private.** It reads Kalshi's books and trades (#280): every figure goes to the record's store
 under PREFIX, and the log prints counts only.
+
+**Hold rules (#385),** a measurement beside the variants above, kept apart under HOLDS_PREFIX so
+their record never changes: the model fair value at each half-spread, under HOLDS, the rules for
+how long a MOVE pull holds a game. Fixed on HOLDS_FIXED, before any figure under them was read,
+and scored from HOLDS_FIRST_DAY, the day after: the days before led to them (#385). A STARTER
+pull holds until the fair value updates under every rule.
+- **wait:** the rule above: until the fair value's source updates.
+- **cool:** until COOL_OFF after the pull, or the update if sooner.
+- **return:** until the mid of the market that moved is within PULL_MOVE of its mid when the
+  pulled bid was posted, or the update if sooner.
+- **trust:** no MOVE pull at all; the quote stays at our price (the owner's option, #385).
+Beside the measures above, each variant counts the minutes it had a bid resting, in all and in
+each game's LATE before its stop. The primary measure, at PRIMARY_HALF_SPREAD, is each rule's
+profit at settlement per game less wait's on the same games, with Holm's adjustment over the three
+rules once there are MIN_WEEKS weeks.
 """
 
 import io
@@ -107,6 +122,19 @@ FAR_BOOK_AGE = timedelta(minutes=35)
 MARKOUTS = (timedelta(minutes=5), timedelta(minutes=30))
 STARTER, MOVE = "starter", "move"
 CENT = Decimal("0.01")
+# The hold rules after a MOVE pull (#385), fixed on HOLDS_FIXED before any figure under them was
+# read. WAIT is the simulator's own rule.
+WAIT, COOL, RETURN, TRUST = "wait", "cool", "return", "trust"
+HOLDS = (WAIT, COOL, RETURN, TRUST)
+HOLDS_FIXED = date(2026, 11, 3)
+# The first day the hold rules are scored on: the days before it led to them (#385, the demo of
+# 2026-11-02), so a replay of them is a check of the mechanics only, never kept in this record.
+HOLDS_FIRST_DAY = HOLDS_FIXED + timedelta(days=1)
+HOLDS_VERSION = "1"
+HOLDS_PREFIX = f"real/shadow/{SHADOW}/holds/{HOLDS_VERSION}"
+COOL_OFF = timedelta(minutes=15)
+LATE = timedelta(hours=3)
+PRIMARY_HALF_SPREAD = Decimal("0.01")
 # The lake tables a run reads.
 TABLES = (
     "kalshi_tops",
@@ -150,6 +178,15 @@ def variants() -> list[tuple[str, Decimal]]:
 
 def variant_name(fair: str, h: Decimal) -> str:
     return f"{fair}-{int(h * 100)}c"
+
+
+def hold_variants() -> list[tuple[Decimal, str]]:
+    """The hold rules' variants (#385): the model at each half-spread under each rule."""
+    return [(h, hold) for hold in HOLDS for h in HALF_SPREADS]
+
+
+def hold_name(h: Decimal, hold: str) -> str:
+    return f"{variant_name(MODEL, h)}-{hold}"
 
 
 @dataclass(frozen=True)
@@ -406,6 +443,8 @@ class VariantDay:
 
     fair: str
     h: Decimal
+    # How long a MOVE pull holds the game (#385): WAIT for every variant of the record above.
+    hold: str = WAIT
     bids: dict[tuple[int, str], ks.Bid] = field(default_factory=dict)
     bought: dict[tuple[int, str], Decimal] = field(default_factory=dict)
     filled_cost: Decimal = Decimal(0)
@@ -420,6 +459,13 @@ class VariantDay:
         default_factory=lambda: {"posted": 0, "pulled_starter": 0, "pulled_move": 0, "fills": 0}
     )
     largest_inventory: Decimal = Decimal(0)
+    # A MOVE hold's market and its mid when the pulled bid was posted, which RETURN reads.
+    moved: dict[int, tuple[tuple[int, str], Decimal]] = field(default_factory=dict)
+    # Each market's last step with a bid resting, and the seconds bids rested: in all, and in
+    # each game's LATE before its stop.
+    seen: dict[tuple[int, str], datetime] = field(default_factory=dict)
+    quoted_s: float = 0.0
+    late_s: float = 0.0
 
     def resting_cost(self, rules: Exchange) -> Decimal:
         return sum(
@@ -472,23 +518,59 @@ def _released(state: VariantDay, game: Game, at: datetime, why: str | None) -> N
         state.mids.pop((game.game_id, team), None)
     if why is not None:
         state.held[game.game_id] = (at, why)
+        state.moved.pop(game.game_id, None)
         if pulled:
             state.counts[f"pulled_{why}"] += 1
 
 
 def _still_held(
-    state: VariantDay, game: Game, fair: tuple[float, datetime, datetime | None]
+    state: VariantDay,
+    game: Game,
+    fair: tuple[float, datetime, datetime | None],
+    at: datetime,
+    inputs: Inputs,
 ) -> bool:
-    """Whether a pulled game still waits for its fair value's source to update after the pull."""
+    """Whether a pulled game still waits: for its fair value's source to update after the pull,
+    or, after a MOVE, for the variant's hold rule to end it (#385)."""
     hold = state.held.get(game.game_id)
     if hold is None:
         return False
-    at, why = hold
+    pulled, why = hold
     source = fair[2] if state.fair == ANCHORED and why == MOVE else fair[1]
-    if source is not None and source > at:
+    if (source is not None and source > pulled) or (
+        why == MOVE and _move_over(state, game, pulled, at, inputs)
+    ):
         del state.held[game.game_id]
+        state.moved.pop(game.game_id, None)
         return False
     return True
+
+
+def _move_over(
+    state: VariantDay, game: Game, pulled: datetime, at: datetime, inputs: Inputs
+) -> bool:
+    """Whether the variant's hold rule ends a MOVE hold at at: COOL_OFF after the pull, or the
+    moved market's mid back within PULL_MOVE of its mid at the pulled bid's posting. WAIT never
+    ends one this way, and TRUST never pulls on a move."""
+    if state.hold == COOL:
+        return at >= pulled + COOL_OFF
+    if state.hold == RETURN and game.game_id in state.moved:
+        key, then = state.moved[game.game_id]
+        mid = mid_of(top_at(inputs.tops.get(key, []), at, ages(game, at)[0]))
+        return mid is not None and abs(mid - then) < PULL_MOVE
+    return False
+
+
+def _rested(state: VariantDay, game: Game, key: tuple[int, str], at: datetime) -> None:
+    """The time a market's bid rested since its last step, in all and in the game's LATE before
+    its stop."""
+    since = state.seen.get(key, at)
+    state.seen[key] = at
+    if at <= since:
+        return
+    state.quoted_s += (at - since).total_seconds()
+    late_from = game.start_utc - STOP_BEFORE - LATE
+    state.late_s += max(0.0, (at - max(since, late_from)).total_seconds())
 
 
 def _quote_price(fair: float, h: Decimal, best_ask: Decimal | None) -> Decimal | None:
@@ -506,7 +588,10 @@ def step_game(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules
         bid = state.bids.get(key)
         if bid is not None:
             logs = inputs.logs.get(key, EMPTY_LOGS)
-            filled += [(t, key, bid, q, k) for t, q, k in advance(bid, at, logs, rules)]
+            found = advance(bid, at, logs, rules)
+            filled += [(t, key, bid, q, k) for t, q, k in found]
+            # A bid filled in full rested until its last fill; this step replaces or drops it.
+            _rested(state, game, key, found[-1][0] if found and bid.left <= 0 else at)
     # Both teams' fills in the order they came, so the inventory is measured after each.
     for t, key, bid, q, k in sorted(filled, key=lambda fill: (fill[0], fill[1][1])):
         state.bought[key] = state.bought.get(key, Decimal(0)) + q
@@ -537,17 +622,18 @@ def step_game(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules
     top_age, book_age = ages(game, at)
     for key in keys:
         bid, then = state.bids.get(key), state.mids.get(key)
-        if bid is None or then is None:
+        if bid is None or then is None or state.hold == TRUST:
             continue
         mid = mid_of(top_at(inputs.tops.get(key, []), at, top_age))
         if mid is not None and abs(mid - then) >= PULL_MOVE:
             _released(state, game, at, MOVE)
+            state.moved[game.game_id] = (key, then)
             break
     for key in keys:
         team = key[1]
         fair = fair_at(state.fair, game, team, at, inputs)
         bid = state.bids.get(key)
-        if fair is None or _still_held(state, game, fair):
+        if fair is None or _still_held(state, game, fair, at, inputs):
             state.bids.pop(key, None)
             continue
         # A quote needs a recent top: post-only, it is never at or above the best ask.
@@ -573,6 +659,7 @@ def step_game(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules
         if state.filled_cost + state.resting_cost(rules) + planned > DAY_CAP:
             continue
         state.mids[key] = mid_of(top)
+        state.seen[key] = at
         state.bids[key] = ks.Bid(
             game_id=game.game_id,
             team=team,
@@ -608,10 +695,12 @@ def steps(game: Game, inputs: Inputs, fair: str | None = None) -> list[datetime]
     return sorted({t + timedelta(microseconds=1) for t in times if t < end} | {end})
 
 
-def run_variant(fair: str, h: Decimal, inputs: Inputs, rules: Exchange) -> VariantDay:
+def run_variant(
+    fair: str, h: Decimal, inputs: Inputs, rules: Exchange, hold: str = WAIT
+) -> VariantDay:
     """One variant over the day: every game's steps in time order, so the day's cap sees every
     game's bids and fills as they came."""
-    state = VariantDay(fair, h)
+    state = VariantDay(fair, h, hold)
     events = sorted(
         ((t, g) for g in inputs.games for t in steps(g, inputs, fair)),
         key=lambda event: (event[0], event[1].game_id),
@@ -716,18 +805,24 @@ def run_day(
     rules: Exchange,
     now: datetime,
     forecasts: pl.DataFrame | None = None,
+    holds: bool = False,
 ) -> DayResult:
     """Every variant's day from the day's ledger, morning view, close forecasts, odds, Kalshi
     logs and Daily Faceoff polls; the fills valued with the results and the closing proxies known
-    by now."""
+    by now. With holds, the hold rules' variants instead (#385), each with its minutes quoted,
+    and the day's slate (game_id, season) for their paired measure."""
     inputs = inputs_of(ledger, morning, odds, depth, trades, tops, dailyfaceoff, forecasts)
     references = lf.references(odds, now) if odds.height else pl.DataFrame()
     results = outcomes(games.filter(pl.col("game_id").is_in([g.game_id for g in inputs.games])))
     rows, counts = [], {}
     seasons = {g.game_id: (g.season, g.game_date, g.start_utc) for g in inputs.games}
-    for fair, h in variants():
-        state = run_variant(fair, h, inputs, rules)
-        name = variant_name(fair, h)
+    specs = (
+        [(hold_name(h, hold), MODEL, h, hold) for h, hold in hold_variants()]
+        if holds
+        else [(variant_name(fair, h), fair, h, WAIT) for fair, h in variants()]
+    )
+    for name, fair, h, hold in specs:
+        state = run_variant(fair, h, inputs, rules, hold)
         valued = markouts(state.fills, inputs, references, results) if state.fills else []
         for fill in valued:
             season, game_date, start = seasons[fill["game_id"]]
@@ -743,6 +838,13 @@ def run_day(
                 }
             )
         counts[name] = state.counts | {"largest_inventory": float(state.largest_inventory)}
+        if holds:
+            counts[name] |= {
+                "quoted_minutes": state.quoted_s / 60,
+                "late_minutes": state.late_s / 60,
+            }
+    if holds:
+        counts["slate"] = sorted([g.game_id, g.season] for g in inputs.games)
     counts["games"] = len(inputs.games)
     counts["watch_logs"] = tops.height > 0
     counts["model_days"] = sum(1 for g in inputs.games if g.game_id in inputs.models)
@@ -753,29 +855,37 @@ def run_day(
 # The record
 
 
-def day_keys(day: date) -> tuple[str, str]:
-    """Where a day's counts and fills are kept, each written once."""
-    base = f"{PREFIX}/days/{day.isoformat()}"
+def day_keys(day: date, prefix: str = PREFIX) -> tuple[str, str]:
+    """Where a day's counts and fills are kept, each written once: the record's under PREFIX, the
+    hold rules' under HOLDS_PREFIX."""
+    base = f"{prefix}/days/{day.isoformat()}"
     return f"{base}.json", f"{base}-fills.parquet"
 
 
-def stored_days(store: lb.Store) -> list[date]:
+def stored_days(store: lb.Store, prefix: str = PREFIX) -> list[date]:
     """The days whose counts are kept: the last file a day writes."""
     found = []
-    for key in store.keys(f"{PREFIX}/days"):
+    for key in store.keys(f"{prefix}/days"):
         name = key.rsplit("/", 1)[-1]
         if name.endswith(".json"):
             found.append(date.fromisoformat(name.removesuffix(".json")))
     return sorted(found)
 
 
-def keep(store: lb.Store, day: date, result: DayResult, code_version: str, now: datetime) -> None:
+def keep(
+    store: lb.Store,
+    day: date,
+    result: DayResult,
+    code_version: str,
+    now: datetime,
+    prefix: str = PREFIX,
+) -> None:
     """A day's files, written once: its fills, then its counts, the last."""
-    counts_key, fills_key = day_keys(day)
+    counts_key, fills_key = day_keys(day, prefix)
     lb.put_once(store, fills_key, lb.parquet(result.fills))
     meta = {
         "shadow": SHADOW,
-        "version": VERSION,
+        "version": VERSION if prefix == PREFIX else f"holds/{HOLDS_VERSION}",
         "day": day.isoformat(),
         "computed_utc": now.isoformat(),
         "code_version": code_version,
@@ -784,21 +894,21 @@ def keep(store: lb.Store, day: date, result: DayResult, code_version: str, now: 
     lb.put_once(store, counts_key, json.dumps(meta, sort_keys=True).encode())
 
 
-def kept(store: lb.Store) -> tuple[pl.DataFrame, list[dict[str, Any]]]:
+def kept(store: lb.Store, prefix: str = PREFIX) -> tuple[pl.DataFrame, list[dict[str, Any]]]:
     """Every kept day's fills and counts."""
     fills, metas = [], []
-    for day in stored_days(store):
-        counts_key, fills_key = day_keys(day)
+    for day in stored_days(store, prefix):
+        counts_key, fills_key = day_keys(day, prefix)
         metas.append(json.loads(store.get(counts_key)))
         fills.append(pl.read_parquet(io.BytesIO(store.get(fills_key))))
     return (pl.concat(fills) if fills else pl.DataFrame(schema=FILL_SCHEMA)), metas
 
 
-def due(today: date, done: Iterable[date]) -> list[date]:
-    """The game dates from FIRST_DAY before today (US Eastern) not kept yet: a day is read once
-    its games are over, the night after."""
+def due(today: date, done: Iterable[date], first: date = FIRST_DAY) -> list[date]:
+    """The game dates from first (FIRST_DAY, or HOLDS_FIRST_DAY for the hold rules) before today
+    (US Eastern) not kept yet: a day is read once its games are over, the night after."""
     kept_days = set(done)
-    found, day = [], FIRST_DAY
+    found, day = [], first
     while day < today:
         if day not in kept_days:
             found.append(day)
@@ -870,20 +980,29 @@ def per_contract_estimate(frame: pl.DataFrame, value: str) -> dict[str, Any]:
 
 
 def summary(
-    fills: pl.DataFrame, metas: Sequence[Mapping[str, Any]], games: pl.DataFrame
+    fills: pl.DataFrame,
+    metas: Sequence[Mapping[str, Any]],
+    games: pl.DataFrame,
+    holds: bool = False,
 ) -> dict[str, Any]:
     """The private figures over every kept day, per variant: its counts, and each measure per
-    contract, with the results games holds now (settled)."""
+    contract, with the results games holds now (settled). With holds, the hold rules' variants
+    (#385), each with its minutes quoted, and the primary measure: each rule's profit per game
+    less wait's (paired)."""
     rows = per_contract(settled(fills, games))
     matched = pairs(rows)
     result: dict[str, Any] = {
         "shadow": SHADOW,
-        "version": VERSION,
+        "version": f"holds/{HOLDS_VERSION}" if holds else VERSION,
         "days": len(metas),
         "days_with_watch_logs": sum(1 for m in metas if m["counts"].get("watch_logs")),
     }
-    for fair, h in variants():
-        name = variant_name(fair, h)
+    names = (
+        [hold_name(h, hold) for h, hold in hold_variants()]
+        if holds
+        else [variant_name(fair, h) for fair, h in variants()]
+    )
+    for name in names:
         of_variant = rows.filter(pl.col("variant") == name)
         counts = [m["counts"].get(name, {}) for m in metas]
         figures: dict[str, Any] = {
@@ -900,11 +1019,76 @@ def summary(
             ),
             "profit_usd": float((of_variant["profit"] * of_variant["contracts"]).sum()),
         }
+        if holds:
+            figures["quoted_minutes"] = sum(c.get("quoted_minutes", 0.0) for c in counts)
+            figures["late_minutes"] = sum(c.get("late_minutes", 0.0) for c in counts)
         for measure in MEASURES:
             known = of_variant.filter(pl.col(measure).is_not_null())
             figures[measure] = per_contract_estimate(known, measure) if known.height else None
         result[name] = figures
+    if holds:
+        result["against_wait"] = against_wait(rows, metas, games)
     return result
+
+
+def game_profits(
+    rows: pl.DataFrame, metas: Sequence[Mapping[str, Any]], games: pl.DataFrame
+) -> pl.DataFrame:
+    """Each hold variant's profit at settlement per game (game_id, season, game_date, variant,
+    profit_usd), the maker fee in it: every kept game whose result games holds now, zero where
+    the variant had no fill."""
+    known = outcomes(games).filter(pl.col("home_win").is_not_null())
+    slate = pl.DataFrame(
+        [
+            {"game_id": g, "season": season, "game_date": date.fromisoformat(m["day"])}
+            for m in metas
+            for g, season in m["counts"].get("slate", [])
+        ],
+        schema={"game_id": pl.Int64, "season": pl.Int32, "game_date": pl.Date},
+    ).join(known.select("game_id"), on="game_id")
+    names = pl.DataFrame({"variant": [hold_name(h, hold) for h, hold in hold_variants()]})
+    totals = (
+        rows.filter(pl.col("profit").is_not_null())
+        .group_by("variant", "game_id")
+        .agg(profit_usd=(pl.col("profit") * pl.col("contracts")).sum())
+    )
+    return (
+        slate.join(names, how="cross")
+        .join(totals, on=["variant", "game_id"], how="left")
+        .with_columns(pl.col("profit_usd").fill_null(0.0))
+    )
+
+
+def against_wait(
+    rows: pl.DataFrame, metas: Sequence[Mapping[str, Any]], games: pl.DataFrame
+) -> dict[str, Any]:
+    """Each rule's profit per game less wait's on the same games, at each half-spread, with its
+    weekly block bootstrap interval, or the counts only under the live report's MIN_WEEKS. At
+    PRIMARY_HALF_SPREAD, the primary measure, Holm's adjustment over the three rules once each
+    has its interval (#385)."""
+    profits = game_profits(rows, metas, games)
+    found: dict[str, Any] = {}
+    p_values: dict[str, float] = {}
+    for h in HALF_SPREADS:
+        base = profits.filter(pl.col("variant") == hold_name(h, WAIT)).select(
+            "game_id", "season", "game_date", wait=pl.col("profit_usd")
+        )
+        for hold in HOLDS[1:]:
+            name = hold_name(h, hold)
+            paired = (
+                profits.filter(pl.col("variant") == name)
+                .join(base, on=["game_id", "season", "game_date"])
+                .with_columns(difference=pl.col("profit_usd") - pl.col("wait"))
+            )
+            if not lr.enough(paired):
+                found[name] = lr.counts(paired)
+                continue
+            found[name] = metrics.bootstrap(paired, "difference").to_dict()
+            if h == PRIMARY_HALF_SPREAD:
+                p_values[name] = metrics.p_value(paired, "difference")
+    if len(p_values) == len(HOLDS) - 1:
+        found["holm"] = metrics.holm(p_values)
+    return found
 
 
 def count_line(metas: Sequence[Mapping[str, Any]], computed: int) -> str:
@@ -921,5 +1105,18 @@ def count_line(metas: Sequence[Mapping[str, Any]], computed: int) -> str:
     )
 
 
-def report_key(as_of: datetime) -> str:
-    return f"{PREFIX}/reports/{as_of:%Y-%m-%dT%H%M%SZ}.json"
+def holds_count_line(metas: Sequence[Mapping[str, Any]], computed: int) -> str:
+    """The hold rules' log line: counts only (#280)."""
+    fills = sum(
+        m["counts"].get(hold_name(h, hold), {}).get("fills", 0)
+        for m in metas
+        for h, hold in hold_variants()
+    )
+    return (
+        f"kalshi quote holds: {computed} days computed now, {len(metas)} kept, {fills} fills "
+        f"over {len(hold_variants())} variants"
+    )
+
+
+def report_key(as_of: datetime, prefix: str = PREFIX) -> str:
+    return f"{prefix}/reports/{as_of:%Y-%m-%dT%H%M%SZ}.json"

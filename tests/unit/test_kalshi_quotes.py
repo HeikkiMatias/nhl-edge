@@ -313,3 +313,166 @@ def test_the_summary_and_the_log_line(tmp_path: object) -> None:
     assert kq.due(qf.DAY + timedelta(days=2), kq.stored_days(store)) == [
         d for d in kq.due(qf.DAY + timedelta(days=2), []) if d != qf.DAY
     ]
+
+
+# The hold rules after a move (#385), on the model only.
+
+MOVED = {7: (0.54, 0.58)}
+
+
+def held_day(**changes: object) -> kq.DayResult:
+    args = {
+        "ledger": qf.ledger(),
+        "morning": qf.morning(),
+        "odds": qf.odds(),
+        "depth": qf.depth(),
+        "trades": qf.trades([(10, qf.HOME, 0.51, 20.0)]),
+        "tops": qf.tops(),
+        "dailyfaceoff": qf.dailyfaceoff(),
+        "games": qf.games(),
+    } | changes
+    return kq.run_day(qf.DAY, rules=DEMO_EXCHANGE, now=NOW, holds=True, **args)  # type: ignore[arg-type]
+
+
+def fill_times(result: kq.DayResult, variant: str) -> list[datetime]:
+    return of(result, variant).filter(pl.col("team") == qf.HOME)["fill_utc"].to_list()
+
+
+def test_the_hold_rules_quote_the_model_alike_without_a_move() -> None:
+    result = held_day()
+    names = [kq.hold_name(h, hold) for h, hold in kq.hold_variants()]
+    assert len(names) == 12 and names[:3] == ["model-0c-wait", "model-1c-wait", "model-2c-wait"]
+    assert set(result.fills["variant"].unique()) == set(names)
+    for h in kq.HALF_SPREADS:
+        fills = {
+            hold: of(result, kq.hold_name(h, hold)).drop("variant").sort(pl.all())
+            for hold in kq.HOLDS
+        }
+        assert all(fills[hold].equals(fills[kq.WAIT]) for hold in kq.HOLDS)
+    assert result.counts["slate"] == [[qf.GAME, 20262027]]
+    # Wait is the simulator's own rule: the same fills as its model arm.
+    assert of(day(), "model-2c").drop("variant").equals(of(result, "model-2c-wait").drop("variant"))
+
+
+def test_trust_keeps_its_quote_through_a_move() -> None:
+    result = held_day(tops=qf.tops(moved=MOVED))
+    assert result.counts["model-2c-wait"]["pulled_move"] == 1
+    assert result.counts["model-2c-trust"]["pulled_move"] == 0
+    assert fill_times(result, "model-2c-wait") == []
+    assert fill_times(result, "model-2c-trust") == [qf.at(10)]
+
+
+def test_cool_quotes_again_fifteen_minutes_after_the_pull() -> None:
+    trades = qf.trades([(21.5, qf.HOME, 0.51, 20.0), (23, qf.HOME, 0.51, 20.0)])
+    result = held_day(tops=qf.tops(moved=MOVED), trades=trades)
+    # Pulled at minute 7, held to minute 22, filled by the trade at 23.
+    assert fill_times(result, "model-2c-cool") == [qf.at(23)]
+    assert fill_times(result, "model-2c-wait") == []
+    # The mid stays moved, so return keeps holding.
+    assert fill_times(result, "model-2c-return") == []
+    assert fill_times(result, "model-2c-trust") == [qf.at(21.5), qf.at(23)]
+
+
+def test_return_quotes_again_when_the_moved_mid_comes_back() -> None:
+    tops = qf.tops(moved={7: (0.54, 0.58), 12: (0.50, 0.54)})
+    trades = qf.trades([(11.5, qf.HOME, 0.51, 20.0), (13, qf.HOME, 0.51, 20.0)])
+    result = held_day(tops=tops, trades=trades)
+    assert fill_times(result, "model-2c-return") == [qf.at(13)]
+    assert fill_times(result, "model-2c-cool") == []
+    assert fill_times(result, "model-2c-wait") == []
+
+
+def test_a_starter_change_holds_under_every_rule() -> None:
+    polls = [(qf.at(-60), qf.HOME, "Logan Thompson"), (qf.at(5), qf.HOME, "Charlie Lindgren")]
+    trades = qf.trades([(10, qf.HOME, 0.51, 20.0), (30, qf.HOME, 0.51, 20.0)])
+    result = held_day(dailyfaceoff=qf.dailyfaceoff(polls), trades=trades)
+    for hold in kq.HOLDS:
+        name = kq.hold_name(Decimal("0.02"), hold)
+        assert result.counts[name]["pulled_starter"] == 1
+        assert of(result, name).is_empty()
+
+
+def test_the_minutes_quoted_in_all_and_in_the_last_three_hours() -> None:
+    result = held_day(tops=qf.tops(moved=MOVED), trades=qf.trades())
+    # Trust rests both markets from the first top to the stop, 10 minutes before the start.
+    whole = (qf.START - kq.STOP_BEFORE - qf.at(0)).total_seconds() / 60
+    trust = result.counts["model-2c-trust"]
+    assert trust["quoted_minutes"] == pytest.approx(2 * whole, abs=1e-3)
+    assert trust["late_minutes"] == pytest.approx(2 * 180, abs=1e-3)
+    # Wait pulls both at minute 7 and never quotes again.
+    wait = result.counts["model-2c-wait"]
+    assert wait["quoted_minutes"] == pytest.approx(2 * 7, abs=1e-3)
+    assert wait["late_minutes"] == 0
+
+
+def test_the_simulators_own_record_is_unchanged() -> None:
+    counts = day().counts
+    assert "slate" not in counts
+    assert set(counts["model-2c"]) == {
+        "posted",
+        "pulled_starter",
+        "pulled_move",
+        "fills",
+        "largest_inventory",
+    }
+
+
+def test_the_hold_rules_record_summary_and_log_line(tmp_path: object) -> None:
+    from pathlib import Path
+
+    from nhl_edge.live import bundle as lb
+
+    store = lb.LocalStore(Path(str(tmp_path)))
+    kq.keep(store, qf.DAY, held_day(), "kalshi-quotes-20261103-abc1234", NOW, kq.HOLDS_PREFIX)
+    assert kq.stored_days(store) == [] and kq.stored_days(store, kq.HOLDS_PREFIX) == [qf.DAY]
+    found, metas = kq.kept(store, kq.HOLDS_PREFIX)
+    assert metas[0]["version"] == "holds/1"
+    figures = kq.summary(found, metas, qf.games(), holds=True)
+    assert figures["version"] == "holds/1"
+    assert figures["model-1c-trust"]["fills"] == 1 and "quoted_minutes" in figures["model-1c-trust"]
+    # Under 4 weeks the paired measure has counts only, and no Holm.
+    against = figures["against_wait"]
+    assert against["model-1c-trust"] == {"games": 1, "weeks": 1} and "holm" not in against
+    assert kq.holds_count_line(metas, 1) == (
+        "kalshi quote holds: 1 days computed now, 1 kept, 12 fills over 12 variants"
+    )
+
+
+def test_against_wait_pairs_each_game_and_adjusts_over_the_three_rules() -> None:
+    days = [qf.DAY + timedelta(weeks=w) for w in range(5)]
+    ids = [qf.GAME + w for w in range(5)]
+    metas = [
+        {"day": d.isoformat(), "counts": {"slate": [[g, 20262027]]}}
+        for d, g in zip(days, ids, strict=True)
+    ]
+    # Trust gains a dollar a game over wait; cool and return match it; one game has no result.
+    rules = ["model-1c-trust", "model-1c-wait", "model-1c-cool", "model-1c-return"]
+    rows = pl.DataFrame(
+        {
+            "variant": [name for name in rules for _ in ids],
+            "game_id": ids * 4,
+            "profit": [0.2] * 5 + [0.1] * 15,
+            "contracts": [10.0] * 20,
+        }
+    )
+    games = pl.concat([qf.games().with_columns(game_id=pl.lit(g)) for g in ids[:4]])
+    against = kq.against_wait(rows, metas, games)
+    trust = against["model-1c-trust"]
+    assert trust["mean"] == pytest.approx(1.0) and trust["games"] == 4
+    assert against["model-1c-cool"]["mean"] == pytest.approx(0.0)
+    holm = against["holm"]
+    assert set(holm) == {"model-1c-cool", "model-1c-return", "model-1c-trust"}
+    assert holm["model-1c-trust"]["passes"] and not holm["model-1c-cool"]["passes"]
+
+
+def test_a_bid_filled_in_full_counts_as_quoted_only_until_its_fill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # At a net cap of 10 the home bid fills in full at minute 10.5, between two steps, and is
+    # never posted again: it counts as quoted until its fill, not until the next step.
+    monkeypatch.setattr(kq, "NET_CAP", Decimal(10))
+    result = held_day(tops=qf.tops(minutes=21), trades=qf.trades([(10.5, qf.HOME, 0.51, 20.0)]))
+    trust = result.counts["model-2c-trust"]
+    whole = (qf.START - kq.STOP_BEFORE - qf.at(0)).total_seconds() / 60
+    assert trust["fills"] == 1
+    assert trust["quoted_minutes"] == pytest.approx(whole + 10.5, abs=1e-3)

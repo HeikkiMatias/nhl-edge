@@ -6329,10 +6329,11 @@ def real_quotes(
     model, the model anchored to Kalshi's mid, and Pinnacle's latest), each at three
     half-spreads, filled on the watch's logs. Each day is kept once, privately, in the record's
     store; then the figures over every kept day, with their weekly block bootstrap intervals, go
-    there too. It reads Kalshi's books and trades, so the log prints counts only (#280). Paper
+    there too. Beside it, under its own record, the model's quotes under each hold rule after a
+    move (#385). It reads Kalshi's books and trades, so the log prints counts only (#280). Paper
     only: no paper bet, real bet or policy reads it."""
     import json
-    from datetime import UTC
+    from datetime import UTC, date
 
     import polars as pl
 
@@ -6351,8 +6352,8 @@ def real_quotes(
             lake.pull(table)
     read = {table: lake.read(table) for table in kq.TABLES}
     rules = placement.code_exchange(placement.LIVE) or real.DEMO_EXCHANGE
-    days = kq.due(now.astimezone(ET).date(), kq.stored_days(store))
-    for day in days:
+
+    def run(day: date, holds: bool) -> "kq.DayResult":
         dated = {
             table: read[table].filter(pl.col("game_date") == day)
             for table in (
@@ -6365,7 +6366,7 @@ def real_quotes(
             )
         }
         ids = dated["paper_ledger"]["game_id"].unique().implode()
-        result = kq.run_day(
+        return kq.run_day(
             day,
             dated["paper_ledger"],
             dated["morning_predictions"],
@@ -6378,13 +6379,23 @@ def real_quotes(
             rules,
             now,
             dated["close_forecasts"],
+            holds=holds,
         )
-        kq.keep(store, day, result, version, now)
-    found, metas = kq.kept(store)
-    figures = {"as_of_utc": now.isoformat(), "code_version": version}
-    figures |= kq.summary(found, metas, read["games"])
-    store.put(kq.report_key(now), json.dumps(figures, sort_keys=True).encode())
-    typer.echo(kq.count_line(metas, len(days)))
+
+    today = now.astimezone(ET).date()
+    for prefix, holds, first in (
+        (kq.PREFIX, False, kq.FIRST_DAY),
+        (kq.HOLDS_PREFIX, True, kq.HOLDS_FIRST_DAY),
+    ):
+        days = kq.due(today, kq.stored_days(store, prefix), first)
+        for day in days:
+            kq.keep(store, day, run(day, holds), version, now, prefix)
+        found, metas = kq.kept(store, prefix)
+        figures = {"as_of_utc": now.isoformat(), "code_version": version}
+        figures |= kq.summary(found, metas, read["games"], holds)
+        store.put(kq.report_key(now, prefix), json.dumps(figures, sort_keys=True).encode())
+        line = kq.holds_count_line if holds else kq.count_line
+        typer.echo(line(metas, len(days)))
 
 
 @real_app.command("quote")
