@@ -195,3 +195,69 @@ def test_the_quotes_figures_stay_out_of_the_repository() -> None:
     assert kq.PREFIX.startswith("real/shadow/")
     repo = Path(__file__).parents[2]
     assert not (repo / "real").exists() and not list((repo / "reports").rglob("*kalshi_quotes*"))
+
+
+# The hold rules after a move (#385).
+
+
+def held_day(**changes: object) -> kq.DayResult:
+    args = {
+        "ledger": qf.ledger(),
+        "morning": qf.morning(),
+        "odds": qf.odds(),
+        "depth": qf.depth(),
+        "trades": qf.trades(TRADE),
+        "tops": qf.tops(),
+        "dailyfaceoff": qf.dailyfaceoff(),
+        "games": qf.games(),
+    } | changes
+    return kq.run_day(qf.DAY, rules=DEMO_EXCHANGE, now=NOW, holds=True, **args)  # type: ignore[arg-type]
+
+
+def test_return_never_reads_the_mid_before_it_is_observed() -> None:
+    # The mid comes back at minute 12: a trade at 11.9 finds return still holding.
+    tops = qf.tops(moved={7: (0.54, 0.58), 12: (0.50, 0.54)})
+    trades = qf.trades([(11.9, qf.HOME, 0.51, 20.0), (12.5, qf.HOME, 0.51, 20.0)])
+    fills = held_day(tops=tops, trades=trades).fills.filter(pl.col("variant") == "model-2c-return")
+    assert fills["fill_utc"].to_list() == [qf.at(12.5)]
+    assert (fills["posted_utc"] > qf.at(12)).all()
+
+
+def test_a_later_top_never_changes_an_earlier_hold() -> None:
+    trades = qf.trades([(10, qf.HOME, 0.51, 20.0), (35, qf.HOME, 0.40, 20.0)])
+    moved = qf.tops(moved={7: (0.54, 0.58)})
+    before = held_day(trades=trades, tops=moved)
+    after = held_day(trades=trades, tops=qf.tops(moved={7: (0.54, 0.58), 30: (0.50, 0.54)}))
+    early = pl.col("fill_utc") < qf.at(30)
+    assert quoted(before).filter(early).height
+    assert (
+        quoted(after)
+        .filter(early)
+        .sort(pl.all())
+        .equals(quoted(before).filter(early).sort(pl.all()))
+    )
+
+
+def test_cool_never_ends_a_hold_before_its_fifteen_minutes() -> None:
+    trades = qf.trades([(21.9, qf.HOME, 0.51, 20.0)])
+    result = held_day(tops=qf.tops(moved={7: (0.54, 0.58)}), trades=trades)
+    assert result.fills.filter(pl.col("variant") == "model-2c-cool").is_empty()
+
+
+def test_the_hold_rules_are_fixed_before_any_figure_under_them() -> None:
+    # #385's rules, fixed on the issue before any figure under them was read: changing one is a
+    # new version of the hold rules' record.
+    assert kq.HOLDS_VERSION == "1" and date(2026, 11, 3) == kq.HOLDS_FIXED
+    assert kq.HOLDS == ("wait", "cool", "return", "trust")
+    assert (
+        timedelta(minutes=15),
+        timedelta(hours=3),
+        Decimal("0.01"),
+    ) == (kq.COOL_OFF, kq.LATE, kq.PRIMARY_HALF_SPREAD)
+
+
+def test_the_hold_figures_stay_out_of_the_repository() -> None:
+    assert kq.HOLDS_PREFIX.startswith("real/shadow/kalshi_quotes/")
+    assert kq.HOLDS_PREFIX != kq.PREFIX and not kq.PREFIX.startswith(kq.HOLDS_PREFIX)
+    repo = Path(__file__).parents[2]
+    assert not list((repo / "reports").rglob("*holds*"))
