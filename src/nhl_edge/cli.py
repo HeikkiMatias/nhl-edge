@@ -6383,8 +6383,11 @@ def real_quotes(
         )
 
     today = now.astimezone(ET).date()
-    for prefix, holds in ((kq.PREFIX, False), (kq.HOLDS_PREFIX, True)):
-        days = kq.due(today, kq.stored_days(store, prefix))
+    for prefix, holds, first in (
+        (kq.PREFIX, False, kq.FIRST_DAY),
+        (kq.HOLDS_PREFIX, True, kq.HOLDS_FIRST_DAY),
+    ):
+        days = kq.due(today, kq.stored_days(store, prefix), first)
         for day in days:
             kq.keep(store, day, run(day, holds), version, now, prefix)
         found, metas = kq.kept(store, prefix)

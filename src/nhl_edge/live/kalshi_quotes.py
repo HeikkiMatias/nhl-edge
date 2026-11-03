@@ -54,7 +54,8 @@ under PREFIX, and the log prints counts only.
 **Hold rules (#385),** a measurement beside the variants above, kept apart under HOLDS_PREFIX so
 their record never changes: the model fair value at each half-spread, under HOLDS, the rules for
 how long a MOVE pull holds a game. Fixed on HOLDS_FIXED, before any figure under them was read,
-and replayed from FIRST_DAY. A STARTER pull holds until the fair value updates under every rule.
+and scored from HOLDS_FIRST_DAY, the day after: the days before led to them (#385). A STARTER
+pull holds until the fair value updates under every rule.
 - **wait:** the rule above: until the fair value's source updates.
 - **cool:** until COOL_OFF after the pull, or the update if sooner.
 - **return:** until the mid of the market that moved is within PULL_MOVE of its mid when the
@@ -126,6 +127,9 @@ CENT = Decimal("0.01")
 WAIT, COOL, RETURN, TRUST = "wait", "cool", "return", "trust"
 HOLDS = (WAIT, COOL, RETURN, TRUST)
 HOLDS_FIXED = date(2026, 11, 3)
+# The first day the hold rules are scored on: the days before it led to them (#385, the demo of
+# 2026-11-02), so a replay of them is a check of the mechanics only, never kept in this record.
+HOLDS_FIRST_DAY = HOLDS_FIXED + timedelta(days=1)
 HOLDS_VERSION = "1"
 HOLDS_PREFIX = f"real/shadow/{SHADOW}/holds/{HOLDS_VERSION}"
 COOL_OFF = timedelta(minutes=15)
@@ -579,15 +583,15 @@ def _quote_price(fair: float, h: Decimal, best_ask: Decimal | None) -> Decimal |
 def step_game(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules: Exchange) -> None:
     """One step of one game at at: its bids' fills to then, its pulls, and its quotes."""
     keys = [(game.game_id, team) for team in (game.home, game.away)]
-    for key in keys:
-        if key in state.bids:
-            _rested(state, game, key, at)
     filled = []
     for key in keys:
         bid = state.bids.get(key)
         if bid is not None:
             logs = inputs.logs.get(key, EMPTY_LOGS)
-            filled += [(t, key, bid, q, k) for t, q, k in advance(bid, at, logs, rules)]
+            found = advance(bid, at, logs, rules)
+            filled += [(t, key, bid, q, k) for t, q, k in found]
+            # A bid filled in full rested until its last fill; this step replaces or drops it.
+            _rested(state, game, key, found[-1][0] if found and bid.left <= 0 else at)
     # Both teams' fills in the order they came, so the inventory is measured after each.
     for t, key, bid, q, k in sorted(filled, key=lambda fill: (fill[0], fill[1][1])):
         state.bought[key] = state.bought.get(key, Decimal(0)) + q
@@ -900,11 +904,11 @@ def kept(store: lb.Store, prefix: str = PREFIX) -> tuple[pl.DataFrame, list[dict
     return (pl.concat(fills) if fills else pl.DataFrame(schema=FILL_SCHEMA)), metas
 
 
-def due(today: date, done: Iterable[date]) -> list[date]:
-    """The game dates from FIRST_DAY before today (US Eastern) not kept yet: a day is read once
-    its games are over, the night after."""
+def due(today: date, done: Iterable[date], first: date = FIRST_DAY) -> list[date]:
+    """The game dates from first (FIRST_DAY, or HOLDS_FIRST_DAY for the hold rules) before today
+    (US Eastern) not kept yet: a day is read once its games are over, the night after."""
     kept_days = set(done)
-    found, day = [], FIRST_DAY
+    found, day = [], first
     while day < today:
         if day not in kept_days:
             found.append(day)

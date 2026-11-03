@@ -261,3 +261,13 @@ def test_the_hold_figures_stay_out_of_the_repository() -> None:
     assert kq.HOLDS_PREFIX != kq.PREFIX and not kq.PREFIX.startswith(kq.HOLDS_PREFIX)
     repo = Path(__file__).parents[2]
     assert not list((repo / "reports").rglob("*holds*"))
+
+
+def test_no_day_that_led_to_the_hold_rules_is_scored() -> None:
+    # The demo of 2026-11-02 led to #385's rules, fixed on 11-03: they are scored from 11-04.
+    assert kq.HOLDS_FIRST_DAY > kq.HOLDS_FIXED > date(2026, 11, 2)
+    assert kq.due(kq.HOLDS_FIXED + timedelta(days=1), [], kq.HOLDS_FIRST_DAY) == []
+    assert kq.due(kq.HOLDS_FIRST_DAY + timedelta(days=2), [], kq.HOLDS_FIRST_DAY) == [
+        kq.HOLDS_FIRST_DAY,
+        kq.HOLDS_FIRST_DAY + timedelta(days=1),
+    ]

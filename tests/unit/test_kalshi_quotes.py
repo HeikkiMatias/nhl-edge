@@ -463,3 +463,16 @@ def test_against_wait_pairs_each_game_and_adjusts_over_the_three_rules() -> None
     holm = against["holm"]
     assert set(holm) == {"model-1c-cool", "model-1c-return", "model-1c-trust"}
     assert holm["model-1c-trust"]["passes"] and not holm["model-1c-cool"]["passes"]
+
+
+def test_a_bid_filled_in_full_counts_as_quoted_only_until_its_fill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # At a net cap of 10 the home bid fills in full at minute 10.5, between two steps, and is
+    # never posted again: it counts as quoted until its fill, not until the next step.
+    monkeypatch.setattr(kq, "NET_CAP", Decimal(10))
+    result = held_day(tops=qf.tops(minutes=21), trades=qf.trades([(10.5, qf.HOME, 0.51, 20.0)]))
+    trust = result.counts["model-2c-trust"]
+    whole = (qf.START - kq.STOP_BEFORE - qf.at(0)).total_seconds() / 60
+    assert trust["fills"] == 1
+    assert trust["quoted_minutes"] == pytest.approx(whole + 10.5, abs=1e-3)
