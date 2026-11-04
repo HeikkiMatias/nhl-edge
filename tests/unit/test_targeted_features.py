@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 import polars as pl
 import pytest
-from targeted_features_fixtures import load, schedule
+from targeted_features_fixtures import load, moments, schedule
 
 tf = load()
 D = date(2013, 11, 1)
@@ -27,7 +27,7 @@ GAMES = schedule(
 
 
 def test_density_counts_earlier_dates_and_road_games_in_a_row() -> None:
-    found = {r["game_id"]: r for r in tf.density(GAMES).iter_rows(named=True)}
+    found = {r["game_id"]: r for r in tf.density(GAMES, moments(GAMES)).iter_rows(named=True)}
     # Game 3 on day 3: BOS played on days 0 and 1, NYR on day 0, all within the 3 days before.
     assert found[3]["dense3_diff"] == 2 - 1 and found[3]["dense6_diff"] == 2 - 1
     # BOS comes home from 2 road games; NYR's one road game is tonight's, none before.
@@ -43,7 +43,7 @@ def test_density_counts_earlier_dates_and_road_games_in_a_row() -> None:
 def test_early_keeps_the_5v5_part_only_when_both_teams_are_in_their_first_games() -> None:
     rows = [(i, day(2 * i), "NYR", "BOS") for i in range(1, 23)]
     games = schedule(rows)
-    frame = games.select("game_id", five_diff=pl.lit(0.3))
+    frame = moments(games).with_columns(five_diff=pl.lit(0.3))
     found = tf.early(frame, games).sort("game_id")["five_diff_early"].to_list()
     assert found[: tf.EARLY] == [0.3] * tf.EARLY and found[tf.EARLY :] == [0.0, 0.0]
 

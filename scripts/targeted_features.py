@@ -80,10 +80,11 @@ def travel(b2_tables: b2.Tables, moments: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def team_games(games: pl.DataFrame) -> pl.DataFrame:
-    """Each team's games of each season in order: date, whether at home, its rest in days (None
-    for its first), its games over the 3 and 6 days before and its road games in a row before,
-    each from its earlier dates only."""
+def team_games(games: pl.DataFrame, moments: pl.DataFrame) -> pl.DataFrame:
+    """Each game of moments (game_id, prediction_utc) for each of its teams, from the team's
+    earlier games of the season whose results were public before the game's prediction time
+    (ADR 0003): its games over the 3 and 6 days before, its rest in days since the latest (None
+    without one), its road games in a row just before, and the game's number in the season."""
     sides = pl.concat(
         [
             games.select(
@@ -91,41 +92,56 @@ def team_games(games: pl.DataFrame) -> pl.DataFrame:
                 "season",
                 "game_date",
                 "start_utc",
+                "observed_utc",
                 team=side,
                 home=pl.lit(side == "home"),
             )
             for side in ("home", "away")
         ]
-    ).sort("season", "team", "start_utc")
-    by = ["season", "team"]
-    sides = sides.with_columns(n=pl.int_range(pl.len()).over(by))
-    earlier = sides.select(*by, other_date="game_date", other_n="n")
-    window = (
-        sides.join(earlier, on=by)
-        .filter(pl.col("other_date") < pl.col("game_date"))
+    )
+    targets = sides.join(moments, on="game_id")
+    earlier = sides.select(
+        "season",
+        "team",
+        other_date="game_date",
+        other_start="start_utc",
+        other_utc="observed_utc",
+        other_home="home",
+    )
+    date = pl.col("game_date")
+    known = (
+        targets.join(earlier, on=["season", "team"])
+        .filter(
+            pl.col("other_start") < pl.col("start_utc"),
+            pl.col("other_utc") < pl.col("prediction_utc"),
+        )
         .group_by("game_id", "team")
         .agg(
-            dense3=(pl.col("other_date") >= pl.col("game_date") - timedelta(days=3)).sum(),
-            dense6=(pl.col("other_date") >= pl.col("game_date") - timedelta(days=6)).sum(),
+            before=pl.len(),
+            dense3=(pl.col("other_date") >= date - timedelta(days=3)).sum(),
+            dense6=(pl.col("other_date") >= date - timedelta(days=6)).sum(),
+            last=pl.col("other_date").max(),
+            # Road games in a row: from the latest back, until the first at home.
+            road=(~pl.col("other_home"))
+            .cast(pl.Int32)
+            .sort_by("other_start", descending=True)
+            .cum_prod()
+            .sum(),
         )
     )
-    last_home = pl.when(pl.col("home")).then(pl.col("n")).shift(1).forward_fill().over(by)
     return (
-        sides.with_columns(
-            rest=(pl.col("game_date") - pl.col("game_date").shift(1).over(by)).dt.total_days(),
-            road=pl.col("n") - last_home.fill_null(-1) - 1,
-        )
-        .join(window, on=["game_id", "team"], how="left")
-        .with_columns(pl.col("dense3", "dense6").fill_null(0).cast(pl.Int32))
+        targets.join(known, on=["game_id", "team"], how="left")
+        .with_columns(pl.col("before", "dense3", "dense6", "road").fill_null(0).cast(pl.Int32))
+        .with_columns(rest=(date - pl.col("last")).dt.total_days(), number=pl.col("before") + 1)
     )
 
 
-def density(games: pl.DataFrame) -> pl.DataFrame:
-    """Each game's density columns (DENSITY) from every played game of the schedule before its
-    date: the schedule is public a day before (ADR 0005), and a game played on an earlier date is
-    over by the prediction time."""
-    per = team_games(games)
-    out = games.select("game_id", "home", "away")
+def density(games: pl.DataFrame, moments: pl.DataFrame) -> pl.DataFrame:
+    """Each game of moments with its density columns (DENSITY), from the season's games whose
+    results were public before its prediction time (team_games): the schedule is public a day
+    before (ADR 0005)."""
+    per = team_games(games, moments)
+    out = games.join(moments.select("game_id"), on="game_id").select("game_id", "home", "away")
     for side in ("home", "away"):
         part = per.select(
             "game_id",
@@ -149,9 +165,10 @@ def density(games: pl.DataFrame) -> pl.DataFrame:
 
 
 def early(frame: pl.DataFrame, games: pl.DataFrame) -> pl.DataFrame:
-    """Each game of frame with five_diff_early: five_diff when both teams are within their first
-    EARLY games of the season, by start, else 0."""
-    per = team_games(games).select("game_id", "team", number=pl.col("n") + 1)
+    """Each game of frame (game_id, prediction_utc, five_diff) with five_diff_early: five_diff
+    when both teams are within their first EARLY games of the season, counted from the games
+    whose results were public before its prediction time, else 0."""
+    per = team_games(games, frame.select("game_id", "prediction_utc"))
     flags = games.select("game_id", "home", "away")
     for side in ("home", "away"):
         flags = flags.join(
@@ -195,7 +212,7 @@ def with_candidates(read: ys.Read) -> pl.DataFrame:
     moments = frame.select("game_id", "prediction_utc")
     return (
         frame.join(travel(read.b2_tables, moments), on="game_id")
-        .join(density(read.games), on="game_id")
+        .join(density(read.games, moments), on="game_id")
         .join(early(frame, read.games), on="game_id")
         .join(presumed(goalie_pairs(read.b3_tables, moments)), on="game_id")
         .sort("game_id")
@@ -248,6 +265,13 @@ def markdown(found: Mapping[str, Any], decision: Mapping[str, Any], version: str
         "candidate anticipates SBR's move beyond the opener's drift. Intervals are 95% weekly",
         "block bootstrap. The features' settings were tuned on these seasons (ADR 0011).",
         "",
+        "Not fresh on these games: #361's diagnostics already read the early-season subset's move",
+        "skill and, descriptively, where the goalie starter surprised (reports/yardstick/",
+        "yardstick-diagnostics-20261101-c7bfa52.md), so early's p-value is development evidence",
+        "twice over. Only travel and density must hold on the rested games by the rule; the",
+        "others' rested intervals are given beside, since a start probability can read last",
+        "night's game, which an opener of the evening before may not have known (ADR 0006).",
+        "",
         "| Candidate | Games | Move skill | On the rested games | Result beyond the close |",
         "|---|---|---|---|---|",
     ]
@@ -272,9 +296,14 @@ def markdown(found: Mapping[str, Any], decision: Mapping[str, Any], version: str
         )
     lines += ["| lineup_change | not yet scored | | | | |", ""]
     kept = [n for n, e in decision["estimates"].items() if e["kept"]]
+    notes = [
+        f"{n} (rested interval {'below 0' if e['rested']['high'] < 0 else 'includes 0'})"
+        for n, e in decision["estimates"].items()
+        if e["kept"]
+    ]
     lines.append(
-        f"**Kept:** {', '.join(kept)}: proposed to the owner as challenger inputs, as development "
-        "evidence only."
+        f"**Kept:** {', '.join(notes)}: proposed to the owner as challenger inputs, as "
+        "development evidence only."
         if kept
         else "**Kept:** none of the four scored. lineup_change follows in its own PR."
     )

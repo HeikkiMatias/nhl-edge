@@ -3,7 +3,7 @@ schedule of played games."""
 
 import importlib.util
 from collections.abc import Sequence
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from types import ModuleType
 
@@ -21,8 +21,8 @@ def load() -> ModuleType:
 
 
 def schedule(rows: Sequence[tuple[int, date, str, str]], season: int = 20132014) -> pl.DataFrame:
-    """SYNTHETIC played games: (game_id, date, home, away), each starting at 00:00 UTC the next
-    day (19:00 ET)."""
+    """SYNTHETIC played games: (game_id, date, home, away), each starting at 23:00 UTC with its
+    result public at 10:00 UTC the next morning (ADR 0003)."""
     return pl.DataFrame(
         {
             "game_id": [g for g, _, _, _ in rows],
@@ -31,6 +31,10 @@ def schedule(rows: Sequence[tuple[int, date, str, str]], season: int = 20132014)
             "start_utc": [datetime.combine(d, time(23, 0), tzinfo=UTC) for _, d, _, _ in rows],
             "home": [h for _, _, h, _ in rows],
             "away": [a for _, _, _, a in rows],
+            "observed_utc": [
+                datetime.combine(d + timedelta(days=1), time(10, 0), tzinfo=UTC)
+                for _, d, _, _ in rows
+            ],
         },
         schema={
             "game_id": pl.Int64,
@@ -39,5 +43,14 @@ def schedule(rows: Sequence[tuple[int, date, str, str]], season: int = 20132014)
             "start_utc": pl.Datetime("us", "UTC"),
             "home": pl.String,
             "away": pl.String,
+            "observed_utc": pl.Datetime("us", "UTC"),
         },
+    )
+
+
+def moments(games: pl.DataFrame) -> pl.DataFrame:
+    """Each game's prediction time: E2's, 10:00 ET (15:00 UTC in November) on its date."""
+    return games.select(
+        "game_id",
+        prediction_utc=pl.col("game_date").cast(pl.Datetime("us", "UTC")) + timedelta(hours=15),
     )
