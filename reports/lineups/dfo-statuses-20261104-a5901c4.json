@@ -1,0 +1,230 @@
+{
+  "counts": {
+    "by_jersey": 6815,
+    "by_name": 722,
+    "candidates": 9286,
+    "first_day": "2026-10-08",
+    "last_day": "2026-11-03",
+    "matched": 7537,
+    "page_players_unmatched": 454,
+    "team_games": 382,
+    "team_games_with_a_page": 382,
+    "without_p_available": 0
+  },
+  "early_exit": {
+    "groups": {
+      "absent": {
+        "candidates": 5,
+        "dressed": {
+          "games": 5,
+          "weeks": 3
+        },
+        "gap": {
+          "games": 5,
+          "weeks": 3
+        },
+        "p_available": {
+          "games": 5,
+          "weeks": 3
+        }
+      },
+      "dtd": {
+        "candidates": 0,
+        "dressed": {
+          "games": 0,
+          "weeks": 0
+        },
+        "gap": {
+          "games": 0,
+          "weeks": 0
+        },
+        "p_available": {
+          "games": 0,
+          "weeks": 0
+        }
+      },
+      "lines": {
+        "candidates": 19,
+        "dressed": {
+          "games": 19,
+          "high": 0.9,
+          "low": 0.48,
+          "mean": 0.631578947368421,
+          "weeks": 5
+        },
+        "gap": {
+          "games": 19,
+          "high": -0.13860149432107288,
+          "low": -0.4362704891275208,
+          "mean": -0.2526908816890088,
+          "weeks": 5
+        },
+        "p_available": {
+          "games": 19,
+          "high": 0.49494162145530246,
+          "low": 0.31452328941492147,
+          "mean": 0.3788880656794123,
+          "weeks": 5
+        }
+      },
+      "other": {
+        "candidates": 0,
+        "dressed": {
+          "games": 0,
+          "weeks": 0
+        },
+        "gap": {
+          "games": 0,
+          "weeks": 0
+        },
+        "p_available": {
+          "games": 0,
+          "weeks": 0
+        }
+      },
+      "out": {
+        "candidates": 25,
+        "dressed": {
+          "games": 25,
+          "high": 0.0,
+          "low": 0.0,
+          "mean": 0.0,
+          "weeks": 4
+        },
+        "gap": {
+          "games": 25,
+          "high": 0.539345562705256,
+          "low": 0.36105314430741375,
+          "mean": 0.44684439799273645,
+          "weeks": 4
+        },
+        "p_available": {
+          "games": 25,
+          "high": 0.539345562705256,
+          "low": 0.36105314430741375,
+          "mean": 0.44684439799273645,
+          "weeks": 4
+        }
+      }
+    },
+    "value": {
+      "games": 44,
+      "high": -0.20409393017369618,
+      "low": -0.4573253993949729,
+      "mean": -0.3133682972028693,
+      "weeks": 5
+    }
+  },
+  "groups": {
+    "absent": {
+      "candidates": 1749,
+      "dressed": {
+        "games": 1749,
+        "high": 0.14084507042253522,
+        "low": 0.07398568019093078,
+        "mean": 0.0989136649514008,
+        "weeks": 5
+      },
+      "gap": {
+        "games": 1749,
+        "high": 0.13830648585212044,
+        "low": 0.09603165745570831,
+        "mean": 0.11209356501182263,
+        "weeks": 5
+      },
+      "p_available": {
+        "games": 1749,
+        "high": 0.27915155627465565,
+        "low": 0.17280112603667871,
+        "mean": 0.21100722996322344,
+        "weeks": 5
+      }
+    },
+    "dtd": {
+      "candidates": 0,
+      "dressed": {
+        "games": 0,
+        "weeks": 0
+      },
+      "gap": {
+        "games": 0,
+        "weeks": 0
+      },
+      "p_available": {
+        "games": 0,
+        "weeks": 0
+      }
+    },
+    "lines": {
+      "candidates": 6757,
+      "dressed": {
+        "games": 6757,
+        "high": 0.9741077676696991,
+        "low": 0.9685481942119111,
+        "mean": 0.970993044250407,
+        "weeks": 5
+      },
+      "gap": {
+        "games": 6757,
+        "high": -0.04092426820569114,
+        "low": -0.05866081967704628,
+        "mean": -0.0491586269396916,
+        "weeks": 5
+      },
+      "p_available": {
+        "games": 6757,
+        "high": 0.928864176652066,
+        "low": 0.9141538722658651,
+        "mean": 0.9218344173107155,
+        "weeks": 5
+      }
+    },
+    "other": {
+      "candidates": 1,
+      "dressed": {
+        "games": 1,
+        "weeks": 1
+      },
+      "gap": {
+        "games": 1,
+        "weeks": 1
+      },
+      "p_available": {
+        "games": 1,
+        "weeks": 1
+      }
+    },
+    "out": {
+      "candidates": 779,
+      "dressed": {
+        "games": 779,
+        "high": 0.10061919504643962,
+        "low": 0.043674698795180725,
+        "mean": 0.07188703465982028,
+        "weeks": 5
+      },
+      "gap": {
+        "games": 779,
+        "high": 0.19869771745042664,
+        "low": 0.11258106870140505,
+        "mean": 0.1480092566171842,
+        "weeks": 5
+      },
+      "p_available": {
+        "games": 779,
+        "high": 0.2654729617501009,
+        "low": 0.19947201879411938,
+        "mean": 0.21989629127700447,
+        "weeks": 5
+      }
+    }
+  },
+  "reliable": false,
+  "value": {
+    "games": 7537,
+    "high": -0.01161755357039382,
+    "low": -0.019247157436362936,
+    "mean": -0.016062659915169936,
+    "weeks": 5
+  }
+}
