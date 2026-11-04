@@ -22,17 +22,18 @@ not read.
 - q3 = sigmoid(a + c·Δĝ), Δĝ at E2's time from the yardstick's inputs, with c ~ N(0, 1²): on
   2016-17 and 2017-18 only, where those inputs exist (ADR 0011).
 
-**Measures:** the paired log loss of each of q1 to q3 against q0 on the ties both scored, with a
-weekly block bootstrap interval and Holm's adjustment over the three (the primary measure);
-beside it the paired Brier, (q - y)², from 0 to 1, q's calibration and the counts. **The gate:**
-q2 or q3 against q1, Holm over the two, an interval below 0, and an implied full-game shift
+**Measures:** the paired log loss of q1 and q2 against q0 on the ties both scored, with a weekly
+block bootstrap interval and Holm's adjustment over the two (the primary measure; q3 beside it,
+described only); beside it the paired Brier, (q - y)², from 0 to 1, q's calibration and the
+counts. **The gate:** q2 against q1, an interval below 0, and an implied full-game shift
 D̂·(q - q1) of a point or more on at least SHARE of every priced game of the scored seasons, D̂
 the earlier 3-on-3 seasons' draw rate.
 
-**Caveats the report names:** q3's input, Δĝ, has settings tuned through 2018-04-09 on these
-training seasons' full-game results, OT and shootout included (ADR 0011), so q3 is scored on
-labels that helped choose its input: weaker evidence than q2's. SBR's opener is assumed public at
-10:00 ET (ADR 0006).
+**q3 decides nothing** (Codex on #390, hard rule 1): its input, Δĝ, has settings tuned through
+2018-04-09 on these training seasons' full-game results, OT and shootout included (ADR 0011),
+after both of its folds' starts. It is reported as a description beside the decision, which is
+q1 and q2 against q0 (Holm over the two) and q2 against q1 for the gate. SBR's opener is assumed
+public at 10:00 ET (ADR 0006).
 
 It reads the lake to 2021-22 only and writes reports/backtest/ot-winner-<yyyymmdd>-<shortsha>.md.
 """
@@ -209,21 +210,29 @@ def shift_share(games: pl.DataFrame, name: str) -> dict[str, Any]:
     return {"games": known.height, "share": float(known.select(moved.mean()).item() or 0.0)}
 
 
+# The candidates in the decision: q3's input has settings tuned through 2018-04-09, after its
+# folds' starts (hard rule 1, Codex on #390), so q3 is reported as a description only.
+DECIDING = ("q1", "q2")
+GATE = ("q2",)
+DESCRIBED = ("q3",)
+
+
 def run(
     tied: pl.DataFrame, inputs: pl.DataFrame, games: pl.DataFrame, rates: Mapping[int, float]
 ) -> dict[str, Any]:
-    """The primary measure, the gate and the figures beside them."""
+    """The primary measure (DECIDING against q0, Holm over them), the gate (GATE against q1),
+    and q3 beside them as a description that decides nothing."""
     scored, priced, fits = predictions(tied, inputs, games, rates)
-    against_q0 = {name: measures(scored, name, "q0") for name in ("q1", "q2", "q3")}
-    holm = metrics.holm({n: m["log_loss_p"] for n, m in against_q0.items()}, ALPHA)
-    against_q1 = {name: measures(scored, name, "q1") for name in ("q2", "q3")}
-    gate_holm = metrics.holm({n: m["log_loss_p"] for n, m in against_q1.items()}, ALPHA)
-    shifts = {name: shift_share(priced, name) for name in ("q2", "q3")}
+    against_q0 = {name: measures(scored, name, "q0") for name in (*DECIDING, *DESCRIBED)}
+    holm = metrics.holm({n: against_q0[n]["log_loss_p"] for n in DECIDING}, ALPHA)
+    against_q1 = {name: measures(scored, name, "q1") for name in (*GATE, *DESCRIBED)}
+    gate_holm = metrics.holm({n: against_q1[n]["log_loss_p"] for n in GATE}, ALPHA)
+    shifts = {name: shift_share(priced, name) for name in (*GATE, *DESCRIBED)}
     beats = {
         name: gate_holm[name]["passes"]
         and against_q1[name]["log_loss"]["high"] < 0
         and shifts[name]["share"] >= SHARE
-        for name in ("q2", "q3")
+        for name in GATE
     }
     calibration = {
         name: {
@@ -232,7 +241,7 @@ def run(
                 scored.filter(pl.col(name).is_not_null()), name, "home_won"
             ).items()
         }
-        for name in ("q2", "q3")
+        for name in (*GATE, *DESCRIBED)
     }
     per_season = (
         scored.group_by("season")
@@ -250,6 +259,7 @@ def run(
         "per_season": per_season.to_dicts(),
         "gate": any(beats.values()),
         "gate_by": beats,
+        "described": list(DESCRIBED),
     }
 
 
@@ -261,6 +271,12 @@ def markdown(found: Mapping[str, Any], disagree: int, version: str) -> str:
     def season(s: int) -> str:
         return f"{s // 10000}-{s % 100:02d}"
 
+    def decision(name: str, steps: Mapping[str, Any], passes: bool | None = None) -> str:
+        if name not in steps:
+            return "described only | described only"
+        ok = steps[name]["passes"] if passes is None else passes
+        return f"{steps[name]['threshold']:.3f} | {'yes' if ok else 'no'}"
+
     lines = [
         f"# The overtime and shootout winner ({version})",
         "",
@@ -271,9 +287,11 @@ def markdown(found: Mapping[str, Any], disagree: int, version: str) -> str:
         "candidate. Intervals are 95% weekly block bootstrap. Every season read has been seen,",
         "so this is development evidence. SBR's opener is assumed public at 10:00 ET (ADR 0006).",
         "",
-        "**q3 is weaker evidence than q2:** its input, Δĝ, has settings tuned through",
-        "2018-04-09 on these training seasons' full-game results, OT and shootout included",
-        "(ADR 0011), so q3 is scored on labels that helped choose its input.",
+        "**q3 decides nothing** (Codex on #390, hard rule 1): its input, Δĝ, has settings tuned",
+        "through 2018-04-09 on these training seasons' full-game results, OT and shootout",
+        "included (ADR 0011), after both of its folds' starts. Its figures are a description,",
+        "and the primary measure's Holm family is q1 and q2, the gate q2 alone. Under the",
+        "issue's first rule, with q3 in both, the outcome is the same.",
         "",
         f"Games where the regulation goals and `decided_in` disagree, dropped: {disagree}.",
         "",
@@ -287,44 +305,37 @@ def markdown(found: Mapping[str, Any], disagree: int, version: str) -> str:
         )
     lines += [
         "",
-        "**The primary measure,** each candidate against q0 = 0.5 (Holm over the three):",
+        "**The primary measure,** each candidate against q0 = 0.5 (Holm over q1 and q2):",
         "",
         "| Candidate | Ties | Log loss | Brier | p | Holm threshold | Passes |",
         "|---|---|---|---|---|---|---|",
     ]
     for name, m in found["against_q0"].items():
-        h = found["holm"][name]
         lines.append(
             f"| {name} | {m['ties']} | {cell(m['log_loss'])} | {cell(m['brier'])} | "
-            f"{m['log_loss_p']:.3f} | {h['threshold']:.3f} | {'yes' if h['passes'] else 'no'} |"
+            f"{m['log_loss_p']:.3f} | {decision(name, found['holm'])} |"
         )
     lines += [
         "",
-        "**The gate,** q2 and q3 against q1 (Holm over the two), and the share of priced games",
-        f"whose full-game probability they would move by {SHIFT:.0%} or more from q1's:",
+        "**The gate,** q2 against q1, and the share of priced games whose full-game probability",
+        f"it would move by {SHIFT:.0%} or more from q1's; q3 beside it, described only:",
         "",
-        "| Candidate | Ties | Log loss | Brier | p | Holm threshold | Shift share | Passes |",
+        "| Candidate | Ties | Log loss | Brier | p | Shift share | Holm threshold | Passes |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for name, m in found["against_q1"].items():
-        h, s = found["gate_holm"][name], found["shifts"][name]
+        s = found["shifts"][name]
         lines.append(
             f"| {name} | {m['ties']} | {cell(m['log_loss'])} | {cell(m['brier'])} | "
-            f"{m['log_loss_p']:.3f} | {h['threshold']:.3f} | {s['share']:.1%} of {s['games']:,} | "
-            f"{'yes' if found['gate_by'][name] else 'no'} |"
+            f"{m['log_loss_p']:.3f} | {s['share']:.1%} of {s['games']:,} | "
+            f"{decision(name, found['gate_holm'], found['gate_by'].get(name))} |"
         )
     lines += ["", "**q's calibration** (intercept 0 and slope 1 when calibrated):", ""]
     for name, c in found["calibration"].items():
         lines.append(f"- {name}: intercept {cell(c['intercept'], 1)}, slope {cell(c['slope'], 1)}")
-    passed = [name for name, ok in found["gate_by"].items() if ok]
-    rests = (
-        " It rests on q3 alone, the weaker evidence."
-        if passed == ["q3"]
-        else f" It rests on {' and '.join(passed)}."
-    )
     lines += [
         "",
-        "**Step 2 goes ahead** (a new issue): the gate passes." + rests
+        "**Step 2 goes ahead** (a new issue): the gate passes on q2."
         if found["gate"]
         else "**Step 2 does not go ahead:** the gate does not pass. q stays implicit in B3; a "
         "regulation or totals market would need the owner's scope first.",

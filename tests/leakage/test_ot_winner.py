@@ -4,6 +4,7 @@ read only earlier seasons' ties, and the seasons read are open ones only."""
 from datetime import date
 from typing import Any
 
+import numpy as np
 import polars as pl
 import pytest
 from ot_winner_fixtures import league, load
@@ -140,3 +141,19 @@ def test_read_never_returns_a_season_after_2021_22(monkeypatch: pytest.MonkeyPat
     assert max(asked["market"]) <= ow.LAST
     assert games["season"].max() <= ow.LAST and held_out not in rates
     assert 2 not in tied["game_id"].to_list() and 2 not in inputs["game_id"].to_list()
+
+
+def test_q3_never_decides_even_when_it_carries_the_signal() -> None:
+    # Hard rule 1 (Codex on #390): q3's input settings were tuned after its folds' starts, so
+    # it is described only. Here Δĝ carries the whole effect and the opener is noise.
+    tied, inputs, games, rates = league(1.5)
+    noise = inputs.with_columns(
+        delta_g_hat=pl.col("o") / 1.4,
+        o=pl.Series(np.random.default_rng(9).normal(0.2, 0.4, inputs.height)),
+    )
+    found = ow.run(tied, noise, games, rates)
+    assert set(found["holm"]) == {"q1", "q2"} and set(found["gate_holm"]) == {"q2"}
+    assert set(found["gate_by"]) == {"q2"} and not found["gate"]
+    # q3's figures are still there, beside the decision.
+    assert found["against_q1"]["q3"]["log_loss"]["high"] < 0
+    assert "described only" in ow.markdown(found, 0, "ot-winner-20261104-abc1234")
