@@ -45,7 +45,9 @@ def league(
             ).filter(pl.Series(tied))
         )
         inputs.append(pl.DataFrame({"game_id": ids, "o": o, "delta_g_hat": o / 1.4}))
-        games.append(pl.DataFrame({"game_id": ids, "season": [season] * per_season}))
+        games.append(
+            pl.DataFrame({"game_id": ids, "season": [season] * per_season, "game_date": dates})
+        )
     rates = {season: 0.25 for season in SEASONS}
     tied = pl.concat(ties).with_columns(
         pl.col("season").cast(pl.Int32), pl.col("home_won").cast(pl.Int8)

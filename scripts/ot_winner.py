@@ -26,8 +26,9 @@ not read.
 block bootstrap interval and Holm's adjustment over the two (the primary measure; q3 beside it,
 described only); beside it the paired Brier, (q - y)², from 0 to 1, q's calibration and the
 counts. **The gate:** q2 against q1, an interval below 0, and an implied full-game shift
-D̂·(q - q1) of a point or more on at least SHARE of every priced game of the scored seasons, D̂
-the earlier 3-on-3 seasons' draw rate.
+D̂·(q - q1) of a point or more on at least SHARE of every priced game of the scored seasons, by
+the low end of that share's weekly block bootstrap interval (hard rule 7), D̂ the earlier 3-on-3
+seasons' draw rate.
 
 **q3 decides nothing** (Codex on #390, hard rule 1): its input, Δĝ, has settings tuned through
 2018-04-09 on these training seasons' full-game results, OT and shootout included (ADR 0011),
@@ -143,7 +144,7 @@ def predictions(
     rows = tied.join(inputs, on="game_id", how="left")
     priced = (
         games.filter(pl.col("season").is_in(list(SCORED)))
-        .select("game_id", "season")
+        .select("game_id", "season", "game_date")
         .join(inputs, on="game_id")
     )
     scored_ties, scored_games, fits = [], [], {}
@@ -204,10 +205,12 @@ def measures(frame: pl.DataFrame, a: str, b: str) -> dict[str, Any]:
 
 def shift_share(games: pl.DataFrame, name: str) -> dict[str, Any]:
     """The share of priced games whose full-game probability q's candidate would move by SHIFT or
-    more from q1's, D̂·|q - q1|."""
-    known = games.filter(pl.col(name).is_not_null())
-    moved = (pl.col("draw") * (pl.col(name) - pl.col("q1")).abs()) >= SHIFT
-    return {"games": known.height, "share": float(known.select(moved.mean()).item() or 0.0)}
+    more from q1's, D̂·|q - q1|, with its weekly block bootstrap interval (hard rule 7, Codex on
+    #390): the gate reads the interval's low end, never the point estimate."""
+    known = games.filter(pl.col(name).is_not_null()).with_columns(
+        moved=((pl.col("draw") * (pl.col(name) - pl.col("q1")).abs()) >= SHIFT).cast(pl.Float64)
+    )
+    return {"games": known.height, "share": metrics.bootstrap(known, "moved").to_dict()}
 
 
 # The candidates in the decision: q3's input has settings tuned through 2018-04-09, after its
@@ -231,7 +234,7 @@ def run(
     beats = {
         name: gate_holm[name]["passes"]
         and against_q1[name]["log_loss"]["high"] < 0
-        and shifts[name]["share"] >= SHARE
+        and shifts[name]["share"]["low"] >= SHARE
         for name in GATE
     }
     calibration = {
@@ -261,6 +264,10 @@ def run(
         "gate_by": beats,
         "described": list(DESCRIBED),
     }
+
+
+def _share(found: Mapping[str, Any]) -> str:
+    return f"{found['mean']:.1%} [{found['low']:.1%}, {found['high']:.1%}]"
 
 
 def markdown(found: Mapping[str, Any], disagree: int, version: str) -> str:
@@ -318,7 +325,8 @@ def markdown(found: Mapping[str, Any], disagree: int, version: str) -> str:
     lines += [
         "",
         "**The gate,** q2 against q1, and the share of priced games whose full-game probability",
-        f"it would move by {SHIFT:.0%} or more from q1's; q3 beside it, described only:",
+        f"it would move by {SHIFT:.0%} or more from q1's, with its interval (the gate needs its",
+        f"low end at {SHARE:.0%} or more); q3 beside it, described only:",
         "",
         "| Candidate | Ties | Log loss | Brier | p | Shift share | Holm threshold | Passes |",
         "|---|---|---|---|---|---|---|---|",
@@ -327,7 +335,7 @@ def markdown(found: Mapping[str, Any], disagree: int, version: str) -> str:
         s = found["shifts"][name]
         lines.append(
             f"| {name} | {m['ties']} | {cell(m['log_loss'])} | {cell(m['brier'])} | "
-            f"{m['log_loss_p']:.3f} | {s['share']:.1%} of {s['games']:,} | "
+            f"{m['log_loss_p']:.3f} | {_share(s['share'])} of {s['games']:,} | "
             f"{decision(name, found['gate_holm'], found['gate_by'].get(name))} |"
         )
     lines += ["", "**q's calibration** (intercept 0 and slope 1 when calibrated):", ""]

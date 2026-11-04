@@ -79,3 +79,15 @@ def test_the_regulation_label_never_reads_the_final_score() -> None:
     games, shots = games_and_shots()
     tied, _ = ow.ties(games.filter(pl.col("game_id") == 1), shots)
     assert tied.height == 1
+
+
+def test_the_shift_share_has_an_interval_and_the_gate_reads_its_low_end() -> None:
+    found = ow.run(*league(1.5))
+    share = found["shifts"]["q2"]["share"]
+    assert share["low"] <= share["mean"] <= share["high"] and share["weeks"] > 0
+    # A share whose low end is under SHARE never passes, whatever its point estimate.
+    assert found["gate_by"]["q2"] == (
+        found["gate_holm"]["q2"]["passes"]
+        and found["against_q1"]["q2"]["log_loss"]["high"] < 0
+        and share["low"] >= ow.SHARE
+    )
