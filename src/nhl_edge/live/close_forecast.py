@@ -86,7 +86,7 @@ STARTS_FIRST = "starts before the forecast is published"
 # Version 2 (ADR 0056), registered on the day its code merged: density beside the split, on its
 # own size.
 VERSION_2 = "close_forecast/2"
-REGISTERED_ON_2 = date(2026, 11, 5)
+REGISTERED_ON_2 = date(2026, 11, 4)
 PREFIX_2 = "forecast/live-2"
 WEIGHTS_2 = blend_fit.REPORTS / "close-forecast-2-20261104-863eb1a.json"
 WEIGHTS_2_SHA256 = "65a5c95a9c87d61b80e41974721504698a785518afd57b655dbe4676266a057f"
