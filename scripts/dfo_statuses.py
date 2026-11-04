@@ -20,8 +20,8 @@ groups), absent (not on the page).
 MIN_WEEKS weeks: by group, the share who dressed, our mean p_available and its gap; the value
 (primary), the paired log loss of whether each matched candidate dressed under a Daily
 Faceoff-informed probability less our p_available, the informed one being p_available but for the
-out and dtd groups' dressed share in the other weeks, both clipped to [CLIP, 1 - CLIP]; and the same
-on #120's early exits.
+out and dtd groups' dressed share in the earlier weeks (Codex on #394: the rule's leave one week
+out read later weeks), both clipped to [CLIP, 1 - CLIP]; and the same on #120's early exits.
 
 **The rule:** reliable for a lineup ADR when the out group's dressed share has its interval's upper
 end below OUT_CEILING and the value's interval is below 0.
@@ -236,12 +236,15 @@ def log_loss(p: pl.Expr, y: pl.Expr) -> pl.Expr:
 
 def informed(rows: pl.DataFrame) -> pl.DataFrame:
     """rows with p_informed: p_available, but for the out and dtd groups their dressed share in
-    the other weeks (leave one week out); a group with no other week keeps p_available."""
+    the earlier weeks, from the candidates whose boxscore (label_utc) was public before the week's
+    first as-of time (hard rule 1, Codex on #394); a group with no such history keeps
+    p_available, as every group does in the first week."""
     out = []
-    for (week,), part in rows.group_by("week", maintain_order=True):
-        others = rows.filter(pl.col("week") != week)
+    for (week,), part in rows.sort("week").group_by("week", maintain_order=True):
+        start = part["as_of_utc"].min()
+        known = rows.filter(pl.col("week") < week, pl.col("label_utc") < start)
         shares = dict(
-            others.filter(pl.col("dfo_group").is_in(INFORMED))
+            known.filter(pl.col("dfo_group").is_in(INFORMED))
             .group_by("dfo_group")
             .agg(share=pl.col("dressed").mean())
             .iter_rows()
@@ -351,7 +354,8 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
         *_table(found["groups"]),
         "",
         "**The value (primary):** paired log loss of whether he dressed, Daily Faceoff-informed "
-        "less our p_available, on the matched candidates (negative favours Daily Faceoff): "
+        "(each week's out and dtd shares from the earlier weeks only) less our p_available, on "
+        "the matched candidates (negative favours Daily Faceoff): "
         f"{_cell(found['value'], 1000)} thousandths.",
         "",
         "## #120's early exits",

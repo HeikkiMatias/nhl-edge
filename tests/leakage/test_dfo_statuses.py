@@ -63,21 +63,32 @@ def test_a_jersey_comes_from_a_boxscore_public_before_the_as_of_time() -> None:
     assert ds.jerseys(actual, cands)["jersey"].to_list() == [22]
 
 
-def test_the_informed_probability_never_reads_its_own_weeks_outcomes() -> None:
-    weeks = [date(2026, 10, 12), date(2026, 10, 19)]
+def test_the_informed_probability_reads_no_outcome_of_its_week_or_a_later_one() -> None:
+    weeks = [date(2026, 10, 12), date(2026, 10, 19), date(2026, 10, 26)]
+    as_of = [datetime.combine(w, datetime.min.time(), UTC) + timedelta(days=1) for w in weeks]
     rows = pl.DataFrame(
         {
             "season": [20262027] * 3,
-            "game_date": [weeks[0], weeks[1], weeks[1]],
-            "week": [weeks[0], weeks[1], weeks[1]],
+            "game_date": weeks,
+            "week": weeks,
+            "as_of_utc": as_of,
+            "label_utc": [a + timedelta(hours=20) for a in as_of],
             "dfo_group": ["out"] * 3,
             "dressed": [0.0, 1.0, 1.0],
             "p_available": [0.5] * 3,
         }
+    ).with_columns(pl.col("as_of_utc", "label_utc").cast(UTC_TYPE))
+
+    def second(frame: pl.DataFrame) -> list[float]:
+        return ds.informed(frame).filter(pl.col("week") == weeks[1])["p_informed"].to_list()
+
+    # Changing the second week's own outcome, or the third's, leaves its probability as it was.
+    own = rows.with_columns(dressed=pl.lit(0.0))
+    assert second(own) == second(rows) == [0.0]
+    # An earlier outcome whose boxscore was public only after the week began is not read.
+    late = rows.with_columns(
+        label_utc=pl.when(pl.col("week") == weeks[0])
+        .then(pl.lit(as_of[1] + timedelta(hours=1)).cast(UTC_TYPE))
+        .otherwise(pl.col("label_utc"))
     )
-    flipped = rows.with_columns(
-        dressed=pl.when(pl.col("week") == weeks[0]).then(1.0).otherwise(pl.col("dressed"))
-    )
-    first = ds.informed(rows).filter(pl.col("week") == weeks[0])["p_informed"]
-    # Changing week 1's own outcome leaves its informed probability as it was.
-    assert ds.informed(flipped).filter(pl.col("week") == weeks[0])["p_informed"].equals(first)
+    assert second(late) == [0.5]

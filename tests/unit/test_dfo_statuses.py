@@ -110,19 +110,22 @@ def test_a_candidate_is_matched_by_jersey_and_last_name_or_else_by_full_name() -
     assert found["how"].to_list() == ["jersey", "name", None, None]
 
 
-def test_the_informed_probability_reads_only_the_other_weeks() -> None:
+def test_the_informed_probability_reads_only_earlier_weeks() -> None:
     week = [date(2026, 10, 12), date(2026, 10, 19)]
+    as_of = [datetime(2026, 10, 13, 14, tzinfo=UTC), datetime(2026, 10, 20, 14, tzinfo=UTC)]
     rows = pl.DataFrame(
         {
             "season": [20262027] * 4,
             "game_date": [week[0], week[0], week[1], week[1]],
             "week": [week[0], week[0], week[1], week[1]],
+            "as_of_utc": [as_of[0], as_of[0], as_of[1], as_of[1]],
+            "label_utc": [a + timedelta(days=1) for a in (as_of[0], as_of[0], as_of[1], as_of[1])],
             "dfo_group": ["out", "lines", "out", "lines"],
             "dressed": [0.0, 1.0, 1.0, 1.0],
             "p_available": [0.6, 0.9, 0.6, 0.9],
         }
-    )
+    ).with_columns(pl.col("as_of_utc", "label_utc").cast(UTC_TYPE))
     found = ds.informed(rows).sort("game_date", "dfo_group")
-    # The first week's out player takes the second week's out share, 1.0, clipped in the loss;
-    # the second week's takes the first's, 0.0. Players in the lines keep p_available.
-    assert found["p_informed"].to_list() == pytest.approx([0.9, 1.0, 0.9, 0.0])
+    # The first week has no history: everyone keeps p_available. The second week's out player
+    # takes the first week's out share, 0.0. Players in the lines keep p_available.
+    assert found["p_informed"].to_list() == pytest.approx([0.9, 0.6, 0.9, 0.0])
