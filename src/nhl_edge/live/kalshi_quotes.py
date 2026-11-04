@@ -23,7 +23,8 @@ the first day it reads; the readings are design evidence for the ADR that comes 
 
 **Quotes.** At each step (a top of book of either team's market, or a fair value's update), each
 team's Yes market gets a post-only bid of SIZE contracts at the fair value less the half-spread h,
-rounded down to the cent, and at least a cent below the market's best ask; none below a cent. Both
+rounded down to the cent (the fair value first rounded to FAIR_PLACES decimals from ROUNDED_FROM,
+#376), and at least a cent below the market's best ask; none below a cent. Both
 teams' Yes bought is the two-sided quote: exactly one team wins on the full game (hard rule 2). A
 bid is replaced when its price would move by a cent or more, and after it fills.
 - **Limits:** a team's bid is sized so that our contracts on it, less those on the other team,
@@ -122,6 +123,11 @@ FAR_BOOK_AGE = timedelta(minutes=35)
 MARKOUTS = (timedelta(minutes=5), timedelta(minutes=30))
 STARTER, MOVE = "starter", "move"
 CENT = Decimal("0.01")
+# #376, the owner's go-ahead of 2026-11-04: a float fair value just below a cent floored a cent
+# too low. From ROUNDED_FROM's games on, the fair value is rounded to FAIR_PLACES decimals
+# first. Earlier days keep the floor they were kept with, so a replay gives the record's figures.
+ROUNDED_FROM = date(2026, 11, 5)
+FAIR_PLACES = 10
 # The hold rules after a MOVE pull (#385), fixed on HOLDS_FIXED before any figure under them was
 # read. WAIT is the simulator's own rule.
 WAIT, COOL, RETURN, TRUST = "wait", "cool", "return", "trust"
@@ -573,8 +579,14 @@ def _rested(state: VariantDay, game: Game, key: tuple[int, str], at: datetime) -
     state.late_s += max(0.0, (at - max(since, late_from)).total_seconds())
 
 
-def _quote_price(fair: float, h: Decimal, best_ask: Decimal | None) -> Decimal | None:
-    price = (Decimal(str(fair)) - h).quantize(CENT, rounding=ROUND_FLOOR)
+def _quote_price(
+    fair: float, h: Decimal, best_ask: Decimal | None, rounded: bool = True
+) -> Decimal | None:
+    """The bid: the fair value less h, floored to the cent, a cent below the best ask, none
+    below a cent. Rounded, the fair value is first rounded to FAIR_PLACES decimals, so a float
+    just below a cent (1 - 0.55 is 0.44999999999999996) floors to that cent (#376)."""
+    value = Decimal(str(round(fair, FAIR_PLACES) if rounded else fair))
+    price = (value - h).quantize(CENT, rounding=ROUND_FLOOR)
     if best_ask is not None:
         price = min(price, best_ask - CENT)
     return price if price >= CENT else None
@@ -641,7 +653,7 @@ def step_game(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules
         if top is None:
             state.bids.pop(key, None)
             continue
-        price = _quote_price(fair[0], state.h, top[2])
+        price = _quote_price(fair[0], state.h, top[2], game.game_date >= ROUNDED_FROM)
         bought = state.bought.get(key, Decimal(0))
         net = bought - state.bought.get((game.game_id, game.other(team)), Decimal(0))
         # A partial fill can leave less than SIZE to the cap: the bid is only what is left.

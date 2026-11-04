@@ -43,6 +43,11 @@ def test_a_quote_is_the_fair_value_less_the_half_spread_below_the_best_ask() -> 
     assert kq._quote_price(0.556, Decimal("0.04"), None) == Decimal("0.51")
     assert kq._quote_price(0.02, Decimal("0.02"), None) is None
     assert kq._quote_price(0.03, Decimal("0.02"), None) == cent
+    # #376: the away side of 0.55 is 0.44999999999999996 in floats. Rounded first, it quotes
+    # its cent at a cent's half-spread; floored as before ROUNDED_FROM, a cent lower.
+    assert kq._quote_price(1 - 0.55, cent, None) == Decimal("0.44")
+    assert kq._quote_price(1 - 0.55, cent, None, rounded=False) == Decimal("0.43")
+    assert kq._quote_price(0.4449999, cent, None) == Decimal("0.43")
 
 
 def test_the_model_quotes_fill_by_the_queue_and_pay_the_maker_fee() -> None:
@@ -476,3 +481,14 @@ def test_a_bid_filled_in_full_counts_as_quoted_only_until_its_fill(
     whole = (qf.START - kq.STOP_BEFORE - qf.at(0)).total_seconds() / 60
     assert trust["fills"] == 1
     assert trust["quoted_minutes"] == pytest.approx(whole + 10.5, abs=1e-3)
+
+
+def test_a_game_from_the_rounding_fix_quotes_the_away_side_at_its_cent() -> None:
+    # The away fair value of a 0.55 home blend: before ROUNDED_FROM the bid is 0.43 and misses
+    # the trade at 0.44; from it, the bid is 0.44 and fills.
+    trades = qf.trades([(10, qf.AWAY, 0.44, 20.0)])
+    before = of(day(trades=trades), "model-1c").filter(pl.col("team") == qf.AWAY)
+    assert before.is_empty()
+    dated = qf.ledger().with_columns(game_date=pl.lit(kq.ROUNDED_FROM))
+    after = of(day(trades=trades, ledger=dated), "model-1c").filter(pl.col("team") == qf.AWAY)
+    assert after["price"].to_list() == [0.44]

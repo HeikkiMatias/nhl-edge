@@ -271,3 +271,15 @@ def test_no_day_that_led_to_the_hold_rules_is_scored() -> None:
         kq.HOLDS_FIRST_DAY,
         kq.HOLDS_FIRST_DAY + timedelta(days=1),
     ]
+
+
+def test_the_rounding_fix_never_changes_a_day_kept_before_it() -> None:
+    # #376 counts from a stated game date after its go-ahead (2026-11-04), so every kept day
+    # before it replays with the floor it was kept with.
+    assert date(2026, 11, 5) == kq.ROUNDED_FROM and kq.FAIR_PLACES == 10
+    trades = qf.trades([(10, qf.AWAY, 0.44, 20.0), (10, qf.HOME, 0.51, 20.0)])
+    kept = day(trades=trades)
+    assert qf.DAY < kq.ROUNDED_FROM
+    # At a cent's half-spread the old floor bids 0.43 for the away side, below the trade at 0.44.
+    away = kept.fills.filter(pl.col("team") == qf.AWAY, pl.col("variant") == "model-1c")
+    assert away.is_empty()
