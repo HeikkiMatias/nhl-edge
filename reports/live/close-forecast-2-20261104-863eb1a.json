@@ -1,0 +1,58 @@
+{
+  "adr": "0056",
+  "component": "close-forecast-2",
+  "density": [
+    "dense3_diff",
+    "dense6_diff",
+    "mismatch",
+    "home_return",
+    "away_trip"
+  ],
+  "games": 6896,
+  "inputs": [
+    "1",
+    "o",
+    "five_diff",
+    "special_diff",
+    "finishing_diff",
+    "goalie_diff",
+    "dense3_diff",
+    "dense6_diff",
+    "mismatch",
+    "home_return",
+    "away_trip"
+  ],
+  "seasons": [
+    20122013,
+    20132014,
+    20142015,
+    20152016,
+    20162017,
+    20172018
+  ],
+  "source": "scripts/close_forecast_density_history.py",
+  "split": [
+    "a",
+    "b_o",
+    "five_diff",
+    "special_diff",
+    "finishing_diff",
+    "goalie_diff"
+  ],
+  "target": "SBR's move from the opener to the close, home log-odds",
+  "train_cutoff": "2018-04-09T10:00:00+00:00",
+  "version": "close-forecast-2-20261104-863eb1a",
+  "weights": {
+    "a": 0.018031682174743376,
+    "away_trip": 0.0020091226676588214,
+    "b_o": -0.1681074285648066,
+    "dense3_diff": -0.01364163729007611,
+    "dense6_diff": -0.0014284210768071288,
+    "finishing_diff": 0.12311161507130847,
+    "five_diff": 0.36058300319678843,
+    "goalie_diff": 0.08077727313577437,
+    "home_return": -0.0005886114666353923,
+    "mismatch": 0.0662317034715439,
+    "special_diff": 0.20469073989680067
+  }
+}
