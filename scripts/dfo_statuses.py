@@ -169,7 +169,15 @@ def matched(cands: pl.DataFrame, groups: pl.DataFrame) -> pl.DataFrame:
             by_jersey.select(*keys, "dfo_player_id", "dfo_group", how=pl.lit("jersey")),
             by_name.select(*keys, "dfo_player_id", "dfo_group", how=pl.lit("name")),
         ]
-    ).unique(subset=keys, keep="first")
+    )
+    # A player Daily Faceoff lists under two ids can match twice: the first group that applies
+    # wins, then the lower id, so the match never depends on a join's order.
+    rank = pl.col("dfo_group").replace_strict(
+        {g: i for i, g in enumerate(GROUPS)}, return_dtype=pl.Int8
+    )
+    found = found.sort([*keys, rank, "dfo_player_id"]).unique(  # type: ignore[list-item]
+        subset=keys, keep="first", maintain_order=True
+    )
     return cands.join(found, on=keys, how="left").with_columns(
         dfo_group=pl.col("dfo_group").fill_null(ABSENT)
     )

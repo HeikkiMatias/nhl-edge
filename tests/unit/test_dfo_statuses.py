@@ -110,6 +110,26 @@ def test_a_candidate_is_matched_by_jersey_and_last_name_or_else_by_full_name() -
     assert found["how"].to_list() == ["jersey", "name", None, None]
 
 
+def test_a_candidate_matched_twice_takes_the_first_group_that_applies() -> None:
+    # Daily Faceoff lists one player under two ids, once in the lines and once out.
+    rows = [(1, "Joel Eriksson Ek", 14, "f2", None), (2, "Joel Eriksson Ek", 14, "ir", "out")]
+    cands = pl.DataFrame(
+        {
+            "game_id": [1],
+            "game_date": [D],
+            "team": ["BOS"],
+            "player_id": [10],
+            "jersey": [14],
+            "full": ["joel eriksson ek"],
+        },
+        schema_overrides={"jersey": pl.Int16},
+    ).with_columns(last=ds.last_name(pl.col("full")))
+    for order in (rows, rows[::-1]):
+        groups = ds.page_groups(page(order, DECISION - timedelta(minutes=1)))
+        found = ds.matched(cands, groups)
+        assert found["dfo_group"].to_list() == ["out"] and found["dfo_player_id"].to_list() == [2]
+
+
 def test_the_informed_probability_reads_only_earlier_weeks() -> None:
     week = [date(2026, 10, 12), date(2026, 10, 19)]
     as_of = [datetime(2026, 10, 13, 14, tzinfo=UTC), datetime(2026, 10, 20, 14, tzinfo=UTC)]
