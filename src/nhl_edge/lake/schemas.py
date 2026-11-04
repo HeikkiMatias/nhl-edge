@@ -624,7 +624,13 @@ class CloseForecasts(pa.DataFrameModel):
     (lam_week, lam_games). Every input is the morning view's (morning_version), known before its
     snapshot (morning_snapshot_utc); prediction_utc is the morning run's instant and
     published_utc the forecast's write. Each date is written once to R2
-    (forecast/live/<date>.parquet), and every forecast is published before its game's start."""
+    (forecast/live/<date>.parquet), and every forecast is published before its game's start.
+
+    Version 2 (forecast_version close_forecast/2, ADR 0056) adds #370's five schedule density
+    columns at the morning cutoff, their move y_hat_density from its own frozen weights, and its
+    size lam_d beside lam, the split's: y_hat = lam * y_hat_hist + lam_d * y_hat_density. Its
+    days are written to forecast/live-2/<date>.parquet. A version 1 row leaves them null. One row
+    per game, date and version."""
 
     game_date: pl.Date
     season: pl.Int32
@@ -641,21 +647,32 @@ class CloseForecasts(pa.DataFrameModel):
     special_diff: pl.Float64 = pa.Field(nullable=True)
     finishing_diff: pl.Float64 = pa.Field(nullable=True)
     goalie_diff: pl.Float64 = pa.Field(nullable=True)
+    dense3_diff: pl.Float64 = pa.Field(nullable=True)
+    dense6_diff: pl.Float64 = pa.Field(nullable=True)
+    mismatch: pl.Float64 = pa.Field(isin=[-1.0, 0.0, 1.0], nullable=True)
+    home_return: pl.Float64 = pa.Field(ge=0, nullable=True)
+    away_trip: pl.Float64 = pa.Field(ge=0, nullable=True)
     y_hat_hist: pl.Float64 = pa.Field(nullable=True)
+    y_hat_density: pl.Float64 = pa.Field(nullable=True)
     lam: pl.Float64
+    lam_d: pl.Float64 = pa.Field(nullable=True)
     lam_week: pl.Date
     lam_games: pl.Int64 = pa.Field(ge=0)
     y_hat: pl.Float64 = pa.Field(nullable=True)
     p_close_hat: pl.Float64 = pa.Field(gt=0, lt=1, nullable=True)
     forecast_version: pl.String
-    weights_version: pl.String = pa.Field(str_matches=r"^close-forecast-\d{8}-")
+    weights_version: pl.String = pa.Field(str_matches=r"^close-forecast-(2-)?\d{8}-")
     morning_version: pl.String
     code_version: pl.String
 
     class Config(pa.DataFrameModel.Config):
         strict = True
         ordered = True
-        unique: str | list[str] | None = ["game_date", "game_id"]  # noqa: RUF012 (pandera config)
+        unique: str | list[str] | None = [  # noqa: RUF012 (pandera config)
+            "game_date",
+            "game_id",
+            "forecast_version",
+        ]
 
     @pa.dataframe_check
     def published_before_the_start(cls, data: pa.PolarsData) -> pl.LazyFrame:
@@ -688,7 +705,9 @@ class CloseForecasts(pa.DataFrameModel):
 
     @pa.dataframe_check
     def one_forecast_a_day(cls, data: pa.PolarsData) -> pl.LazyFrame:
-        return data.lazyframe.select(pl.col("published_utc").n_unique().over("game_date") == 1)
+        # Each version publishes its day once, at its own time (ADR 0056).
+        one = pl.col("published_utc").n_unique().over("game_date", "forecast_version") == 1
+        return data.lazyframe.select(one)
 
 
 class PaperSettlements(pa.DataFrameModel):

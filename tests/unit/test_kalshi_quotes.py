@@ -10,6 +10,7 @@ import polars as pl
 import pytest
 import quotes_fixtures as qf
 
+from nhl_edge.live import close_forecast as cf
 from nhl_edge.live import kalshi_quotes as kq
 from nhl_edge.live import kalshi_shadow as ks
 from nhl_edge.live.real import DEMO_EXCHANGE
@@ -107,7 +108,9 @@ def test_pinnacle_and_anchored_quote_from_their_own_fair_values() -> None:
     assert price is not None and anchored["price"].to_list() == [float(price)]
 
 
-def forecasts(p_close_hat: float = 0.53, day: date = qf.DAY) -> pl.DataFrame:
+def forecasts(
+    p_close_hat: float = 0.53, day: date = qf.DAY, version: str = cf.VERSION
+) -> pl.DataFrame:
     """The day's close forecast for the game (ADR 0054), published before the first top."""
     return pl.DataFrame(
         {
@@ -116,6 +119,7 @@ def forecasts(p_close_hat: float = 0.53, day: date = qf.DAY) -> pl.DataFrame:
             "status": ["predicted"],
             "p_close_hat": [p_close_hat],
             "published_utc": [qf.PUBLISHED - timedelta(minutes=5)],
+            "forecast_version": [version],
         }
     ).with_columns(pl.col("published_utc").cast(qf.UTC_TYPE))
 
@@ -133,6 +137,26 @@ def test_the_forecast_quotes_from_its_published_close_forecast(
     monkeypatch.setattr(kq, "FORECAST_FIRST_DAY", qf.DAY + timedelta(days=1))
     assert of(day(forecasts=forecasts()), "forecast-2c").is_empty()
     assert result.counts["forecast-2c"]["posted"] > 0
+
+
+def test_each_close_forecast_fair_value_reads_its_own_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(kq, "FORECAST_FIRST_DAY", qf.DAY)
+    monkeypatch.setattr(kq, "FORECAST2_FIRST_DAY", qf.DAY)
+    both = pl.concat([forecasts(0.53), forecasts(0.57, version=cf.VERSION_2)])
+    result = day(forecasts=both)
+    first = of(result, "forecast-2c").filter(pl.col("team") == qf.HOME)
+    second = of(result, "forecast2-2c").filter(pl.col("team") == qf.HOME)
+    assert first["fair_at_post"].to_list()[0] == pytest.approx(0.53)
+    assert second["fair_at_post"].to_list()[0] == pytest.approx(0.57)
+    # Version 2's rows leave version 1's arm as it was alone (ADR 0056).
+    assert first.equals(
+        of(day(forecasts=forecasts(0.53)), "forecast-2c").filter(pl.col("team") == qf.HOME)
+    )
+    # Before its first day, version 2's arm quotes nothing.
+    monkeypatch.setattr(kq, "FORECAST2_FIRST_DAY", qf.DAY + timedelta(days=1))
+    assert of(day(forecasts=both), "forecast2-2c").is_empty()
 
 
 def test_a_team_is_quoted_only_to_the_net_cap() -> None:
@@ -313,7 +337,7 @@ def test_the_summary_and_the_log_line(tmp_path: object) -> None:
     line = kq.count_line(metas, 1)
     assert (
         line == "kalshi quotes: 1 days computed now, 1 kept (1 with watch logs), 6 fills over "
-        "12 variants"
+        "15 variants"
     )
     assert kq.due(qf.DAY + timedelta(days=2), kq.stored_days(store)) == [
         d for d in kq.due(qf.DAY + timedelta(days=2), []) if d != qf.DAY

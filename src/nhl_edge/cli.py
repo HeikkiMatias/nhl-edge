@@ -3406,7 +3406,10 @@ def live_forecast(
     from the morning view's Pinnacle pair and B3's split in its bundle, with the frozen weights and
     the week's size. It runs after the morning view, and writes the day once (forecast/live/
     <date>.parquet) and to the lake's close_forecasts; the week's size is fitted and kept once, by
-    the week's first forecast. No bet or order reads it. The log shows counts only."""
+    the week's first forecast. Version 2 (ADR 0056), from its registration, adds schedule density
+    from the season's games known at the morning cutoff, on its own size, and is written to
+    forecast/live-2/<date>.parquet after version 1, which its failure never stops. No bet or
+    order reads either. The log shows counts only."""
     from datetime import UTC
     from zoneinfo import ZoneInfo
 
@@ -3433,16 +3436,29 @@ def live_forecast(
         records: lb.Store = lb.R2Store(lake.objects, lake.bucket)
     else:
         records = lb.LocalStore(out)
+
+    def games() -> pl.DataFrame:
+        if r2:
+            lake.pull("games")
+        return lake.read("games")
+
     if check:
         synced = cf.sync(records)
         if r2 and synced.height:
             lake.replace_dates("close_forecasts", synced, synced["game_date"].unique().to_list())
-        days = cf.stored_days(records)[-recent:] if recent > 0 else []
-        problems = [problem for each in days for problem in cf.check(records, each)]
+        problems, replayed = [], 0
+        for spec in cf.VERSIONS:
+            days = cf.stored_days(records, spec)[-recent:] if recent > 0 else []
+            replayed += len(days)
+            problems += [
+                f"{spec.version} {problem}"
+                for each in days
+                for problem in cf.check(records, each, spec, games)
+            ]
         for problem in problems:
             typer.echo(problem, err=True)
         typer.echo(
-            f"{synced['game_date'].n_unique()} forecast days in the lake; {len(days)} replayed, "
+            f"{synced['game_date'].n_unique()} forecast days in the lake; {replayed} replayed, "
             f"{len(problems)} problems"
         )
         if problems:
@@ -3473,34 +3489,50 @@ def live_forecast(
         raise typer.Exit(code=1)
     morning = lm.stored(records, game_date)
     try:
-        found = cf.parts(lb.read(records, game_date, lm.BUNDLES))
+        bundle = lb.read(records, game_date, lm.BUNDLES)
     except Exception as exc:
         typer.echo(f"{game_date}: the morning bundle can't be read ({exc})", err=True)
         raise typer.Exit(code=1) from None
-    w = cf.weights()
 
     def odds() -> pl.DataFrame:
         if r2:
             lake.pull("odds_snapshots")
         return lake.read("odds_snapshots")
 
-    fit = cf.week_fit(
-        records,
-        cf.week_of(game_date),
-        lambda: cf.sync(records),
-        lambda: lm.sync(records),
-        odds,
-        w.version,
-    )
-    rows = cf.forecast(morning, found, w, fit, datetime.now(UTC), code_version)
-    try:
-        where = cf.write_once(records, game_date, rows)
-    except Exception as exc:
-        typer.echo(f"the {game_date} forecast was not written ({exc}): never rewritten", err=True)
-        raise typer.Exit(code=1) from None
-    if r2:
-        lake.replace_dates("close_forecasts", rows, [game_date])
-    typer.echo(f"{where}: {cf.counts(rows)}; the week's size on {fit.rows.height} games")
+    failed = False
+    for spec in cf.registered(game_date):
+        try:
+            found = cf.inputs(bundle, spec, games)
+            w = cf.weights(spec)
+            fit = cf.week_fit(
+                records,
+                cf.week_of(game_date),
+                lambda: cf.sync(records),
+                lambda: lm.sync(records),
+                odds,
+                w.version,
+                spec,
+            )
+            rows = cf.forecast(morning, found, w, fit, datetime.now(UTC), code_version, spec)
+            where = cf.write_once(records, game_date, rows, spec)
+        except Exception as exc:
+            typer.echo(
+                f"{spec.version}: the {game_date} forecast was not written ({exc}): never "
+                "rewritten",
+                err=True,
+            )
+            failed = True
+            continue
+        typer.echo(f"{where}: {cf.counts(rows)}; the week's size on {fit.rows.height} games")
+    kept = [
+        cf.stored(records, game_date, spec)
+        for spec in cf.VERSIONS
+        if game_date in cf.stored_days(records, spec)
+    ]
+    if r2 and kept:
+        lake.replace_dates("close_forecasts", pl.concat(kept), [game_date])
+    if failed:
+        raise typer.Exit(code=1)
 
 
 @live_app.command("replay")

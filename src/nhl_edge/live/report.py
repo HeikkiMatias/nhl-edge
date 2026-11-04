@@ -1197,6 +1197,128 @@ def close_forecast_view(
     }
 
 
+# Version 2 of the close forecaster (ADR 0056), paired with version 1 on the same games, and the
+# forecasters' family at the formal review: two tests under Holm's step-down (ADR 0048's method).
+FORECASTERS_FAMILY = ("close_forecast/1 against no move", "close_forecast/2 against version 1")
+
+
+def close_forecast_2_view(
+    forecasts: pl.DataFrame,
+    morning: pl.DataFrame,
+    rows: pl.DataFrame,
+    games: pl.DataFrame,
+    odds: pl.DataFrame,
+    as_of: date,
+    now: datetime,
+    formal: bool = False,
+) -> dict[str, Any]:
+    """Version 2 of the close forecaster (ADR 0056) over its stored regular-season days after its
+    registration up to as_of, with no verdict before the formal review. Its primary measure, per
+    game both versions forecast: version 2's squared error on Pinnacle's move from the morning
+    snapshot to its closing proxy less version 1's, in thousandths of squared log-odds (negative
+    favours version 2), with its p-value at the formal review. Beside it: each version against no
+    move on the same games, all three on the rested games, each week's two sizes, version 2's
+    slope of the move on its forecast move, and its shadow takes at 07:05 (_forecast_takes),
+    valued at the close and at settlement. A game day of the ledger without its forecast is
+    listed, never withheld."""
+    keys = ["game_date", "game_id"]
+    counted_days = (pl.col("game_date") > cf.REGISTERED_ON_2) & (pl.col("game_date") <= as_of)
+    regular = (pl.col("game_id") // 10_000 % 100) == REGULAR_SEASON
+    stored = forecasts.filter(pl.col("forecast_version") == cf.VERSION_2, regular, counted_days)
+    first = forecasts.filter(pl.col("forecast_version") == cf.VERSION, regular, counted_days)
+    days = set(stored["game_date"].to_list())
+    game_days = sorted(set(rows.filter(counted_days)["game_date"].to_list()))
+    weeks_seen = (
+        stored.select("lam_week", "lam", "lam_d", "lam_games").unique().sort("lam_week").iter_rows()
+    )
+    section: dict[str, Any] = {
+        "version": cf.VERSION_2,
+        "registered_on": cf.REGISTERED_ON_2.isoformat(),
+        "days": len(days),
+        "games": stored.height,
+        "predicted": stored.filter(pl.col("status") == cf.PREDICTED).height,
+        "not_predicted": _counts(stored.filter(pl.col("status") != cf.PREDICTED), "status"),
+        "missing_days": [d.isoformat() for d in game_days if d not in days],
+        "weeks": [
+            {"week": week.isoformat(), "lam": lam, "lam_d": lam_d, "games": n}
+            for week, lam, lam_d, n in weeks_seen
+        ],
+    }
+    started = scoreable(stored, games).filter(pl.col("start_utc") <= now)
+    priced = started.select(
+        *keys, "season", "start_utc", "home", "away", "y_hat", "p_close_hat", "published_utc"
+    ).join(
+        morning.select(
+            *keys,
+            "event_id",
+            "home_price",
+            "away_price",
+            "p_b3",
+            "p_blend",
+            "u_sd",
+            "prediction_utc",
+            "last_update_utc",
+            decision_snapshot_utc="morning_snapshot_utc",
+        ),
+        on=keys,
+    )
+    moves = movement.table(priced, ls.closes(odds, now))
+    with_v1 = scoreable(first, games).select(*keys, y_hat_1="y_hat")
+    valid = (
+        _rested(
+            moves.filter(pl.col("move").is_not_null())
+            .join(priced.select(*keys, "home", "away", "y_hat"), on=keys)
+            .join(with_v1, on=keys),
+            games,
+        )
+        .with_columns(
+            # In thousandths of squared log-odds, as the yardstick's (ADR 0053).
+            s_2=1000 * ((pl.col("move") - pl.col("y_hat")) ** 2 - pl.col("move") ** 2),
+            s_1=1000 * ((pl.col("move") - pl.col("y_hat_1")) ** 2 - pl.col("move") ** 2),
+        )
+        .with_columns(difference=pl.col("s_2") - pl.col("s_1"))
+    )
+    primary = estimate(valid, "difference")
+    if formal and "mean" in primary:
+        primary["p_value"] = p_value(valid, "difference")
+    rested = valid.filter(pl.col("rested"))
+    takes = _forecast_takes(priced, odds, outcomes(games))
+    valued = shadow.valued(takes, moves)
+    settled = takes.filter(pl.col("ret").is_not_null())
+    return section | {
+        "primary": primary,
+        "closes": valid.height,
+        "against_no_move": {
+            "version 1": estimate(valid, "s_1"),
+            "version 2": estimate(valid, "s_2"),
+        },
+        "rested": {
+            "difference": estimate(rested, "difference"),
+            "version 1": estimate(rested, "s_1"),
+            "version 2": estimate(rested, "s_2"),
+        },
+        "size": _toward(valid, "y_hat"),
+        "takes": {
+            "sides": takes.height,
+            "with_close": valued.height,
+            "clv_per_take": estimate(valued, "clv"),
+            "settled": settled.height,
+            "return_per_take": estimate(settled, "ret"),
+        },
+    }
+
+
+def forecasters_review(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    """The forecasters' family at the formal review (ADR 0056): version 1 against no move and
+    version 2 against version 1, each on its primary measure's p-value, under Holm's step-down; a
+    measure without its p-value counts with p = 1."""
+    family = {
+        FORECASTERS_FAMILY[0]: first["primary"].get("p_value", 1.0),
+        FORECASTERS_FAMILY[1]: second["primary"].get("p_value", 1.0),
+    }
+    return holm(family, REVIEW_ALPHA)
+
+
 def real_stakes(
     bets: pl.DataFrame,
     season_bets: pl.DataFrame,
@@ -1330,6 +1452,28 @@ def report(
     incomplete = {
         name: cover[name] for name in ("awaiting_settlement", "awaiting_result") if cover[name]
     }
+    first_forecaster = close_forecast_view(
+        forecasts if forecasts is not None else cf.empty(),
+        morning if morning is not None else lm.empty(),
+        rows,
+        games,
+        odds,
+        as_of,
+        now,
+        formal,
+    )
+    second_forecaster = close_forecast_2_view(
+        forecasts if forecasts is not None else cf.empty(),
+        morning if morning is not None else lm.empty(),
+        rows,
+        games,
+        odds,
+        as_of,
+        now,
+        formal,
+    )
+    if formal:
+        second_forecaster["review"] = forecasters_review(first_forecaster, second_forecaster)
     result: dict[str, Any] = {
         "as_of": as_of.isoformat(),
         "policy_version": policy,
@@ -1384,16 +1528,8 @@ def report(
             now,
             formal,
         ),
-        "close_forecast": close_forecast_view(
-            forecasts if forecasts is not None else cf.empty(),
-            morning if morning is not None else lm.empty(),
-            rows,
-            games,
-            odds,
-            as_of,
-            now,
-            formal,
-        ),
+        "close_forecast": first_forecaster,
+        "close_forecast_2": second_forecaster,
         "verdicts": {
             "closing_value": INTERIM
             if not formal
@@ -1724,6 +1860,8 @@ def markdown(result: dict[str, Any]) -> str:
         lines += _morning_lines(result["morning_view"])
     if "close_forecast" in result:
         lines += _forecast_lines(result["close_forecast"])
+    if "close_forecast_2" in result:
+        lines += _forecast_2_lines(result["close_forecast_2"])
     if "returns" in result:
         ret = result["returns"]
         lines += [
@@ -2108,6 +2246,76 @@ def _forecast_lines(section: dict[str, Any]) -> list[str]:
         f"{_fmt(takes['clv_per_take'], 'takes')}; settled {takes['settled']}, return per take "
         f"{_fmt(takes['return_per_take'], 'takes')}",
     ]
+    return lines
+
+
+def _forecast_2_lines(section: dict[str, Any]) -> list[str]:
+    """Version 2 of the close forecaster (ADR 0056) as markdown lines, with the forecasters'
+    family at the formal review."""
+    lines = [
+        "",
+        "## The close forecaster, version 2 (ADR 0056)",
+        "",
+        f"Version {section['version']}, registered {section['registered_on']}: version 1 with "
+        "schedule density beside B3's split, on its own size, with no bet and no verdict before "
+        "the formal review. Its primary measure is its squared error on the move to the close "
+        "less version 1's, in thousandths of squared log-odds: below 0 favours version 2.",
+        "",
+    ]
+    if not section["games"] and not section["missing_days"]:
+        return [*lines, "No game day after its registration yet."]
+    not_predicted = ", ".join(f"{reason} {n}" for reason, n in section["not_predicted"].items())
+    lines.append(
+        f"- Days: {section['days']}, {section['games']} games, {section['predicted']} forecast"
+        + (f"; not forecast: {not_predicted}" if not_predicted else "")
+        + "."
+    )
+    if section["missing_days"]:
+        lines.append(
+            f"- Without a stored forecast: {len(section['missing_days'])} game days "
+            f"({', '.join(section['missing_days'])})."
+        )
+    if section["weeks"]:
+        lines.append(
+            "- The week's sizes, the split's and density's: "
+            + "; ".join(
+                f"{w['week']} {w['lam']:.3f} and {w['lam_d']:.3f} on {w['games']} games"
+                for w in section["weeks"]
+            )
+            + "."
+        )
+    primary = section["primary"]
+    size = section["size"]
+    takes = section["takes"]
+    rested = section["rested"]
+    lines += [
+        f"- **Version 2 less version 1 (primary):** {_fmt(primary)}"
+        + (f", p = {primary['p_value']:.4f}" if "p_value" in primary else ""),
+        f"- Against no move on the same games: version 1 "
+        f"{_fmt(section['against_no_move']['version 1'])}; version 2 "
+        f"{_fmt(section['against_no_move']['version 2'])}",
+        f"- On the rested games: version 2 less version 1 {_fmt(rested['difference'])}; "
+        f"version 1 {_fmt(rested['version 1'])}; version 2 {_fmt(rested['version 2'])}",
+        f"- Games with a close: {section['closes']}. The slope of the move on version 2's "
+        f"forecast move (1 when its size is right): {_fmt(size['slope'])}",
+        f"- Shadow takes at 07:05 (expected return above 0 at the best price, one unit each): "
+        f"{takes['sides']}; with a close {takes['with_close']}, CLV per take "
+        f"{_fmt(takes['clv_per_take'], 'takes')}; settled {takes['settled']}, return per take "
+        f"{_fmt(takes['return_per_take'], 'takes')}",
+    ]
+    review = section.get("review")
+    if review is not None:
+        lines += [
+            "",
+            f"**The forecasters' review (ADR 0056):** Holm's step-down over the two tests at "
+            f"family-wise {REVIEW_ALPHA:.0%}.",
+            "",
+            *(
+                f"- {name}: p = {r['p_value']:.4f}, threshold {r['threshold']:.4f}, "
+                + ("passes" if r["passes"] else "does not pass")
+                for name, r in review.items()
+            ),
+        ]
     return lines
 
 

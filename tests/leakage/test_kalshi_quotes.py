@@ -54,6 +54,7 @@ def test_a_close_forecast_is_known_only_after_its_publication() -> None:
             "status": ["predicted"],
             "p_close_hat": [0.53],
             "published_utc": [qf.PUBLISHED],
+            "forecast_version": [cf.VERSION],
         }
     ).with_columns(pl.col("published_utc").cast(qf.UTC_TYPE))
     inputs = kq.inputs_of(
@@ -70,8 +71,39 @@ def test_a_close_forecast_is_known_only_after_its_publication() -> None:
     assert kq.fair_at(kq.FORECAST, game, qf.HOME, qf.PUBLISHED, inputs) is None
     after = qf.PUBLISHED + timedelta(microseconds=1)
     assert kq.fair_at(kq.FORECAST, game, qf.HOME, after, inputs) == (0.53, qf.PUBLISHED, None)
-    # Its first day comes after its registration (ADR 0054): no day it reads informed it.
+    # Its first day comes after its registration (ADR 0054): no day it reads informed it. So
+    # does version 2's (ADR 0056).
     assert kq.FORECAST_FIRST_DAY > cf.REGISTERED_ON
+    assert kq.FORECAST2_FIRST_DAY > cf.REGISTERED_ON_2
+
+
+def test_version_2s_close_forecast_is_known_only_after_its_publication() -> None:
+    forecast = pl.DataFrame(
+        {
+            "game_date": [kq.FORECAST2_FIRST_DAY],
+            "game_id": [qf.GAME],
+            "status": ["predicted"],
+            "p_close_hat": [0.57],
+            "published_utc": [qf.PUBLISHED],
+            "forecast_version": [cf.VERSION_2],
+        }
+    ).with_columns(pl.col("published_utc").cast(qf.UTC_TYPE))
+    inputs = kq.inputs_of(
+        qf.ledger(),
+        qf.morning(),
+        qf.odds(),
+        qf.depth(),
+        qf.trades(),
+        qf.tops(),
+        qf.dailyfaceoff(),
+        forecast,
+    )
+    (game,) = inputs.games
+    assert kq.fair_at(kq.FORECAST2, game, qf.HOME, qf.PUBLISHED, inputs) is None
+    after = qf.PUBLISHED + timedelta(microseconds=1)
+    assert kq.fair_at(kq.FORECAST2, game, qf.HOME, after, inputs) == (0.57, qf.PUBLISHED, None)
+    # Version 1's arm never reads version 2's row.
+    assert kq.fair_at(kq.FORECAST, game, qf.HOME, after, inputs) is None
 
 
 def test_a_later_decision_or_snapshot_never_changes_an_earlier_quote() -> None:
