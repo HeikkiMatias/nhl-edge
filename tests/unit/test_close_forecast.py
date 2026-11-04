@@ -9,6 +9,7 @@ from pathlib import Path
 
 import forecast_fixtures as fx
 import numpy as np
+import pandera.polars as pa
 import polars as pl
 import pytest
 from forecast_fixtures import DAY, PUBLISHED, found, morning
@@ -287,6 +288,20 @@ def test_each_version_is_written_once_under_its_own_prefix(tmp_path: Path) -> No
     assert cf.stored_days(store) == [DAY] and cf.stored_days(store, cf.V2) == [DAY]
     synced = cf.sync(store)
     assert synced.height == 6
+    # Each version publishes at its own time, as the morning run writes them one after the
+    # other (Codex on #392): the day validates, and still one publication per version.
+    later = cf.forecast(
+        morning(),
+        fx.with_density(found()),
+        cf.weights(cf.V2),
+        fit2(),
+        PUBLISHED + timedelta(seconds=3),
+        "v",
+        cf.V2,
+    )
+    CloseForecasts.validate(pl.concat([one, later]))
+    with pytest.raises(pa.errors.SchemaError, match="one_forecast_a_day"):
+        CloseForecasts.validate(pl.concat([one, later.head(2), two.tail(1)]))
     assert sorted(set(synced["forecast_version"].to_list())) == [cf.VERSION, cf.VERSION_2]
     # Each version's week is its own, read back with its sizes.
     kept = cf.kept_week(store, date(2026, 11, 2), cf.V2)

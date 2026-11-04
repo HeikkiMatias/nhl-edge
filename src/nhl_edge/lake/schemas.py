@@ -705,7 +705,9 @@ class CloseForecasts(pa.DataFrameModel):
 
     @pa.dataframe_check
     def one_forecast_a_day(cls, data: pa.PolarsData) -> pl.LazyFrame:
-        return data.lazyframe.select(pl.col("published_utc").n_unique().over("game_date") == 1)
+        # Each version publishes its day once, at its own time (ADR 0056).
+        one = pl.col("published_utc").n_unique().over("game_date", "forecast_version") == 1
+        return data.lazyframe.select(one)
 
 
 class PaperSettlements(pa.DataFrameModel):
