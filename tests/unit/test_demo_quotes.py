@@ -106,9 +106,10 @@ def test_both_teams_get_a_post_only_bid_a_cent_below_the_fair_value() -> None:
     step(state, fake)
     assert [o.ticker for o in fake.sent] == [HOME, AWAY]
     home, away = fake.sent
-    # The simulator's own price rule, a float fair value floored to the cent (#376 tracks it).
+    # The simulator's own price rule: before ROUNDED_FROM, a float fair value floored to the
+    # cent, so the away side of 0.55 (0.44999999999999996) quotes 0.43 (#376).
     assert home.price == Decimal("0.54")
-    assert away.price == kq._quote_price(1 - 0.55, dq.HALF_SPREAD, Decimal("0.46"))
+    assert away.price == Decimal("0.43")
     assert home.count == dq.SIZE and home.post_only
     assert home.expiration_time == START - dq.STOP_BEFORE
     assert home.client_order_id.startswith("q-20261104-2026020150-BOS-130000-")
@@ -403,3 +404,21 @@ def test_a_recovered_bid_whose_cancel_is_refused_keeps_what_still_rests() -> Non
     assert state.bought == {(GAME.game_id, "BOS"): Decimal(4)}
     (stuck,) = state.stuck
     assert stuck.left == Decimal(6) and state.resting_cost(DEMO_EXCHANGE) > Decimal(3)
+
+
+def test_from_the_rounding_fix_the_away_side_quotes_its_cent() -> None:
+    # #376: a game from ROUNDED_FROM rounds the fair value before the floor, as the simulator.
+    later = kq.ROUNDED_FROM
+    game = kq.Game(2026020160, 20262027, later, "BOS", "NYR", START + (later - DAY))
+    home, away = ticker(later, "NYR", "BOS", "BOS"), ticker(later, "NYR", "BOS", "NYR")
+    fake = Fake(tops={home: ("0.53", "0.56"), away: ("0.43", "0.46")})
+    state = dq.Day(later, "130000")
+    dq.step(
+        state,
+        [game],
+        AT + (later - DAY),
+        sources(published=PUBLISHED + (later - DAY)),
+        fake,
+        DEMO_EXCHANGE,
+    )
+    assert [o.price for o in fake.sent] == [Decimal("0.54"), Decimal("0.44")]

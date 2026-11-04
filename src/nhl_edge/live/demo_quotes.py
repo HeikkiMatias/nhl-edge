@@ -12,7 +12,8 @@ STOP_BEFORE), per game, in order:
    than it named before (STARTER), or when a team's mid moved PULL_MOVE or more since its bid's
    posting (MOVE). The game then waits for the fair value to update after the pull.
 3. **Quotes:** each team's Yes market gets a post-only bid of SIZE contracts at the fair value less
-   HALF_SPREAD, rounded down to the cent and at least a cent below the demo market's best ask; a
+   HALF_SPREAD, rounded down to the cent as the simulator's rule does (#376 from its ROUNDED_FROM)
+   and at least a cent below the demo market's best ask; a
    bid is replaced when its price or size would change. The size is what is left to NET_CAP of
    the team's net contracts, and no bid is posted past DAY_CAP of the day's filled and resting
    cost. A bid expires at its game's start less STOP_BEFORE on Kalshi's side too.
@@ -302,7 +303,9 @@ def step(
                 continue
             found = tops[key]
             assert found is not None
-            price = kq._quote_price(game.side(team, fair[0]), HALF_SPREAD, found[1])
+            price = kq._quote_price(
+                game.side(team, fair[0]), HALF_SPREAD, found[1], game.game_date >= kq.ROUNDED_FROM
+            )
             size = _size(day, game, team)
             bid = day.bids.get(key)
             if price is None or size <= 0:
