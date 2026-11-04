@@ -98,3 +98,6 @@ def test_the_family_and_its_rule_are_the_issues() -> None:
     assert tf.FAMILY == ("travel", "density", "early", "goalie_presumed", "lineup_change")
     assert tf.EARLY == 20 and tf.ALPHA == 0.05
     assert set(tf.PRIMARY) == set(tf.FAMILY) - {"lineup_change"}
+    # The descriptive comparison is never in the family or its decision.
+    assert not set(tf.DESCRIPTIVE) & set(tf.FAMILY)
+    assert all(a not in [p for p, _ in tf.PRIMARY.values()] for a, _ in tf.DESCRIPTIVE.values())

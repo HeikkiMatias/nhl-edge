@@ -59,7 +59,11 @@ CANDIDATES: dict[str, tuple[str, ...]] = {
     "early": (*b3.SPLIT, "five_diff_early"),
     "goalie_presumed": ("goalie_presumed",),
     "B3 split + goalie_presumed": (*b3.SPLIT, "goalie_presumed"),
+    # Descriptive, added after the decision, never part of it: whether a kept candidate adds
+    # beyond B3's split, which already carries the goalie-start mixture (#370's report).
+    "B3 split + density": (*b3.SPLIT, *DENSITY),
 }
+DESCRIPTIVE = {"density beyond B3's split": ("B3 split + density", "B3 split")}
 # Each family member's primary measure: a candidate's own move skill, or a pair's difference.
 PRIMARY: dict[str, tuple[str, str | None]] = {
     "travel": ("travel", None),
@@ -250,7 +254,25 @@ def decide(per_game: pl.DataFrame, found: Mapping[str, Any]) -> dict[str, Any]:
         if name in SCHEDULE_FACTS:
             passes = passes and entry["rested"]["high"] < 0
         entry |= {"threshold": steps[name]["threshold"], "kept": passes}
-    return {"family": list(FAMILY), "estimates": estimates, "lineup_change": "not yet scored"}
+    described: dict[str, Any] = {}
+    for name, (a, b) in DESCRIPTIVE.items():
+        parts = {
+            "all": paired_frame(per_game, a, b),
+            "rested": paired_frame(per_game, a, b, True),
+            "back_to_back": paired_frame(per_game.filter(~pl.col("rested")), a, b),
+        }
+        if "result" in per_game.columns:
+            parts["result"] = paired_frame(per_game, a, b, measure="result")
+        if all(frame.height for frame in parts.values()):
+            described[name] = {
+                k: metrics.bootstrap(frame, "difference").to_dict() for k, frame in parts.items()
+            }
+    return {
+        "family": list(FAMILY),
+        "estimates": estimates,
+        "lineup_change": "not yet scored",
+        "descriptive": described,
+    }
 
 
 def markdown(found: Mapping[str, Any], decision: Mapping[str, Any], version: str) -> str:
@@ -307,6 +329,20 @@ def markdown(found: Mapping[str, Any], decision: Mapping[str, Any], version: str
         if kept
         else "**Kept:** none of the four scored. lineup_change follows in its own PR."
     )
+    lines += [
+        "",
+        "**Descriptive, after the decision and not part of it:** a kept candidate on top of B3's",
+        "split, which already carries the goalie-start mixture, paired against the split (move",
+        "skill and result beyond the close, thousandths):",
+        "",
+        "| Comparison | All games | Rested | Back-to-back | Result beyond the close |",
+        "|---|---|---|---|---|",
+    ]
+    for name, entry in decision.get("descriptive", {}).items():
+        lines.append(
+            f"| {name} | {cell(entry['all'])} | {cell(entry['rested'])} | "
+            f"{cell(entry['back_to_back'])} | {cell(entry['result'])} |"
+        )
     return "\n".join([*lines, ""])
 
 
