@@ -29,6 +29,11 @@ q2 or q3 against q1, Holm over the two, an interval below 0, and an implied full
 D̂·(q - q1) of a point or more on at least SHARE of every priced game of the scored seasons, D̂
 the earlier 3-on-3 seasons' draw rate.
 
+**Caveats the report names:** q3's input, Δĝ, has settings tuned through 2018-04-09 on these
+training seasons' full-game results, OT and shootout included (ADR 0011), so q3 is scored on
+labels that helped choose its input: weaker evidence than q2's. SBR's opener is assumed public at
+10:00 ET (ADR 0006).
+
 It reads the lake to 2021-22 only and writes reports/backtest/ot-winner-<yyyymmdd>-<shortsha>.md.
 """
 
@@ -264,7 +269,11 @@ def markdown(found: Mapping[str, Any], disagree: int, version: str) -> str:
         "3-on-3 era. Each scored season is fitted on the earlier ones. Log loss and Brier in",
         "thousandths, the candidate's less the baseline's, tie by tie: negative favours the",
         "candidate. Intervals are 95% weekly block bootstrap. Every season read has been seen,",
-        "so this is development evidence.",
+        "so this is development evidence. SBR's opener is assumed public at 10:00 ET (ADR 0006).",
+        "",
+        "**q3 is weaker evidence than q2:** its input, Δĝ, has settings tuned through",
+        "2018-04-09 on these training seasons' full-game results, OT and shootout included",
+        "(ADR 0011), so q3 is scored on labels that helped choose its input.",
         "",
         f"Games where the regulation goals and `decided_in` disagree, dropped: {disagree}.",
         "",
@@ -307,9 +316,15 @@ def markdown(found: Mapping[str, Any], disagree: int, version: str) -> str:
     lines += ["", "**q's calibration** (intercept 0 and slope 1 when calibrated):", ""]
     for name, c in found["calibration"].items():
         lines.append(f"- {name}: intercept {cell(c['intercept'], 1)}, slope {cell(c['slope'], 1)}")
+    passed = [name for name, ok in found["gate_by"].items() if ok]
+    rests = (
+        " It rests on q3 alone, the weaker evidence."
+        if passed == ["q3"]
+        else f" It rests on {' and '.join(passed)}."
+    )
     lines += [
         "",
-        "**Step 2 goes ahead** (a new issue): the gate passes."
+        "**Step 2 goes ahead** (a new issue): the gate passes." + rests
         if found["gate"]
         else "**Step 2 does not go ahead:** the gate does not pass. q stays implicit in B3; a "
         "regulation or totals market would need the owner's scope first.",
