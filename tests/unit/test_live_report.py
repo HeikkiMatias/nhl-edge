@@ -1717,11 +1717,14 @@ def test_the_morning_view_s_slope_on_b3_s_disagreement_from_four_weeks(
     assert formal["primary"]["p_value"] == pytest.approx(0.0)
 
 
-def forecasts_of(morning: pl.DataFrame, lam: float = 1.0) -> pl.DataFrame:
+def forecasts_of(morning: pl.DataFrame, lam: float = 1.0, version: str = "") -> pl.DataFrame:
     """Each morning row's close forecast (ADR 0054), its move exactly half B3's disagreement with
-    the morning pair: the move mornings() closes with, at lam 1."""
-    from nhl_edge.lake.schemas import CloseForecasts
+    the morning pair: the move mornings() closes with, at lam 1. With version close_forecast/2,
+    version 2's row (ADR 0056), its density part 0 at size 1."""
     from nhl_edge.live import close_forecast as cf
+
+    version = version or cf.VERSION
+    second = version == cf.VERSION_2
 
     logit = (pl.col("p_b0") / (1 - pl.col("p_b0"))).log()
     half = 0.5 * ((pl.col("p_b3") / (1 - pl.col("p_b3"))).log() - logit)
@@ -1735,12 +1738,21 @@ def forecasts_of(morning: pl.DataFrame, lam: float = 1.0) -> pl.DataFrame:
         lam_games=pl.lit(0),
         y_hat=lam * half,
         p_close_hat=1 / (1 + (-(logit + lam * half)).exp()),
-        forecast_version=pl.lit(cf.VERSION),
-        weights_version=pl.lit("close-forecast-20261102-1ecc8a2"),
+        forecast_version=pl.lit(version),
+        weights_version=pl.lit(
+            "close-forecast-2-20261104-863eb1a" if second else "close-forecast-20261102-1ecc8a2"
+        ),
         code_version=pl.lit("close-forecast-20261103-abc1234"),
     )
-    columns = dtypes(CloseForecasts)
-    return CloseForecasts.validate(frame.select(list(columns)).cast(columns))  # type: ignore[arg-type]
+    if second:
+        frame = frame.with_columns(
+            **dict.fromkeys(("dense3_diff", "dense6_diff", "mismatch"), 0.0),
+            home_return=pl.lit(0.0),
+            away_trip=pl.lit(0.0),
+            y_hat_density=pl.lit(0.0),
+            lam_d=pl.lit(1.0),
+        )
+    return cf.complete(frame)
 
 
 def test_the_close_forecaster_scores_its_forecast_of_the_move(
@@ -1791,6 +1803,47 @@ def test_the_close_forecaster_scores_its_forecast_of_the_move(
         season.report(morning=morning, odds=odds, forecasts=forecasts)["close_forecast"]["days"]
         == 0
     )
+
+
+def test_version_2_is_scored_against_version_1_on_the_same_games(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nhl_edge.live import close_forecast as cf
+    from nhl_edge.live import morning as lm
+
+    for module, name in ((lm, "REGISTERED_ON"), (cf, "REGISTERED_ON"), (cf, "REGISTERED_ON_2")):
+        monkeypatch.setattr(module, name, FIRST - timedelta(days=1))
+    season = Season(n_weeks=5)
+    later = pl.col("start_utc") + timedelta(hours=2)
+    season.ledger = season.ledger.with_columns(start_utc=later)
+    season.games = season.games.with_columns(
+        start_utc=later, home=pl.lit("WSH"), away=pl.lit("PIT")
+    )
+    morning, odds = mornings(season)
+    # Version 1 forecasts half the move, version 2 all of it.
+    first = forecasts_of(morning, lam=0.5)
+    both = pl.concat([first, forecasts_of(morning, version=cf.VERSION_2)])
+    result = season.report(morning=morning, odds=odds, forecasts=both)
+    section = result["close_forecast_2"]
+    primary = section["primary"]
+    assert primary["mean"] < 0 and primary["high"] < 0 and "p_value" not in primary
+    assert section["against_no_move"]["version 2"]["mean"] < 0
+    assert set(section["rested"]) == {"difference", "version 1", "version 2"}
+    assert section["weeks"] and section["weeks"][0]["lam_d"] == 1.0
+    assert section["takes"]["sides"] > 0
+    # Version 2's rows leave version 1's section as it was alone.
+    alone = season.report(morning=morning, odds=odds, forecasts=first)
+    assert result["close_forecast"] == alone["close_forecast"]
+    assert alone["close_forecast_2"]["games"] == 0
+    text = lr.markdown(result)
+    assert "## The close forecaster, version 2 (ADR 0056)" in text
+    assert "The forecasters' review" not in text
+    # At the formal review, Holm's step-down over the two forecaster tests.
+    formal = season.report(as_of=date(2027, 4, 12), morning=morning, odds=odds, forecasts=both)
+    review = formal["close_forecast_2"]["review"]
+    assert set(review) == set(lr.FORECASTERS_FAMILY)
+    assert all(r["passes"] for r in review.values())
+    assert "The forecasters' review (ADR 0056)" in lr.markdown(formal)
 
 
 def test_the_rested_games_are_those_neither_team_played_the_day_before() -> None:

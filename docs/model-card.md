@@ -304,6 +304,11 @@ B1 recalibrates B0's multiplicative probabilities. For the 2018-19 fold it is fi
 - **On history** (`reports/yardstick/close-forecast-history-20261102-21a7cba.md`): it beats no move out of sample, −0.510 [−0.825, −0.207] thousandths, with moves averaging 0.66 points. Taking at the opener doesn't beat the close.
 - **Live:** its primary measure is its squared error less no move's, a family of its own, with counts only under 4 weeks and no verdict before the formal review.
 
+**The close forecaster, version 2 (ADR 0056, accepted 2026-11-04).** Version 1 with schedule density beside the split, on its own size.
+- **What it is:** p̂_close = sigmoid(o + λ_s·(a + b_o·o + b·x) + λ_d·(b_d·d)), d #370's five density columns at the morning cutoff, the weights frozen from SBR's 2012-13 to 2017-18 (`reports/live/close-forecast-2-20261104-863eb1a.json`), and both sizes refitted weekly on earlier mornings under independent N(1, 0.5²).
+- **On history** (`reports/yardstick/close-forecast-2-history-20261104-863eb1a.md`): out of sample, version 2 less version 1 is −0.410 [−0.525, −0.297] thousandths on the rested games, −1.279 [−1.512, −1.061] on every game. Most of the gain is on back-to-back games, where SBR's opener may predate the previous night's result, so λ_d will show how much of it transfers to Pinnacle's 07:05 pair.
+- **Live:** its primary measure is its squared error less version 1's; at the formal review, it and version 1's test against no move share Holm's step-down. Counts only under 4 weeks.
+
 **Upsets in mismatches (#366, explore half).** Favourites don't lose more often than priced.
 - **The heaviest win more often:** at a close of 0.70 or more, +0.090 [+0.010, +0.162], 84 games. That is the market's under-confidence that B1 recalibrates.
 - **No letdown spot** (a big win, a win streak, a slumping underdog, a road trip) shows favourites losing more than the close says.

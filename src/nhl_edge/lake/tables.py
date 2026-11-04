@@ -148,7 +148,7 @@ TABLES: dict[str, Table] = {
     # once to R2.
     "morning_predictions": Table(MorningPredictions, ("game_date", "game_id"), BY_DATE),
     # The close forecast at the morning snapshot (#369, ADR 0054), as written once to R2.
-    "close_forecasts": Table(CloseForecasts, ("game_date", "game_id"), BY_DATE),
+    "close_forecasts": Table(CloseForecasts, ("game_date", "game_id", "forecast_version"), BY_DATE),
     # Registered challengers' probabilities, scored on each day's run bundle (#255, ADR 0038).
     "challenger_predictions": Table(
         ChallengerPredictions,

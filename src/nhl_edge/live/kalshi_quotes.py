@@ -17,9 +17,11 @@ the first day it reads; the readings are design evidence for the ADR that comes 
   old, with both a bid and an ask.
 - **pinnacle:** Pinnacle's latest h2h pair before the moment, fresh at its snapshot, de-vigged
   multiplicatively (market/devig.py, hard rule 3): a reference only.
-- **forecast:** the close forecaster's p_close_hat (close_forecasts, ADR 0054) from its
-  publication, on game dates from FORECAST_FIRST_DAY, the first after its registration: its rules
-  were fixed before then, and the other fair values' are unchanged.
+- **forecast:** the close forecaster's p_close_hat (close_forecasts, ADR 0054), version 1's,
+  from its publication, on game dates from FORECAST_FIRST_DAY, the first after its registration:
+  its rules were fixed before then, and the other fair values' are unchanged.
+- **forecast2:** the same from version 2 (ADR 0056), with schedule density, on game dates from
+  FORECAST2_FIRST_DAY, the first after its registration.
 
 **Quotes.** At each step (a top of book of either team's market, or a fair value's update), each
 team's Yes market gets a post-only bid of SIZE contracts at the fair value less the half-spread h,
@@ -103,8 +105,12 @@ PREFIX = f"real/shadow/{SHADOW}/{VERSION}"
 RULES_FIXED = date(2026, 10, 30)
 FIRST_DAY = date(2026, 10, 31)
 MODEL, ANCHORED, PINNACLE, FORECAST = "model", "anchored", "pinnacle", "forecast"
-FAIRS = (MODEL, ANCHORED, PINNACLE, FORECAST)
+FORECAST2 = "forecast2"
+FAIRS = (MODEL, ANCHORED, PINNACLE, FORECAST, FORECAST2)
 FORECAST_FIRST_DAY = cf.REGISTERED_ON + timedelta(days=1)
+FORECAST2_FIRST_DAY = cf.REGISTERED_ON_2 + timedelta(days=1)
+# Each close forecast fair value's version.
+FORECASTS = {FORECAST: cf.VERSION, FORECAST2: cf.VERSION_2}
 # Kalshi's NHL winner markets quote a cent wide nearly always (measured 2026-10-30 on the watch's
 # tops): at 0 a quote joins the best bid when the fair value allows, at 1 and 2 it sits behind it.
 # The owner's choice of 2026-10-30, over 2, 4 and 6 cents, which a cent-wide market never fills.
@@ -246,14 +252,17 @@ def model_sources(ledger: pl.DataFrame, morning: pl.DataFrame) -> Sources:
     return {k: sorted(v) for k, v in found.items()}
 
 
-def forecast_sources(forecasts: pl.DataFrame) -> Sources:
-    """Each game's close forecast (home side) by when it was published, only where forecast and
-    on game dates from FORECAST_FIRST_DAY."""
+def forecast_sources(forecasts: pl.DataFrame, fair: str = FORECAST) -> Sources:
+    """Each game's close forecast (home side) of the fair value's version (FORECASTS) by when it
+    was published, only where forecast and on game dates from the version's first day."""
+    version = FORECASTS[fair]
+    first = FORECAST2_FIRST_DAY if fair == FORECAST2 else FORECAST_FIRST_DAY
     found: Sources = {}
     forecast = forecasts.filter(
+        pl.col("forecast_version") == version,
         pl.col("status") == PREDICTED,
         pl.col("p_close_hat").is_not_null(),
-        pl.col("game_date") >= FORECAST_FIRST_DAY,
+        pl.col("game_date") >= first,
     )
     for r in forecast.iter_rows(named=True):
         found.setdefault(r["game_id"], []).append(
@@ -491,6 +500,11 @@ class Inputs:
     books: Mapping[tuple[int, str], ks.Market]
     changes: Mapping[int, list[datetime]]
     forecasts: Sources = field(default_factory=dict)
+    forecasts2: Sources = field(default_factory=dict)
+
+    def forecast(self, fair: str) -> Sources:
+        """The close forecasts the fair value reads: version 1's or version 2's."""
+        return self.forecasts2 if fair == FORECAST2 else self.forecasts
 
 
 def fair_at(
@@ -498,8 +512,8 @@ def fair_at(
 ) -> tuple[float, datetime, datetime | None] | None:
     """The team's fair value at at, with its model or Pinnacle source's time and, for anchored,
     its mid's: None without one."""
-    if kind in (PINNACLE, FORECAST):
-        source = inputs.pinnacle if kind == PINNACLE else inputs.forecasts
+    if kind in (PINNACLE, *FORECASTS):
+        source = inputs.pinnacle if kind == PINNACLE else inputs.forecast(kind)
         found = latest(source.get(game.game_id, []), at)
         return (game.side(team, found[1]), found[0], None) if found else None
     model = latest(inputs.models.get(game.game_id, []), at)
@@ -700,8 +714,8 @@ def steps(game: Game, inputs: Inputs, fair: str | None = None) -> list[datetime]
     }
     times |= {t for t, _ in inputs.models.get(game.game_id, [])}
     times |= {t for t, _ in inputs.pinnacle.get(game.game_id, [])}
-    if fair == FORECAST:
-        times |= {t for t, _ in inputs.forecasts.get(game.game_id, [])}
+    if fair in FORECASTS:
+        times |= {t for t, _ in inputs.forecast(fair).get(game.game_id, [])}
     times |= set(inputs.changes.get(game.game_id, []))
     # A source published at t is known just after it (latest() reads strictly before).
     return sorted({t + timedelta(microseconds=1) for t in times if t < end} | {end})
@@ -752,6 +766,7 @@ def inputs_of(
         books,
         change_times(games, dailyfaceoff),
         forecast_sources(forecasts) if forecasts is not None else {},
+        forecast_sources(forecasts, FORECAST2) if forecasts is not None else {},
     )
 
 

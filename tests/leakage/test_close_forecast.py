@@ -8,6 +8,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 
+import forecast_fixtures as fx
 import polars as pl
 import pytest
 from forecast_fixtures import PUBLISHED, found, morning
@@ -161,9 +162,102 @@ def test_no_forecast_reads_its_own_games_close() -> None:
         "fit",
         "published",
         "code_version",
+        "spec",
     ]
     # The week's fold start precedes every morning of the week (the window opens at 07:00 ET).
     for offset in range(7):
         day = WEEK + timedelta(days=offset)
         opens = datetime.combine(day, time(7), ET)
         assert cf.fold_start(cf.week_of(day)) <= opens.astimezone(UTC)
+
+
+# Version 2 (ADR 0056)
+
+
+def kept_2(day: date) -> pl.DataFrame:
+    """A day's stored version 2 forecasts, at both sizes 1."""
+    shift = timedelta(days=(day - date(2026, 11, 4)).days)
+    week = cf.week_of(day)
+    fit = cf.Fit(
+        week,
+        cf.fold_start(week),
+        1.0,
+        None,
+        pl.DataFrame(schema=cf.ROW_SCHEMA_2),
+        1.0,
+        cf.VERSION_2,
+    )
+    found_2 = fx.with_density(found(), {"mismatch": [1.0, -1.0, 0.0]})
+    return cf.forecast(morning(day), found_2, cf.weights(cf.V2), fit, PUBLISHED + shift, "v", cf.V2)
+
+
+def test_density_reads_only_results_public_before_the_morning_cutoff() -> None:
+    before = cf.density_inputs(fx.slate_bundle(), fx.played(fx.EARLIER))
+    # Last night's NYR game, its result public only after the cutoff: never counted.
+    late = fx.played(
+        [(2026020091, date(2026, 11, 3), "NYR", "WSH")], public=fx.CUTOFF + timedelta(minutes=1)
+    )
+    # Tonight's games and a later one, whatever their result's time: never counted.
+    tonight = fx.played(
+        [
+            (g, fx.DAY, h, a)
+            for g, h, a in fx.morning().select("game_id", "home", "away").iter_rows()
+        ]
+    )
+    later = fx.played([(2026020120, date(2026, 11, 6), "BOS", "NYR")], public=fx.CUTOFF)
+    every = pl.concat([fx.played(fx.EARLIER), late, tonight, later])
+    assert cf.density_inputs(fx.slate_bundle(), every).equals(before)
+    # The same NYR game public before the cutoff does count: the check has power.
+    sooner = fx.played(
+        [(2026020091, date(2026, 11, 3), "NYR", "WSH")], public=fx.CUTOFF - timedelta(minutes=1)
+    )
+    moved = cf.density_inputs(fx.slate_bundle(), pl.concat([fx.played(fx.EARLIER), sooner]))
+    assert not moved.equals(before)
+    # Another season's games are never read.
+    other = fx.played(fx.EARLIER).with_columns(season=pl.lit(20252026, dtype=pl.Int32))
+    alone = cf.density_inputs(fx.slate_bundle(), other)
+    assert all((alone[c] == 0).all() for c in fx.DENSITY)
+
+
+def test_version_2s_sizes_read_only_its_own_earlier_weeks_public_before_its_fold_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[datetime] = []
+    monkeypatch.setattr(ls, "closes", closes_after_the_morning(asked))
+    days = [date(2026, 11, 4), date(2026, 11, 8), date(2026, 11, 9), date(2026, 11, 10)]
+    second = pl.concat([kept_2(day) for day in days])
+    first = pl.concat([kept(day) for day in days])
+    mornings = pl.concat([morning(day) for day in days])
+    odds = odds_for(mornings)
+    rows = cf.training_rows(pl.concat([first, second]), mornings, odds, WEEK, cf.V2)
+    assert set(rows["game_date"].to_list()) == {date(2026, 11, 4), date(2026, 11, 8)}
+    assert asked == [cf.fold_start(WEEK)]
+    assert rows.columns == list(cf.ROW_SCHEMA_2)
+    # Version 1's forecasts are never version 2's rows, nor version 2's version 1's.
+    assert cf.training_rows(first, mornings, odds, WEEK, cf.V2).is_empty()
+    assert cf.training_rows(second, mornings, odds, WEEK).is_empty()
+    # A forecast published after the fold start is not read.
+    late = second.with_columns(
+        published_utc=pl.when(pl.col("game_date") == date(2026, 11, 8))
+        .then(pl.lit(cf.fold_start(WEEK)).cast(UTC_TYPE))
+        .otherwise(pl.col("published_utc"))
+    )
+    found_days = cf.training_rows(late, mornings, odds, WEEK, cf.V2)["game_date"].to_list()
+    assert set(found_days) == {date(2026, 11, 4)}
+
+
+def test_version_2s_weights_were_fitted_on_the_training_seasons_only() -> None:
+    w = cf.weights(cf.V2)
+    record = json.loads(cf.WEIGHTS_2.read_text())
+    training = {s for s, role in SEASON_ROLES.items() if role == SeasonRole.TRAINING}
+    assert set(record["seasons"]) <= training
+    assert w.train_cutoff < datetime(2018, 4, 10, tzinfo=UTC)
+    assert record["density"] == list(fx.DENSITY)
+
+
+def test_version_2s_inputs_read_no_close_and_no_result() -> None:
+    # Beside the morning bundle, version 2 reads the season's games, filtered to the results
+    # public before the cutoff (test_density_reads_only_results_public_before_the_morning_cutoff);
+    # its forecast reads no odds, close or result.
+    assert list(inspect.signature(cf.density_inputs).parameters) == ["bundle", "games"]
+    assert list(inspect.signature(cf.inputs).parameters) == ["bundle", "spec", "games"]
