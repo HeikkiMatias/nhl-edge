@@ -119,6 +119,9 @@
       }
     }
   },
+  "described": [
+    "q3"
+  ],
   "disagree": 0,
   "fits": {
     "20162017": {
@@ -162,7 +165,7 @@
       "ties_trained": 860
     },
     "20212022": {
-      "draw_rate": 0.22672499941308175,
+      "draw_rate": 0.22672499941308177,
       "q1": 0.5,
       "q2": {
         "a": -0.06128832289069727,
@@ -174,41 +177,28 @@
   },
   "gate": false,
   "gate_by": {
-    "q2": false,
-    "q3": false
+    "q2": false
   },
   "gate_holm": {
     "q2": {
       "p_value": 0.316,
       "passes": false,
-      "rank": 2,
-      "threshold": 0.05
-    },
-    "q3": {
-      "p_value": 0.056,
-      "passes": false,
       "rank": 1,
-      "threshold": 0.025
+      "threshold": 0.05
     }
   },
   "holm": {
     "q1": {
       "p_value": 0.268,
       "passes": false,
-      "rank": 2,
+      "rank": 1,
       "threshold": 0.025
     },
     "q2": {
       "p_value": 0.633,
       "passes": false,
-      "rank": 3,
+      "rank": 2,
       "threshold": 0.05
-    },
-    "q3": {
-      "p_value": 0.075,
-      "passes": false,
-      "rank": 1,
-      "threshold": 0.016666666666666666
     }
   },
   "per_season": [
