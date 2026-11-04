@@ -1,6 +1,6 @@
 # 0056. `close_forecast` version 2: schedule density beside B3's split, with its own live size
 
-- Status: Proposed
+- Status: Accepted (the owner, 2026-11-04): option 3
 - Date: 2026-11-04
 - Part of: #370, whose rule kept schedule density; ADR 0054's "Later: #370's features enter as a new version". From the owner on 2026-11-04: "It should help us pick an early line."
 
@@ -33,7 +33,7 @@
    - **The gain:** density's size can fall to whatever Pinnacle's 07:05 price leaves without dragging the split's.
 4. **Density's five weights refitted live.** Five weights on a few hundred mornings are noisy.
 
-## Decision (Proposed): option 3, as `close_forecast` version 2, registered on the day its code merges. Version 1 runs unchanged beside it.
+## Decision: option 3 (the owner, 2026-11-04), as `close_forecast` version 2, registered on the day its code merges. Version 1 runs unchanged beside it.
 
 **The inputs:**
 - **v1's,** from the morning bundle at its input cutoff (ADR 0054): o, Pinnacle's de-vigged morning pair; x, B3's four parts.
