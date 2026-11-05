@@ -5540,7 +5540,10 @@ REVISIONS_MIGRATION = "20261106140000_real_entry_revisions.sql"
 
 def _new_revisions(store: Any) -> str:
     """Copy the owner's new revisions of entries (Supabase real_entry_revisions, ADR 0058) to the
-    record, each once, after the entries they revise. Before its migration there are none."""
+    record, each once, after the entries they revise. A revision whose entry the record doesn't
+    hold yet, as when the owner records and revises a bet while the sync runs, waits for the
+    next sync, so the record never holds a revision without its entry (Codex on #404). Before
+    its migration there are none."""
     from nhl_edge.lake.supabase import Supabase, SupabaseError
     from nhl_edge.live import real_ledger as rl
 
@@ -5552,7 +5555,15 @@ def _new_revisions(store: Any) -> str:
         if not any(code in str(exc) for code in ("PGRST205", "42P01")):
             raise
         return f"the dashboard's revisions aren't set up yet: apply {REVISIONS_MIGRATION}"
-    return f"{rl.store_revisions(store, found)} new revisions copied from the dashboard"
+
+    def bet(row: Any) -> tuple[str, int]:
+        return (str(row["game_date"])[:10], int(row["game_id"]))
+
+    held = {bet(entry) for entry in rl.entries(store)}
+    ready = [revision for revision in found if bet(revision) in held]
+    waiting = len(found) - len(ready)
+    later = f" ({waiting} wait for their entry, until the next sync)" if waiting else ""
+    return f"{rl.store_revisions(store, ready)} new revisions copied from the dashboard{later}"
 
 
 @real_app.command("alert")

@@ -236,6 +236,16 @@ test("the owner's revisions apply before the corrections, as the R2 record appli
   // The withdrawn entry's own time stays: it was recorded before the start, never late.
   expect([rows[2].entry?.entered_utc, rows[2].entry?.late]).toEqual(["2026-11-17T18:01:00Z", false]);
   expect([...rev.counts]).toEqual([["2026-11-17/1", 2], ["2026-11-17/2", 1], ["2026-11-17/3", 1]]);
+  // A correction of a withdrawn bet's reason alone leaves it not placed, as the R2 record does
+  // (Codex on #404).
+  const reasonOnly = corrected(
+    rev.entries,
+    [{ game_date: "2026-11-17", game_id: 2, n: 0, changes: { reason: "missed it" }, reason: "statement", corrected_utc: "2026-11-23T10:00:00Z" }],
+    alerts,
+    rev.withdrawn,
+  );
+  const second = twins([bet(2)], alerts, reasonOnly.entries, [], "real")[0];
+  expect([second.state, second.entry?.reason, second.entry?.matched_price]).toEqual(["not placed", "missed it", null]);
 });
 
 test("a closed window's alerts end the practice history, and the start reads from the alerts", () => {

@@ -1743,6 +1743,17 @@ def test_the_real_sync_copies_the_entries_then_their_revisions_each_once(
     assert (bet["stake"], bet["revisions"]) == (1.2, 1)
     result = runner.invoke(app, ["real", "sync", "--r2", "--supabase"])
     assert "0 new revisions copied" in result.output
+    # A bet recorded and revised while the sync reads: its revision waits for its entry, and
+    # the sync goes on (Codex on #404).
+    second = 2026020054
+    tables["real_entry_revisions"].append({"id": 2, **rf.revision(second, 1, stake=1.0)})
+    result = runner.invoke(app, ["real", "sync", "--r2", "--supabase"])
+    assert result.exit_code == 0, result.output
+    assert "0 new revisions copied from the dashboard (1 wait for their entry" in result.output
+    tables["real_entries"].append({"id": 2, **rf.entry(second, stake=0.8), "source": "form"})
+    result = runner.invoke(app, ["real", "sync", "--r2", "--supabase"])
+    assert "1 new revisions copied" in result.output
+    assert [(r["game_id"], r["n"]) for r in rl.revisions(store)] == [(first, 1), (second, 1)]
     # Before the revisions migration: the entries alone, and a note to apply it.
     del tables["real_entry_revisions"]
     result = runner.invoke(app, ["real", "sync", "--r2", "--supabase"])
