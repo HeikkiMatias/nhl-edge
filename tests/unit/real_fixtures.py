@@ -109,6 +109,35 @@ def entry(
     }
 
 
+def revision(
+    game_id: int = 2026020053,
+    n: int = 1,
+    outcome: str = "placed",
+    price: float | None = 2.10,
+    stake: float | None = 1.5,
+    placed: datetime | None = datetime(2026, 10, 7, 17, 5, tzinfo=UTC),
+    revised: datetime = datetime(2026, 10, 7, 18, 0, tzinfo=UTC),
+    reason: str | None = None,
+    note: str = "the stake was wrong",
+) -> dict[str, Any]:
+    """A revision as Supabase's real_entry_revisions returns it (ADR 0058): a complete new entry,
+    or its withdrawal."""
+    is_placed = outcome == "placed"
+    return {
+        "game_date": pf.DAY.isoformat(),
+        "game_id": game_id,
+        "n": n,
+        "outcome": outcome,
+        "matched_price": price if is_placed else None,
+        "stake": stake if is_placed else None,
+        "bet_id": f"R{game_id}-{n}" if is_placed else None,
+        "placed_utc": placed.isoformat() if is_placed and placed else None,
+        "reason": reason if outcome == "not placed" else None,
+        "note": note,
+        "revised_utc": revised.isoformat(),
+    }
+
+
 def table_of(rows: pl.DataFrame, game_id: int) -> list[list[float]]:
     return json.loads(rows.filter(pl.col("game_id") == game_id)["stakes"].item())
 

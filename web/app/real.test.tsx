@@ -2,7 +2,7 @@
 // The real bets section (#268): each alerted bet's minimum price and the stake at the price
 // typed, the entry sent to real_entries as the migration takes it, the database's refusal shown,
 // and the recorded entry once read back. Supabase is the real client over the PostgREST stub.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { ALERT, type Answer, type Sent, stubbed } from "@/lib/testing";
@@ -244,4 +244,195 @@ test("an automatic entry says it came from Kalshi's fills", async () => {
   expect(
     await screen.findByText(/Recorded automatically, from Kalshi's fills: placed at 2.07, 1.18 €, bet id order-1/),
   ).toBeTruthy();
+});
+
+/** A form entry, as the owner recorded it at 18:01 (ADR 0058's revisions start from it). */
+const RECORDED = {
+  game_date: ALERT.game_date,
+  game_id: ALERT.game_id,
+  outcome: "placed",
+  matched_price: 2.1,
+  stake: 0.9,
+  bet_id: "P1",
+  placed_utc: "2026-11-17T18:00:00Z",
+  reason: null,
+  entered_utc: "2026-11-17T18:01:00Z",
+  late: false,
+  source: "form",
+};
+
+/** The stub with the revisions migration applied: real_entry_revisions takes inserts. */
+function revisable(revisions: unknown[] = [], entry: unknown = RECORDED) {
+  const tables = {
+    real_alerts: [ALERT] as unknown[],
+    real_entries: [entry] as unknown[],
+    real_entry_revisions: revisions,
+  };
+  const answer = (sent: Sent): Answer | undefined =>
+    sent.method === "POST" && sent.url.pathname.endsWith("/real_entry_revisions")
+      ? { status: 201, body: null }
+      : undefined;
+  return { ...stubbed(tables, new Set(["anon"]), answer), tables };
+}
+
+const posted = (requests: Sent[]) => requests.filter((r) => r.method === "POST");
+
+test("before the start an entry can be corrected, from its own values and with a note", async () => {
+  const { supabase, requests, tables } = revisable();
+  render(<RealBets client={supabase} />);
+  expect(await screen.findByText(/Recorded: placed at 2.1, 0.90 €, bet id P1/)).toBeTruthy();
+  fireEvent.click(screen.getByText("Correct it"));
+  // The form starts from the entry as it stands.
+  expect((screen.getByLabelText("Price") as HTMLInputElement).value).toBe("2.1");
+  expect((screen.getByLabelText("Stake (€)") as HTMLInputElement).value).toBe("0.90");
+  expect((screen.getByLabelText("Bet id") as HTMLInputElement).value).toBe("P1");
+  fireEvent.change(screen.getByLabelText("Price"), { target: { value: "2.12" } });
+  // The stake recorded stays unless it is changed, whatever the price.
+  expect((screen.getByLabelText("Stake (€)") as HTMLInputElement).value).toBe("0.90");
+  // No note, no revision: refused before anything is sent.
+  fireEvent.click(screen.getByText("Save as placed"));
+  expect((await screen.findByRole("alert")).textContent).toMatch(/Say why/);
+  expect(posted(requests)).toHaveLength(0);
+  fireEvent.change(screen.getAllByLabelText("Why (kept with the record)")[0], {
+    target: { value: " the price was 2.12 " },
+  });
+  tables.real_entry_revisions.push({
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    n: 1,
+    outcome: "placed",
+    matched_price: 2.12,
+    stake: 0.9,
+    bet_id: "P1",
+    placed_utc: "2026-11-17T18:00:00Z",
+    reason: null,
+    note: "the price was 2.12",
+    revised_utc: "2026-11-17T18:05:10Z",
+  });
+  fireEvent.click(screen.getByText("Save as placed"));
+  expect(await screen.findByText(/Recorded: placed at 2.12, 0.90 €, bet id P1.*Revised before the start/)).toBeTruthy();
+  const [insert] = posted(requests);
+  expect(insert.url.pathname).toBe("/rest/v1/real_entry_revisions");
+  expect(JSON.parse(insert.body ?? "{}")).toEqual({
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    outcome: "placed",
+    matched_price: 2.12,
+    stake: 0.9,
+    bet_id: "P1",
+    placed_utc: "2026-11-17T18:00:00.000Z",
+    note: "the price was 2.12",
+  });
+  fireEvent.click(screen.getByText("History: the entry, 1 revision"));
+  expect(screen.getByText(/Revision 1, .*: placed at 2.12, 0.90 €, bet id P1.*Why: the price was 2.12/)).toBeTruthy();
+});
+
+test("an undo withdraws the entry with its note, and the bet can be recorded anew", async () => {
+  const { supabase, requests, tables } = revisable();
+  render(<RealBets client={supabase} />);
+  fireEvent.click(await screen.findByText("Undo it"));
+  const undo = screen.getByRole("form", { name: "Undo TOR" });
+  fireEvent.change(within(undo).getByLabelText("Why (kept with the record)"), {
+    target: { value: "recorded on the wrong game" },
+  });
+  tables.real_entry_revisions.push({
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    n: 1,
+    outcome: "withdrawn",
+    matched_price: null,
+    stake: null,
+    bet_id: null,
+    placed_utc: null,
+    reason: null,
+    note: "recorded on the wrong game",
+    revised_utc: "2026-11-17T18:05:10Z",
+  });
+  fireEvent.click(screen.getByText("Undo the entry"));
+  expect(await screen.findByText("Withdrawn: the bet is not recorded.")).toBeTruthy();
+  expect(JSON.parse(posted(requests)[0].body ?? "{}")).toEqual({
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    outcome: "withdrawn",
+    note: "recorded on the wrong game",
+  });
+  // Recorded anew as a revision too: the bet's one entry stays.
+  fireEvent.click(screen.getByText("Record it again"));
+  fireEvent.change(screen.getByLabelText("Why (kept with the record)"), {
+    target: { value: "it never matched" },
+  });
+  fireEvent.change(screen.getByRole("combobox"), { target: { value: "not matched" } });
+  fireEvent.click(screen.getByText("Save as not placed"));
+  await waitFor(() => expect(posted(requests)).toHaveLength(2));
+  const again = posted(requests)[1];
+  expect(again.url.pathname).toBe("/rest/v1/real_entry_revisions");
+  expect(JSON.parse(again.body ?? "{}")).toEqual({
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    outcome: "not placed",
+    reason: "not matched",
+    note: "it never matched",
+  });
+});
+
+test("from the start on an entry is no longer revised from the form", async () => {
+  vi.setSystemTime(new Date("2026-11-18T00:00:30Z"));
+  const undone = {
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    n: 1,
+    outcome: "withdrawn",
+    matched_price: null,
+    stake: null,
+    bet_id: null,
+    placed_utc: null,
+    reason: null,
+    note: "wrong game",
+    revised_utc: "2026-11-17T23:00:00Z",
+  };
+  const { supabase } = revisable([undone]);
+  render(<RealBets client={supabase} />);
+  expect(await screen.findByText("Withdrawn: the bet is not recorded.")).toBeTruthy();
+  expect(screen.getByText(/only the weekly check/)).toBeTruthy();
+  expect(screen.queryByText("Record it again")).toBeNull();
+  expect(screen.queryByText("Correct it")).toBeNull();
+  expect(screen.getByText("History: the entry, 1 revision")).toBeTruthy();
+});
+
+test("a correction at the weekly check shows in the bet's history, with its reason", async () => {
+  vi.setSystemTime(new Date("2026-11-23T10:05:00Z"));
+  const correction = {
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    n: 0,
+    changes: { stake: 1.3, bet_id: "P9" },
+    reason: "the statement says 1.30",
+    corrected_utc: "2026-11-23T10:00:00Z",
+  };
+  const { supabase } = stubbed(
+    { real_alerts: [ALERT], real_entries: [RECORDED], real_entry_revisions: [], real_corrections: [correction] },
+    new Set(["anon"]),
+  );
+  render(<RealBets client={supabase} />);
+  expect(
+    await screen.findByText(/Recorded: placed at 2.1, 1.30 €, bet id P9.*Corrected at the weekly check/),
+  ).toBeTruthy();
+  fireEvent.click(screen.getByText("History: the entry, 1 correction"));
+  expect(
+    screen.getByText(/Correction at the weekly check, 2026-11-23: stake 1.30 €, bet id P9. Why: the statement says 1.30/),
+  ).toBeTruthy();
+  expect(screen.queryByText("Correct it")).toBeNull();
+});
+
+test("an automatic Kalshi entry, or any entry before the revisions migration, isn't revised", async () => {
+  const { supabase } = revisable([], { ...RECORDED, source: "kalshi" });
+  render(<RealBets client={supabase} />);
+  expect(await screen.findByText(/Recorded automatically, from Kalshi's fills/)).toBeTruthy();
+  expect(screen.queryByText("Correct it")).toBeNull();
+  cleanup();
+  const before = stubbed({ real_alerts: [ALERT], real_entries: [RECORDED] }, new Set(["anon"]));
+  render(<RealBets client={before.supabase} />);
+  expect(await screen.findByText(/Recorded: placed at 2.1/)).toBeTruthy();
+  expect(screen.queryByText("Correct it")).toBeNull();
+  expect(screen.queryByText("Undo it")).toBeNull();
 });

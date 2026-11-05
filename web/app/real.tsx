@@ -5,16 +5,22 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 
 import { helsinkiTime } from "@/lib/format";
 import {
+  checkNote,
   checkPlaced,
   loadReal,
+  NOTE_MAX,
   REASONS,
   type Reason,
   type RealState,
   recordNotPlaced,
   recordPlaced,
+  reviseNotPlaced,
+  revisePlaced,
   stakeAt,
+  standing,
+  withdraw,
 } from "@/lib/real";
-import type { RealAlert, RealEntry, RealOrder } from "@/lib/types";
+import type { RealAlert, RealCorrection, RealEntry, RealOrder, RealRevision } from "@/lib/types";
 
 import { Explain } from "./sections";
 
@@ -81,11 +87,15 @@ export function RealBets({
           client={client}
           alert={alert}
           entry={state.entries[alert.game_id]}
+          revisions={state.revisions === null ? null : (state.revisions[alert.game_id] ?? [])}
+          corrections={state.corrections[alert.game_id] ?? []}
           onRecorded={refresh}
           now={now}
         />
       ))}
-      <Explain terms={["realStakes", "practice", "minPrice", "realStake", "realRecord"]} />
+      <Explain
+        terms={["realStakes", "practice", "minPrice", "realStake", "realRecord", "realRevision"]}
+      />
     </>
   );
 }
@@ -121,12 +131,18 @@ function RealBet({
   client,
   alert,
   entry,
+  revisions,
+  corrections,
   onRecorded,
   now,
 }: {
   client: SupabaseClient;
   alert: RealAlert;
   entry: RealEntry | undefined;
+  /** The entry's revisions in order, or null before their migration (ADR 0058). */
+  revisions: RealRevision[] | null;
+  /** The weekly check's corrections of the bet, in order. */
+  corrections: RealCorrection[];
   onRecorded: () => void;
   now: number;
 }) {
@@ -139,11 +155,41 @@ function RealBet({
       </div>
     );
   }
-  if (entry) {
+  if (entry || corrections.length) {
+    // The entry as the owner's revisions, then the weekly check's corrections, leave it, as the
+    // record applies them (ADR 0058): until the start the form's own entries can be corrected or
+    // undone, with a note; from the start on only the weekly check corrects them. Kalshi's
+    // automatic entries are the pipeline's, from its fills.
+    const revised = entry ? (revisions ?? []) : [];
+    const current = standing(entry ?? null, revised, corrections, alert);
+    const open =
+      entry !== undefined &&
+      revisions !== null &&
+      entry.source !== "kalshi" &&
+      now < new Date(alert.start_utc).getTime();
     return (
       <div className="real-bet">
         <h3>{title}</h3>
-        <Recorded entry={entry} />
+        {current ? (
+          <Recorded
+            entry={current}
+            revised={revised.length > 0}
+            corrected={corrections.length > 0}
+          />
+        ) : (
+          <p className="recorded">Withdrawn: the bet is not recorded.</p>
+        )}
+        {open ? (
+          <Revise client={client} alert={alert} current={current} onRecorded={onRecorded} />
+        ) : !current ? (
+          <p className="muted">
+            The game has started: from now on only the weekly check, against the venue&apos;s
+            statement, records it.
+          </p>
+        ) : null}
+        {revised.length || corrections.length ? (
+          <History entry={entry} revisions={revised} corrections={corrections} />
+        ) : null}
       </div>
     );
   }
@@ -212,25 +258,80 @@ function Order({ alert, order, now }: { alert: RealAlert; order: RealOrder; now:
   );
 }
 
-function Recorded({ entry }: { entry: RealEntry }) {
+function Recorded({
+  entry,
+  revised = false,
+  corrected = false,
+}: {
+  entry: RealEntry;
+  revised?: boolean;
+  corrected?: boolean;
+}) {
   const late = entry.late ? " Recorded after the start (late)." : "";
   const how = entry.source === "kalshi" ? " automatically, from Kalshi's fills" : "";
-  if (entry.outcome === "not placed") {
-    return (
-      <p className="recorded">
-        Recorded{how}: not placed ({entry.reason}).{late}
-      </p>
-    );
-  }
+  const again = revised ? " Revised before the start." : "";
+  const fixed = corrected ? " Corrected at the weekly check." : "";
   return (
     <p className="recorded">
-      Recorded{how}: placed at {entry.matched_price}, {euros(entry.stake ?? 0)}, bet id{" "}
-      {entry.bet_id}, {entry.placed_utc ? helsinkiTime(entry.placed_utc) : ""}.{late}
+      Recorded{how}: {described(entry)}.{late}
+      {again}
+      {fixed}
     </p>
   );
 }
 
-function EntryForm({
+/** An entry or a revision in words: placed at its price and stake, or not placed and why. */
+function described(e: Pick<RealEntry, "matched_price" | "stake" | "bet_id" | "placed_utc" | "reason"> & {
+  outcome: RealRevision["outcome"];
+}): string {
+  if (e.outcome === "withdrawn") return "withdrawn, the bet unrecorded";
+  if (e.outcome === "not placed") return `not placed (${e.reason})`;
+  const at = e.placed_utc ? `, ${helsinkiTime(e.placed_utc)}` : "";
+  return `placed at ${e.matched_price}, ${euros(e.stake ?? 0)}, bet id ${e.bet_id}${at}`;
+}
+
+/** Correct an entry or undo it until the game's start (ADR 0058), each with a note; a
+ * withdrawn bet can be recorded anew. Nothing is edited: each is appended beside the entry. */
+function Revise({
+  client,
+  alert,
+  current,
+  onRecorded,
+}: {
+  client: SupabaseClient;
+  alert: RealAlert;
+  current: RealEntry | null;
+  onRecorded: () => void;
+}) {
+  if (!current) {
+    return (
+      <details>
+        <summary>Record it again</summary>
+        <EntryForm client={client} alert={alert} onRecorded={onRecorded} revision />
+      </details>
+    );
+  }
+  return (
+    <>
+      <details>
+        <summary>Correct it</summary>
+        <EntryForm
+          client={client}
+          alert={alert}
+          onRecorded={onRecorded}
+          initial={current}
+          revision
+        />
+      </details>
+      <details>
+        <summary>Undo it</summary>
+        <Undo client={client} alert={alert} onRecorded={onRecorded} />
+      </details>
+    </>
+  );
+}
+
+function Undo({
   client,
   alert,
   onRecorded,
@@ -239,14 +340,162 @@ function EntryForm({
   alert: RealAlert;
   onRecorded: () => void;
 }) {
-  const [price, setPrice] = useState("");
-  const [stake, setStake] = useState("");
-  const [stakeEdited, setStakeEdited] = useState(false);
-  const [betId, setBetId] = useState("");
+  const [note, setNote] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function undo(event: FormEvent) {
+    event.preventDefault();
+    const wrong = checkNote(note);
+    setError(wrong);
+    if (wrong) return;
+    setBusy(true);
+    const refused = await withdraw(client, alert, note);
+    setBusy(false);
+    if (refused) setError(refused);
+    else onRecorded();
+  }
+
+  return (
+    <>
+      <form onSubmit={undo} aria-label={`Undo ${team(alert)}`}>
+        <Note value={note} onChange={setNote} />
+        <button type="submit" className="secondary" disabled={busy}>
+          Undo the entry
+        </button>
+      </form>
+      {error ? (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+function Note({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="note">
+      Why (kept with the record)
+      <input
+        required
+        maxLength={NOTE_MAX}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </label>
+  );
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** The entry, each revision of it with its note, and each correction at the weekly check with
+ * its reason, oldest first (ADR 0058). */
+function History({
+  entry,
+  revisions,
+  corrections,
+}: {
+  entry: RealEntry | undefined;
+  revisions: RealRevision[];
+  corrections: RealCorrection[];
+}) {
+  const parts = [
+    entry ? "the entry" : "no entry",
+    ...(revisions.length ? [plural(revisions.length, "revision")] : []),
+    ...(corrections.length ? [plural(corrections.length, "correction")] : []),
+  ];
+  return (
+    <details className="history">
+      <summary>History: {parts.join(", ")}</summary>
+      <ol>
+        {entry ? (
+          <li>
+            Entry, {helsinkiTime(entry.entered_utc)}: {described(entry)}.
+          </li>
+        ) : null}
+        {revisions.map((r) => (
+          <li key={`r${r.n}`}>
+            Revision {r.n}, {helsinkiTime(r.revised_utc)}: {described(r)}. Why: {r.note}
+          </li>
+        ))}
+        {corrections.map((c) => (
+          <li key={`c${c.n}`}>
+            Correction at the weekly check, {c.corrected_utc.slice(0, 10)}: {changed(c.changes)}.
+            Why: {c.reason}
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
+const FIELD_NAMES: Record<string, string> = {
+  outcome: "outcome",
+  matched_price: "price",
+  stake: "stake",
+  bet_id: "bet id",
+  placed_utc: "placed at",
+  reason: "reason",
+};
+
+/** A correction's changes in words: "stake 1.30, bet id X2". */
+function changed(changes: RealCorrection["changes"]): string {
+  return Object.entries(changes)
+    .map(([name, value]) => {
+      const shown =
+        value === null
+          ? "none"
+          : name === "stake"
+            ? euros(Number(value))
+            : name === "placed_utc"
+              ? helsinkiTime(String(value))
+              : String(value);
+      return `${FIELD_NAMES[name] ?? name} ${shown}`;
+    })
+    .join(", ");
+}
+
+/** An instant as the datetime-local input shows it, in the browser's own time. */
+function localInput(iso: string): string {
+  const at = new Date(iso);
+  return new Date(at.getTime() - at.getTimezoneOffset() * 60_000).toISOString().slice(0, 19);
+}
+
+function EntryForm({
+  client,
+  alert,
+  onRecorded,
+  initial = null,
+  revision = false,
+}: {
+  client: SupabaseClient;
+  alert: RealAlert;
+  onRecorded: () => void;
+  /** The entry as it stands, which a correction starts from. */
+  initial?: RealEntry | null;
+  /** A revision of the entry (ADR 0058), sent with its note, rather than the entry itself. */
+  revision?: boolean;
+}) {
+  const placedBefore = initial?.outcome === "placed";
+  const [price, setPrice] = useState(placedBefore ? String(initial.matched_price ?? "") : "");
+  const [stake, setStake] = useState(
+    placedBefore && initial.stake !== null ? initial.stake.toFixed(2) : "",
+  );
+  // A correction keeps the stake recorded unless it is changed, whatever the price.
+  const [stakeEdited, setStakeEdited] = useState(placedBefore);
+  const [betId, setBetId] = useState(placedBefore ? (initial.bet_id ?? "") : "");
   // Empty means "now", read when the entry is sent: a default fixed when the form mounted would
   // record the page's load time for a bet placed later (Codex on #277).
-  const [placedAt, setPlacedAt] = useState("");
-  const [reason, setReason] = useState<Reason>(REASONS[0]);
+  const [placedAt, setPlacedAt] = useState(
+    placedBefore && initial.placed_utc ? localInput(initial.placed_utc) : "",
+  );
+  const [reason, setReason] = useState<Reason>(
+    initial?.outcome === "not placed" && REASONS.includes(initial.reason as Reason)
+      ? (initial.reason as Reason)
+      : REASONS[0],
+  );
+  const [note, setNote] = useState("");
   const [errors, setErrors] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -265,14 +514,21 @@ function EntryForm({
     }
   }
 
+  // A revision needs its note, for either outcome.
+  const noted = () => (revision ? checkNote(note) : null);
+
   async function place(event: FormEvent) {
     event.preventDefault();
     const sent = bet();
     const checked = checkPlaced(alert, sent, new Date());
-    setErrors(checked.errors);
-    if (checked.errors.length) return;
+    const unsaid = noted();
+    const wrong = unsaid ? [...checked.errors, unsaid] : checked.errors;
+    setErrors(wrong);
+    if (wrong.length) return;
     setBusy(true);
-    const refused = await recordPlaced(client, alert, sent);
+    const refused = revision
+      ? await revisePlaced(client, alert, sent, note)
+      : await recordPlaced(client, alert, sent);
     setBusy(false);
     if (refused) setErrors([refused]);
     else onRecorded();
@@ -280,8 +536,13 @@ function EntryForm({
 
   async function notPlaced(event: FormEvent) {
     event.preventDefault();
+    const wrong = noted();
+    setErrors(wrong ? [wrong] : []);
+    if (wrong) return;
     setBusy(true);
-    const refused = await recordNotPlaced(client, alert, reason);
+    const refused = revision
+      ? await reviseNotPlaced(client, alert, reason, note)
+      : await recordNotPlaced(client, alert, reason);
     setBusy(false);
     if (refused) setErrors([refused]);
     else onRecorded();
@@ -289,7 +550,8 @@ function EntryForm({
 
   return (
     <>
-      <form onSubmit={place} aria-label={`Record ${team(alert)}`}>
+      {revision ? <Note value={note} onChange={setNote} /> : null}
+      <form onSubmit={place} aria-label={`${revision ? "Revise" : "Record"} ${team(alert)}`}>
         <label>
           Price
           <input
@@ -331,7 +593,7 @@ function EntryForm({
           />
         </label>
         <button type="submit" disabled={busy}>
-          Record placed bet
+          {revision ? "Save as placed" : "Record placed bet"}
         </button>
       </form>
       {allowed !== null ? (
@@ -346,7 +608,10 @@ function EntryForm({
           {w}
         </p>
       ))}
-      <form onSubmit={notPlaced} aria-label={`Not placed ${team(alert)}`}>
+      <form
+        onSubmit={notPlaced}
+        aria-label={`${revision ? "Revise as not placed" : "Not placed"} ${team(alert)}`}
+      >
         <select value={reason} onChange={(e) => setReason(e.target.value as Reason)}>
           {REASONS.map((r) => (
             <option key={r} value={r}>
@@ -355,7 +620,7 @@ function EntryForm({
           ))}
         </select>
         <button type="submit" className="secondary" disabled={busy}>
-          Record not placed
+          {revision ? "Save as not placed" : "Record not placed"}
         </button>
       </form>
       {errors.map((e) => (

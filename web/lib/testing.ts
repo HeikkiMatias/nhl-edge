@@ -24,6 +24,7 @@ export type Tables = {
   games?: unknown[];
   real_alerts?: unknown[];
   real_entries?: unknown[];
+  real_entry_revisions?: unknown[];
   real_settlements?: unknown[];
   real_corrections?: unknown[];
   real_days?: unknown[];

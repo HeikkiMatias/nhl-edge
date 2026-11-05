@@ -1,16 +1,20 @@
 // Real stakes on the dashboard (#268, ADR 0039): the latest alerted day's bets and the owner's
 // form. The rules the form shows are the database's own (supabase/migrations/
 // 20261016120000_real_bets.sql): it refuses a second entry, and a placed time at or after the
-// game's start, before the alert or in the future, whatever the browser sends. The stakes come
+// game's start, before the alert or in the future, whatever the browser sends. Until the start
+// the owner may revise an entry or withdraw it, with a note (ADR 0058, 20261106140000_real_entry_
+// revisions.sql): each revision is appended beside the entry, never an edit. The stakes come
 // from the alert's own table, so the dashboard holds no copy of the staking rule.
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { every } from "./load.ts";
+import { corrected, revised } from "./real-record.ts";
 import type {
   RealAlert,
   RealCorrection,
   RealDayMode,
   RealEntry,
+  RealRevision,
   RealSettlement,
 } from "./types.ts";
 
@@ -19,6 +23,12 @@ export const ALERT_COLUMNS =
   "min_price, max_stake, bankroll, stakes, alert_utc";
 export const ENTRY_COLUMNS =
   "game_date, game_id, outcome, matched_price, stake, bet_id, placed_utc, reason, entered_utc, late";
+export const REVISION_COLUMNS =
+  "game_date, game_id, n, outcome, matched_price, stake, bet_id, placed_utc, reason, note, " +
+  "revised_utc";
+export const CORRECTION_COLUMNS = "game_date, game_id, n, changes, reason, corrected_utc";
+/** A revision's note, as the migration checks it: said in at most this many characters. */
+export const NOTE_MAX = 200;
 /** Why an alerted bet wasn't placed, as the migration allows them. */
 export const REASONS = ["the price fell under the minimum", "not matched", "missed it"] as const;
 export type Reason = (typeof REASONS)[number];
@@ -35,7 +45,17 @@ const NOT_SET_UP = new Set(["PGRST205", "42P01", "42501"]);
 
 export type RealState =
   | { ready: false }
-  | { ready: true; day: string | null; alerts: RealAlert[]; entries: Record<number, RealEntry> };
+  | {
+      ready: true;
+      day: string | null;
+      alerts: RealAlert[];
+      entries: Record<number, RealEntry>;
+      /** Each bet's revisions in order; null before the revisions migration (ADR 0058), when
+       * an entry can't be revised from the form. */
+      revisions: Record<number, RealRevision[]> | null;
+      /** Each bet's corrections from the weekly check, in order (none before their migration). */
+      corrections: Record<number, RealCorrection[]>;
+    };
 
 /** The latest alerted day's rows and the owner's entries for them, read under row-level
  * security; not ready before the migration is applied. Throws Supabase's other errors. */
@@ -57,7 +77,9 @@ export async function loadReal(client: SupabaseClient): Promise<RealState> {
   }
   const rows = alerts.data ?? [];
   const day = rows[0]?.game_date ?? null;
-  if (day === null) return { ready: true, day, alerts: [], entries: {} };
+  if (day === null) {
+    return { ready: true, day, alerts: [], entries: {}, revisions: null, corrections: {} };
+  }
   const ofDay = (columns: string) =>
     client
       .from("real_entries")
@@ -67,12 +89,63 @@ export async function loadReal(client: SupabaseClient): Promise<RealState> {
   let entries = await ofDay(ENTRY_COLUMNS + KALSHI_ENTRY);
   if (entries.error?.code === UNDEFINED_COLUMN) entries = await ofDay(ENTRY_COLUMNS);
   if (entries.error) throw entries.error;
+  const revised = await client
+    .from("real_entry_revisions")
+    .select(REVISION_COLUMNS)
+    .eq("game_date", day)
+    .order("game_id")
+    .order("n")
+    .overrideTypes<RealRevision[], { merge: false }>();
+  let revisions: Record<number, RealRevision[]> | null = null;
+  if (revised.error) {
+    if (!NOT_SET_UP.has(revised.error.code)) throw revised.error;
+  } else {
+    revisions = {};
+    for (const r of [...(revised.data ?? [])].sort((a, b) => a.n - b.n)) {
+      (revisions[r.game_id] ??= []).push(r);
+    }
+  }
+  const fixed = await client
+    .from("real_corrections")
+    .select(CORRECTION_COLUMNS)
+    .eq("game_date", day)
+    .order("corrected_utc")
+    .order("game_id")
+    .order("n")
+    .overrideTypes<RealCorrection[], { merge: false }>();
+  if (fixed.error && !NOT_SET_UP.has(fixed.error.code)) throw fixed.error;
+  const corrections: Record<number, RealCorrection[]> = {};
+  for (const c of fixed.error ? [] : (fixed.data ?? [])) (corrections[c.game_id] ??= []).push(c);
   return {
     ready: true,
     day,
     alerts: rows.filter((r) => r.game_date === day),
     entries: Object.fromEntries((entries.data ?? []).map((e) => [e.game_id, e])),
+    revisions,
+    corrections,
   };
+}
+
+/** A bet's entry as it stands, as the real record applies them: the entry, then the owner's
+ * revisions in order (ADR 0058), each a complete new entry, then the weekly check's corrections;
+ * null when it is left unrecorded, as after an undo. The entry's own time, lateness and source
+ * stay. */
+export function standing(
+  entry: RealEntry | null,
+  revisions: RealRevision[] = [],
+  corrections: RealCorrection[] = [],
+  alert?: RealAlert,
+): RealEntry | null {
+  const rev = revised(entry ? [entry] : [], revisions);
+  return corrected(rev.entries, corrections, alert ? [alert] : [], rev.withdrawn).entries[0] ?? null;
+}
+
+/** Why the database would refuse a revision's note, or null. */
+export function checkNote(note: string): string | null {
+  const said = note.trim();
+  if (!said) return "Say why, in a few words: the note stays with the record.";
+  if (said.length > NOTE_MAX) return `The note is at most ${NOTE_MAX} characters.`;
+  return null;
 }
 
 /** The stake the alert allows at a price: its row at the highest listed price at or below it,
@@ -142,6 +215,55 @@ export async function recordNotPlaced(
   return error ? refusal(error) : null;
 }
 
+/** Revise an entry before its game's start (ADR 0058): a complete new entry, placed, with a
+ * note. Returns the database's refusal, or null. */
+export async function revisePlaced(
+  client: SupabaseClient,
+  alert: RealAlert,
+  bet: Placed,
+  note: string,
+): Promise<string | null> {
+  return revise(client, alert, {
+    outcome: "placed",
+    matched_price: bet.price,
+    stake: bet.stake,
+    bet_id: bet.betId.trim(),
+    placed_utc: bet.placedAt.toISOString(),
+    note: note.trim(),
+  });
+}
+
+/** Revise an entry to not placed, with its reason and a note. */
+export async function reviseNotPlaced(
+  client: SupabaseClient,
+  alert: RealAlert,
+  reason: Reason,
+  note: string,
+): Promise<string | null> {
+  return revise(client, alert, { outcome: "not placed", reason, note: note.trim() });
+}
+
+/** Withdraw an entry ("undo"), with a note: the bet is unrecorded again until it is recorded
+ * anew, before the start. */
+export async function withdraw(
+  client: SupabaseClient,
+  alert: RealAlert,
+  note: string,
+): Promise<string | null> {
+  return revise(client, alert, { outcome: "withdrawn", note: note.trim() });
+}
+
+async function revise(
+  client: SupabaseClient,
+  alert: RealAlert,
+  revision: Record<string, unknown>,
+): Promise<string | null> {
+  const { error } = await client
+    .from("real_entry_revisions")
+    .insert({ game_date: alert.game_date, game_id: alert.game_id, ...revision });
+  return error ? refusal(error) : null;
+}
+
 function refusal(error: { code?: string; message: string }): string {
   if (error.code === "23505") return "This bet is already recorded: an entry is never changed.";
   return error.message;
@@ -159,6 +281,8 @@ export type RealRecordState =
       ready: true;
       alerts: RealAlert[];
       entries: RealEntry[];
+      /** The owner's revisions, empty before their migration (ADR 0058). */
+      revisions: RealRevision[];
       corrections: RealCorrection[];
       days: RealDayMode[];
       settlements: RealSettlement[] | null;
@@ -193,13 +317,29 @@ export async function loadRecord(client: SupabaseClient): Promise<RealRecordStat
     if (NOT_SET_UP.has((error as { code?: string }).code ?? "")) return { ready: false };
     throw error;
   }
+  // Before the revisions migration (ADR 0058), there are no revisions to read.
+  let revisions: RealRevision[] = [];
+  try {
+    revisions = await every((from, to) =>
+      client
+        .from("real_entry_revisions")
+        .select(REVISION_COLUMNS)
+        .order("game_date")
+        .order("game_id")
+        .order("n")
+        .range(from, to)
+        .overrideTypes<RealRevision[], { merge: false }>(),
+    );
+  } catch (error) {
+    if (!NOT_SET_UP.has((error as { code?: string }).code ?? "")) throw error;
+  }
   // Before the real record migration, there are no corrections or settlements to read.
   let corrections: RealCorrection[] = [];
   try {
     corrections = await every((from, to) =>
       client
         .from("real_corrections")
-        .select("game_date, game_id, n, changes, reason, corrected_utc")
+        .select(CORRECTION_COLUMNS)
         .order("corrected_utc")
         .order("game_date")
         .order("game_id")
@@ -239,5 +379,5 @@ export async function loadRecord(client: SupabaseClient): Promise<RealRecordStat
     if (!NOT_SET_UP.has((error as { code?: string }).code ?? "")) throw error;
     settlements = null;
   }
-  return { ready: true, alerts, entries, corrections, days, settlements };
+  return { ready: true, alerts, entries, revisions, corrections, days, settlements };
 }

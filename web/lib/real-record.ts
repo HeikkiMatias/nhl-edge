@@ -9,6 +9,7 @@ import type {
   RealCorrection,
   RealDayMode,
   RealEntry,
+  RealRevision,
   RealSettlement,
 } from "./types.ts";
 
@@ -36,13 +37,58 @@ export function since(
   return { start: real[0], latest, mode: modes.get(latest) ?? "real" };
 }
 
+/** The entries with the owner's revisions applied in order (ADR 0058), as the R2 record's
+ * real_bets applies them before the corrections: each a complete new entry, or its withdrawal,
+ * which leaves the bet unrecorded. withdrawn holds the entry of each bet left withdrawn, whose
+ * time a later correction keeps; counts counts the revisions per bet. */
+export function revised(
+  entries: RealEntry[],
+  revisions: RealRevision[],
+): { entries: RealEntry[]; withdrawn: Map<string, RealEntry>; counts: Map<string, number> } {
+  const byKey = new Map(entries.map((e) => [key(e.game_date, e.game_id), { ...e }]));
+  const withdrawn = new Map<string, RealEntry>();
+  const counts = new Map<string, number>();
+  const ordered = [...revisions].sort((a, b) =>
+    a.game_date !== b.game_date
+      ? a.game_date < b.game_date ? -1 : 1
+      : a.game_id !== b.game_id
+        ? a.game_id - b.game_id
+        : a.n - b.n,
+  );
+  for (const r of ordered) {
+    const k = key(r.game_date, r.game_id);
+    const entry = byKey.get(k) ?? withdrawn.get(k);
+    // The database refuses a revision without an entry; a row read without one is left out.
+    if (!entry) continue;
+    if (r.outcome === "withdrawn") {
+      byKey.delete(k);
+      withdrawn.set(k, entry);
+    } else {
+      withdrawn.delete(k);
+      byKey.set(k, {
+        ...entry,
+        outcome: r.outcome,
+        matched_price: r.matched_price,
+        stake: r.stake,
+        bet_id: r.bet_id,
+        placed_utc: r.placed_utc,
+        reason: r.reason,
+      });
+    }
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  return { entries: [...byKey.values()], withdrawn, counts };
+}
+
 /** The entries with the corrections applied in order, as the R2 record's real_bets applies
  * them: a correction changes its entry's fields, or makes one for a bet placed but never
- * recorded, entered at the correction's time. corrected counts them per bet. */
+ * recorded, entered at the correction's time, or at its withdrawn entry's (withdrawn, from
+ * revised). corrected counts them per bet. */
 export function corrected(
   entries: RealEntry[],
   corrections: RealCorrection[],
   alerts: RealAlert[],
+  withdrawn: ReadonlyMap<string, RealEntry> = new Map(),
 ): { entries: RealEntry[]; counts: Map<string, number> } {
   const byKey = new Map(entries.map((e) => [key(e.game_date, e.game_id), { ...e }]));
   const starts = new Map(alerts.map((a) => [key(a.game_date, a.game_id), a.start_utc]));
@@ -59,18 +105,23 @@ export function corrected(
   for (const c of ordered) {
     const k = key(c.game_date, c.game_id);
     const start = starts.get(k);
-    const base: RealEntry = byKey.get(k) ?? {
-      game_date: c.game_date,
-      game_id: c.game_id,
-      outcome: "placed",
+    const fresh = {
+      outcome: "placed" as const,
       matched_price: null,
       stake: null,
       bet_id: null,
       placed_utc: null,
       reason: null,
-      entered_utc: c.corrected_utc,
-      late: start !== undefined && new Date(c.corrected_utc) >= new Date(start),
     };
+    const away = withdrawn.get(k);
+    const base: RealEntry = byKey.get(k) ??
+      (away ? { ...away, ...fresh } : undefined) ?? {
+        game_date: c.game_date,
+        game_id: c.game_id,
+        ...fresh,
+        entered_utc: c.corrected_utc,
+        late: start !== undefined && new Date(c.corrected_utc) >= new Date(start),
+      };
     const next = { ...base, ...c.changes };
     // A bet found not placed keeps no placement, as the record's checks require.
     if (next.outcome === "not placed") {

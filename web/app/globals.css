@@ -508,6 +508,31 @@ button:disabled {
   font-weight: 600;
 }
 
+/* The owner's revisions until the start (ADR 0058): Correct, Undo, and the entry's history. */
+.real-bet details {
+  margin: 6px 0;
+}
+
+.real-bet summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.real-bet label.note {
+  margin-top: 8px;
+}
+
+.real-bet label.note input {
+  width: min(100%, 28rem);
+}
+
+.real-bet .history ol {
+  margin: 4px 0;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .warning {
   color: var(--warn);
   margin: 4px 0;

@@ -1,6 +1,6 @@
 # 0058. The owner's own revisions of a real bet's entry, until its game starts
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-11-05), as written: a required note of up to 200 characters, and no revision from the game's start
 - Date: 2026-11-05
 - Amends: ADR 0039, item 7 (the records): an entry is still written once and never edited, and revisions are appended beside it.
 
@@ -25,7 +25,7 @@
 
 ## Decision
 
-Option 3, if the owner accepts it.
+Option 3 (the owner, 2026-11-05).
 
 1. **What a revision is:** a new, complete entry for the same bet, appended by an owner through the form with a short note saying why, such as "typo in the stake".
    - It is placed, with its price, stake, bet id and time, or not placed, with its reason.

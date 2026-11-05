@@ -202,3 +202,38 @@ test("a bet a correction found not placed shows its cancelled settlement", async
   expect(await screen.findByText("Cancelled by a correction")).toBeTruthy();
   expect(screen.getByText(/Not placed: not matched/)).toBeTruthy();
 });
+
+test("the owner's revisions apply to the record before the weekly check's corrections", async () => {
+  // ADR 0058: the entry was placed at 2.2, revised before the start to 2.25 at 1.2 €.
+  const entry = {
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    outcome: "placed",
+    matched_price: 2.2,
+    stake: 1.5,
+    bet_id: "P1",
+    placed_utc: "2026-11-17T18:00:00Z",
+    reason: null,
+    entered_utc: "2026-11-17T18:01:00Z",
+    late: false,
+  };
+  const revision = {
+    game_date: ALERT.game_date,
+    game_id: ALERT.game_id,
+    n: 1,
+    outcome: "placed",
+    matched_price: 2.25,
+    stake: 1.2,
+    bet_id: "P1b",
+    placed_utc: "2026-11-17T18:00:00Z",
+    reason: null,
+    note: "the price was 2.25",
+    revised_utc: "2026-11-17T19:00:00Z",
+  };
+  const { supabase } = stubbed(
+    { real_alerts: [ALERT], real_entries: [entry], real_entry_revisions: [revision] },
+    new Set(["anon"]),
+  );
+  render(<RealRecord client={supabase} bets={[BET]} report={null} />);
+  expect(await screen.findByText(/Placed at 2.25.*\(revised\)/)).toBeTruthy();
+});

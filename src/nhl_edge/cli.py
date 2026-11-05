@@ -5535,6 +5535,26 @@ def _new_entries(store: Any) -> int:
     return rl.store_entries(store, [row for row in found if row.get("source") != "kalshi"])
 
 
+REVISIONS_MIGRATION = "20261106140000_real_entry_revisions.sql"
+
+
+def _new_revisions(store: Any) -> str:
+    """Copy the owner's new revisions of entries (Supabase real_entry_revisions, ADR 0058) to the
+    record, each once, after the entries they revise. Before its migration there are none."""
+    from nhl_edge.lake.supabase import Supabase, SupabaseError
+    from nhl_edge.live import real_ledger as rl
+
+    try:
+        found = Supabase.from_env().select(
+            "real_entry_revisions", ("id", *rl.REVISION_FIELDS), "id"
+        )
+    except SupabaseError as exc:
+        if not any(code in str(exc) for code in ("PGRST205", "42P01")):
+            raise
+        return f"the dashboard's revisions aren't set up yet: apply {REVISIONS_MIGRATION}"
+    return f"{rl.store_revisions(store, found)} new revisions copied from the dashboard"
+
+
 @real_app.command("alert")
 def real_alert(
     r2: Annotated[
@@ -5678,8 +5698,11 @@ def real_alert(
 
     if supabase and not dry_run:
         typer.echo(f"{_new_entries(store)} new entries copied from the dashboard")
+        typer.echo(_new_revisions(store))
     games = lake.read("games", seasons=[LIVE_SEASON])
-    record = rl.bets(rl.alerts(store), rl.entries(store), rl.corrections(store))
+    record = rl.bets(
+        rl.alerts(store), rl.entries(store), rl.corrections(store), rl.revisions(store)
+    )
     url = optional("DASHBOARD_URL")
     reports_ = rl.weekly_reports()
     stopped = rl.stopped_days(store)
@@ -5767,12 +5790,12 @@ def real_sync(
     ] = False,
     supabase: Annotated[
         bool,
-        typer.Option("--supabase", help="Copy the dashboard's new entries first."),
+        typer.Option("--supabase", help="Copy the dashboard's new entries and revisions first."),
     ] = False,
 ) -> None:
-    """Copy the dashboard's new entries to the real record, each once (#268), and rebuild the
-    lake's real_alerts and real_bets from it: every alerted bet placed, not placed, or skipped,
-    with the corrections applied."""
+    """Copy the dashboard's new entries and the owner's revisions of them to the real record, each
+    once (#268, ADR 0058), and rebuild the lake's real_alerts and real_bets from it: every alerted
+    bet placed, not placed, or skipped, with the revisions, then the corrections, applied."""
     from nhl_edge.live import placement
     from nhl_edge.live import real_ledger as rl
 
@@ -5782,9 +5805,10 @@ def real_sync(
     lake, store = _real_record(r2)
     if supabase:
         typer.echo(f"{_new_entries(store)} new entries copied from the dashboard")
+        typer.echo(_new_revisions(store))
     alerted = rl.alerts(store)
     corrected = rl.corrections(store)
-    record = rl.bets(alerted, rl.entries(store), corrected)
+    record = rl.bets(alerted, rl.entries(store), corrected, rl.revisions(store))
     if supabase:
         from nhl_edge.lake.supabase import Supabase
 
@@ -5858,7 +5882,9 @@ def real_settle(
     if r2:
         lake.pull("games", seasons=[LIVE_SEASON])
     games = lake.read("games", seasons=[LIVE_SEASON])
-    record = rl.bets(rl.alerts(store), rl.entries(store), rl.corrections(store))
+    record = rl.bets(
+        rl.alerts(store), rl.entries(store), rl.corrections(store), rl.revisions(store)
+    )
     resolved = rl.exchange_settlements(store)
     new = rl.settle(record, games, rl.settlements(store), now, version, resolved)
     rl.write_settlements(store, new)
@@ -5906,7 +5932,9 @@ def real_statement(
     lake, store = _real_record(r2)
     if r2:
         lake.pull("games", seasons=[LIVE_SEASON])
-    record = rl.bets(rl.alerts(store), rl.entries(store), rl.corrections(store))
+    record = rl.bets(
+        rl.alerts(store), rl.entries(store), rl.corrections(store), rl.revisions(store)
+    )
     games = lake.read("games", seasons=[LIVE_SEASON])
     of = rl.PRACTICE if practice else rl.REAL
     for line in rl.statement(record, rl.settlements(store), of, games):

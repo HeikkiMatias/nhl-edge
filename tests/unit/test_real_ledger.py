@@ -255,6 +255,125 @@ def test_corrections_are_appended_and_applied_in_order() -> None:
     assert len(rl.corrections(bucket)) == held
 
 
+def test_revisions_are_copied_once_and_never_edited() -> None:
+    bucket = store()
+    first, second = rf.revision(n=1), rf.revision(n=2, outcome=rl.WITHDRAWN)
+    assert rl.store_revisions(bucket, [second, first]) == 2
+    assert rl.store_revisions(bucket, [first, second]) == 0
+    with pytest.raises(lb.Conflict):
+        rl.store_revisions(bucket, [rf.revision(n=1, stake=1.4)])
+    assert [r["n"] for r in rl.revisions(bucket)] == [1, 2]
+    assert set(rl.revisions(bucket)[0]) == set(rl.REVISION_FIELDS)
+
+
+def test_revisions_apply_after_the_entry_and_before_the_corrections() -> None:
+    rows = rf.alert_rows()
+    entered = datetime(2026, 10, 7, 17, 6, tzinfo=UTC)
+    entry = rf.entry(FIRST, stake=1.0, entered=entered)
+    revised = [
+        # Out of order on purpose: they apply by their number.
+        rf.revision(FIRST, 3, price=2.05, stake=1.4, revised=rf.later(3)),
+        rf.revision(FIRST, 1, stake=1.2, revised=rf.later(1)),
+        rf.revision(FIRST, 2, "not placed", reason="not matched", revised=rf.later(2)),
+    ]
+    record = rl.bets(rows, [entry], revised=revised)
+    first = record.filter(pl.col("game_id") == FIRST).row(0, named=True)
+    assert (first["outcome"], first["matched_price"], first["stake"]) == (rl.PLACED, 2.05, 1.4)
+    assert (first["bet_id"], first["revisions"], first["corrections"]) == (f"R{FIRST}-3", 3, 0)
+    # Still the entry's time: a revision records nothing late.
+    assert (first["entered_utc"], first["late"], first["reason"]) == (entered, False, None)
+    # A correction at the weekly check applies on top of the revisions.
+    fixed = {
+        "game_date": pf.DAY.isoformat(),
+        "game_id": FIRST,
+        "n": 0,
+        "changes": {"stake": 1.3},
+        "reason": "the statement says 1.30",
+        "corrected_utc": "2026-10-12T10:00:00+00:00",
+    }
+    corrected = rl.bets(rows, [entry], [fixed], revised)
+    after = corrected.filter(pl.col("game_id") == FIRST).row(0, named=True)
+    assert (after["stake"], after["matched_price"]) == (1.3, 2.05)
+    assert (after["revisions"], after["corrections"]) == (3, 1)
+    others = corrected.filter(pl.col("game_id") != FIRST)
+    assert set(others["revisions"]) == {0}
+
+
+def test_an_undo_leaves_the_bet_unrecorded_until_it_is_recorded_again() -> None:
+    rows = rf.alert_rows()
+    entered = datetime(2026, 10, 7, 17, 6, tzinfo=UTC)
+    entry = rf.entry(FIRST, entered=entered)
+    undo = rf.revision(FIRST, 1, rl.WITHDRAWN, note="recorded on the wrong game")
+    first = rl.bets(rows, [entry], revised=[undo]).filter(pl.col("game_id") == FIRST)
+    # As an alerted bet without an entry: not placed, with no reason, time or lateness.
+    unrecorded = ("reason", "matched_price", "bet_id", "entered_utc", "late", "within_rule")
+    assert first.select(unrecorded).row(0) == (None,) * len(unrecorded)
+    assert first.select("outcome", "revisions").row(0) == (rl.NOT_PLACED, 1)
+    again = rf.revision(FIRST, 2, price=2.12, stake=1.5, revised=rf.later(2))
+    first = rl.bets(rows, [entry], revised=[undo, again]).filter(pl.col("game_id") == FIRST)
+    assert first.select("outcome", "matched_price", "entered_utc", "late", "revisions").row(0) == (
+        rl.PLACED,
+        2.12,
+        entered,
+        False,
+        2,
+    )
+
+
+def test_a_revision_without_an_entry_or_from_the_start_is_refused() -> None:
+    rows = rf.alert_rows()
+    with pytest.raises(ValueError, match="a revision without an entry"):
+        rl.bets(rows, [], revised=[rf.revision(FIRST)])
+    at_start = rf.revision(FIRST, revised=pf.GAMES[FIRST][2])
+    with pytest.raises(ValueError, match="at or after its game's start"):
+        rl.bets(rows, [rf.entry(FIRST)], revised=[at_start])
+    # The record's own rule for the bet it leaves: placed after its alert, before the start.
+    early = rf.revision(FIRST, placed=rf.ALERT - timedelta(minutes=1))
+    with pytest.raises(ValueError, match="outside its alert"):
+        rl.bets(rows, [rf.entry(FIRST)], revised=[early])
+
+
+def test_a_correction_is_checked_against_the_revised_entry() -> None:
+    bucket = rf.alerted_store()
+    rl.store_entries(bucket, [rf.entry(FIRST)])
+    rl.store_revisions(bucket, [rf.revision(FIRST, 1, rl.WITHDRAWN)])
+    now = datetime(2026, 10, 12, 10, tzinfo=UTC)
+    # The withdrawal cleared the bet's price, stake and id: "placed" alone leaves it incomplete.
+    with pytest.raises(ValueError, match="a placed bet needs"):
+        rl.correct(bucket, pf.DAY, FIRST, {"outcome": "placed"}, "the statement has it", now)
+    restored = {name: rf.entry(FIRST)[name] for name in rl.CORRECTABLE}
+    rl.correct(bucket, pf.DAY, FIRST, restored, "the statement has it", now)
+    revised = rl.revisions(bucket)
+    record = rl.bets(rl.alerts(bucket), rl.entries(bucket), rl.corrections(bucket), revised)
+    first = record.filter(pl.col("game_id") == FIRST).row(0, named=True)
+    assert (first["outcome"], first["revisions"], first["corrections"]) == (rl.PLACED, 1, 1)
+    assert first["entered_utc"] == datetime(2026, 10, 7, 17, 6, tzinfo=UTC)
+
+
+def test_the_revisions_read_are_the_migrations_columns() -> None:
+    import re
+    from pathlib import Path
+
+    migration = Path("supabase/migrations/20261106140000_real_entry_revisions.sql").read_text()
+    body = re.search(r"create table public\.real_entry_revisions \((.*?)\n\);", migration, re.S)
+    assert body is not None
+    column = re.compile(r"^  ([a-z_0-9]+) (?:bigint|integer|text|date|timestamptz|numeric|uuid)\b")
+    found = {m.group(1) for line in body.group(1).splitlines() if (m := column.match(line))}
+    assert set(rl.REVISION_FIELDS) == found - {"id", "revised_by"}
+    # The form's grant: the revision's own columns, never its number, time or author.
+    grant = re.search(r"grant insert \((.*?)\)\s+on table public\.real_entry_revisions", migration)
+    assert grant is not None
+    assert set(grant.group(1).split(", ")) == set(rl.REVISION_FIELDS) - {"n", "revised_utc"}
+    outcomes = re.search(r"outcome text not null check \(outcome in \((.*?)\)\)", migration)
+    assert outcomes is not None
+    assert re.findall(r"'([^']+)'", outcomes.group(1)) == [rl.PLACED, rl.NOT_PLACED, rl.WITHDRAWN]
+    from nhl_edge.lake.schemas import REAL_REASONS
+
+    reasons = re.search(r"reason text check \(reason in \((.*?)\)\)", migration)
+    assert reasons is not None
+    assert re.findall(r"'([^']+)'", reasons.group(1)) == list(REAL_REASONS)
+
+
 def test_the_bankroll_counts_only_its_own_modes_placed_bets() -> None:
     rows = rf.alert_rows()
     record = rl.bets(rows, [rf.entry(FIRST, price=2.10, stake=1.5), rf.entry(SECOND, stake=1.0,

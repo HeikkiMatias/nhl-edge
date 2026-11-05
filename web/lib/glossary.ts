@@ -238,10 +238,19 @@ export const GLOSSARY = {
     term: "Recording a bet",
     meaning:
       "Each alerted bet gets one entry: placed, with the matched price, the stake, the venue's " +
-      "bet id and when you placed it, or not placed, with the reason. An entry is never " +
-      "changed; a mistake is corrected at the weekly check against the venue's statement. A bet " +
-      "recorded after its game started is accepted and marked late, if it was placed before " +
-      "the start.",
+      "bet id and when you placed it, or not placed, with the reason. Until the game starts it " +
+      "can be revised from the form; from the start on, a mistake is corrected at the weekly " +
+      "check against the venue's statement. A bet recorded after its game started is accepted " +
+      "and marked late, if it was placed before the start.",
+  },
+  realRevision: {
+    term: "Correcting or undoing an entry",
+    meaning:
+      "Until a bet's game starts, you can correct its entry (a new price, stake, bet id or " +
+      "time, or not placed after all) or undo it, and the bet is unrecorded again until you " +
+      "record it anew. Each comes with a short note saying why. Nothing is edited: the entry " +
+      "and every revision stay on record, in order, and the record uses the latest. Automatic " +
+      "Kalshi entries come from their fills and aren't revised here.",
   },
   realBankroll: {
     term: "Real bankroll",
