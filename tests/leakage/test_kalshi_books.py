@@ -90,9 +90,9 @@ def test_no_model_or_feature_code_reads_the_books() -> None:
     # on it (ADR 0040), the orders' fills valued against the close (#318), the watch of every
     # game's markets (#319), the re-valuation of the resting bids it triggers (#321), the shadow
     # that selects on Kalshi's own prices (#320, ADR 0046), the scale-up reading of the real fills
-    # (#322, ADR 0047), the paper quotes on both teams' markets (#358), the owner's own two-sided
-    # demo quotes (#375, ADR 0055) and the CLI that runs them name it, and only the first three and
-    # the CLI name the books' table.
+    # (#322, ADR 0047), the paper quotes on both teams' markets (#358) and their live view for the
+    # owner's dashboard (#398), the owner's own two-sided demo quotes (#375, ADR 0055) and the CLI
+    # that runs them name it, and only the first three and the CLI name the books' table.
     src = Path(__file__).parents[2] / "src" / "nhl_edge"
     texts = {path.relative_to(src).as_posix(): path.read_text() for path in src.rglob("*.py")}
     naming = {path for path, text in texts.items() if "kalshi" in text.lower()}
@@ -109,6 +109,7 @@ def test_no_model_or_feature_code_reads_the_books() -> None:
         "live/kalshi_shadow.py",
         "live/kalshi_trade.py",
         "live/placement.py",
+        "live/quotes_live.py",
         "live/real.py",
         "live/real_ledger.py",
         "live/revalue.py",

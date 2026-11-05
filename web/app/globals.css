@@ -709,6 +709,25 @@ button:disabled {
   background: var(--s3);
 }
 
+/* Team logos (the NHL's), one image for each theme. */
+.logo {
+  vertical-align: -5px;
+  margin-right: 4px;
+}
+
+:root[data-theme="light"] .logo.on-dark,
+:root:not([data-theme="light"]) .logo.on-light {
+  display: none;
+}
+
+.game-card .card-title {
+  flex-wrap: wrap;
+}
+
+.game-card .card-title h3 {
+  margin-right: auto;
+}
+
 /* Per-contract figures on one cent scale: a dot and its interval band. */
 .intervals {
   list-style: none;

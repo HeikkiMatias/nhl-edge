@@ -3,7 +3,7 @@
 The dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.js app that runs in the browser and reads Supabase.
 
 **The tabs (#398).** Each is linkable by the URL's hash and survives a reload:
-- **Market making** (`#market`, the default): the direction the owner follows most.
+- **Market making** (`#market`, the default): Today (`#market`) and Results (`#market/results`), the direction the owner follows most.
 - **Betting:** Today (`#betting`, where the Telegram alert links) and Results (`#betting/results`).
 - **Models** (`#models`): the live report, for now; the challengers' charts follow (#398 step 5).
 - **Help** (`#help`): the daily routine, what each section shows and the glossary.
@@ -14,6 +14,14 @@ A tab is drawn when first opened and kept after, so moving back is instant and a
 
 **Help pop-ups.** Every section's ⓘ opens what it shows, how to read it, where it comes from and the glossary's words for its terms. They close on Esc, a click outside or their button. The texts live in one place, `lib/help.ts`, with the terms from `lib/glossary.ts`.
 
+**Market making › Today** (#398 step 3, the default), the simulator's day as it stands from the owner-only `quote_live`, read again every minute:
+- **Per game:** our fair value for each team, Kalshi's best bid and ask, our resting bid and its contracts, what we hold and at what cost, and what the holding wins or loses at the result, with the game's state (quoting, pulled after a move or a starter, stopped before the start).
+- **The day:** the games, fills and cost, and the best and worst cases if every result goes our way or against us.
+- **A half-spread picker** (our model at 0, 1 or 2¢), and a "not updating" warning when no cycle has come for 15 minutes while games are still to start.
+- **Team logos** are the NHL's own (`assets.nhle.com`), one for each theme.
+
+`nhl real quotes-live` writes it every 5 minutes, in its own job beside the watch (`kalshi-watch.yml`). It reads the watch's polls as they are mirrored to R2, never Kalshi itself. At a day's end its holdings equal the nightly record's.
+
 **Market making › Results** (#398), the Kalshi quoting simulator's figures from the owner-only `quote_days` and `quote_reports`:
 - **Paper only:** a simulator on Kalshi's real books from 2026-10-31. Its fills are an upper bound.
 - **A picker:** the fair value and the half-spread, starting at our model a cent below.
@@ -22,7 +30,7 @@ A tab is drawn when first opened and kept after, so moving back is instant and a
 - **Per contract:** the spread and the markouts, with each figure's 95% interval once its fills span 4 weeks (from about game date 2026-11-16), counts only before.
 - **Every variant** side by side, and the hold rules (#385) against wait.
 
-Before the quotes migration it says how to apply it. The live view of the day's games (Market making › Today) comes with #398 step 3.
+Before their migrations, both views say how to apply them.
 
 **Betting** shows:
 
@@ -69,12 +77,12 @@ Before the quotes migration it says how to apply it. The live view of the day's 
 - **The browser holds only the public anon key.** The service role key stays in the GitHub workflows' secrets.
   - The app's one server route, `app/api/scores`, relays the NHL's public scoreboard. It holds no secret and reads no Supabase data.
   - It serves only dates within two days of today, and Vercel's CDN caches its answers for 20 seconds.
-- **Row-level security decides what a signed-in user can read.** Only the users in `public.dashboard_owners` can read `predictions`, `paper_bets`, `live_reports`, `real_alerts`, `real_entries`, `real_settlements`, `real_corrections`, `real_days`, `quote_days` and `quote_reports`, and, from `games`, the scores of the bets' games. Anon reads nothing.
+- **Row-level security decides what a signed-in user can read.** Only the users in `public.dashboard_owners` can read `predictions`, `paper_bets`, `live_reports`, `real_alerts`, `real_entries`, `real_settlements`, `real_corrections`, `real_days`, `quote_days`, `quote_reports` and `quote_live`, and, from `games`, the scores of the bets' games. Anon reads nothing.
 - **The one write is the real bets form** (#268): an owner may insert into `real_entries`, only its entry's own columns. The database sets the entry's time, lateness and author, refuses a second entry and a placed time outside the bet's alert and start, and grants no update or delete (`supabase/migrations/20261016120000_real_bets.sql`). An automatic Kalshi bet shows its order instead of the form: the pipeline records its entry (#287).
 - **Sign-in is by password, or by email link,** and only for users who already exist: sign-ups are off, and the link never creates a user (`shouldCreateUser: false`). Any other signed-in account is told it is not an owner, and is shown its user id.
 - **A link that comes back signed out says why,** in Supabase's words from the client's initialization: an expired or used-up link (as when a mail scanner opened it first), or a code it couldn't exchange, as in a browser other than the one that asked for it. A sign-in clears the message.
 - The page asks search engines not to index it.
-- **The Kalshi quoting simulator's figures are private (#280).** The owner chose on 2026-11-05 to see them on the dashboard, in owner-only tables. `quote_days` holds sums per game date and variant, `quote_reports` the night's figures over every kept day. No price, ticker, order book, trade or fill time reaches Supabase from the nightly run. The raw logs stay in R2.
+- **The Kalshi quoting simulator's figures are private (#280).** The owner chose on 2026-11-05 to see them on the dashboard, in owner-only tables. `quote_days` holds sums per game date and variant, `quote_reports` the night's figures over every kept day. No price, ticker, order book, trade or fill time reaches Supabase from the nightly run. The live view's `quote_live` carries Kalshi's latest best bid and ask per market, by the owner's choice of the same day, and no ticker, trade or order. The raw logs stay in R2.
 
 ## Environment variables
 
@@ -98,6 +106,7 @@ Without them the build still succeeds, and the page says it isn't configured.
    - `supabase/migrations/20261018180000_kalshi_orders.sql` (#287, ADR 0040): each Kalshi bet's order on its alert, and the automatic bets' entries, which the pipeline records from their fills (`source = 'kalshi'`, never the form's). Apply it before the venue commit that makes Kalshi the real bets' venue. Until then the page reads no order and every entry is the form's.
    - `supabase/migrations/20261023120000_real_payouts.sql` (#290): the settlement status `payout`, for a Kalshi bet held for Kalshi's own resolution (its game played over two weeks late, or never) and paid out at Kalshi's price. Apply it before the venue commit too: until then such a settlement's copy to the dashboard is refused, and the nightly settle step fails on it.
    - `supabase/migrations/20261106120000_kalshi_quotes.sql` (#398): the quoting simulator's figures per game date and variant (`quote_days`) and each night's figures over every kept day (`quote_reports`), owner-only, for the Market making tab. Then set `SUPABASE_QUOTES=true` (step 3).
+   - `supabase/migrations/20261106130000_quote_live.sql` (#398 step 3): the live view's rows (`quote_live`), owner-only. Then set `SUPABASE_QUOTES_LIVE=true` (step 3).
 2. **Your user.**
    - Authentication → Users → Add user → Create new user, with your email and a password, and "Auto Confirm User" ticked. You sign in with those.
    - A user made without a password: delete it and add it again with one, then put its new id in `dashboard_owners` (step 2's insert). Or set the password through Supabase Auth's admin API, which hashes it as Auth does, never with SQL on `auth.users`:
@@ -107,6 +116,7 @@ Without them the build still succeeds, and the page says it isn't configured.
 3. **The repository variable `SUPABASE_LEDGER=true`** (GitHub → Settings → Secrets and variables → Actions → Variables), if not already set for #167. The midday and nightly runs then copy the ledger, and the nightly run writes the live report.
    - **`SUPABASE_REAL=true`,** once the real bets migration is applied: the midday alert then sends the day's bets to the dashboard, and copies your entries back to R2, the record.
    - **`DASHBOARD_URL`,** the Vercel production URL: the alert's message links to it.
+   - **`SUPABASE_QUOTES_LIVE=true`,** once the live migration is applied: each watch window then runs the live job beside the watch, in the `kalshi-live` environment, as the nightly job does for its Supabase secrets.
    - **`SUPABASE_QUOTES=true`,** once the quotes migration is applied: the nightly run then copies the simulator's figures, every kept day since 2026-10-31 on its first night, and each night again as the games' results come in.
 4. **Vercel.**
    - New Project → import `HeikkiMatias/nhl-edge`.
@@ -132,6 +142,7 @@ The tests run the real supabase-js client against a stand-in for PostgREST (`lib
 - `lib/load.test.ts`: the reads.
 - `lib/results.test.ts`: the bankroll and the record.
 - `lib/live.test.ts` and `app/api/scores/route.test.ts`: the live scores and their route, on the NHL's recorded scoreboards of 2026-10-08 and 10-09 (`lib/fixtures/score-*.json`).
+- `lib/live-quotes.test.ts` and `app/market-today.test.tsx`: the live view's latest day under row-level security, each game's holding either way, the best and worst cases, the picker, a pulled game, the refresh and the "not updating" warning, on synthetic rows (`lib/fixtures/live-quotes.ts`).
 - `lib/quotes.test.ts` and `app/market.test.tsx`: the simulator's reads under row-level security, its totals and running lines, the picker, counts only before 4 weeks and intervals after, and the hold rules, on synthetic rows (`lib/fixtures/quotes.ts`).
 - `app/dashboard.test.tsx`: the page's states.
   - the tabs: the default, the hash, the arrow keys; a help pop-up opening and closing; the theme switch;

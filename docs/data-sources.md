@@ -701,6 +701,10 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
     - `quote_reports` holds each night's figures over every kept day.
     - Both records go there, the simulator's and the hold rules', recomputed every night.
     - No fill's price, ticker, time or trade goes there (`supabase/migrations/20261106120000_kalshi_quotes.sql`).
+- **`nhl real quotes-live --r2 --supabase`, in its own job beside each watch window (#398 step 3, once `SUPABASE_QUOTES_LIVE` is true):** the dashboard's live view of the simulator, every 5 minutes until the watch's end.
+  - **Each cycle:** today's new watch polls restored from R2 as the watch mirrors them (never Kalshi itself), the lake's fair values pulled, then our model's quotes at each half-spread run to now by the simulator's own rules (`run_variant`'s `until`). Before the decision is published, the slate is the morning view's.
+  - **The rows** (`quote_live`, owner-only, the owner's choice of 2026-11-05), per game, team and variant: our fair value, Kalshi's latest best bid and ask, our resting bid, what we hold and its cost, and the game's state. Each cycle replaces them; the nightly record stays the record. At a day's end the holdings equal the record's (checked on 11-03 and 11-04).
+  - **The log** has counts only; a failed cycle names its error's kind and the next one runs.
 - **Inputs:** an order is built from the day's alert only. No Kalshi price is an input: of the market's data only its status is used (`tests/leakage/test_kalshi_orders.py`, which also checks that no model package reads the real record or the orders).
 
 ## Odds snapshots

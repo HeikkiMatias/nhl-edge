@@ -901,6 +901,73 @@ def _parse(
     return parse_trades(body, market, observed, raw_key)
 
 
+def poll_keys(store: RawStore, kind: str, day: date) -> list[str]:
+    """A kind's stored polls of a game date, oldest first, by their raw keys."""
+    day_dir = store.base_dir / kalshi.SOURCE / WATCH / kind / day.isoformat()
+    if not day_dir.is_dir():
+        return []
+    return [
+        path.relative_to(store.base_dir).as_posix().removesuffix(SUFFIX)
+        for path in sorted(day_dir.glob(f"*{SUFFIX}"))
+    ]
+
+
+def read_poll(
+    store: RawStore, kind: str, raw_key: str, report: ReplayReport
+) -> list[pl.DataFrame] | None:
+    """One stored poll's rows, its responses counted in report: None while its meta is not
+    written yet (incomplete), and nothing but its key in report.unparsed when it doesn't parse."""
+    if not (store.base_dir / f"{raw_key}.meta.json").exists():
+        report.incomplete.append(raw_key)
+        return None
+    report.objects[kind] += 1
+    frames: list[pl.DataFrame] = []
+    try:
+        meta = store.meta(raw_key)
+        markets = {m["ticker"]: kalshi.market_of(m) for m in meta["markets"]}
+        polled = json.loads(store.get(raw_key))["responses"]
+        for response in polled:
+            if response.get("invalid"):
+                report.invalid += 1
+                continue
+            if response["status"] != kalshi.OK:
+                report.not_found += response["status"] == kalshi.NOT_FOUND
+                continue
+            frames.append(
+                _parse(
+                    kind,
+                    response["body"].encode(),
+                    markets,
+                    response["ticker"],
+                    parse_utc(response["fetched_utc"]),
+                    raw_key,
+                )
+            )
+    except (KalshiError, KeyError, TypeError, ValueError, SchemaError):
+        report.unparsed.append(raw_key)
+        return []
+    return frames
+
+
+def watch_tables(
+    frames: Mapping[str, Sequence[pl.DataFrame]], report: ReplayReport | None = None
+) -> dict[str, pl.DataFrame]:
+    """The three tables from their parsed polls' rows, sorted and validated. A trade fetched by
+    two polls is kept at its first fetch."""
+    tables = {}
+    for kind in KINDS:
+        columns = dtypes(SCHEMAS[kind])
+        parts = list(frames.get(kind, []))
+        table = pl.concat(parts) if parts else pl.DataFrame(schema=columns)
+        if kind == TRADES:
+            table = table.sort("observed_utc").unique("trade_id", keep="first")
+        table = table.sort(*ORDER[kind])
+        tables[kind] = SCHEMAS[kind].validate(table)
+        if report is not None:
+            report.rows[kind] = table.height
+    return tables
+
+
 def stored_watch(
     store: RawStore, dates: Collection[date] | None = None
 ) -> tuple[dict[str, pl.DataFrame], ReplayReport]:
@@ -920,46 +987,10 @@ def stored_watch(
             if dates is not None and day not in dates:
                 continue
             seen.add(day)
-            for path in sorted(day_dir.glob(f"*{SUFFIX}")):
-                raw_key = path.relative_to(store.base_dir).as_posix().removesuffix(SUFFIX)
-                if not (store.base_dir / f"{raw_key}.meta.json").exists():
-                    report.incomplete.append(raw_key)
-                    continue
-                report.objects[kind] += 1
-                try:
-                    meta = store.meta(raw_key)
-                    markets = {m["ticker"]: kalshi.market_of(m) for m in meta["markets"]}
-                    polled = json.loads(store.get(raw_key))["responses"]
-                    for response in polled:
-                        if response.get("invalid"):
-                            report.invalid += 1
-                            continue
-                        if response["status"] != kalshi.OK:
-                            report.not_found += response["status"] == kalshi.NOT_FOUND
-                            continue
-                        frames[kind].append(
-                            _parse(
-                                kind,
-                                response["body"].encode(),
-                                markets,
-                                response["ticker"],
-                                parse_utc(response["fetched_utc"]),
-                                raw_key,
-                            )
-                        )
-                except (KalshiError, KeyError, TypeError, ValueError, SchemaError):
-                    report.unparsed.append(raw_key)
+            for raw_key in poll_keys(store, kind, day):
+                frames[kind] += read_poll(store, kind, raw_key, report) or []
     report.dates = sorted(seen)
-    tables = {}
-    for kind in KINDS:
-        columns = dtypes(SCHEMAS[kind])
-        table = pl.concat(frames[kind]) if frames[kind] else pl.DataFrame(schema=columns)
-        if kind == TRADES:
-            table = table.sort("observed_utc").unique("trade_id", keep="first")
-        table = table.sort(*ORDER[kind])
-        tables[kind] = SCHEMAS[kind].validate(table)
-        report.rows[kind] = table.height
-    return tables, report
+    return watch_tables(frames, report), report
 
 
 class ReplayError(RuntimeError):
