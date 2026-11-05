@@ -856,6 +856,9 @@ def challengers(
             "version": challenger.version,
             "adr": challenger.adr,
             "registered_on": challenger.registered_on.isoformat(),
+            # Its primary measure as its ADR fixes it: a model or challenger its log loss is
+            # paired with, or "move"; None for the control (the dashboard's Models tab, #398).
+            "primary": challenger.primary,
             "days": len(scored_days),
             "games": own.height,
             "predicted": own.filter(pl.col("p_home").is_not_null()).height,

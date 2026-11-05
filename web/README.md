@@ -5,7 +5,7 @@ The dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.js app that run
 **The tabs (#398).** Each is linkable by the URL's hash and survives a reload:
 - **Market making** (`#market`, the default): Today (`#market`) and Results (`#market/results`), the direction the owner follows most.
 - **Betting:** Today (`#betting`, where the Telegram alert links) and Results (`#betting/results`).
-- **Models** (`#models`): the live report, for now; the challengers' charts follow (#398 step 5).
+- **Models** (`#models`, #398 step 5): the model against the market over time (BLEND − B1, B3 − B2 and the blend's calibration slope), a card per challenger (registration, game days and games, a fitted one's training games toward its minimum, its primary measure and the way to the formal review), the morning view and the close forecasters, then the full live report. Its history is read when the tab first opens: each nightly report of the current policy, with only the figures it charts. A chart draws a point only once its figure has its interval, from 4 weeks (hard rule 7); before that the card says about when. Nothing on it is a verdict before the formal review (ADR 0032).
 - **Help** (`#help`): the daily routine, what each section shows and the glossary.
 
 A tab is drawn when first opened and kept after, so moving back is instant and a form keeps what was typed in it.

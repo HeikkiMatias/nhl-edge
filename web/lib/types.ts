@@ -1,3 +1,5 @@
+import type { ChallengerEntry, ForecastSection } from "./models.ts";
+
 // The rows the dashboard reads, as the migrations in supabase/migrations/ define them. Only the
 // columns it selects. Each bet's result and profit show during the season (ADR 0034).
 
@@ -90,6 +92,12 @@ export type RealStakes = {
 export type LiveReport = {
   as_of: string;
   kind: string;
+  /** The challengers (ADR 0038), the morning view (ADR 0052) and the close forecasters (ADR 0054,
+   * 0056), each absent from a report before it. */
+  challengers?: { registered: number; challengers: Record<string, ChallengerEntry> } | null;
+  morning_view?: ForecastSection | null;
+  close_forecast?: ForecastSection | null;
+  close_forecast_2?: ForecastSection | null;
   /** The frozen policy's real-stakes section; absent from an earlier policy's report. */
   real_stakes?: RealStakes | null;
   policy_version: string;
