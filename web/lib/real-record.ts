@@ -105,8 +105,11 @@ export function corrected(
   for (const c of ordered) {
     const k = key(c.game_date, c.game_id);
     const start = starts.get(k);
-    const fresh = {
-      outcome: "placed" as const,
+    // A withdrawn entry is unrecorded: a correction applies to it cleared and not placed, as the
+    // R2 record applies one, so a correction of its reason alone leaves it not placed (Codex on
+    // #404). It keeps the entry's own time.
+    const cleared = {
+      outcome: "not placed" as const,
       matched_price: null,
       stake: null,
       bet_id: null,
@@ -115,10 +118,11 @@ export function corrected(
     };
     const away = withdrawn.get(k);
     const base: RealEntry = byKey.get(k) ??
-      (away ? { ...away, ...fresh } : undefined) ?? {
+      (away ? { ...away, ...cleared } : undefined) ?? {
         game_date: c.game_date,
         game_id: c.game_id,
-        ...fresh,
+        ...cleared,
+        outcome: "placed",
         entered_utc: c.corrected_utc,
         late: start !== undefined && new Date(c.corrected_utc) >= new Date(start),
       };
