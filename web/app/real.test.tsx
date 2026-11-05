@@ -436,3 +436,28 @@ test("an automatic Kalshi entry, or any entry before the revisions migration, is
   expect(screen.queryByText("Correct it")).toBeNull();
   expect(screen.queryByText("Undo it")).toBeNull();
 });
+
+test("an alerted bet's card shows its teams' logos and the stake ladder", async () => {
+  const { supabase } = board();
+  render(<RealBets client={supabase} />);
+  const heading = await screen.findByText(/CHI at TOR, starts .* · bet TOR/);
+  const logos = [...heading.querySelectorAll("img.logo.on-dark")].map((i) => i.getAttribute("src"));
+  expect(logos).toEqual([
+    "https://assets.nhle.com/logos/nhl/svg/CHI_dark.svg",
+    "https://assets.nhle.com/logos/nhl/svg/TOR_dark.svg",
+  ]);
+  const ladder = screen.getByRole("list", { name: "The stake at each price" });
+  expect([...ladder.querySelectorAll("li")].map((li) => li.textContent)).toEqual([
+    "2.12+1.50 €",
+    "2.08+0.90 €",
+    "2.05+0.60 €",
+  ]);
+});
+
+test("from the start on a recorded entry is locked, with the weekly check to correct it", async () => {
+  vi.setSystemTime(new Date("2026-11-18T00:00:30Z"));
+  const { supabase } = revisable();
+  render(<RealBets client={supabase} />);
+  expect(await screen.findByText(/Locked: the game has started/)).toBeTruthy();
+  expect(screen.queryByText("Correct it")).toBeNull();
+});

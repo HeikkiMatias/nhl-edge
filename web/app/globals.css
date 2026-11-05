@@ -848,6 +848,386 @@ button:disabled {
   font-size: 13px;
 }
 
+/* Betting › Today (#398 step 4): the bet cards' logos and stake ladder, the live games with our
+   bets, the slate on one 0–100% scale and the start rule's checklist. */
+.real-bet h3 .logos {
+  display: inline-flex;
+  gap: 2px;
+  margin-right: 6px;
+  vertical-align: -6px;
+}
+
+.real-bet h3 .logos .logo {
+  margin-right: 0;
+}
+
+.ladder {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 8px;
+}
+
+.ladder li {
+  display: inline-flex;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ladder .price {
+  color: var(--secondary);
+}
+
+.ladder .stake {
+  font-weight: 600;
+}
+
+.locked {
+  font-size: 13px;
+}
+
+.locked::before {
+  content: "🔒 ";
+}
+
+.live-games {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.live-game {
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 12px 14px;
+  min-width: 0;
+}
+
+.live-game.has-bet {
+  border-color: var(--accent);
+}
+
+.live-game .score-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-game .team {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.live-game .team.home {
+  justify-content: flex-end;
+}
+
+.live-game .team .logo {
+  margin-right: 0;
+}
+
+.live-game .goals {
+  font-family: var(--font-display, system-ui), system-ui, sans-serif;
+  font-size: 1.6rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.live-game .goals.none {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.live-totals {
+  grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
+}
+
+.live-game .clock {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--secondary);
+}
+
+.live-game .clock.on {
+  color: var(--warn);
+}
+
+.live-game .our-bet {
+  border-top: 1px solid var(--hairline);
+  margin-top: 10px;
+  padding-top: 8px;
+}
+
+.live-game .our-bet p {
+  margin: 0 0 8px;
+}
+
+.pays {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.pays div {
+  background: var(--card);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.pays dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pays dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.now {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--card);
+  font-size: 14px;
+}
+
+.now .dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.now.live .dot {
+  background: var(--warn);
+}
+
+.now.off .dot {
+  background: transparent;
+  border: 2px solid var(--muted);
+}
+
+.slate-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 13px;
+  color: var(--secondary);
+  margin: 4px 0 8px;
+}
+
+.slate .mark {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  vertical-align: -1px;
+}
+
+.slate .mark.b1 {
+  border: 2px solid var(--secondary);
+}
+
+.slate .mark.blend {
+  background: var(--s1);
+}
+
+.slate .mark.gap {
+  width: 18px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--warn);
+  vertical-align: 3px;
+}
+
+.slate-axis,
+.slate-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 20px;
+}
+
+.slate-axis {
+  font-size: 12px;
+  color: var(--muted);
+  padding-bottom: 4px;
+}
+
+.slate-axis > span:first-child,
+.slate-game {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.slate-axis .scale,
+.slate-list .track {
+  flex: 999 1 240px;
+  min-width: 0;
+  position: relative;
+}
+
+.slate-axis .scale {
+  display: flex;
+  justify-content: space-between;
+  font-variant-numeric: tabular-nums;
+}
+
+.slate-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.slate-list li {
+  padding: 10px 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.slate-game .teams {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  font-weight: 600;
+}
+
+.slate-game .teams .logo {
+  margin-right: 0;
+}
+
+.slate-game .teams .muted {
+  font-weight: 400;
+}
+
+.slate-game .status {
+  font-size: 13px;
+  color: var(--secondary);
+}
+
+.slate-list li.review .status {
+  color: var(--warn);
+}
+
+.slate-game .figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: 13px;
+  color: var(--secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.slate-game .figures strong {
+  color: var(--text);
+}
+
+.slate-game .figures .bet {
+  color: var(--accent);
+}
+
+.slate-list li.review .figures {
+  color: var(--warn);
+}
+
+.slate-list .track {
+  height: 22px;
+  background: linear-gradient(var(--grid), var(--grid)) 0 10px / 100% 2px no-repeat,
+    linear-gradient(var(--zero), var(--zero)) 50% 3px / 1px 16px no-repeat;
+}
+
+.slate-list .segment {
+  position: absolute;
+  top: 10px;
+  height: 2px;
+  background: var(--secondary);
+}
+
+.slate-list li.review .segment {
+  height: 3px;
+  background: var(--warn);
+}
+
+.slate-list .dot {
+  position: absolute;
+  top: 4px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 50%;
+}
+
+.slate-list .dot.b1 {
+  border: 2px solid var(--secondary);
+  background: var(--card);
+}
+
+.slate-list .dot.blend {
+  background: var(--s1);
+  box-shadow: 0 0 0 2px var(--card);
+}
+
+.checklist {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+
+.checklist li {
+  display: flex;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.check-mark {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1.5px solid var(--muted);
+  color: var(--muted);
+}
+
+.checklist li.met .check-mark {
+  border-color: var(--good);
+  background: var(--good);
+  color: #ffffff;
+}
+
+.checklist li.blocks .check-mark {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
 .won::before {
   content: "✓ ";
   color: var(--good);

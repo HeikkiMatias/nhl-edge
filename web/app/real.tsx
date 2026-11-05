@@ -7,6 +7,7 @@ import { helsinkiTime } from "@/lib/format";
 import {
   checkNote,
   checkPlaced,
+  ladder,
   loadReal,
   NOTE_MAX,
   REASONS,
@@ -23,6 +24,7 @@ import {
 import type { RealAlert, RealCorrection, RealEntry, RealOrder, RealRevision } from "@/lib/types";
 
 import { Explain } from "./sections";
+import { Logo } from "./ui";
 
 const euros = (x: number) => `${x.toFixed(2)} €`;
 const team = (a: RealAlert) => (a.side === "home" ? a.home : a.away);
@@ -32,16 +34,26 @@ const team = (a: RealAlert) => (a.side === "home" ? a.home : a.away);
 export function RealBets({
   client,
   onRecorded,
+  onState,
 }: {
   client: SupabaseClient;
   /** Told when an entry is recorded, so the real record beside it reads it too (#270). */
   onRecorded?: () => void;
+  /** Told each time the day is read, so the live games show the bets recorded on it. */
+  onState?: (state: RealState) => void;
 }) {
   const [state, setState] = useState<RealState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(
-    () => loadReal(client).then(setState, (e: Error) => setError(e.message)),
-    [client],
+    () =>
+      loadReal(client).then(
+        (read) => {
+          setState(read);
+          onState?.(read);
+        },
+        (e: Error) => setError(e.message),
+      ),
+    [client, onState],
   );
   const refresh = useCallback(() => {
     load();
@@ -147,10 +159,19 @@ function RealBet({
   now: number;
 }) {
   const title = `${alert.away} at ${alert.home}, starts ${helsinkiTime(alert.start_utc, alert.game_date)} · bet ${team(alert)}`;
+  const heading = (
+    <h3>
+      <span className="logos">
+        <Logo team={alert.away} size={28} />
+        <Logo team={alert.home} size={28} />
+      </span>
+      {title}
+    </h3>
+  );
   if (alert.status !== "alerted") {
     return (
       <div className="real-bet">
-        <h3>{title}</h3>
+        {heading}
         <p className="muted">No bet: {alert.status.replace(/^skipped: /, "")}.</p>
       </div>
     );
@@ -169,7 +190,7 @@ function RealBet({
       now < new Date(alert.start_utc).getTime();
     return (
       <div className="real-bet">
-        <h3>{title}</h3>
+        {heading}
         {current ? (
           <Recorded
             entry={current}
@@ -186,6 +207,11 @@ function RealBet({
             The game has started: from now on only the weekly check, against the venue&apos;s
             statement, records it.
           </p>
+        ) : entry?.source !== "kalshi" && now >= new Date(alert.start_utc).getTime() ? (
+          <p className="muted locked">
+            Locked: the game has started. A mistake goes to the weekly check against the
+            venue&apos;s statement.
+          </p>
         ) : null}
         {revised.length || corrections.length ? (
           <History entry={entry} revisions={revised} corrections={corrections} />
@@ -197,7 +223,7 @@ function RealBet({
   if (alert.exchange) {
     return (
       <div className="real-bet">
-        <h3>{title}</h3>
+        {heading}
         <Order alert={alert} order={alert.exchange} now={now} />
       </div>
     );
@@ -207,7 +233,7 @@ function RealBet({
   if (now >= new Date(alert.start_utc).getTime()) {
     return (
       <div className="real-bet">
-        <h3>{title}</h3>
+        {heading}
         <p className="warning">The game has started: don&apos;t place this bet now.</p>
         <details>
           <summary>Placed it before the start? Record it here (marked late)</summary>
@@ -218,11 +244,19 @@ function RealBet({
   }
   return (
     <div className="real-bet">
-      <h3>{title}</h3>
+      {heading}
       <p>
         Minimum price <strong>{alert.min_price}</strong>. Stake {euros(alert.max_stake)} at{" "}
         {alert.paper_price} or more.
       </p>
+      <ul className="ladder" aria-label="The stake at each price">
+        {ladder(alert.stakes).map((step) => (
+          <li key={step.price}>
+            <span className="price">{step.price.toFixed(2)}+</span>
+            <span className="stake">{euros(step.stake)}</span>
+          </li>
+        ))}
+      </ul>
       <EntryForm client={client} alert={alert} onRecorded={onRecorded} />
     </div>
   );

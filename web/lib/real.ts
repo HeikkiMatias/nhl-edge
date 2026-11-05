@@ -156,6 +156,23 @@ export function stakeAt(stakes: RealAlert["stakes"], price: number): number {
   return allowed;
 }
 
+/** At most rows steps of an alert's stake table, highest price first: each stake with the lowest
+ * price that gives it, the full stake and the lowest always among them, as the Telegram alert
+ * lists them (real_ledger.ladder). */
+export function ladder(stakes: RealAlert["stakes"], rows = 4): { price: number; stake: number }[] {
+  const levels = new Map<number, number>();
+  for (const row of [...stakes].sort((a, b) => a.price - b.price)) {
+    if (!levels.has(row.stake)) levels.set(row.stake, row.price);
+  }
+  const steps = [...levels.entries()]
+    .map(([stake, price]) => ({ price, stake }))
+    .sort((a, b) => b.price - a.price);
+  if (steps.length <= rows) return steps;
+  const picks = new Set<number>();
+  for (let i = 0; i < rows; i++) picks.add(Math.round((i * (steps.length - 1)) / (rows - 1)));
+  return [...picks].sort((a, b) => a - b).map((i) => steps[i]);
+}
+
 /** A placed bet as the form holds it, before it is sent. */
 export type Placed = { price: number; stake: number; betId: string; placedAt: Date };
 

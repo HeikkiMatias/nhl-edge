@@ -123,7 +123,7 @@ export const GLOSSARY = {
       "The NHL's own scoreboard for the slate's games, read every 30 seconds while a game is on: " +
       "the score (away team first), the period and the time left in it. The bet's team is in " +
       "bold. Scores are only shown here: they never enter the ledger, the settlement or the " +
-      "model.",
+      "model, and a bet's \"right now\" is only what it would pay if the game ended then.",
   },
   provisional: {
     term: "Provisionally won or lost",

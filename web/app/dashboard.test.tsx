@@ -312,10 +312,10 @@ test("an owner sees the slate, the bets, the CLV history and the report", async 
   expect(screen.getByText("Signed in as owner@example.com.", { exact: false })).toBeTruthy();
   // The slate is the day's, under Betting › Today.
   await open("Betting");
-  // The slate's bet and the ledger's, at Pinnacle's price.
-  expect(screen.getAllByText("WSH @ 1.900").length).toBe(1);
-  // Its 19:00 ET start of Thursday 2026-10-08, in Helsinki time (#218).
-  expect(screen.getByText("Start (Helsinki)")).toBeTruthy();
+  // The slate's bet, at Pinnacle's price.
+  expect(screen.getAllByText(/^WSH @ 1\.900, stake/).length).toBe(1);
+  // Its 19:00 ET start of Thursday 2026-10-08, in Helsinki time (#218), on the slate's list.
+  expect(screen.getByText("The home team's chance")).toBeTruthy();
   expect(screen.getByText("Fri 02:00")).toBeTruthy();
   // The bets and the CLV history under Betting › Results, the report under Models.
   await open("Results");
@@ -423,12 +423,17 @@ test("tonight's games show live, with the paper bet's team marked", async () => 
   render(<Signed client={supabase} />);
   await open("Betting");
   const status = await screen.findByText("2nd · 12:34");
-  const row = status.closest("tr") as HTMLTableRowElement;
-  expect(row.textContent).toContain("PIT 1–2 WSH");
-  expect(row.querySelector(".bet-side")?.textContent).toBe("WSH");
+  const card = status.closest("article") as HTMLElement;
+  expect(card.getAttribute("aria-label")).toBe("PIT at WSH");
+  expect(card.querySelector(".goals")?.textContent).toBe("1–2");
+  expect(card.querySelector(".bet-side")?.textContent).toBe("WSH");
+  // No entry recorded on the form: the paper bet, in units, and where it stands right now.
+  expect(card.textContent).toContain("Paper bet: WSH at 1.9, stake 0.75 units");
+  expect(card.querySelector(".now")?.textContent).toMatch(/^Leading 2–1: would win \+0\.6\d units if it ended now$/);
+  expect(screen.getByText("Staked in play")).toBeTruthy();
   expect(scoreFetch).toHaveBeenCalledWith("/api/scores?date=2026-10-08");
   expect(screen.getByText(/It refreshes every 30 seconds while a game is on/)).toBeTruthy();
-  expect(screen.getAllByText("Live scores").length).toBeGreaterThan(1); // the heading and its term
+  expect(screen.getAllByText("Live games and our bets").length).toBeGreaterThan(0);
 });
 
 test("a final score marks the bet provisionally, until the nightly run settles it", async () => {
@@ -442,7 +447,8 @@ test("a final score marks the bet provisionally, until the nightly run settles i
   render(<Signed client={supabase} />);
   await open("Betting");
   expect(await screen.findByText("Final (OT)")).toBeTruthy();
-  expect(screen.getByText("Provisionally won").className).toBe("won");
+  const now = screen.getByText(/^Won \+0\.6\d units, provisional until tonight's settlement$/);
+  expect(now.className).toBe("now won");
 });
 
 test("a scoreboard that fails says so, and the rest of the board stands", async () => {
@@ -452,7 +458,7 @@ test("a scoreboard that fails says so, and the rest of the board stands", async 
   render(<Signed client={supabase} />);
   await open("Betting");
   expect(await screen.findByText("Live scores unavailable: NHL API answered 503")).toBeTruthy();
-  expect(screen.getByText("Start (Helsinki)")).toBeTruthy();
+  expect(screen.getByText("The home team's chance")).toBeTruthy();
 });
 
 test("an older slate shows no live scores and asks the scoreboard nothing", async () => {
@@ -460,7 +466,7 @@ test("an older slate shows no live scores and asks the scoreboard nothing", asyn
   const { supabase } = client(owner);
   render(<Signed client={supabase} />);
   await open("Betting");
-  expect(await screen.findByText(/Live scores show for today's and last night's games/)).toBeTruthy();
+  expect(await screen.findByText(/Live games show for today's and last night's games/)).toBeTruthy();
   expect(scoreFetch).not.toHaveBeenCalled();
 });
 
@@ -548,9 +554,9 @@ test("an ⓘ opens what its section shows, and Esc or its button closes it", asy
   const { supabase } = client(owner);
   render(<Signed client={supabase} />);
   await open("Betting");
-  const info = screen.getByRole("button", { name: "About: Live scores" });
+  const info = screen.getByRole("button", { name: "About: Live games and our bets" });
   fireEvent.click(info);
-  const dialog = await screen.findByRole("dialog", { name: "Live scores" });
+  const dialog = await screen.findByRole("dialog", { name: "Live games and our bets" });
   expect(dialog.textContent).toContain("How to read it.");
   expect(dialog.textContent).toContain("The NHL's public scoreboard");
   fireEvent.keyDown(dialog, { key: "Escape" });

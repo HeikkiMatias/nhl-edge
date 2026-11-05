@@ -108,7 +108,7 @@ export const HELP = {
     title: "Today's real bets",
     what:
       "The bets the 12:45 ET decision picked, with the lowest price still worth taking and the " +
-      "stake at your price.",
+      "stake at your price: the ladder lists the stake from each price up.",
     read:
       "Record each bet once it is placed, or say why it was not. Until the game starts you can " +
       "correct an entry or undo it, with a note: each revision is kept beside the entry, never " +
@@ -138,16 +138,29 @@ export const HELP = {
     terms: ["paper", "clv", "interval", "luck"],
   },
   liveScores: {
-    title: "Live scores",
-    what: "Tonight's games with their scores and clock, and the paper bet's team marked.",
-    read: "A final score marks the bet provisionally until the nightly run settles it.",
-    source: "The NHL's public scoreboard, every 30 seconds.",
-    terms: ["live", "provisional"],
+    title: "Live games and our bets",
+    what:
+      "Tonight's games with their scores and clock, and the bet we hold on each: the one you " +
+      "recorded (real, or practice before real stakes start), or else the paper bet, with its " +
+      "price and stake, what it pays if it wins and what it costs if it loses.",
+    read:
+      "A game with our bet is outlined. Right now says whether the bet is leading, trailing or " +
+      "tied, and what it would pay if the game ended now. A finished game shows the result, " +
+      "provisional until the nightly settlement. The four totals add up the open bets and " +
+      "today's finished ones, in euros for recorded bets and in units for paper ones.",
+    source:
+      "The NHL's public scoreboard every 30 seconds, and your recorded entries. Logos are the " +
+      "NHL's, as its scoreboard serves them.",
+    terms: ["live", "provisional", "units"],
   },
   slate: {
     title: "The slate",
-    what: "Every game of the day: its decision, the market's probability (B1) and our blend's.",
-    read: "Gaps over 8 points get a hand review (hard rule 8).",
+    what:
+      "Every game of the day: its decision, and the home team's chance to win by the market " +
+      "(B1, the hollow dot) and by our blend (the filled dot) on one 0–100% scale.",
+    read:
+      "The further apart the dots, the more we disagree with the market; the numbers are " +
+      "written beside them. Gaps over 8 points get a hand review (hard rule 8).",
     source: "The decision's ledger.",
     terms: ["b1", "blend", "gap", "status"],
   },

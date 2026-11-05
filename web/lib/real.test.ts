@@ -2,7 +2,7 @@
 // the database's refusals and the rule's warnings, and the read of the latest alerted day.
 import { expect, test } from "vitest";
 
-import { checkNote, checkPlaced, loadReal, NOTE_MAX, stakeAt, standing } from "./real.ts";
+import { checkNote, checkPlaced, ladder, loadReal, NOTE_MAX, stakeAt, standing } from "./real.ts";
 import { ALERT, stubbed } from "./testing.ts";
 import type { RealEntry, RealRevision } from "./types.ts";
 
@@ -164,4 +164,15 @@ test("a revision's note is required and kept short, as the migration checks it",
   expect(checkNote("  ")).toMatch(/Say why/);
   expect(checkNote("x".repeat(NOTE_MAX + 1))).toMatch(/at most 200 characters/);
   expect(checkNote(" the stake was 0.80 ")).toBeNull();
+});
+
+test("the stake ladder lists each stake from its lowest price, highest first", () => {
+  expect(ladder(ALERT.stakes)).toEqual([
+    { price: 2.12, stake: 1.5 },
+    { price: 2.08, stake: 0.9 },
+    { price: 2.05, stake: 0.6 },
+  ]);
+  // At most four steps, the full stake and the lowest always among them.
+  const long = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6].map((stake, i) => ({ price: 2 + i / 100, stake }));
+  expect(ladder(long).map((s) => s.stake)).toEqual([0.6, 0.4, 0.3, 0.1]);
 });

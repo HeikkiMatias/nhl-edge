@@ -24,7 +24,7 @@ import {
 } from "@/lib/live-quotes";
 import { dollars, HALF_SPREADS } from "@/lib/quotes";
 
-import { Card, Chip, Segmented } from "./ui";
+import { Card, Chip, Logo, Segmented } from "./ui";
 
 export function MarketToday({ client }: { client: SupabaseClient }) {
   const [live, setLive] = useState<Live | null>(null);
@@ -140,30 +140,6 @@ function tone(state: LiveRow["state"]): "good" | "warn" | "info" | undefined {
   if (state === "quoting") return "info";
   if (state === "pulled_move" || state === "pulled_starter") return "warn";
   return undefined;
-}
-
-function Logo({ team }: { team: string }) {
-  // The NHL's own logos, as its scoreboard serves them, one for each theme.
-  return (
-    <>
-      <img
-        className="logo on-dark"
-        src={`https://assets.nhle.com/logos/nhl/svg/${team}_dark.svg`}
-        alt=""
-        width={22}
-        height={22}
-        loading="lazy"
-      />
-      <img
-        className="logo on-light"
-        src={`https://assets.nhle.com/logos/nhl/svg/${team}_light.svg`}
-        alt=""
-        width={22}
-        height={22}
-        loading="lazy"
-      />
-    </>
-  );
 }
 
 function GameCard({ game }: { game: LiveGame }) {
