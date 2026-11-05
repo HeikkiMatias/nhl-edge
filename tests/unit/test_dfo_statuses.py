@@ -149,3 +149,66 @@ def test_the_informed_probability_reads_only_earlier_weeks() -> None:
     # The first week has no history: everyone keeps p_available. The second week's out player
     # takes the first week's out share, 0.0. Players in the lines keep p_available.
     assert found["p_informed"].to_list() == pytest.approx([0.9, 0.6, 0.9, 0.0])
+
+
+# The second measurement (rule 2)
+
+
+def test_rule_2_groups_by_status_wherever_the_player_is_listed() -> None:
+    rows = page(
+        [
+            (1, "Out Player", 1, "ir", "out"),
+            (2, "Ir Player", 2, "ir", "ir"),
+            (3, "Dtd Player", 3, "ir", "dtd"),
+            (4, "Listed Player", 4, "ir", None),
+            (5, "Line Player", 5, "f1", None),
+        ],
+        DECISION - timedelta(minutes=1),
+    )
+    second = dict(ds.page_groups(rows, rule=2).select("dfo_player_id", "dfo_group").iter_rows())
+    assert second == {1: "out", 2: "out", 3: "dtd", 4: "other", 5: "lines"}
+    # Step 3's rule counts the whole ir group as out.
+    first = dict(ds.page_groups(rows).select("dfo_player_id", "dfo_group").iter_rows())
+    assert first == {1: "out", 2: "out", 3: "out", 4: "out", 5: "lines"}
+    with pytest.raises(ValueError, match="no rule"):
+        ds.page_groups(rows, rule=3)
+
+
+def test_rule_2_scores_its_window_with_shares_from_every_earlier_week() -> None:
+    start = ds.WINDOW_2[0]
+    weeks = [start - timedelta(days=10), start + timedelta(days=4)]
+    as_of = [datetime.combine(w, datetime.min.time(), UTC) + timedelta(hours=14) for w in weeks]
+    rows = pl.DataFrame(
+        {
+            "season": [20262027] * 4,
+            "game_date": [weeks[0], weeks[0], weeks[1], weeks[1]],
+            "week": [weeks[0], weeks[0], weeks[1], weeks[1]],
+            "as_of_utc": [as_of[0], as_of[0], as_of[1], as_of[1]],
+            "label_utc": [
+                a + timedelta(hours=20) for a in (as_of[0], as_of[0], as_of[1], as_of[1])
+            ],
+            "dfo_group": ["out", "lines", "out", "lines"],
+            "dfo_player_id": [1, 2, 3, 4],
+            "early_exit": [0.0] * 4,
+            "dressed": [0.0, 1.0, 0.0, 1.0],
+            "p_available": [0.6, 0.9, 0.6, 0.9],
+        }
+    ).with_columns(pl.col("as_of_utc", "label_utc").cast(UTC_TYPE))
+    found = ds.run(rows, {"rule": 2}, start)
+    # Only the window's two candidates are counted, and its out player has an informed share
+    # from the earlier week (0.0), so the value is negative.
+    assert found["groups"]["out"]["candidates"] == 1
+    assert found["groups"]["lines"]["candidates"] == 1
+    assert found["value"] == {"games": 2, "weeks": 1}
+
+
+def test_a_rule_is_never_read_before_its_window_is_complete() -> None:
+    last = ds.WINDOW_2[1]
+    public = datetime.combine(last + timedelta(days=1), datetime.min.time(), UTC) + timedelta(
+        hours=10
+    )
+    with pytest.raises(SystemExit, match="can't be read yet"):
+        ds.complete(2, public - timedelta(seconds=1))
+    ds.complete(2, public)
+    # Step 3's rule has no end: it can always be replayed.
+    ds.complete(1, datetime(2026, 11, 5, tzinfo=UTC))
