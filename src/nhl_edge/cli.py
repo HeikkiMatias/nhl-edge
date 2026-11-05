@@ -6506,6 +6506,7 @@ def real_quotes_live(
     from datetime import UTC, timedelta
 
     from nhl_edge.backtest import reports
+    from nhl_edge.ingest import dailyfaceoff as dfo
     from nhl_edge.ingest import kalshi
     from nhl_edge.ingest import kalshi_watch as kw
     from nhl_edge.ingest.odds import ET
@@ -6547,10 +6548,12 @@ def real_quotes_live(
             if r2:
                 for kind in kw.KINDS:
                     store.restore_from_r2(f"{kalshi.SOURCE}/{kw.WATCH}/{kind}/{day.isoformat()}/")
+                store.restore_from_r2(f"{dfo.PREFIX}/{day.isoformat()}/")
                 for table in ql.LAKE_TABLES:
                     lake.pull(table)
             read = {table: lake.read(table) for table in ql.LAKE_TABLES}
-            inputs = ql.live_inputs(day, read, watched.update())
+            starters, _ = dfo.stored_starting_goalies(store, {day})
+            inputs = ql.live_inputs(day, read, watched.update(), starters, now)
             rows = ql.live_rows(inputs, rules, now, version)
             if client is not None and rows.height:
                 client.upsert(ql.TABLE, rows, ql.KEY)

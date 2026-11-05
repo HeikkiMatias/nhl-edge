@@ -29,14 +29,14 @@ from nhl_edge.live.real import Exchange
 # The live variants: our model's fair value at each half-spread, the demo's (ADR 0055).
 LIVE = tuple((kq.MODEL, h) for h in kq.HALF_SPREADS)
 EVERY = timedelta(minutes=5)
-# The lake's tables a cycle reads beside the watch's polls: the fair values' sources and the
-# starters.
+# The lake's tables a cycle reads beside the watch's polls: the fair values' sources. The
+# starters come from Daily Faceoff's pages of the day, as a live decision reads them (ADR 0037):
+# the lake's table is rebuilt only at night.
 LAKE_TABLES = (
     "paper_ledger",
     "morning_predictions",
     "close_forecasts",
     "odds_snapshots",
-    "dailyfaceoff_goalies",
 )
 TABLE = "quote_live"
 KEY = ("game_date", "variant", "game_id", "team")
@@ -171,13 +171,22 @@ def snapshot(
     return rows
 
 
+def known_by(frame: pl.DataFrame, now: datetime) -> pl.DataFrame:
+    """The rows observed by now: a trade is indexed by when it was made, so one fetched later
+    would otherwise fill a bid before it was known (hard rule 1)."""
+    return frame.filter(pl.col("observed_utc") <= now) if "observed_utc" in frame.columns else frame
+
+
 def live_inputs(
     day: date,
     read: Mapping[str, pl.DataFrame],
     watched: Mapping[str, pl.DataFrame],
+    dailyfaceoff: pl.DataFrame,
+    now: datetime,
 ) -> kq.Inputs:
-    """Today's inputs from the lake's tables (read) and the watch's polls so far (watched): the
-    decision's slate once it is published, the morning view's before."""
+    """Today's inputs as known at now, from the lake's tables (read), the watch's polls so far
+    (watched) and Daily Faceoff's pages of the day: the decision's slate once it is published,
+    the morning view's before."""
     dated = {
         table: read[table].filter(pl.col("game_date") == day)
         for table in ("paper_ledger", "morning_predictions", "close_forecasts")
@@ -189,10 +198,10 @@ def live_inputs(
         ledger,
         morning,
         read["odds_snapshots"].filter(pl.col("game_id").is_in(ids)),
-        watched[kw.BOOKS].filter(pl.col("game_date") == day),
-        watched[kw.TRADES].filter(pl.col("game_date") == day),
-        watched[kw.TOPS].filter(pl.col("game_date") == day),
-        read["dailyfaceoff_goalies"].filter(pl.col("game_date") == day),
+        known_by(watched[kw.BOOKS].filter(pl.col("game_date") == day), now),
+        known_by(watched[kw.TRADES].filter(pl.col("game_date") == day), now),
+        known_by(watched[kw.TOPS].filter(pl.col("game_date") == day), now),
+        known_by(dailyfaceoff.filter(pl.col("game_date") == day), now),
         dated["close_forecasts"],
         slate=slate,
     )

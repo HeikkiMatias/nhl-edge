@@ -133,7 +133,6 @@ def lake_tables(ledger: pl.DataFrame, morning: pl.DataFrame) -> dict[str, pl.Dat
             }
         ),
         "odds_snapshots": qf.odds(),
-        "dailyfaceoff_goalies": qf.dailyfaceoff(),
     }
 
 
@@ -149,17 +148,72 @@ def test_before_the_decision_the_slate_is_the_morning_views() -> None:
     # The morning view's row carries the slate's columns, as morning_predictions does.
     morning = qf.ledger(p_blend=0.56, published=qf.PUBLISHED - timedelta(hours=5))
     empty = qf.ledger().clear()
-    found = ql.live_inputs(qf.DAY, lake_tables(empty, morning), watched())
+    found = ql.live_inputs(
+        qf.DAY, lake_tables(empty, morning), watched(), qf.dailyfaceoff(), qf.at(5)
+    )
     assert [g.game_id for g in found.games] == [qf.GAME]
     rows = ql.live_rows(found, DEMO_EXCHANGE, qf.at(5), "x")
     assert row(rows, "model-1c", qf.HOME)["fair"] == pytest.approx(0.56)
     # Once the decision is published, its slate, and its fair value from its publication.
-    decided = ql.live_inputs(qf.DAY, lake_tables(qf.ledger(), morning), watched())
+    decided = ql.live_inputs(
+        qf.DAY, lake_tables(qf.ledger(), morning), watched(), qf.dailyfaceoff(), qf.at(5)
+    )
     rows = ql.live_rows(decided, DEMO_EXCHANGE, qf.at(5), "x")
     assert row(rows, "model-1c", qf.HOME)["fair"] == pytest.approx(0.55)
     # Another day's rows are not today's.
-    other = ql.live_inputs(date(2026, 11, 4), lake_tables(qf.ledger(), morning), watched())
+    other = ql.live_inputs(
+        date(2026, 11, 4), lake_tables(qf.ledger(), morning), watched(), qf.dailyfaceoff(), qf.at(5)
+    )
     assert other.games == ()
+
+
+def test_a_trade_counts_only_once_it_was_fetched() -> None:
+    # A trade made at minute 10 but first fetched at 15: a replay of minute 12 doesn't know it.
+    late = watched()
+    late["trades"] = qf.trades([(10, qf.HOME, 0.51, 20.0)]).with_columns(
+        observed_utc=pl.lit(qf.at(15)).cast(qf.UTC_TYPE)
+    )
+    tables = lake_tables(qf.ledger(), qf.ledger().clear())
+
+    def held(now: datetime) -> float:
+        found = ql.live_inputs(qf.DAY, tables, late, qf.dailyfaceoff(), now)
+        return row(ql.live_rows(found, DEMO_EXCHANGE, now, "x"), "model-2c", qf.HOME)["contracts"]
+
+    assert held(qf.at(12)) == 0.0
+    assert held(qf.at(16)) == 10.0
+
+
+def test_a_fill_since_the_last_step_shows_at_once() -> None:
+    # A trade half a minute after the step at minute 10, read at 10:45: no step since, and the
+    # resting bid is still advanced through it, with no new quote.
+    between = kq.inputs_of(
+        qf.ledger(),
+        qf.morning(),
+        qf.odds(),
+        qf.depth(),
+        qf.trades([(10.5, qf.HOME, 0.51, 20.0)]),
+        qf.tops(),
+        qf.dailyfaceoff(),
+    )
+    home = row(ql.live_rows(between, DEMO_EXCHANGE, qf.at(10.75), "x"), "model-2c", qf.HOME)
+    assert (home["contracts"], home["fills"]) == (10.0, 1)
+    # Filled in full, the bid no longer rests until the next step replaces it.
+    assert home["bid_price"] is None
+    # The record's step at minute 11 takes the same fill.
+    state = kq.run_variant(kq.MODEL, Decimal("0.02"), between, DEMO_EXCHANGE, until=qf.at(11))
+    assert state.bought[(qf.GAME, qf.HOME)] == Decimal(10)
+
+
+def test_a_starter_named_today_pulls_the_game_live() -> None:
+    # Daily Faceoff's pages of the day name another starter at minute 8.
+    polls = [(qf.at(2), qf.HOME, "Goalie One"), (qf.at(8), qf.HOME, "Goalie Two")]
+    tables = lake_tables(qf.ledger(), qf.ledger().clear())
+    found = ql.live_inputs(qf.DAY, tables, watched(), qf.dailyfaceoff(polls), qf.at(9))
+    rows = ql.live_rows(found, DEMO_EXCHANGE, qf.at(9), "x")
+    assert set(rows["state"]) == {ql.PULLED_STARTER}
+    # A change not yet seen at minute 7 pulls nothing.
+    early = ql.live_inputs(qf.DAY, tables, watched(), qf.dailyfaceoff(polls), qf.at(7))
+    assert ql.PULLED_STARTER not in set(ql.live_rows(early, DEMO_EXCHANGE, qf.at(7), "x")["state"])
 
 
 def test_the_watch_polls_are_read_once_each_and_an_unfinished_one_later(tmp_path: Path) -> None:
@@ -231,6 +285,10 @@ def test_nhl_real_quotes_live_upserts_one_cycle(monkeypatch: pytest.MonkeyPatch)
         "nhl_edge.lake.raw.RawStore.from_env", classmethod(lambda cls, **_: FakeStore())
     )
     monkeypatch.setattr(ql.Watched, "update", lambda self: watched())
+    monkeypatch.setattr(
+        "nhl_edge.ingest.dailyfaceoff.stored_starting_goalies",
+        lambda store, dates: (qf.dailyfaceoff(), None),
+    )
     monkeypatch.setattr(cli, "datetime", Moment)
     monkeypatch.setattr("nhl_edge.backtest.reports.version", lambda name, now: "quotes-live-x")
     runner = CliRunner()
