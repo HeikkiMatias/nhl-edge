@@ -234,7 +234,7 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
               small
             />
             {opened.has("betting/today") ? (
-              <div hidden={sub !== "today"}>
+              <div hidden={sub !== "today"} role="tabpanel" id="panel-today" aria-labelledby="tab-today">
                 {/* Where the day's Telegram alert links to (#268). */}
                 <Card title="Real bets" topic="realBets" wide>
                   <RealBets client={client} onRecorded={() => setRecorded((n) => n + 1)} />
@@ -255,7 +255,12 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
               </div>
             ) : null}
             {opened.has("betting/results") ? (
-              <div hidden={sub !== "results"}>
+              <div
+                hidden={sub !== "results"}
+                role="tabpanel"
+                id="panel-results"
+                aria-labelledby="tab-results"
+              >
                 <Card title="Paper trading" topic="paper" wide>
                   <p className="notice">
                     {data.report?.kind === "formal review"
