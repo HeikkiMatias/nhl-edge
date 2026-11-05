@@ -142,7 +142,7 @@ def test_the_message_lists_each_bet_or_says_why_there_is_none() -> None:
     assert text.startswith("NHL Edge · PRACTICE, don't bet · Wed 7 Oct\nPractice bankroll 100.00")
     assert "PIT at WSH, starts Thu 02:30 · bet WSH" in text
     assert "  stake: 1.50 € at 2.06 or more · " in text and "Record each bet" in text
-    assert "dash.test" in text and "Practice only" in text
+    assert "dashboard: https://dash.test#betting" in text and "Practice only" in text
     real_rows = rf.alert_rows(rl.Mode(rl.REAL, date(2026, 11, 16)))
     assert rl.message(pf.DAY, rl.Mode(rl.REAL), real_rows, 100.0, None).startswith(
         "NHL Edge · real bets · Wed 7 Oct\nReal bankroll 100.00 €"

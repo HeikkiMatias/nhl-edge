@@ -269,6 +269,76 @@ export const GLOSSARY = {
       "won bets made at the prices you got less what the same stakes would have made at the " +
       "paper prices: positive means you beat the paper price.",
   },
+  marketMaking: {
+    term: "Market making (quoting)",
+    meaning:
+      "Instead of taking a price someone offers, we post our own bids on Kalshi, an exchange, " +
+      "and wait for others to sell to us. A Kalshi contract pays $1 if its team wins, overtime " +
+      "and shootout included, so a bid of 43¢ on a team we give 45% earns 2¢ if we are right. " +
+      "For now it is a simulator on Kalshi's real order books: no money is at stake.",
+  },
+  fairValue: {
+    term: "Fair value",
+    meaning:
+      "What we think a contract is worth: a team's chance to win, in cents. Five are tried side " +
+      "by side: our model; our model pulled halfway toward Kalshi's own price; Pinnacle's price, " +
+      "as a reference; and the two close forecasters, which predict where Pinnacle will close.",
+  },
+  halfSpread: {
+    term: "Half-spread",
+    meaning:
+      "How far below our fair value we bid: 0, 1 or 2 cents. Wider bids fill less often but " +
+      "keep more of each fill. Each fair value at each half-spread is one variant.",
+  },
+  fill: {
+    term: "Fill",
+    meaning:
+      "A bid that someone sold to. The simulator counts a fill only when a real trade on Kalshi " +
+      "reached our price after the bids ahead of ours, so its fills are an upper bound: real " +
+      "ones would be no more frequent.",
+  },
+  twoSided: {
+    term: "Two-sided",
+    meaning:
+      "Contracts bought on both teams of one game. Exactly one team wins, so a pair pays $1 " +
+      "whatever happens: its profit is locked in at the price, and only the spread counts.",
+  },
+  edge: {
+    term: "Expected profit (edge)",
+    meaning:
+      "What a fill should earn on average, in dollars after Kalshi's maker fee: the contract's " +
+      "worth less the price, times the contracts. Worth by our fair value is our own opinion; " +
+      "worth by Pinnacle's close, observed after the fill, is the market's verdict and the " +
+      "honest test. A market maker's danger is fills that look good by its own value and lose " +
+      "by the close: the sellers knew more.",
+  },
+  markout: {
+    term: "Markout",
+    meaning:
+      "How a fill looks later: the market's price some minutes after it, or at the close, less " +
+      "the price we paid, in cents per contract. Above 0 the market moved our way after we " +
+      "bought.",
+  },
+  makerFee: {
+    term: "Maker fee",
+    meaning:
+      "Kalshi's fee on a resting bid that fills, smallest near 0¢ and $1 and largest near 50¢. " +
+      "Every profit and edge on this tab is after it.",
+  },
+  pull: {
+    term: "Pull",
+    meaning:
+      "Cancelling a game's bids: when another starting goalie is named, or when Kalshi's price " +
+      "moves 3 cents since our bid went up. The game then waits, by the hold rule, before " +
+      "quoting again.",
+  },
+  holdRule: {
+    term: "Hold rule",
+    meaning:
+      "How long quoting waits after a pull for a price move: until our fair value updates " +
+      "(wait), 15 minutes (cool), until the move reverses (return), or no pull at all (trust). " +
+      "Each is scored against wait on the same games (#385).",
+  },
 } satisfies Record<string, Term>;
 
 export type TermKey = keyof typeof GLOSSARY;

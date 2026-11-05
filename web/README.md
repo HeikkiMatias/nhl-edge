@@ -1,6 +1,30 @@
 # Dashboard
 
-The paper-trading dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.js app that runs in the browser and reads Supabase. It shows:
+The dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.js app that runs in the browser and reads Supabase.
+
+**The tabs (#398).** Each is linkable by the URL's hash and survives a reload:
+- **Market making** (`#market`, the default): the direction the owner follows most.
+- **Betting:** Today (`#betting`, where the Telegram alert links) and Results (`#betting/results`).
+- **Models** (`#models`): the live report, for now; the challengers' charts follow (#398 step 5).
+- **Help** (`#help`): the daily routine, what each section shows and the glossary.
+
+A tab is drawn when first opened and kept after, so moving back is instant and a form keeps what was typed in it.
+
+**The theme (#399).** Dark by default, with a light theme on the switch, remembered in this browser only (`localStorage`). The fonts, Barlow Semi Condensed and IBM Plex Sans, are self-hosted by Next at build time, so no reader's browser asks Google for them. Every colour is a token in `app/globals.css`.
+
+**Help pop-ups.** Every section's ⓘ opens what it shows, how to read it, where it comes from and the glossary's words for its terms. They close on Esc, a click outside or their button. The texts live in one place, `lib/help.ts`, with the terms from `lib/glossary.ts`.
+
+**Market making › Results** (#398), the Kalshi quoting simulator's figures from the owner-only `quote_days` and `quote_reports`:
+- **Paper only:** a simulator on Kalshi's real books from 2026-10-31. Its fills are an upper bound.
+- **A picker:** the fair value and the half-spread, starting at our model a cent below.
+- **The totals:** the game days, fills, the two-sided share, the paper profit, and the profit expected by our fair value and by Pinnacle's close, each after the fee.
+- **Luck against edge:** the three as running lines over game days, and the daily profit as signed columns.
+- **Per contract:** the spread and the markouts, with each figure's 95% interval once its fills span 4 weeks (from about game date 2026-11-16), counts only before.
+- **Every variant** side by side, and the hold rules (#385) against wait.
+
+Before the quotes migration it says how to apply it. The live view of the day's games (Market making › Today) comes with #398 step 3.
+
+**Betting** shows:
 
 - **Real bets** (#268, ADR 0039), first, where the day's Telegram alert links to:
   - the latest alerted day's bets, practice ones until real stakes start, each with its minimum price and its stake at the price you type, looked up in the alert's own stake table;
@@ -33,7 +57,7 @@ The paper-trading dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.j
 
 **Times** are Helsinki time (#218), computed from the stored UTC instants, so they follow both countries' daylight-saving changes. A game day is still the NHL's own date (US Eastern), as the ledger keys on it. A 19:00 ET game of a Thursday shows as "Fri 02:00", and the 12:45 ET decision as 19:45, or 18:45 in the weeks when only one country has changed its clocks.
 
-**Explanations.** Each section has a "What these mean" panel, and a glossary closes the page. Every term is written for a reader with no betting or statistics background, in one place (`lib/glossary.ts`), so the panels and the glossary never disagree.
+**Explanations.** Each section has its ⓘ pop-up and a "What these mean" panel, and the Help tab has the whole glossary. Every term is written for a reader with no betting or statistics background, in one place (`lib/glossary.ts`), so the panels and the glossary never disagree.
 
 **Where the figures come from.**
 - Every evaluation figure is the report's own, and the dashboard gives no verdict before the formal review (ADR 0032).
@@ -108,7 +132,9 @@ The tests run the real supabase-js client against a stand-in for PostgREST (`lib
 - `lib/load.test.ts`: the reads.
 - `lib/results.test.ts`: the bankroll and the record.
 - `lib/live.test.ts` and `app/api/scores/route.test.ts`: the live scores and their route, on the NHL's recorded scoreboards of 2026-10-08 and 10-09 (`lib/fixtures/score-*.json`).
+- `lib/quotes.test.ts` and `app/market.test.tsx`: the simulator's reads under row-level security, its totals and running lines, the picker, counts only before 4 weeks and intervals after, and the hold rules, on synthetic rows (`lib/fixtures/quotes.ts`).
 - `app/dashboard.test.tsx`: the page's states.
+  - the tabs: the default, the hash, the arrow keys; a help pop-up opening and closing; the theme switch;
   - not configured;
   - the sign-in form: a password, or an email link, and a link that came back signed out;
   - an owner's board, with the results, the bankroll, the charts' keyboard readout and the glossary, and a non-owner's denial;

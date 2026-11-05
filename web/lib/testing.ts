@@ -27,13 +27,15 @@ export type Tables = {
   real_settlements?: unknown[];
   real_corrections?: unknown[];
   real_days?: unknown[];
+  quote_days?: unknown[];
+  quote_reports?: unknown[];
 };
 
 /**
  * A client whose requests reach `tables`, newest first as the dashboard orders them, read under
  * row-level security: the RPC is_dashboard_owner says whether the caller's token is an owner's,
- * and a table gives a non-owner no rows. `offset` and `limit` page the rows, and live_reports
- * keeps its `policy_version=eq.` filter and its CLV projection. `answer` can replace any reply.
+ * and a table gives a non-owner no rows. `offset` and `limit` page the rows, `column=eq.value`
+ * filters them, and live_reports keeps its CLV projection. `answer` can replace any reply.
  */
 export function stubbed(
   tables: Tables,
@@ -76,9 +78,10 @@ function postgrest(tables: Tables, owners: ReadonlySet<string>, sent: Sent): Ans
   }
   let rows = owner ? [...(tables[path as keyof Tables] ?? [])] : [];
   const params = sent.url.searchParams;
-  const policy = params.get("policy_version");
-  if (policy) {
-    rows = (rows as StoredReport[]).filter((r) => `eq.${r.policy_version}` === policy);
+  // Each column=eq.value filter, such as live_reports' policy_version or quote_reports' record.
+  for (const [column, value] of params) {
+    if (!value.startsWith("eq.")) continue;
+    rows = rows.filter((r) => `eq.${String((r as Record<string, unknown>)[column])}` === value);
   }
   if (params.get("select")?.includes("clv:")) {
     rows = (rows as StoredReport[]).map((r) => ({

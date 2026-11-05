@@ -1,41 +1,129 @@
-:root {
-  --text: #1c1f23;
-  --muted: #5f6b76;
+/* The dashboard's theme (#399): dark by default, "a rink at night", with a light variant on the
+   switch. Every colour is a token here. The series and status colours were checked with the
+   dataviz validator on both surfaces: the series pairs pass for colour vision deficiency and
+   contrast, and text never wears a series colour. */
+:root,
+:root[data-theme="dark"] {
+  --page: #0b1220;
+  --card: #121a29;
+  --raised: #182235;
+  --hairline: rgba(255, 255, 255, 0.08);
+  --line: #233047;
+  --grid: #233047;
+  --axis: #2f3d55;
+  --zero: #4a5a76;
+  --text: #e8edf5;
+  --secondary: #a9b4c6;
+  --muted: #7d8aa0;
+  --accent: #7cc4ff;
+  --accent-ink: #0b1220;
+  --s1: #3987e5;
+  --s2: #d95926;
+  --s3: #199e70;
+  --gain: #3987e5;
+  --loss: #e66767;
+  --good: #0ca30c;
+  --warn: #fab219;
+  --critical: #e66767;
+  --panel: var(--raised);
+  --series: var(--s1);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --page: #f4f6f9;
+  --card: #ffffff;
+  --raised: #f6f8fa;
+  --hairline: rgba(15, 23, 42, 0.1);
   --line: #d9dee3;
-  --panel: #f6f8fa;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --zero: #8a96a8;
+  --text: #1c1f23;
+  --secondary: #3d4752;
+  --muted: #5f6b76;
   --accent: #0b5cad;
+  --accent-ink: #ffffff;
+  --s1: #2a78d6;
+  --s2: #c4501f;
+  --s3: #138a61;
+  --gain: #2a78d6;
+  --loss: #c93c3c;
+  --good: #0a7d0a;
   --warn: #8a5a00;
+  --critical: #c93c3c;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  color-scheme: light;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  background: var(--page);
+}
+
 body {
   margin: 0;
-  padding: 24px 16px 48px;
+  padding: 16px 16px 48px;
   font:
-    15px/1.5 system-ui,
+    15px/1.5 var(--font-text, system-ui),
+    system-ui,
     -apple-system,
     "Segoe UI",
     sans-serif;
   color: var(--text);
-  background: #fff;
+  background: var(--page);
+  /* Never a sideways scroll on a phone: wide tables scroll inside their own box. */
+  overflow-x: clip;
 }
 
 main {
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 0 auto;
+}
+
+h1,
+h2,
+h3,
+.tile .value,
+.tabs button {
+  font-family: var(--font-display, system-ui), system-ui, sans-serif;
 }
 
 h1 {
   font-size: 1.5rem;
-  margin: 0 0 4px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  margin: 0;
 }
 
 h2 {
-  font-size: 1.15rem;
-  margin: 32px 0 8px;
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin: 20px 0 8px;
+}
+
+h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--secondary);
+  margin: 16px 0 6px;
+}
+
+a {
+  color: var(--accent);
+}
+
+code {
+  font-size: 0.9em;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 0 4px;
+  overflow-wrap: anywhere;
 }
 
 .muted {
@@ -43,16 +131,246 @@ h2 {
 }
 
 .notice {
-  background: var(--panel);
+  background: var(--raised);
   border-left: 4px solid var(--warn);
+  border-radius: 0 6px 6px 0;
   padding: 8px 12px;
   margin: 12px 0;
 }
 
-.scroll {
-  overflow-x: auto;
+.notice.real {
+  border-left-color: var(--accent);
 }
 
+.scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+/* The top bar, the account line and the tabs. */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.topbar h1 {
+  flex: 1;
+}
+
+.account {
+  margin: 8px 0 0;
+  font-size: 0.9rem;
+}
+
+.status-line {
+  margin: 6px 0 0;
+}
+
+.tabs {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin: 12px 0 8px;
+  padding: 4px 0;
+  background: var(--page);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.tabs button {
+  background: none;
+  color: var(--secondary);
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  padding: 8px 12px 6px;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.tabs button[aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.tabs.sub {
+  position: static;
+  border-bottom: 0;
+  margin-top: 0;
+}
+
+.tabs.sub button {
+  font-size: 0.95rem;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 4px 14px;
+}
+
+.tabs.sub button[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+/* Cards: a titled section, lifted slightly from the page. */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  gap: 12px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 12px 16px 16px;
+  margin: 12px 0;
+  min-width: 0;
+}
+
+.cards .card {
+  margin: 0;
+}
+
+.card.wide {
+  grid-column: 1 / -1;
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-title h3 {
+  margin: 4px 0;
+  color: var(--text);
+  font-size: 1.15rem;
+}
+
+.chip {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--secondary);
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+.chip.info {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.chip.warn {
+  color: var(--warn);
+}
+
+.chip.good {
+  color: var(--good);
+}
+
+/* Pickers: a row of choices, one pressed. */
+.pickers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 12px 0;
+}
+
+.segmented {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.segmented-label {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-right: 4px;
+}
+
+.segmented button {
+  background: var(--raised);
+  color: var(--secondary);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.9rem;
+}
+
+.segmented button.on {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+/* The ⓘ button and its pop-up. */
+button.info {
+  background: none;
+  color: var(--muted);
+  border: 0;
+  padding: 0 4px;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+button.info:hover {
+  color: var(--accent);
+}
+
+dialog.help {
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 0;
+  max-width: min(560px, calc(100vw - 32px));
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+dialog.help::backdrop {
+  background: rgba(5, 10, 20, 0.6);
+}
+
+.help-body {
+  padding: 16px 20px;
+}
+
+.help-body h3 {
+  margin-top: 0;
+  color: var(--text);
+}
+
+.help-body dt,
+.help-list dt {
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+.help-body dd,
+.help-list dd {
+  margin: 2px 0 0;
+}
+
+.routine li {
+  margin: 4px 0;
+}
+
+/* Tables. */
 table {
   border-collapse: collapse;
   width: 100%;
@@ -77,6 +395,15 @@ th.number {
   text-align: right;
 }
 
+tr.selected td {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+tr.primary td {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+/* Forms and buttons. */
 form {
   display: flex;
   gap: 8px;
@@ -85,29 +412,62 @@ form {
 }
 
 input,
-button {
+button,
+select {
   font: inherit;
   padding: 6px 10px;
 }
 
+input,
+select {
+  background: var(--page);
+  color: var(--text);
+  border: 1px solid var(--axis);
+  border-radius: 6px;
+}
+
 button {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   border: 0;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
+  font-weight: 600;
 }
 
 button.link {
   background: none;
   color: var(--accent);
   padding: 0;
+  font-weight: inherit;
+}
+
+button.secondary,
+button.ghost {
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--hairline);
+}
+
+button.ghost {
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* Real bets (#268): one block per alerted bet, its form and what the database said. */
 .real-bet {
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 4px 12px 8px;
   margin: 12px 0;
 }
@@ -138,26 +498,6 @@ button.link {
   width: 13rem;
 }
 
-select {
-  font: inherit;
-  padding: 6px 10px;
-}
-
-button.secondary {
-  background: var(--panel);
-  color: var(--text);
-  border: 1px solid var(--line);
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.notice.real {
-  border-left-color: var(--accent);
-}
-
 .recorded {
   color: var(--text);
   font-weight: 600;
@@ -169,20 +509,13 @@ button:disabled {
 }
 
 .error {
-  color: var(--critical, #d03b3b);
+  color: var(--critical);
   margin: 4px 0;
 }
 
-/* Charts (#210): one series in the series blue on the page's white, hairline grid and axes,
-   checked with the dataviz validator. Text wears text colours, never the series colour. */
-:root {
-  --series: #2a78d6;
-  --grid: #e1e0d9;
-  --axis: #c3c2b7;
-  --good: #0ca30c;
-  --critical: #d03b3b;
-}
-
+/* Charts (#210, #399): the card's surface, hairline grid and recessive axes, an emphasized zero
+   line, 2px lines, columns rounded at their data end. Text wears text colours, never a series
+   colour. */
 .chart {
   position: relative;
   margin: 8px 0 4px;
@@ -210,6 +543,11 @@ button:disabled {
   stroke-width: 1;
 }
 
+.chart .axis.zero {
+  stroke: var(--zero);
+  stroke-width: 1.5;
+}
+
 .chart .tick {
   fill: var(--muted);
   font-size: 12px;
@@ -224,9 +562,24 @@ button:disabled {
   stroke-linecap: round;
 }
 
+.chart .line.s1,
+.chart .dot.s1 {
+  stroke: var(--s1);
+}
+
+.chart .line.s2,
+.chart .dot.s2 {
+  stroke: var(--s2);
+}
+
+.chart .line.s3,
+.chart .dot.s3 {
+  stroke: var(--s3);
+}
+
 .chart .band {
   fill: var(--series);
-  opacity: 0.1;
+  opacity: 0.16;
 }
 
 .chart .reference {
@@ -249,12 +602,38 @@ button:disabled {
 
 .chart .dot {
   fill: var(--series);
-  stroke: #fff;
+  stroke: var(--card);
   stroke-width: 2;
+}
+
+.chart .dot.s1 {
+  fill: var(--s1);
+}
+
+.chart .dot.s2 {
+  fill: var(--s2);
+}
+
+.chart .dot.s3 {
+  fill: var(--s3);
+}
+
+.chart .dot.s1,
+.chart .dot.s2,
+.chart .dot.s3 {
+  stroke: var(--card);
 }
 
 .chart .column {
   fill: var(--series);
+}
+
+.chart .column.gain {
+  fill: var(--gain);
+}
+
+.chart .column.loss {
+  fill: var(--loss);
 }
 
 .chart .lifted {
@@ -269,32 +648,137 @@ button:disabled {
 .chart-tip {
   position: absolute;
   transform: translate(-50%, calc(-100% - 10px));
-  background: #fff;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   padding: 4px 8px;
   font-size: 13px;
-  white-space: nowrap;
+  max-width: min(320px, 80vw);
+  white-space: normal;
   pointer-events: none;
   display: flex;
   flex-direction: column;
+  z-index: 3;
 }
 
 .chart-tip span {
-  color: var(--muted);
+  color: var(--secondary);
 }
 
+.legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 0;
+  margin: 4px 0 8px;
+  font-size: 0.9rem;
+  color: var(--secondary);
+}
+
+.legend strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.swatch {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.swatch.s1 {
+  background: var(--s1);
+}
+
+.swatch.s2 {
+  background: var(--s2);
+}
+
+.swatch.s3 {
+  background: var(--s3);
+}
+
+/* Per-contract figures on one cent scale: a dot and its interval band. */
+.intervals {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+
+.intervals li {
+  display: grid;
+  grid-template-columns: minmax(0, 12rem) minmax(80px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+
+.interval-name {
+  color: var(--secondary);
+}
+
+.interval-value {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.intervals li > .interval-value.muted {
+  grid-column: 2 / -1;
+  text-align: left;
+}
+
+.interval-track {
+  position: relative;
+  height: 14px;
+}
+
+.interval-zero {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1.5px;
+  background: var(--zero);
+}
+
+.interval-band {
+  position: absolute;
+  top: 5px;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--s1) 45%, transparent);
+}
+
+.interval-dot {
+  position: absolute;
+  top: 3px;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background: var(--s1);
+}
+
+/* Tiles: a label, a big figure, and its interval or counts under it. */
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr));
   gap: 12px;
   margin: 12px 0;
 }
 
 .tile {
-  background: var(--panel);
-  border-radius: 6px;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
   padding: 10px 12px;
 }
 
@@ -304,8 +788,10 @@ button:disabled {
 }
 
 .tile .value {
-  font-size: 1.4rem;
+  font-size: 1.75rem;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
 }
 
 .tile .sub {
@@ -355,4 +841,36 @@ details.explain dd {
 .start-rule ul {
   margin: 4px 0 12px;
   padding-left: 20px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tabs button,
+  .segmented button,
+  button.info {
+    transition: color 150ms, background-color 150ms, border-color 150ms;
+  }
+}
+
+@media (max-width: 560px) {
+  body {
+    padding: 12px 12px 40px;
+  }
+
+  .card {
+    padding: 10px 12px 12px;
+  }
+
+  .tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+
+  .intervals li {
+    grid-template-columns: 1fr auto;
+  }
+
+  .interval-track {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
 }

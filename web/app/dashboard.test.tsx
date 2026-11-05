@@ -49,6 +49,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Each test starts at the page's own address, on the default tab.
+  window.history.replaceState(null, "", "/");
+  localStorage.clear();
+  delete document.documentElement.dataset.theme;
   vi.unstubAllGlobals();
   vi.useRealTimers(); // also restores the date set by vi.setSystemTime
   scoreFetch.mockClear();
@@ -203,6 +207,15 @@ function client(
   };
 }
 
+/** Opens a tab, and a sub-tab when given, as a click would. */
+async function open(name: string, sub?: string) {
+  fireEvent.click(await screen.findByRole("tab", { name }));
+  if (sub) fireEvent.click(await screen.findByRole("tab", { name: sub }));
+}
+
+/** The board is drawn once its tabs are. */
+const board = () => screen.findByRole("tab", { name: "Market making" });
+
 test("without the public URL and key the page says it isn't configured", () => {
   render(<Dashboard />);
   expect(screen.getByText(/Not configured/)).toBeTruthy();
@@ -216,7 +229,7 @@ test("signed out, the right password opens the owner's board", async () => {
   fireEvent.change(email, { target: { value: "owner@example.com" } });
   fireEvent.change(screen.getByPlaceholderText("password"), { target: { value: "right" } });
   fireEvent.submit(email.closest("form") as HTMLFormElement);
-  await screen.findByText("Paper bets");
+  await board();
   expect(signInWithPassword).toHaveBeenCalledWith({
     email: "owner@example.com",
     password: "right",
@@ -274,7 +287,7 @@ test("a link that comes back signed out says why, until a sign-in clears it", as
   fireEvent.change(email, { target: { value: "owner@example.com" } });
   fireEvent.change(screen.getByPlaceholderText("password"), { target: { value: "right" } });
   fireEvent.submit(email.closest("form") as HTMLFormElement);
-  await screen.findByText("Paper bets");
+  await board();
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
   await screen.findByPlaceholderText("email");
   expect(signOut).toHaveBeenCalledOnce();
@@ -285,7 +298,7 @@ test("a link that signed in leaves no message after signing out", async () => {
   // The error is the client's, not the URL's: a link that worked reports none.
   const { supabase } = client(owner);
   render(<Signed client={supabase} />);
-  await screen.findByText("Paper bets");
+  await board();
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
   await screen.findByPlaceholderText("email");
   expect(screen.queryByText(/didn't work/)).toBeNull();
@@ -295,14 +308,20 @@ test("an owner sees the slate, the bets, the CLV history and the report", async 
   const { supabase } = client(owner);
   render(<Signed client={supabase} />);
   expect(screen.getByText("Loading…")).toBeTruthy();
-  await screen.findByText("Paper bets");
+  await board();
   expect(screen.getByText("Signed in as owner@example.com.", { exact: false })).toBeTruthy();
+  // The slate is the day's, under Betting › Today.
+  await open("Betting");
   // The slate's bet and the ledger's, at Pinnacle's price.
   expect(screen.getAllByText("WSH @ 1.900").length).toBe(1);
   // Its 19:00 ET start of Thursday 2026-10-08, in Helsinki time (#218).
   expect(screen.getByText("Start (Helsinki)")).toBeTruthy();
   expect(screen.getByText("Fri 02:00")).toBeTruthy();
+  // The bets and the CLV history under Betting › Results, the report under Models.
+  await open("Results");
+  await screen.findByText("Paper bets");
   expect(screen.getByText("Awaiting the result")).toBeTruthy();
+  await open("Models");
   // The report's own figures: CLV per bet with its interval in the headline tile, the report and
   // its date in the history.
   expect(
@@ -316,6 +335,7 @@ test("an owner sees each bet's result, its score and the bankroll, with CLV firs
   // ADR 0034: results show during the season, beside the note that they are mostly luck.
   const { supabase } = client(owner);
   render(<Signed client={supabase} />);
+  await open("Betting", "Results");
   await screen.findByText("Results and bankroll");
   const won = screen.getByText("Won");
   expect(won.className).toBe("won");
@@ -333,7 +353,8 @@ test("an owner sees each bet's result, its score and the bankroll, with CLV firs
   expect(screen.getByRole("img", { name: /Paper bankroll after each settled day/ })).toBeTruthy();
   expect(screen.getByRole("img", { name: "Paper bets per game day" })).toBeTruthy();
   expect(screen.getByRole("img", { name: /expected return at the decision against its CLV/ })).toBeTruthy();
-  // Every term explained.
+  // Every term explained, in its section and on the Help tab.
+  await open("Help");
   expect(screen.getByText("What everything means")).toBeTruthy();
   expect(screen.getAllByText("CLV (closing line value)").length).toBeGreaterThan(1);
 });
@@ -341,6 +362,7 @@ test("an owner sees each bet's result, its score and the bankroll, with CLV firs
 test("the bankroll chart's readout follows the keys", async () => {
   const { supabase } = client(owner);
   render(<Signed client={supabase} />);
+  await open("Betting", "Results");
   const chart = await screen.findByRole("img", { name: /Paper bankroll after each settled day/ });
   fireEvent.focus(chart);
   const readout = await screen.findByRole("status");
@@ -366,6 +388,7 @@ test("each bet shows its policy, and the bankroll chart marks where v2 starts", 
       : undefined,
   );
   render(<Signed client={supabase} />);
+  await open("Betting", "Results");
   await screen.findByText("Results and bankroll");
   const tagged = [...document.querySelectorAll("td[title^='policy-']")];
   expect(tagged.map((c) => [c.textContent, c.getAttribute("title")])).toEqual([
@@ -388,6 +411,7 @@ test("before the games migration, results show and say why the scores don't", as
       : undefined,
   );
   render(<Signed client={supabase} />);
+  await open("Betting", "Results");
   await screen.findByText("Won");
   expect(screen.queryByText("DAL 4–2 BUF")).toBeNull();
   expect(screen.getByText(/Scores show once the owner applies the migration/)).toBeTruthy();
@@ -397,6 +421,7 @@ test("tonight's games show live, with the paper bet's team marked", async () => 
   vi.setSystemTime(new Date("2026-10-09T00:30:00Z")); // 20:30 ET on the slate's day
   const { supabase } = client(owner);
   render(<Signed client={supabase} />);
+  await open("Betting");
   const status = await screen.findByText("2nd · 12:34");
   const row = status.closest("tr") as HTMLTableRowElement;
   expect(row.textContent).toContain("PIT 1–2 WSH");
@@ -415,6 +440,7 @@ test("a final score marks the bet provisionally, until the nightly run settles i
   };
   const { supabase } = client(owner);
   render(<Signed client={supabase} />);
+  await open("Betting");
   expect(await screen.findByText("Final (OT)")).toBeTruthy();
   expect(screen.getByText("Provisionally won").className).toBe("won");
 });
@@ -424,14 +450,16 @@ test("a scoreboard that fails says so, and the rest of the board stands", async 
   scoreboard = { status: 502, body: { error: "NHL API answered 503" } };
   const { supabase } = client(owner);
   render(<Signed client={supabase} />);
+  await open("Betting");
   expect(await screen.findByText("Live scores unavailable: NHL API answered 503")).toBeTruthy();
-  expect(screen.getByText("Paper bets")).toBeTruthy();
+  expect(screen.getByText("Start (Helsinki)")).toBeTruthy();
 });
 
 test("an older slate shows no live scores and asks the scoreboard nothing", async () => {
   vi.setSystemTime(new Date("2026-10-12T16:00:00Z"));
   const { supabase } = client(owner);
   render(<Signed client={supabase} />);
+  await open("Betting");
   expect(await screen.findByText(/Live scores show for today's and last night's games/)).toBeTruthy();
   expect(scoreFetch).not.toHaveBeenCalled();
 });
@@ -441,7 +469,7 @@ test("an account that isn't an owner sees nothing but its user id", async () => 
   render(<Signed client={supabase} />);
   await screen.findByText(/not a dashboard owner/);
   expect(screen.getByText(new RegExp(stranger.user.id))).toBeTruthy();
-  expect(screen.queryByText("Paper bets")).toBeNull();
+  expect(screen.queryByRole("tab")).toBeNull();
   expect(requests.map((r) => r.url.pathname)).toEqual(["/rest/v1/rpc/is_dashboard_owner"]);
 });
 
@@ -458,6 +486,7 @@ test("a failed read shows the error, not an empty board", async () => {
 
 test("a session replaced by another account's reads the board again", async () => {
   // Codex on #197: no account may see the rows, or the denial, loaded for another.
+  window.history.replaceState(null, "", "/#betting/results");
   const { supabase, change } = client(owner);
   render(<Signed client={supabase} />);
   await screen.findByText("Paper bets");
@@ -473,9 +502,68 @@ test("a session replaced by another account's reads the board again", async () =
 test("signing out returns to the form", async () => {
   const { supabase, signOut } = client(owner);
   render(<Signed client={supabase} />);
-  await screen.findByText("Paper bets");
+  await board();
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
   await screen.findByPlaceholderText("email");
   expect(signOut).toHaveBeenCalledOnce();
-  await waitFor(() => expect(screen.queryByText("Paper bets")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("tab")).toBeNull());
+});
+
+// The tabs, the help pop-ups and the theme (#398, #399).
+
+test("the board opens on market making, and each tab is linkable by the hash", async () => {
+  const { supabase } = client(owner);
+  render(<Signed client={supabase} />);
+  const market = await board();
+  expect(market.getAttribute("aria-selected")).toBe("true");
+  // Before the quotes migration, the simulator's tab says how to apply it.
+  expect(await screen.findByText(/The quotes migration isn't applied yet/)).toBeTruthy();
+  await open("Betting", "Results");
+  expect(window.location.hash).toBe("#betting/results");
+  expect(screen.getByRole("tab", { name: "Results" }).getAttribute("aria-selected")).toBe("true");
+  // The arrow keys move along the bar, wrapping at its ends.
+  const betting = screen.getByRole("tab", { name: "Betting" });
+  fireEvent.keyDown(betting, { key: "ArrowRight" });
+  expect(window.location.hash).toBe("#models");
+  expect(document.activeElement?.textContent).toBe("Models");
+  fireEvent.keyDown(screen.getByRole("tab", { name: "Models" }), { key: "End" });
+  expect(window.location.hash).toBe("#help");
+  fireEvent.keyDown(screen.getByRole("tab", { name: "Help" }), { key: "ArrowRight" });
+  expect(window.location.hash).toBe("#market");
+  // A link to a tab opens it, and the hash changing moves the board along.
+  act(() => {
+    window.location.hash = "#betting";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  });
+  expect(screen.getByRole("tab", { name: "Betting" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("tab", { name: "Today" }).getAttribute("aria-selected")).toBe("true");
+});
+
+test("an ⓘ opens what its section shows, and Esc or its button closes it", async () => {
+  const { supabase } = client(owner);
+  render(<Signed client={supabase} />);
+  await open("Betting");
+  const info = screen.getByRole("button", { name: "About: Live scores" });
+  fireEvent.click(info);
+  const dialog = await screen.findByRole("dialog", { name: "Live scores" });
+  expect(dialog.textContent).toContain("How to read it.");
+  expect(dialog.textContent).toContain("The NHL's public scoreboard");
+  fireEvent.keyDown(dialog, { key: "Escape" });
+  await waitFor(() => expect(dialog.hasAttribute("open")).toBe(false));
+  expect(document.activeElement).toBe(info);
+  fireEvent.click(info);
+  fireEvent.click(await screen.findByRole("button", { name: "Close" }));
+  await waitFor(() => expect(dialog.hasAttribute("open")).toBe(false));
+});
+
+test("the theme is dark until switched, and the switch is remembered", async () => {
+  const { supabase } = client(owner);
+  render(<Signed client={supabase} />);
+  await board();
+  const toggle = screen.getByRole("button", { name: "Light theme" });
+  fireEvent.click(toggle);
+  expect(document.documentElement.dataset.theme).toBe("light");
+  expect(localStorage.getItem("nhl-edge-theme")).toBe("light");
+  fireEvent.click(screen.getByRole("button", { name: "Dark theme" }));
+  expect(document.documentElement.dataset.theme).toBe("dark");
 });

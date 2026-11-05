@@ -7,10 +7,27 @@ import { easternDate, easternInstant, helsinkiTime } from "@/lib/format";
 import { load, type Data } from "@/lib/load";
 import { supabase } from "@/lib/supabase";
 
+import { HELP } from "@/lib/help";
+
 import { LiveScores } from "./live";
+import { MarketResults } from "./market";
 import { RealBets } from "./real";
 import { RealRecord } from "./real-record";
 import { ClvHistory, Glossary, Headline, Ledger, Report, Results, Slate } from "./sections";
+import { Card, Chip, Panel, Tabs, ThemeToggle, useHash } from "./ui";
+
+// The tabs (#398): market making first, the direction the owner follows most; then the bets,
+// the models and the help. Each is linkable by the URL's hash, such as #betting/results.
+const TABS = [
+  { id: "market", label: "Market making" },
+  { id: "betting", label: "Betting" },
+  { id: "models", label: "Models" },
+  { id: "help", label: "Help" },
+];
+const BETTING = [
+  { id: "today", label: "Today" },
+  { id: "results", label: "Results" },
+];
 
 /** The page: the sign-in form, or the board for a signed-in user, read through the client made
  * from the public URL and anon key (lib/supabase.ts). */
@@ -56,7 +73,10 @@ export function Signed({ client }: { client: SupabaseClient }) {
 
   return (
     <main>
-      <h1>NHL edge: paper trading</h1>
+      <header className="topbar">
+        <h1>NHL edge</h1>
+        <ThemeToggle />
+      </header>
       {!ready ? (
         <p className="muted">Loading…</p>
       ) : session ? (
@@ -132,13 +152,21 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
   const [error, setError] = useState<string | null>(null);
   // Bumped when the form records a bet, so the real record reads it at once.
   const [recorded, setRecorded] = useState(0);
+  const [path, go] = useHash();
+  const tab = TABS.some((t) => t.id === path[0]) ? path[0] : "market";
+  const sub = tab === "betting" && path[1] === "results" ? "results" : "today";
+  // A tab is drawn when first opened and kept after, so moving back is instant and a form keeps
+  // what was typed in it.
+  const [opened, setOpened] = useState<Set<string>>(() => new Set());
+  const here = tab === "betting" ? `betting/${sub}` : tab;
+  if (!opened.has(here)) setOpened(new Set(opened).add(here));
 
   useEffect(() => {
     load(client).then(setData, (e: Error) => setError(e.message));
   }, [client]);
 
   const signOut = (
-    <p className="muted">
+    <p className="muted account">
       Signed in as {session.user.email}.{" "}
       <button className="link" onClick={() => client.auth.signOut()}>
         Sign out
@@ -175,53 +203,151 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
     );
   }
   const today = easternDate(new Date());
+  const review = data.report?.review_date ?? "2027-04-12";
   return (
     <>
       {signOut}
-      {/* First, where the day's Telegram alert links to (#268). */}
-      <h2>Real bets</h2>
-      <RealBets client={client} onRecorded={() => setRecorded((n) => n + 1)} />
-
-      <h2>Real record</h2>
-      <RealRecord client={client} bets={data.bets} report={data.report} version={recorded} />
-
-      <h2>Paper trading</h2>
-      <p className="notice">
-        {data.report?.kind === "formal review"
-          ? "The formal review (ADR 0032)."
-          : `Interim: no verdict or promotion follows before the formal review on ${
-              data.report?.review_date ?? "2027-04-12"
-            } (ADR 0032), and real stakes only by ADR 0039's start rule. The results below are mostly luck over this few bets: CLV is the measure (ADR 0034).`}
+      <p className="status-line">
+        <Chip tone="info">
+          {data.report?.kind === "formal review" ? "Formal review" : `Interim · review ${review}`}
+        </Chip>
       </p>
-      <Headline bets={data.bets} report={data.report} />
+      <Tabs tabs={TABS} active={tab} onSelect={(id) => go([id])} label="Dashboard" />
 
-      <h2>Live scores</h2>
-      <LiveScores day={data.day} rows={data.slate} bets={data.bets} />
-
-      <h2>Slate</h2>
-      {data.day !== today ? (
-        <p className="muted">
-          No decision for today&apos;s game day ({today}) yet: it is published after{" "}
-          {helsinkiTime(easternInstant(today, "12:45").toISOString())} Helsinki time (12:45 in New
-          York).
-        </p>
+      {opened.has("market") ? (
+        <div hidden={tab !== "market"}>
+          <Panel id="market">
+            <h2>Market making</h2>
+            <MarketResults client={client} />
+          </Panel>
+        </div>
       ) : null}
-      <Slate day={data.day} rows={data.slate} bets={data.bets} />
 
-      <h2>Results and bankroll</h2>
-      <Results bets={data.bets} />
+      {opened.has("betting/today") || opened.has("betting/results") ? (
+        <div hidden={tab !== "betting"}>
+          <Panel id="betting">
+            <Tabs
+              tabs={BETTING}
+              active={sub}
+              onSelect={(id) => go(["betting", id])}
+              label="Betting"
+              small
+            />
+            {opened.has("betting/today") ? (
+              <div hidden={sub !== "today"}>
+                {/* Where the day's Telegram alert links to (#268). */}
+                <Card title="Real bets" topic="realBets" wide>
+                  <RealBets client={client} onRecorded={() => setRecorded((n) => n + 1)} />
+                </Card>
+                <Card title="Live scores" topic="liveScores" wide>
+                  <LiveScores day={data.day} rows={data.slate} bets={data.bets} />
+                </Card>
+                <Card title="Slate" topic="slate" wide>
+                  {data.day !== today ? (
+                    <p className="muted">
+                      No decision for today&apos;s game day ({today}) yet: it is published after{" "}
+                      {helsinkiTime(easternInstant(today, "12:45").toISOString())} Helsinki time
+                      (12:45 in New York).
+                    </p>
+                  ) : null}
+                  <Slate day={data.day} rows={data.slate} bets={data.bets} />
+                </Card>
+              </div>
+            ) : null}
+            {opened.has("betting/results") ? (
+              <div hidden={sub !== "results"}>
+                <Card title="Paper trading" topic="paper" wide>
+                  <p className="notice">
+                    {data.report?.kind === "formal review"
+                      ? "The formal review (ADR 0032)."
+                      : `Interim: no verdict or promotion follows before the formal review on ${review} (ADR 0032), and real stakes only by ADR 0039's start rule. The results below are mostly luck over this few bets: CLV is the measure (ADR 0034).`}
+                  </p>
+                  <Headline bets={data.bets} report={data.report} />
+                </Card>
+                <Card title="Real record" topic="realRecord" wide>
+                  <RealRecord
+                    client={client}
+                    bets={data.bets}
+                    report={data.report}
+                    version={recorded}
+                  />
+                </Card>
+                <Card title="Results and bankroll" topic="results" wide>
+                  <Results bets={data.bets} />
+                </Card>
+                <Card title="Paper bets" topic="ledger" wide>
+                  <Ledger bets={data.bets} scores={data.scores} />
+                </Card>
+                <Card title="Cumulative CLV per bet" topic="clv" wide>
+                  <ClvHistory rows={data.history} />
+                </Card>
+              </div>
+            ) : null}
+          </Panel>
+        </div>
+      ) : null}
 
-      <h2>Paper bets</h2>
-      <Ledger bets={data.bets} scores={data.scores} />
+      {opened.has("models") ? (
+        <div hidden={tab !== "models"}>
+          <Panel id="models">
+            <Card title="Live report" topic="report" wide>
+              <Report report={data.report} />
+            </Card>
+          </Panel>
+        </div>
+      ) : null}
 
-      <h2>Cumulative CLV per bet</h2>
-      <ClvHistory rows={data.history} />
+      {opened.has("help") ? (
+        <div hidden={tab !== "help"}>
+          <Panel id="help">
+            <HelpTab />
+          </Panel>
+        </div>
+      ) : null}
+    </>
+  );
+}
 
-      <h2>Live report</h2>
-      <Report report={data.report} />
-
-      <h2>What everything means</h2>
-      <Glossary />
+/** The daily routine, what each section shows, and every term. */
+function HelpTab() {
+  return (
+    <>
+      <Card title="The daily routine" wide>
+        <ol className="routine">
+          <li>
+            <strong>Midday (12:45 New York, 19:45 Helsinki):</strong> the decision runs and the
+            Telegram alert lists the day&apos;s bets with their lowest prices and stakes. Its link
+            opens Betting › Today.
+          </li>
+          <li>
+            <strong>Before each game:</strong> place the bet at the venue, then record it under
+            Real bets: placed, with the price and stake you got, or not placed and why.
+          </li>
+          <li>
+            <strong>Overnight:</strong> the nightly run settles the games, writes the live report
+            and copies the market-making simulator&apos;s day. Nothing to do.
+          </li>
+          <li>
+            <strong>Monday:</strong> the weekly report, and the check of the real record against
+            the venue&apos;s statement.
+          </li>
+        </ol>
+      </Card>
+      <Card title="What each section shows" wide>
+        <dl className="help-list">
+          {Object.values(HELP).map((h) => (
+            <div key={h.title}>
+              <dt>{h.title}</dt>
+              <dd>
+                {h.what} <span className="muted">{h.read}</span>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </Card>
+      <Card title="What everything means" wide>
+        <Glossary />
+      </Card>
     </>
   );
 }

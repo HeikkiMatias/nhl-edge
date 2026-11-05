@@ -349,6 +349,10 @@ def _day(day: date) -> str:
     return f"{day:%a} {day.day} {day:%b}"
 
 
+# The dashboard's betting tab (web/app/dashboard.tsx), where each real bet is recorded.
+BETTING_TAB = "#betting"
+
+
 def message(
     day: date,
     today: Mode,
@@ -427,7 +431,9 @@ def message(
             "Between two prices, use the lower one's stake. Below the minimum price, don't bet.",
         ]
         if url:
-            lines.append(f"Record each bet on the dashboard: {url}")
+            # The dashboard opens on market making (#398): the link lands on the bets' tab.
+            link = url if "#" in url else f"{url}{BETTING_TAB}"
+            lines.append(f"Record each bet on the dashboard: {link}")
     if practice:
         lines.append("Practice only: nothing here is a real bet.")
     return "\n".join(lines)
