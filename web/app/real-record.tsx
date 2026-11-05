@@ -1,7 +1,7 @@
 "use client";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { estimate, shortDate } from "@/lib/format";
 import { loadRecord, type RealRecordState, stakeAt } from "@/lib/real";
@@ -252,29 +252,53 @@ function StartRule({
   }
   const yes = (holds: boolean) => (holds ? "holds" : "doesn't hold yet");
   const a = section.conditions.a;
+  // Each condition with its state: met, not yet, or one that blocks the start while it applies.
+  // The words carry it; the mark only repeats them.
   return (
     <div className="start-rule">
       <p>
         <strong>The start rule</strong> ({section.window[0]} to {section.window[1]}, decided at
         Monday&apos;s report): {section.verdict}.
       </p>
-      <ul>
-        <li>
+      <ul className="checklist">
+        <Check met={a.measured && a.holds}>
           CLV (a): {a.measured ? yes(a.holds) : "too few weeks to measure"}. CLV per bet{" "}
           {estimate(a.clv_per_bet, "bets")}; its pessimistic bound{" "}
           {a.bound ? estimate(a.bound, "bets") : "none yet"}. It holds only when both intervals
           reach above 0 and the coverage floor holds.
-        </li>
-        <li>Operations (c): {yes(section.conditions.c.holds)}</li>
-        <li>
+        </Check>
+        <Check met={section.conditions.c.holds}>Operations (c): {yes(section.conditions.c.holds)}</Check>
+        <Check met={section.conditions.d.holds}>
           The venue (d): {section.conditions.d.holds ? `${section.conditions.d.venue}, ready` : "not chosen yet"}
-        </li>
-        <li>
+        </Check>
+        <Check met={!section.veto.applies} blocks={section.veto.applies}>
           Your veto: {section.veto.applies ? "applies" : "lifted"} (paper bankroll{" "}
           {section.veto.paper_bankroll.toFixed(2)} against its {section.veto.start})
-        </li>
-        <li>The drawdown review: {section.drawdown_review.applies ? "open" : "not triggered"}</li>
+        </Check>
+        <Check met={!section.drawdown_review.applies} blocks={section.drawdown_review.applies}>
+          The drawdown review: {section.drawdown_review.applies ? "open" : "not triggered"}
+        </Check>
       </ul>
     </div>
+  );
+}
+
+function Check({
+  met,
+  blocks = false,
+  children,
+}: {
+  met: boolean;
+  blocks?: boolean;
+  children: ReactNode;
+}) {
+  const state = met ? "met" : blocks ? "blocks" : "pending";
+  return (
+    <li className={state}>
+      <span className="check-mark" aria-hidden="true">
+        {met ? "✓" : blocks ? "!" : "○"}
+      </span>
+      <span>{children}</span>
+    </li>
   );
 }

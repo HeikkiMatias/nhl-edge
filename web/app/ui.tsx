@@ -250,3 +250,28 @@ export function Segmented<T extends string | number>({
 export function Chip({ children, tone }: { children: ReactNode; tone?: "warn" | "good" | "info" }) {
   return <span className={tone ? `chip ${tone}` : "chip"}>{children}</span>;
 }
+
+/** A team's logo, the NHL's own as its scoreboard serves them, one image for each theme. It is
+ * decoration beside the team's code, so it has no text of its own. */
+export function Logo({ team, size = 22 }: { team: string; size?: number }) {
+  return (
+    <>
+      <img
+        className="logo on-dark"
+        src={`https://assets.nhle.com/logos/nhl/svg/${team}_dark.svg`}
+        alt=""
+        width={size}
+        height={size}
+        loading="lazy"
+      />
+      <img
+        className="logo on-light"
+        src={`https://assets.nhle.com/logos/nhl/svg/${team}_light.svg`}
+        alt=""
+        width={size}
+        height={size}
+        loading="lazy"
+      />
+    </>
+  );
+}

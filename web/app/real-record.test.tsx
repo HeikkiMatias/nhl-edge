@@ -68,6 +68,9 @@ test("before the start: the rule in plain words and the practice record, labelle
   expect(screen.getByText(/CLV \(a\): too few weeks to measure. CLV per bet 30 bets over 2 weeks/)).toBeTruthy();
   expect(screen.getByText("The venue (d): not chosen yet")).toBeTruthy();
   expect(screen.getByText(/Your veto: lifted/)).toBeTruthy();
+  // The checklist marks each condition met or not yet; a veto or review blocks while it applies.
+  const marks = [...document.querySelectorAll(".checklist li")].map((li) => li.className);
+  expect(marks).toEqual(["pending", "met", "pending", "met", "met"]);
   expect(screen.getByText("Not recorded")).toBeTruthy();
   expect(screen.getByText(/No settled bet yet/)).toBeTruthy();
 });

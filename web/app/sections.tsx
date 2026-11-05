@@ -14,13 +14,16 @@ import {
 import type { Bet, Figure, LiveReport, Prediction, Score } from "@/lib/types";
 
 import { ColumnChart, LineChart, ScatterChart } from "./charts";
+import { Logo } from "./ui";
 
 // Probability gaps above this many points get a hand review (hard rule 8), as in the report.
 const GAP = 0.08;
 
 const key = (game_date: string, game_id: number) => `${game_date}/${game_id}`;
 
-/** A day's slate: each game's decision, B1 and the blend, and its bet if any. */
+/** A day's slate as a list (#398 step 4): each game with its start and decision, the home team's
+ * chance to win by the market (B1) and by our blend on one 0–100% scale, the numbers written out,
+ * the gap flagged above 8 points for hand review (hard rule 8), and its bet if any. */
 export function Slate({
   day,
   rows,
@@ -33,54 +36,87 @@ export function Slate({
   if (!day) return <p className="muted">No decision yet.</p>;
   const placed = new Map(bets.map((b) => [key(b.game_date, b.game_id), b]));
   return (
-    <div className="scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>Game</th>
-            <th>Start (Helsinki)</th>
-            <th>Status</th>
-            <th className="number">Home price</th>
-            <th className="number">Away price</th>
-            <th className="number">B1</th>
-            <th className="number">Blend</th>
-            <th className="number">Gap</th>
-            <th>Bet</th>
-            <th className="number">Stake</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => {
-            const bet = placed.get(key(r.game_date, r.game_id));
-            const gap = r.p_blend !== null && r.p_b1 !== null ? r.p_blend - r.p_b1 : null;
-            return (
-              <tr key={r.game_id}>
-                <td>
+    <div className="slate">
+      <div className="slate-legend" aria-hidden="true">
+        <span>
+          <span className="mark b1" /> Market (B1)
+        </span>
+        <span>
+          <span className="mark blend" /> Our blend
+        </span>
+        <span>
+          <span className="mark gap" /> Gap over {100 * GAP} points: hand review
+        </span>
+      </div>
+      <div className="slate-axis" aria-hidden="true">
+        <span>The home team&apos;s chance</span>
+        <span className="scale">
+          <span>0%</span>
+          <span>50%</span>
+          <span>100%</span>
+        </span>
+      </div>
+      <ul className="slate-list">
+        {rows.map((r) => {
+          const bet = placed.get(key(r.game_date, r.game_id));
+          const gap = r.p_blend !== null && r.p_b1 !== null ? r.p_blend - r.p_b1 : null;
+          const review = gap !== null && Math.abs(gap) > GAP;
+          const at = (p: number) => `${(100 * Math.min(1, Math.max(0, p))).toFixed(2)}%`;
+          return (
+            <li key={r.game_id} className={review ? "review" : undefined}>
+              <div className="slate-game">
+                <div className="teams">
+                  <Logo team={r.away} />
                   {r.away} at {r.home}
-                </td>
-                <td>{helsinkiTime(r.start_utc, r.game_date)}</td>
-                <td>{r.status}</td>
-                <td className="number">{price(r.home_price)}</td>
-                <td className="number">{price(r.away_price)}</td>
-                <td className="number">{percent(r.p_b1)}</td>
-                <td className="number">{percent(r.p_blend)}</td>
-                <td className="number">
-                  {gap === null ? "" : `${(100 * gap).toFixed(1)}`}
-                  {gap !== null && Math.abs(gap) > GAP ? " review" : ""}
-                </td>
-                <td>
-                  {bet ? `${bet.side === "home" ? bet.home : bet.away} @ ${price(bet.price)}` : ""}
-                </td>
-                <td className="number">{bet ? bet.stake.toFixed(2) : ""}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                  <Logo team={r.home} />
+                  <span className="muted">{helsinkiTime(r.start_utc, r.game_date)}</span>
+                </div>
+                <div className="status">{r.status}</div>
+                <div className="figures">
+                  <span>
+                    Prices {price(r.home_price) || "–"} / {price(r.away_price) || "–"}
+                  </span>
+                  <span>
+                    Market <strong>{percent(r.p_b1)}</strong>
+                  </span>
+                  <span>
+                    Blend <strong>{percent(r.p_blend)}</strong>
+                  </span>
+                  <span>
+                    Gap <strong>{gap === null ? "–" : `${gap >= 0 ? "+" : ""}${(100 * gap).toFixed(1)}`}</strong>
+                    {review ? " review" : ""}
+                  </span>
+                  {bet ? (
+                    <span className="bet">
+                      {`${bet.side === "home" ? bet.home : bet.away} @ ${price(bet.price)}`}, stake{" "}
+                      {bet.stake.toFixed(2)}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              <div className="track" aria-hidden="true">
+                {r.p_b1 !== null && r.p_blend !== null ? (
+                  <span
+                    className="segment"
+                    style={{
+                      left: at(Math.min(r.p_b1, r.p_blend)),
+                      width: at(Math.abs(r.p_blend - r.p_b1)),
+                    }}
+                  />
+                ) : null}
+                {r.p_b1 !== null ? <span className="dot b1" style={{ left: at(r.p_b1) }} /> : null}
+                {r.p_blend !== null ? (
+                  <span className="dot blend" style={{ left: at(r.p_blend) }} />
+                ) : null}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
       <p className="muted">
         Slate of {day}, the NHL&apos;s game day (its US Eastern date); start times are Helsinki
-        time, with the weekday when a game starts after that day. Gap is the blend minus B1 in
-        points; above {100 * GAP} it goes to hand review.
+        time, with the weekday when a game starts after that day. Prices are home / away. Gap is
+        the blend minus B1 in points; above {100 * GAP} it goes to hand review.
       </p>
       <Explain terms={["price", "b1", "blend", "gap", "status", "stake"]} />
     </div>

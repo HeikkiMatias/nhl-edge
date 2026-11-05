@@ -1,10 +1,11 @@
 "use client";
 
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 
 import { easternDate, easternInstant, helsinkiTime } from "@/lib/format";
 import { load, type Data } from "@/lib/load";
+import type { RealState } from "@/lib/real";
 import { supabase } from "@/lib/supabase";
 
 import { HELP } from "@/lib/help";
@@ -158,6 +159,9 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
   const [error, setError] = useState<string | null>(null);
   // Bumped when the form records a bet, so the real record reads it at once.
   const [recorded, setRecorded] = useState(0);
+  const onRecorded = useCallback(() => setRecorded((n) => n + 1), []);
+  // The real bets' day as the form last read it, for the live games' recorded bets.
+  const [real, setReal] = useState<RealState | null>(null);
   const [path, go] = useHash();
   const tab = TABS.some((t) => t.id === path[0]) ? path[0] : "market";
   const sub = (tab === "betting" || tab === "market") && path[1] === "results" ? "results" : "today";
@@ -268,10 +272,10 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
               <div hidden={sub !== "today"} role="tabpanel" id="panel-today" aria-labelledby="tab-today">
                 {/* Where the day's Telegram alert links to (#268). */}
                 <Card title="Real bets" topic="realBets" wide>
-                  <RealBets client={client} onRecorded={() => setRecorded((n) => n + 1)} />
+                  <RealBets client={client} onRecorded={onRecorded} onState={setReal} />
                 </Card>
-                <Card title="Live scores" topic="liveScores" wide>
-                  <LiveScores day={data.day} rows={data.slate} bets={data.bets} />
+                <Card title="Live games and our bets" topic="liveScores" wide>
+                  <LiveScores day={data.day} rows={data.slate} bets={data.bets} real={real} />
                 </Card>
                 <Card title="Slate" topic="slate" wide>
                   {data.day !== today ? (
