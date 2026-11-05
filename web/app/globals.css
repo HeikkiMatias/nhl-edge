@@ -1228,6 +1228,70 @@ button:disabled {
   color: var(--warn);
 }
 
+/* The Models tab (#398 step 5): measure and challenger cards, fit progress and the timeline. */
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
+  gap: 12px;
+}
+
+.model-card {
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 12px 14px;
+  min-width: 0;
+}
+
+.model-card h3 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+
+.model-card p {
+  margin: 4px 0;
+}
+
+.model-card .figure {
+  font-variant-numeric: tabular-nums;
+}
+
+.model-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.model-head h3 {
+  margin: 0;
+}
+
+.progress,
+.timeline-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  overflow: hidden;
+  margin: 8px 0 2px;
+}
+
+.progress span,
+.timeline-bar span {
+  display: block;
+  height: 100%;
+  background: var(--s1);
+}
+
+.timeline-bar span {
+  background: var(--secondary);
+}
+
+.timeline p {
+  font-size: 13px;
+}
+
 .won::before {
   content: "✓ ";
   color: var(--good);

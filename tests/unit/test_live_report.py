@@ -193,7 +193,7 @@ def test_every_registered_challenger_is_reported_from_the_day_after_its_registra
     season = Season(n_weeks=6)
     registered = FIRST + timedelta(days=6)
     shifted = replace(lc.REGISTRY[0], name="shifted", registered_on=registered)
-    silent = replace(lc.REGISTRY[0], name="silent", registered_on=registered)
+    silent = replace(lc.REGISTRY[0], name="silent", registered_on=registered, primary="BLEND")
     monkeypatch.setattr(lc, "REGISTRY", (shifted, silent))
     # Every game's output, those of the registration's week too: only later days count.
     outputs = ChallengerPredictions.validate(
@@ -218,6 +218,9 @@ def test_every_registered_challenger_is_reported_from_the_day_after_its_registra
     assert result["registered"] == 2
     counted = season.ledger.filter(pl.col("game_date") > registered)
     shifted_result = result["challengers"]["shifted/1"]
+    # Each entry names its primary measure; the control has none (#398's Models tab).
+    assert shifted_result["primary"] is None
+    assert result["challengers"]["silent/1"]["primary"] == "BLEND"
     assert shifted_result["games"] == shifted_result["predicted"] == counted.height
     assert shifted_result["days"] == counted["game_date"].n_unique()
     # The paired difference, the challenger's log loss less the blend's, on the same games.

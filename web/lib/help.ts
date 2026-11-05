@@ -187,6 +187,46 @@ export const HELP = {
     source: "The nightly live report.",
     terms: ["clv", "interval"],
   },
+  models: {
+    title: "The model against the market",
+    what:
+      "Each nightly report's paired log loss of the blend against the recalibrated market " +
+      "(BLEND − B1) and of the player layer against the team-and-goalie model (B3 − B2), with " +
+      "the blend's calibration slope, over the frozen policy's game days.",
+    read:
+      "Below 0 favours the first model named; a calibration slope of 1 is calibrated. A point " +
+      "is drawn only once its figure has its 95% interval, from 4 weeks of games; before that " +
+      "the card says about when it comes. Read the band, not the line: no verdict before the " +
+      "formal review.",
+    source: "The nightly live report (live_reports), each night's figures to its date.",
+    terms: ["comparison", "b1", "b3", "blend", "calibration", "interval"],
+  },
+  challengers: {
+    title: "Challengers",
+    what:
+      "Every registered challenger: when it was registered, the game days and games it has " +
+      "scored, a fitted one's training games toward its minimum, its primary measure, and the " +
+      "way to the formal review.",
+    read:
+      "A difference in log loss is the challenger's less the other model's: below 0 favours the " +
+      "challenger. Under 4 weeks a figure shows counts only. Nothing is a verdict before the " +
+      "formal review, which tests them all together.",
+    source: "The nightly live report's challengers section, from each day's run bundle.",
+    terms: ["challenger", "primaryMeasure", "comparison", "interval", "formalReview"],
+  },
+  forecasters: {
+    title: "The morning view and the close forecasters",
+    what:
+      "The morning view (ADR 0052) and the two close forecasters (ADR 0054, 0056), each with its " +
+      "primary measure over time: the morning slope toward the close, each forecast's error " +
+      "against no move, and version 2 against version 1.",
+    read:
+      "The morning slope above 0 means the market later prices in what B3 sees in the morning. " +
+      "A forecaster's figure below 0 means it forecasts the move better than no move, or for " +
+      "version 2, better than version 1. Counts only until 4 weeks.",
+    source: "The nightly live report's morning view and close forecaster sections.",
+    terms: ["primaryMeasure", "close", "interval", "formalReview"],
+  },
   report: {
     title: "The live report",
     what:
@@ -194,7 +234,7 @@ export const HELP = {
       "comparisons, the blend's calibration, gaps for hand review and the alerts.",
     read:
       "Every figure has its 95% interval once it spans 4 weeks; no verdict before the formal " +
-      "review on 2027-04-12 (ADR 0032). Charts of the challengers come to this tab next.",
+      "review on 2027-04-12 (ADR 0032). The charts above draw its figures over time.",
     source: "nhl live report, each night.",
     terms: ["interim", "coverage", "comparison", "calibration", "interval"],
   },

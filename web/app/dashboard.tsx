@@ -13,9 +13,10 @@ import { HELP } from "@/lib/help";
 import { LiveScores } from "./live";
 import { MarketResults } from "./market";
 import { MarketToday } from "./market-today";
+import { ModelsTab } from "./models";
 import { RealBets } from "./real";
 import { RealRecord } from "./real-record";
-import { ClvHistory, Glossary, Headline, Ledger, Report, Results, Slate } from "./sections";
+import { ClvHistory, Glossary, Headline, Ledger, Results, Slate } from "./sections";
 import { Card, Chip, Panel, Tabs, ThemeToggle, useHash } from "./ui";
 
 // The tabs (#398): market making first, the direction the owner follows most; then the bets,
@@ -330,9 +331,7 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
       {opened.has("models") ? (
         <div hidden={tab !== "models"}>
           <Panel id="models">
-            <Card title="Live report" topic="report" wide>
-              <Report report={data.report} />
-            </Card>
+            <ModelsTab client={client} report={data.report} />
           </Panel>
         </div>
       ) : null}

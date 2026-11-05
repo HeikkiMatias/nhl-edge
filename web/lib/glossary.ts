@@ -201,6 +201,26 @@ export const GLOSSARY = {
       "difference in log loss per game, a standard score for probabilities. Negative favours " +
       "the first model named.",
   },
+  challenger: {
+    term: "Challenger",
+    meaning:
+      "A model registered before it is tested, scored only on the game days after its " +
+      "registration, never part of the decision, and never a change to the frozen policy. Every " +
+      "one is reported, and a day without its output withholds its figures (ADR 0038).",
+  },
+  primaryMeasure: {
+    term: "Primary measure",
+    meaning:
+      "The one figure fixed in a challenger's ADR before any game is scored, which the formal " +
+      "review tests (ADR 0048). The other figures beside it only describe.",
+  },
+  formalReview: {
+    term: "The formal review",
+    meaning:
+      "On 2027-04-12: every challenger's primary measure is tested together, with Holm's " +
+      "adjustment so that a lucky one among many doesn't pass. Until then nothing is decided, " +
+      "whatever a chart looks like (ADR 0032, ADR 0048).",
+  },
   calibration: {
     term: "Calibration",
     meaning:
