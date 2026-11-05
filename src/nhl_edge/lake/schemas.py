@@ -944,7 +944,8 @@ class RealBets(pa.DataFrameModel):
     the alert's stake at the matched price, and within_rule whether the matched price cleared the
     minimum and the stake placed was within the allowed one. corrections counts the corrections
     applied (real/live/corrections/), each appended at the weekly check against the venue's
-    statement, never an edit."""
+    statement, never an edit; revisions counts the owner's revisions applied before them
+    (real/live/revisions/, ADR 0058), each appended from the form before the game's start."""
 
     game_date: pl.Date
     season: pl.Int32
@@ -973,6 +974,7 @@ class RealBets(pa.DataFrameModel):
     allowed_stake: pl.Float64 = pa.Field(ge=0, nullable=True)
     within_rule: pl.Boolean = pa.Field(nullable=True)
     corrections: pl.Int32 = pa.Field(ge=0)
+    revisions: pl.Int32 = pa.Field(ge=0)
 
     class Config(pa.DataFrameModel.Config):
         strict = True

@@ -2,9 +2,18 @@
 // settlement revision, the price against the paper price, and practice kept apart from real.
 import { expect, test } from "vitest";
 
-import { corrected, priceGap, realBankroll, realRecord, since, twins, view } from "./real-record.ts";
+import {
+  corrected,
+  priceGap,
+  realBankroll,
+  realRecord,
+  revised,
+  since,
+  twins,
+  view,
+} from "./real-record.ts";
 import { ALERT } from "./testing.ts";
-import type { Bet, RealAlert, RealEntry, RealSettlement } from "./types.ts";
+import type { Bet, RealAlert, RealEntry, RealRevision, RealSettlement } from "./types.ts";
 
 const bet = (game_id: number, game_date = "2026-11-17", price = 2.15): Bet => ({
   game_date,
@@ -175,6 +184,68 @@ test("corrections apply in order over the entries, as the R2 record applies them
   ]);
   expect(rows[1].entry?.late).toBe(true);
   expect(fixed.counts.get("2026-11-17/1")).toBe(2);
+});
+
+test("the owner's revisions apply before the corrections, as the R2 record applies them", () => {
+  const alerts = [alert(1), alert(2), alert(3)];
+  const entries = [placed(1, 2.2, 1.0), placed(2, 2.2, 1.0), placed(3, 2.2, 1.0)];
+  const revision = (game_id: number, n: number, changes: Partial<RealRevision>): RealRevision => ({
+    game_date: "2026-11-17",
+    game_id,
+    n,
+    outcome: "placed",
+    matched_price: 2.25,
+    stake: 1.1,
+    bet_id: `R${game_id}-${n}`,
+    placed_utc: "2026-11-17T18:00:00Z",
+    reason: null,
+    note: "why",
+    revised_utc: "2026-11-17T19:00:00Z",
+    ...changes,
+  });
+  const rev = revised(entries, [
+    // Out of order on purpose: each bet's revisions apply by their number.
+    revision(1, 2, { stake: 1.2 }),
+    revision(1, 1, { stake: 0.5 }),
+    // Undone, and left so: the bet is unrecorded again.
+    revision(2, 1, { outcome: "withdrawn", matched_price: null, stake: null, bet_id: null, placed_utc: null }),
+    // Undone, then a correction at the weekly check finds it placed after all.
+    revision(3, 1, { outcome: "withdrawn", matched_price: null, stake: null, bet_id: null, placed_utc: null }),
+  ]);
+  const fixed = corrected(
+    rev.entries,
+    [
+      {
+        game_date: "2026-11-17",
+        game_id: 3,
+        n: 0,
+        changes: { outcome: "placed", matched_price: 2.1, stake: 1.0, bet_id: "X3", placed_utc: "2026-11-17T18:00:00Z" },
+        reason: "on the statement",
+        corrected_utc: "2026-11-23T10:00:00Z",
+      },
+    ],
+    alerts,
+    rev.withdrawn,
+  );
+  const rows = twins([bet(1), bet(2), bet(3)], alerts, fixed.entries, [], "real");
+  expect(rows.map((t) => [t.state, t.entry?.stake ?? null])).toEqual([
+    ["placed", 1.2],
+    ["not recorded", null],
+    ["placed", 1.0],
+  ]);
+  // The withdrawn entry's own time stays: it was recorded before the start, never late.
+  expect([rows[2].entry?.entered_utc, rows[2].entry?.late]).toEqual(["2026-11-17T18:01:00Z", false]);
+  expect([...rev.counts]).toEqual([["2026-11-17/1", 2], ["2026-11-17/2", 1], ["2026-11-17/3", 1]]);
+  // A correction of a withdrawn bet's reason alone leaves it not placed, as the R2 record does
+  // (Codex on #404).
+  const reasonOnly = corrected(
+    rev.entries,
+    [{ game_date: "2026-11-17", game_id: 2, n: 0, changes: { reason: "missed it" }, reason: "statement", corrected_utc: "2026-11-23T10:00:00Z" }],
+    alerts,
+    rev.withdrawn,
+  );
+  const second = twins([bet(2)], alerts, reasonOnly.entries, [], "real")[0];
+  expect([second.state, second.entry?.reason, second.entry?.matched_price]).toEqual(["not placed", "missed it", null]);
 });
 
 test("a closed window's alerts end the practice history, and the start reads from the alerts", () => {

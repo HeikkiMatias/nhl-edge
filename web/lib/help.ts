@@ -110,10 +110,12 @@ export const HELP = {
       "The bets the 12:45 ET decision picked, with the lowest price still worth taking and the " +
       "stake at your price.",
     read:
-      "Record each bet once it is placed, or say why it was not. An entry is never changed; a " +
-      "mistake is corrected at the weekly check against the venue's statement.",
-    source: "The decision's Telegram alert; your entries go to the record.",
-    terms: ["minPrice", "realStake", "realRecord", "practice"],
+      "Record each bet once it is placed, or say why it was not. Until the game starts you can " +
+      "correct an entry or undo it, with a note: each revision is kept beside the entry, never " +
+      "an edit. From the start on, a mistake is corrected at the weekly check against the " +
+      "venue's statement.",
+    source: "The decision's Telegram alert; your entries and revisions go to the record.",
+    terms: ["minPrice", "realStake", "realRecord", "realRevision", "practice"],
   },
   realRecord: {
     title: "Real record",
@@ -121,7 +123,7 @@ export const HELP = {
       "Every real bet and its paper twin: what was placed, at what price and stake, and how it " +
       "settled, with the real bankroll.",
     read: "The stop line at 80 € ends real bets until you decide to restart.",
-    source: "The real bets' alerts, entries, settlements and corrections.",
+    source: "The real bets' alerts, entries, revisions, settlements and corrections.",
     terms: ["realBankroll", "stopLine", "realTwin", "priceGap"],
   },
   paper: {

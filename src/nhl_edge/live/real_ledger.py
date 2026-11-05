@@ -16,8 +16,11 @@
   cent, at which the expected return p·o - 1 still clears the bet's hurdle (hard rule 4).
 - **The entries:** the owner records each bet on the dashboard (Supabase's real_entries, which
   refuses a second entry and a placed time at or after the start). Each is copied once to R2
-  (real/live/entries/), the record; a mistake is corrected by an appended correction
-  (real/live/corrections/), never an edit.
+  (real/live/entries/), the record. Until the game's start the owner may append revisions from
+  the form (real_entry_revisions, ADR 0058): each a complete new entry, or its withdrawal, with a
+  note, copied once to R2 (real/live/revisions/). From the start on, a mistake is corrected by an
+  appended correction at the weekly check (real/live/corrections/). Neither is an edit: the
+  record applies the entry, then its revisions in order, then the corrections.
 - **Settlement** on the full game, OT and shootout included (hard rule 2), at the matched price
   and the stake placed, appended once per placed bet (real/live/settlements/); a correction to a
   settled bet appends its next revision. The bankroll at a decision counts only results public
@@ -69,6 +72,8 @@ SKIP_MODE = {
     CLOSED: "skipped: the start window closed without a start",
 }
 PLACED, NOT_PLACED, SKIPPED = "placed", "not placed", "skipped"
+# A revision that withdraws the entry: the bet is unrecorded again (ADR 0058).
+WITHDRAWN = "withdrawn"
 SETTLED, VOID, CANCELLED, PAYOUT = "settled", "void", "cancelled", "payout"
 # An exchange market resolved at the exchange's own price per contract (Kalshi's "last fair
 # price"), as for a game cancelled or played over two weeks late (ADR 0040).
@@ -86,8 +91,10 @@ ENTRY_FIELDS = (
     "entered_utc",
     "late",
 )
-# What a correction may change.
+# What a correction may change, and what a revision gives anew.
 CORRECTABLE = ("outcome", "matched_price", "stake", "bet_id", "placed_utc", "reason")
+# A revision as the dashboard's form appends it (Supabase real_entry_revisions) and R2 keeps it.
+REVISION_FIELDS = ("game_date", "game_id", "n", *CORRECTABLE, "note", "revised_utc")
 
 
 @dataclass(frozen=True)
@@ -600,6 +607,10 @@ def correction_key(game_date: date, game_id: int, n: int) -> str:
     return f"{PREFIX}/corrections/{game_date.isoformat()}/{game_id}-{n}.json"
 
 
+def revision_key(game_date: date, game_id: int, n: int) -> str:
+    return f"{PREFIX}/revisions/{game_date.isoformat()}/{game_id}-{n}.json"
+
+
 def settlement_key(game_date: date, game_id: int, revision: int) -> str:
     return f"{PREFIX}/settlements/{game_date.isoformat()}/{game_id}-{revision}.parquet"
 
@@ -813,6 +824,30 @@ def entries(store: lb.Store) -> list[dict[str, Any]]:
     return [json.loads(store.get(key)) for key in store.keys(f"{PREFIX}/entries")]
 
 
+def store_revisions(store: lb.Store, revised: Sequence[Mapping[str, Any]]) -> int:
+    """Copy the dashboard's revisions to R2, each once, as store_entries does the entries: one
+    already there with other bytes is refused (a revision is never edited). Returns how many were
+    new."""
+    held = set(store.keys(f"{PREFIX}/revisions"))
+    new = 0
+    for revision in revised:
+        body = json.dumps({name: revision.get(name) for name in REVISION_FIELDS}, sort_keys=True)
+        game_date = date.fromisoformat(str(revision["game_date"]))
+        key = revision_key(game_date, int(revision["game_id"]), int(revision["n"]))
+        new += key not in held
+        lb.put_once(store, key, body.encode())
+    return new
+
+
+def _revision_order(revision: Mapping[str, Any]) -> tuple[str, int, int]:
+    return (str(revision["game_date"])[:10], int(revision["game_id"]), int(revision["n"]))
+
+
+def revisions(store: lb.Store) -> list[dict[str, Any]]:
+    found = [json.loads(store.get(key)) for key in store.keys(f"{PREFIX}/revisions")]
+    return sorted(found, key=_revision_order)
+
+
 def corrections(store: lb.Store) -> list[dict[str, Any]]:
     found = [json.loads(store.get(key)) for key in store.keys(f"{PREFIX}/corrections")]
     return sorted(found, key=lambda c: (c["corrected_utc"], c["game_date"], c["game_id"], c["n"]))
@@ -850,7 +885,7 @@ def correct(
         "reason": reason,
         "corrected_utc": now.isoformat(),
     }
-    bets(alerts(store), entries(store), [*corrections(store), record])
+    bets(alerts(store), entries(store), [*corrections(store), record], revisions(store))
     store.put(key, json.dumps(record, sort_keys=True).encode())
     return key
 
@@ -865,12 +900,37 @@ def bets(
     alerted_rows: pl.DataFrame,
     recorded: Sequence[Mapping[str, Any]],
     corrected: Sequence[Mapping[str, Any]] = (),
+    revised: Sequence[Mapping[str, Any]] = (),
 ) -> pl.DataFrame:
-    """Every alert row with what the owner did (the lake's real_bets): its entry, with the
-    corrections applied in order, or "not placed" when an alerted bet has none."""
+    """Every alert row with what the owner did (the lake's real_bets): its entry, then the owner's
+    revisions of it in order, each a complete new entry or its withdrawal (ADR 0058), then the
+    corrections in order; or "not placed" when an alerted bet has none, or its entry was withdrawn.
+    A revision without an entry, or one made at or after its game's start, is refused."""
     found: dict[tuple[str, int], dict[str, Any]] = {}
     for entry in recorded:
         found[(str(entry["game_date"])[:10], int(entry["game_id"]))] = dict(entry)
+    revision_counts: dict[tuple[str, int], int] = {}
+    last_revised: dict[tuple[str, int], datetime] = {}
+    # The bets whose entry stands withdrawn: unrecorded again, until a revision or a correction
+    # records them anew.
+    withdrawn: set[tuple[str, int]] = set()
+    for revision in sorted(revised, key=_revision_order):
+        key = _revision_order(revision)[:2]
+        entry = found.get(key)
+        if entry is None:
+            raise ValueError(f"a revision without an entry: {key}")
+        given = revision["outcome"]
+        entry.update(
+            {name: None if given == WITHDRAWN else revision.get(name) for name in CORRECTABLE}
+        )
+        if given == WITHDRAWN:
+            withdrawn.add(key)
+        else:
+            withdrawn.discard(key)
+        revision_counts[key] = revision_counts.get(key, 0) + 1
+        when = _instant(revision["revised_utc"])
+        assert when is not None
+        last_revised[key] = max(last_revised.get(key, when), when)
     counts: dict[tuple[str, int], int] = {}
     for correction in corrected:
         key = (correction["game_date"], int(correction["game_id"]))
@@ -879,6 +939,8 @@ def bets(
             {"entered_utc": correction["corrected_utc"], "late": None, "reason": None},
         )
         entry.update(correction["changes"])
+        if "outcome" in correction["changes"]:
+            withdrawn.discard(key)
         counts[key] = counts.get(key, 0) + 1
     keys = {(row["game_date"].isoformat(), row["game_id"]) for row in alerted_rows.to_dicts()}
     orphans = sorted(set(found) - keys)
@@ -888,6 +950,9 @@ def bets(
     for alert in alerted_rows.sort("game_date", "game_id").iter_rows(named=True):
         key = (alert["game_date"].isoformat(), alert["game_id"])
         entry = found.get(key, {})
+        # As the form's own rule: a revision is made before the game's start (ADR 0058).
+        if key in last_revised and last_revised[key] >= alert["start_utc"]:
+            raise ValueError(f"a revision at or after its game's start: {key}")
         if alert["status"] != ALERTED:
             if entry:
                 raise ValueError(f"an entry for a bet that wasn't alerted: {key}")
@@ -905,8 +970,8 @@ def bets(
         matched = float(entry["matched_price"]) if placed else None
         stake = float(entry["stake"]) if placed else None
         allowed = stake_at(json.loads(alert["stakes"]), matched) if matched is not None else None
-        entered = _instant(entry.get("entered_utc"))
-        late = entry.get("late")
+        entered = None if key in withdrawn else _instant(entry.get("entered_utc"))
+        late = None if key in withdrawn else entry.get("late")
         if late is None and entered is not None:
             late = entered >= alert["start_utc"]
         rows.append(
@@ -931,6 +996,7 @@ def bets(
                     and stake <= allowed + 1e-9
                 ),
                 "corrections": counts.get(key, 0),
+                "revisions": revision_counts.get(key, 0),
             }
         )
     built = pl.DataFrame(rows, schema=dtypes(RealBets))

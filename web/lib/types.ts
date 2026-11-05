@@ -239,6 +239,22 @@ export type RealEntry = {
   source?: "form" | "kalshi";
 };
 
+/** The owner's revision of a bet's entry from the form, until its game's start (public.
+ * real_entry_revisions, ADR 0058): a complete new entry, or its withdrawal, with a note. */
+export type RealRevision = {
+  game_date: string;
+  game_id: number;
+  n: number;
+  outcome: "placed" | "not placed" | "withdrawn";
+  matched_price: number | null;
+  stake: number | null;
+  bet_id: string | null;
+  placed_utc: string | null;
+  reason: string | null;
+  note: string;
+  revised_utc: string;
+};
+
 /** A settlement revision of a placed real or practice bet (public.real_settlements, #270): on the
  * full game at the matched price and stake placed, or, for a Kalshi bet held for Kalshi's own
  * resolution, a payout at its price with no result (#290). The latest revision of each bet counts. */

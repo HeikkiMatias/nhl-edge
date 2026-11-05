@@ -1692,6 +1692,75 @@ def test_a_rerun_of_an_alerted_day_writes_its_copies_again(
     assert result.exit_code == 0 and sent == [alert.message]
 
 
+def test_the_real_sync_copies_the_entries_then_their_revisions_each_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # ADR 0058: the owner's revisions reach the record after the entries they revise, each once,
+    # and the lake's real_bets applies them; before their migration the sync goes on without.
+    import polars as pl
+    import predict_fixtures as pf
+    import real_fixtures as rf
+
+    from nhl_edge import cli
+    from nhl_edge.lake import supabase as sb
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import real_ledger as rl
+
+    store = lb.LocalStore(tmp_path)
+    empty = rl.bets(rf.alert_rows().clear(), [])
+    rl.write_alert(store, rl.prepare(pf.DAY, rf.ledger(), [], empty, rf.games(), rf.ALERT, rf.CODE))
+    first = 2026020053
+    tables: dict[str, Any] = {
+        "real_entries": [{"id": 1, **rf.entry(first, stake=1.0), "source": "form"}],
+        "real_entry_revisions": [{"id": 1, **rf.revision(first, 1, stake=1.2)}],
+    }
+
+    class Fake:
+        def select(self, table: str, columns: Any, order: str) -> list[dict[str, Any]]:
+            if table not in tables:
+                raise sb.SupabaseError("read failed: 404 PGRST205")
+            return [{name: row.get(name) for name in columns} for row in tables[table]]
+
+        def insert_new_records(self, table: str, rows: Any, key: Any) -> int:
+            return len(rows)
+
+    class FakeLake:
+        def __init__(self) -> None:
+            self.tables: dict[str, Any] = {}
+
+        def replace(self, table: str, frame: Any) -> None:
+            self.tables[table] = frame
+
+    lake = FakeLake()
+    monkeypatch.setattr(cli, "_real_record", lambda r2: (lake, store))
+    monkeypatch.setattr(sb.Supabase, "from_env", classmethod(lambda cls: Fake()))
+    result = runner.invoke(app, ["real", "sync", "--r2", "--supabase"])
+    assert result.exit_code == 0, result.output
+    assert "1 new entries copied" in result.output
+    assert "1 new revisions copied" in result.output
+    assert [r["n"] for r in rl.revisions(store)] == [1]
+    bet = lake.tables["real_bets"].filter(pl.col("game_id") == first).row(0, named=True)
+    assert (bet["stake"], bet["revisions"]) == (1.2, 1)
+    result = runner.invoke(app, ["real", "sync", "--r2", "--supabase"])
+    assert "0 new revisions copied" in result.output
+    # A bet recorded and revised while the sync reads: its revision waits for its entry, and
+    # the sync goes on (Codex on #404).
+    second = 2026020054
+    tables["real_entry_revisions"].append({"id": 2, **rf.revision(second, 1, stake=1.0)})
+    result = runner.invoke(app, ["real", "sync", "--r2", "--supabase"])
+    assert result.exit_code == 0, result.output
+    assert "0 new revisions copied from the dashboard (1 wait for their entry" in result.output
+    tables["real_entries"].append({"id": 2, **rf.entry(second, stake=0.8), "source": "form"})
+    result = runner.invoke(app, ["real", "sync", "--r2", "--supabase"])
+    assert "1 new revisions copied" in result.output
+    assert [(r["game_id"], r["n"]) for r in rl.revisions(store)] == [(first, 1), (second, 1)]
+    # Before the revisions migration: the entries alone, and a note to apply it.
+    del tables["real_entry_revisions"]
+    result = runner.invoke(app, ["real", "sync", "--r2", "--supabase"])
+    assert result.exit_code == 0, result.output
+    assert "apply 20261106140000_real_entry_revisions.sql" in result.output
+
+
 def test_kalshi_books_skips_a_cron_line_that_is_not_an_odds_slot() -> None:
     # 03:00 UTC is never a slot, so no alert is read and nothing is fetched.
     result = runner.invoke(app, ["kalshi", "books", "--mirror-raw", "--cron", "0 3 * * *"])

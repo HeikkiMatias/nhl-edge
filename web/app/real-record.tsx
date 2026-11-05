@@ -11,6 +11,7 @@ import {
   REAL_START,
   realBankroll,
   realRecord,
+  revised,
   since,
   STOP_DRAWDOWN,
   type Twin,
@@ -52,8 +53,10 @@ export function RealRecord({
   if (!state.ready) return <p className="muted">Not set up yet (web/README.md).</p>;
   const shown = view(state.alerts, state.days);
   const settlements = state.settlements ?? [];
-  // The weekly check's corrections apply over the entries, as in the R2 record (Codex on #278).
-  const fixed = corrected(state.entries, state.corrections, state.alerts);
+  // The owner's revisions before the start (ADR 0058), then the weekly check's corrections,
+  // apply over the entries, as in the R2 record (Codex on #278).
+  const rev = revised(state.entries, state.revisions);
+  const fixed = corrected(rev.entries, state.corrections, state.alerts, rev.withdrawn);
   const rows = twins(bets, state.alerts, fixed.entries, settlements, shown, state.days);
   const days = realBankroll(settlements, shown);
   const r = realRecord(settlements, shown);
@@ -106,7 +109,7 @@ export function RealRecord({
       {rows.length === 0 ? (
         <p className="muted">No alert yet.</p>
       ) : (
-        <Twins rows={rows} counts={fixed.counts} />
+        <Twins rows={rows} corrections={fixed.counts} revisions={rev.counts} />
       )}
       <h3>The price against the paper price</h3>
       {gap.bets.length === 0 ? (
@@ -125,7 +128,15 @@ export function RealRecord({
 
 const signedPrice = (x: number) => `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(3)}`;
 
-function Twins({ rows, counts }: { rows: Twin[]; counts: Map<string, number> }) {
+function Twins({
+  rows,
+  corrections,
+  revisions,
+}: {
+  rows: Twin[];
+  corrections: Map<string, number>;
+  revisions: Map<string, number>;
+}) {
   return (
     <div className="scroll">
       <table>
@@ -152,7 +163,8 @@ function Twins({ rows, counts }: { rows: Twin[]; counts: Map<string, number> }) 
               </td>
               <td>
                 {twinText(t)}
-                {counts.get(`${t.bet.game_date}/${t.bet.game_id}`) ? " (corrected)" : ""}
+                {revisions.get(`${t.bet.game_date}/${t.bet.game_id}`) ? " (revised)" : ""}
+                {corrections.get(`${t.bet.game_date}/${t.bet.game_id}`) ? " (corrected)" : ""}
               </td>
               <td className="number">
                 {t.state === "placed" && t.entry?.matched_price != null
