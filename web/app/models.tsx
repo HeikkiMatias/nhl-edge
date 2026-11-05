@@ -62,7 +62,9 @@ export function ModelsTab({ client, report }: { client: SupabaseClient; report: 
           />
           <Measure
             title="The blend's calibration slope"
-            figure={report.calibration.slope}
+            // Before its interval the slope is absent and its counts are the section's own
+            // (Codex on #406).
+            figure={report.calibration.slope ?? { games: report.calibration.games, weeks: report.calibration.weeks }}
             asOf={report.as_of}
             points={series(history, (n) => n.slope)}
             reference={1}
@@ -244,6 +246,9 @@ function ChallengerCard({
   const fit = fitProgress(entry);
   const points = series(nights, (n) => primaryFigure(n.challengers?.[id]));
   const withheld = entry.missing_days.length > 0;
+  // A baseline challenger without a day withholds the pairing, the primary measure with it
+  // (Codex on #406).
+  const baselineMissing = entry.baseline_missing_days ?? [];
   const control = primaryName(entry).startsWith("The control");
   const unfitted = entry.predicted === 0 && (entry.not_predicted.unfitted ?? 0) > 0;
   const about = control ? null : intervalAbout(figure, asOf);
@@ -256,7 +261,7 @@ function ChallengerCard({
         </span>
         {control ? <Chip>control</Chip> : null}
         {unfitted ? <Chip tone="warn">unfitted</Chip> : null}
-        {withheld ? <Chip tone="warn">withheld</Chip> : null}
+        {withheld || baselineMissing.length ? <Chip tone="warn">withheld</Chip> : null}
       </div>
       <p className="muted">
         {entry.days} game day{entry.days === 1 ? "" : "s"}, {entry.games} games, {entry.predicted}{" "}
@@ -284,6 +289,11 @@ function ChallengerCard({
         <p className="warning">
           Withheld: {entry.missing_days.length} game day{entry.missing_days.length === 1 ? "" : "s"}{" "}
           without its output, so none of its figures show.
+        </p>
+      ) : baselineMissing.length ? (
+        <p className="warning">
+          <strong>{primaryName(entry)}</strong>: withheld, its baseline {entry.baseline} lacks{" "}
+          {baselineMissing.length} game day{baselineMissing.length === 1 ? "" : "s"}.
         </p>
       ) : (
         <>

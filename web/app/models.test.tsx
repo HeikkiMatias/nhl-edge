@@ -55,6 +55,14 @@ const CHALLENGERS = {
     comparisons: { B3: { difference: band(-0.002), left_out: 0 } },
   },
   "team_residual_blend/1": { ...base, name: "team_residual_blend", adr: "0043", primary: "conservative_blend/1", missing_days: ["2026-11-03"] },
+  "goalie_spread_blend/1": {
+    ...base,
+    name: "goalie_spread_blend",
+    adr: "0042",
+    primary: "conservative_blend/1",
+    baseline: "conservative_blend/1",
+    baseline_missing_days: ["2026-11-04"],
+  },
 };
 const REPORT = {
   ...fixture,
@@ -63,7 +71,8 @@ const REPORT = {
   policy_version: "policy-v2",
   review_date: "2027-04-12",
   comparisons: { "BLEND - B1": { difference: band(-0.003), left_out: 0 }, "B3 - B2": { difference: counts, left_out: 0 } },
-  calibration: { games: 400, weeks: 5, slope: { value: 0.95, low: 0.8, high: 1.1, games: 400, weeks: 5 } },
+  // Three weeks: the slope's counts are the section's own until it has its interval.
+  calibration: { games: 124, weeks: 3 },
   challengers: { registered: 4, challengers: CHALLENGERS },
   morning_view: { version: "morning_view/1", registered_on: "2026-10-30", days: 15, games: 90, predicted: 88, not_predicted: { "no Pinnacle morning price": 2 }, missing_days: [], primary: counts },
   close_forecast: null,
@@ -105,6 +114,10 @@ test("a figure with its interval is charted; one without says about when it come
   expect(await screen.findByText(/^-0\.0030 \[-0\.0130, \+0\.0070\] \(400 games, 5 weeks\)$/)).toBeTruthy();
   // B3 − B2 has two weeks: counts only, about two weeks after the report.
   expect(screen.getByText(/^66 games over 2 weeks: too few weeks/)).toBeTruthy();
+  // The slope keeps the section's counts, a week from its interval (Codex on #406).
+  const slope = screen.getByText("The blend's calibration slope").closest(".model-card") as HTMLElement;
+  expect(slope.textContent).toContain("124 games over 3 weeks: too few weeks");
+  expect(slope.textContent).toContain("The chart starts once the figure has its interval, about 2026-11-27");
   expect(screen.getAllByText(/The chart starts once the figure has its interval, about 2026-12-04/).length).toBeGreaterThan(0);
   // The blend's chart draws the two nights with an interval, not the first.
   const chart = await screen.findByRole("img", { name: /BLEND − B1, log loss per game, with its 95% interval/ });
@@ -124,6 +137,10 @@ test("each challenger's card: the control, an unfitted one's progress, a withhel
   expect(unfitted.textContent).toContain("Registered 2026-10-22 → intervals 4 weeks after it is fitted → formal review 2027-04-12");
   const withheld = screen.getByRole("article", { name: "team_residual_blend/1" });
   expect(withheld.textContent).toContain("Withheld: 1 game day without its output");
+  // Its baseline's missing day withholds the pairing (Codex on #406).
+  const paired = screen.getByRole("article", { name: "goalie_spread_blend/1" });
+  expect(paired.textContent).toContain("withheld, its baseline conservative_blend/1 lacks 1 game day.");
+  expect(paired.textContent).toContain("withheld");
   const charted = screen.getByRole("article", { name: "b3_split/1" });
   expect(charted.textContent).toContain("Log loss against B3");
   expect(charted.textContent).toContain("intervals now");

@@ -28,6 +28,8 @@ export type ChallengerEntry = {
   not_predicted: Record<string, number>;
   missing_days: string[];
   pending_days: string[];
+  /** The days its baseline challenger lacks, which withhold the pairing (ADR 0042). */
+  baseline_missing_days?: string[];
   latest_fit?: { games?: number; minimum?: number; week?: string } & Record<string, unknown>;
   comparisons?: Record<string, { difference: Figure; left_out: number }>;
   move?: { difference: Figure };
@@ -98,7 +100,9 @@ export function primaryFigure(entry: ChallengerEntry | undefined): Figure | null
 export function primaryName(entry: ChallengerEntry): string {
   const primary = primaryOf(entry);
   if (primary === null) return "The control: no primary measure, so no candidate";
-  if (primary === "move") return "Its forecast's move toward Pinnacle's close";
+  if (primary === "move") {
+    return "Its forecast's squared error on the move to Pinnacle's close less no move's (below 0 favours it)";
+  }
   const against = primary === "BLEND" ? "the frozen blend" : primary;
   return `Log loss against ${against}, the challenger's less (below 0 favours it)`;
 }

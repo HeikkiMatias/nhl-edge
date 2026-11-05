@@ -50,6 +50,10 @@ test("its figure is its paired difference, or its move, and none for the control
   expect(primaryFigure(undefined)).toBeNull();
   expect(primaryName(entry())).toBe("Log loss against the frozen blend, the challenger's less (below 0 favours it)");
   expect(primaryName(entry({ primary: null }))).toMatch(/^The control/);
+  // The close challenger's figure is its squared error less no move's (Codex on #406).
+  expect(primaryName(entry({ primary: "move" }))).toBe(
+    "Its forecast's squared error on the move to Pinnacle's close less no move's (below 0 favours it)",
+  );
 });
 
 test("a chart's points are only the nights whose figure has its interval", () => {
