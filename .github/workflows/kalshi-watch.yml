@@ -45,6 +45,34 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
           uv run nhl kalshi watch --mirror-raw "${pick[@]}"
+  live:
+    # The dashboard's live view of market making (#398 step 3): beside the watch, every 5 minutes
+    # until the watch's own end, the quoting simulator on today's games as they stand, from the
+    # watch's polls as it mirrors them to R2 (never Kalshi itself) and the lake's fair values. Its
+    # rows carry Kalshi's prices, so they go only to the owner-only quote_live table (the owner's
+    # choice of 2026-11-05); the log prints counts only. It runs once the owner applies the live
+    # migration and sets SUPABASE_QUOTES_LIVE to true. Its own job, so it never slows the watch.
+    if: (github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true') && vars.SUPABASE_QUOTES_LIVE == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 358
+    # The Supabase secrets, as the nightly job reads them.
+    environment: kalshi-live
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
+      - run: uv sync --frozen
+      - name: Live quotes view (#398)
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
+          uv run nhl real quotes-live --r2 --supabase "${pick[@]}"
   quote:
     # Two-sided quoting on Kalshi's demo exchange (#375, ADR 0055), mock funds only: the paper
     # simulator's rules at the model's fair value, a step each minute from the morning view's

@@ -608,8 +608,9 @@ def _quote_price(
     return price if price >= CENT else None
 
 
-def step_game(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules: Exchange) -> None:
-    """One step of one game at at: its bids' fills to then, its pulls, and its quotes."""
+def _fills_to(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules: Exchange) -> None:
+    """The game's resting bids' fills to at, both teams' in the order they came, so the inventory
+    is measured after each."""
     keys = [(game.game_id, team) for team in (game.home, game.away)]
     filled = []
     for key in keys:
@@ -639,6 +640,12 @@ def step_game(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules
         )
         net = state.bought[key] - state.bought.get((game.game_id, game.other(key[1])), Decimal(0))
         state.largest_inventory = max(state.largest_inventory, abs(net))
+
+
+def step_game(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules: Exchange) -> None:
+    """One step of one game at at: its bids' fills to then, its pulls, and its quotes."""
+    keys = [(game.game_id, team) for team in (game.home, game.away)]
+    _fills_to(state, game, at, inputs, rules)
     if at >= game.start_utc - STOP_BEFORE:
         _released(state, game, at, None)
         return
@@ -724,17 +731,35 @@ def steps(game: Game, inputs: Inputs, fair: str | None = None) -> list[datetime]
 
 
 def run_variant(
-    fair: str, h: Decimal, inputs: Inputs, rules: Exchange, hold: str = WAIT
+    fair: str,
+    h: Decimal,
+    inputs: Inputs,
+    rules: Exchange,
+    hold: str = WAIT,
+    until: datetime | None = None,
 ) -> VariantDay:
     """One variant over the day: every game's steps in time order, so the day's cap sees every
-    game's bids and fills as they came."""
+    game's bids and fills as they came. With until, only the steps to then, as the day stands at
+    that moment (the dashboard's live view, #398); the record's days run to the end."""
     state = VariantDay(fair, h, hold)
     events = sorted(
-        ((t, g) for g in inputs.games for t in steps(g, inputs, fair)),
+        (
+            (t, g)
+            for g in inputs.games
+            for t in steps(g, inputs, fair)
+            if until is None or t <= until
+        ),
         key=lambda event: (event[0], event[1].game_id),
     )
     for at, game in events:
         step_game(state, game, at, inputs, rules)
+    if until is not None:
+        # The live view: the resting bids' fills from their last step to until, from the trades
+        # known by then, with no new quote; a bid filled in full no longer rests.
+        for game in inputs.games:
+            if any(key[0] == game.game_id for key in state.bids):
+                _fills_to(state, game, until, inputs, rules)
+        state.bids = {key: bid for key, bid in state.bids.items() if bid.left > 0}
     return state
 
 
@@ -756,8 +781,11 @@ def inputs_of(
     tops: pl.DataFrame,
     dailyfaceoff: pl.DataFrame,
     forecasts: pl.DataFrame | None = None,
+    slate: pl.DataFrame | None = None,
 ) -> Inputs:
-    games = tuple(slate_of(ledger))
+    """The day's inputs, indexed. The games are the ledger's, or slate's when given: the live view
+    reads the morning view's before the decision is published (#398)."""
+    games = tuple(slate_of(ledger if slate is None else slate))
     books = ks.markets(depth, trades, tops)
     return Inputs(
         games,

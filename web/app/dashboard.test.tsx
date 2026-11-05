@@ -516,7 +516,12 @@ test("the board opens on market making, and each tab is linkable by the hash", a
   render(<Signed client={supabase} />);
   const market = await board();
   expect(market.getAttribute("aria-selected")).toBe("true");
-  // Before the quotes migration, the simulator's tab says how to apply it.
+  // It opens on today's live view, which before its migration says how to apply it; the
+  // results say the same of theirs.
+  expect(screen.getByRole("tab", { name: "Today" }).getAttribute("aria-selected")).toBe("true");
+  expect(await screen.findByText(/The live migration isn't applied yet/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("tab", { name: "Results" }));
+  expect(window.location.hash).toBe("#market/results");
   expect(await screen.findByText(/The quotes migration isn't applied yet/)).toBeTruthy();
   await open("Betting", "Results");
   expect(window.location.hash).toBe("#betting/results");

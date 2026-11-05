@@ -29,6 +29,7 @@ export type Tables = {
   real_days?: unknown[];
   quote_days?: unknown[];
   quote_reports?: unknown[];
+  quote_live?: unknown[];
 };
 
 /**

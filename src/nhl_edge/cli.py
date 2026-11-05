@@ -6456,6 +6456,118 @@ def real_quotes(
             typer.echo(f"supabase {name}: {sent} day rows and tonight's report upserted")
 
 
+@real_app.command("quotes-live")
+def real_quotes_live(
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2",
+            help="Restore the day's new watch polls from R2, and pull the lake's tables, at each "
+            "cycle.",
+        ),
+    ] = False,
+    supabase: Annotated[
+        bool,
+        typer.Option("--supabase", help="Upsert each cycle's rows into the owner-only quote_live."),
+    ] = False,
+    once: Annotated[bool, typer.Option("--once", help="One cycle, then stop.")] = False,
+    every: Annotated[
+        int,
+        typer.Option(min=60, help="Seconds between cycles (the watch's books every 5 minutes)."),
+    ] = 300,
+    until: Annotated[
+        datetime | None,
+        typer.Option(
+            formats=["%Y-%m-%dT%H:%M"],
+            help="Stop at this UTC time, by default the watch's own end, a minute before the next "
+            "window.",
+        ),
+    ] = None,
+    cron: Annotated[
+        str | None,
+        typer.Option(help="Cron line that fired the run; skipped when it is the other offset's."),
+    ] = None,
+    at: Annotated[
+        datetime | None,
+        typer.Option(
+            formats=["%Y-%m-%dT%H:%M"],
+            help="One cycle as the day stood at this UTC time, from the polls stored by then; "
+            "never with --supabase.",
+        ),
+    ] = None,
+) -> None:
+    """The dashboard's live view of market making (#398 step 3): the quoting simulator on today's
+    games as they stand, every few minutes while the watch runs. Each cycle reads the watch's
+    polls of today so far (never Kalshi), runs our model's quotes at each half-spread to now, and
+    gives each game and team our fair value, Kalshi's latest top, our resting bid and what we
+    hold. With --supabase the rows go to the owner-only quote_live table, which the owner chose for
+    Kalshi's prices on 2026-11-05. Paper only. The log prints counts only (#280)."""
+    import time as clock
+    from datetime import UTC, timedelta
+
+    from nhl_edge.backtest import reports
+    from nhl_edge.ingest import dailyfaceoff as dfo
+    from nhl_edge.ingest import kalshi
+    from nhl_edge.ingest import kalshi_watch as kw
+    from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.supabase import Supabase
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.live import placement, real
+    from nhl_edge.live import quotes_live as ql
+    from nhl_edge.settings import load_env
+
+    if supabase and not r2:
+        raise typer.BadParameter("--supabase reads the polls mirrored to R2: pass --r2 too")
+    if supabase and at is not None:
+        raise typer.BadParameter("--at replays a past moment: the live table is today's")
+    load_env()
+    fixed = at.replace(tzinfo=UTC) if at is not None else None
+    once = once or fixed is not None
+    now = fixed or datetime.now(UTC)
+    if cron is not None and not kw.cron_due(cron, now):
+        typer.echo(f"quotes live: cron {cron!r} is not this time of year's line, skipped")
+        return
+    version = reports.version("quotes-live", now)
+    if supabase and version.endswith("-dirty"):
+        raise typer.BadParameter("commit first: the rows name their commit")
+    end = (until.replace(tzinfo=UTC) if until else None) or kw.window_end(now)
+    store = RawStore.from_env(mirror=r2)
+    lake = Lake.from_env(mirror=r2)
+    client = Supabase.from_env() if supabase else None
+    rules = placement.code_exchange(placement.LIVE) or real.DEMO_EXCHANGE
+    watched: ql.Watched | None = None
+    while True:
+        now = fixed or datetime.now(UTC)
+        day = now.astimezone(ET).date()
+        if watched is None or watched.day != day:
+            watched = ql.Watched(store, day)
+        # A failed cycle never stops the next, and its line names the error's kind only: a
+        # message could carry Kalshi's data into the public log.
+        try:
+            if r2:
+                for kind in kw.KINDS:
+                    store.restore_from_r2(f"{kalshi.SOURCE}/{kw.WATCH}/{kind}/{day.isoformat()}/")
+                store.restore_from_r2(f"{dfo.PREFIX}/{day.isoformat()}/")
+                for table in ql.LAKE_TABLES:
+                    lake.pull(table)
+            read = {table: lake.read(table) for table in ql.LAKE_TABLES}
+            starters, _ = dfo.stored_starting_goalies(store, {day})
+            inputs = ql.live_inputs(day, read, watched.update(), starters, now)
+            rows = ql.live_rows(inputs, rules, now, version)
+            if client is not None and rows.height:
+                client.upsert(ql.TABLE, rows, ql.KEY)
+            typer.echo(ql.count_line(rows, now, watched.unparsed))
+        except Exception as exc:
+            typer.echo(f"quotes live {now:%H:%M}Z: cycle failed ({type(exc).__name__})")
+        if once:
+            return
+        wait = every - (datetime.now(UTC) - now).total_seconds()
+        if datetime.now(UTC) + timedelta(seconds=max(wait, 0)) >= end:
+            return
+        clock.sleep(max(wait, 0))
+
+
 @real_app.command("quote")
 def real_quote(
     r2: Annotated[

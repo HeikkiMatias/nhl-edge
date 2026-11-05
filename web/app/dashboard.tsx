@@ -11,6 +11,7 @@ import { HELP } from "@/lib/help";
 
 import { LiveScores } from "./live";
 import { MarketResults } from "./market";
+import { MarketToday } from "./market-today";
 import { RealBets } from "./real";
 import { RealRecord } from "./real-record";
 import { ClvHistory, Glossary, Headline, Ledger, Report, Results, Slate } from "./sections";
@@ -27,6 +28,11 @@ const TABS = [
 const BETTING = [
   { id: "today", label: "Today" },
   { id: "results", label: "Results" },
+];
+// Market making's sub-tabs share the ids, so their panels' ids are prefixed.
+const MARKET = [
+  { id: "market-today", label: "Today" },
+  { id: "market-results", label: "Results" },
 ];
 
 /** The page: the sign-in form, or the board for a signed-in user, read through the client made
@@ -154,11 +160,11 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
   const [recorded, setRecorded] = useState(0);
   const [path, go] = useHash();
   const tab = TABS.some((t) => t.id === path[0]) ? path[0] : "market";
-  const sub = tab === "betting" && path[1] === "results" ? "results" : "today";
+  const sub = (tab === "betting" || tab === "market") && path[1] === "results" ? "results" : "today";
   // A tab is drawn when first opened and kept after, so moving back is instant and a form keeps
   // what was typed in it.
   const [opened, setOpened] = useState<Set<string>>(() => new Set());
-  const here = tab === "betting" ? `betting/${sub}` : tab;
+  const here = tab === "betting" || tab === "market" ? `${tab}/${sub}` : tab;
   if (!opened.has(here)) setOpened(new Set(opened).add(here));
 
   useEffect(() => {
@@ -214,11 +220,36 @@ function Board({ client, session }: { client: SupabaseClient; session: Session }
       </p>
       <Tabs tabs={TABS} active={tab} onSelect={(id) => go([id])} label="Dashboard" />
 
-      {opened.has("market") ? (
+      {opened.has("market/today") || opened.has("market/results") ? (
         <div hidden={tab !== "market"}>
           <Panel id="market">
-            <h2>Market making</h2>
-            <MarketResults client={client} />
+            <Tabs
+              tabs={MARKET}
+              active={`market-${sub}`}
+              onSelect={(id) => go(["market", id.replace("market-", "")])}
+              label="Market making"
+              small
+            />
+            {opened.has("market/today") ? (
+              <div
+                hidden={sub !== "today"}
+                role="tabpanel"
+                id="panel-market-today"
+                aria-labelledby="tab-market-today"
+              >
+                <MarketToday client={client} />
+              </div>
+            ) : null}
+            {opened.has("market/results") ? (
+              <div
+                hidden={sub !== "results"}
+                role="tabpanel"
+                id="panel-market-results"
+                aria-labelledby="tab-market-results"
+              >
+                <MarketResults client={client} />
+              </div>
+            ) : null}
           </Panel>
         </div>
       ) : null}

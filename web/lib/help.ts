@@ -12,6 +12,24 @@ export type Help = {
 };
 
 export const HELP = {
+  mmToday: {
+    title: "Market making today",
+    what:
+      "Today's games as the simulator stands now, every 5 minutes while the watch runs: for " +
+      "each team our fair value, Kalshi's best bid and ask, the bid we have resting and its " +
+      "contracts, what we hold, and what the holding wins or loses at the result. Prices are " +
+      "cents per $1 contract that pays out if its team wins, overtime and shootout included.",
+    read:
+      "Quoting: our bids are up. Pulled: Kalshi's price moved 3 cents or a new starter was " +
+      "named, and the game waits for our fair value. Quotes stop 10 minutes before the start; " +
+      "what we hold then rides on the result. Contracts on both teams pay a dollar a pair " +
+      "whatever happens. The best and worst cases add up every game's result going our way or " +
+      "against us.",
+    source:
+      "The simulator on the watch's polls of Kalshi's books, and our fair values (quote_live). " +
+      "Owner-only. The nightly record is the record; this view is replaced at each cycle.",
+    terms: ["marketMaking", "fairValue", "halfSpread", "fill", "pull", "twoSided"],
+  },
   mmTotals: {
     title: "Market making so far",
     what:
