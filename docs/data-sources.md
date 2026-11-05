@@ -696,6 +696,11 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - **The fill model:** the price shadow's: a trade after the posting at or below the bid fills it once the depth ahead of it has traded, and an ask at or below it fills the rest. An upper bound on fills, so on the adverse ones too.
   - **The figures, per contract:** the spread captured, the markouts (Kalshi's mid 5 and 30 minutes after the fill and its last mid before the start, and Pinnacle's closing proxy observed after the fill, each less the price), and the profit at settlement on the full game with the maker fee. Each fill weighs by its contracts, and the results are read again at every report, so a day kept before its results gets them later. Beside them, the pairs (contracts bought on both teams of a game) and the largest inventory, measured after each fill in time order. Each has its weekly block bootstrap interval, counts only under 4 weeks.
   - **Private (#280):** each day under `real/shadow/kalshi_quotes/1/days/` and the figures under `.../reports/`. The log has counts only. Point in time: `tests/leakage/test_kalshi_quotes.py`.
+  - **On the dashboard (#398, `--supabase`, once `SUPABASE_QUOTES` is true):** the owner chose owner-only tables on 2026-11-05.
+    - `quote_days` holds, per kept game date and variant, the counts, contracts and cost with the fee. It also holds the profit expected by the fair value, by Kalshi's last mid and by Pinnacle's close, each net of the fee, and the profit at settlement, null until every fill's game has its result.
+    - `quote_reports` holds each night's figures over every kept day.
+    - Both records go there, the simulator's and the hold rules', recomputed every night.
+    - No fill's price, ticker, time or trade goes there (`supabase/migrations/20261106120000_kalshi_quotes.sql`).
 - **Inputs:** an order is built from the day's alert only. No Kalshi price is an input: of the market's data only its status is used (`tests/leakage/test_kalshi_orders.py`, which also checks that no model package reads the real record or the orders).
 
 ## Odds snapshots

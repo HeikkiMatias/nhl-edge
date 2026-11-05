@@ -172,9 +172,15 @@ jobs:
         # kept yet: two-sided post-only quotes on both teams' Kalshi markets from three fair values
         # (the model, the model anchored to Kalshi's mid, Pinnacle's latest), at three
         # half-spreads, filled on the watch's logs (#319). Paper only. Its days and figures go
-        # privately to R2 (#280); the log prints counts only.
+        # privately to R2 (#280); the log prints counts only. Once the owner applies the quotes
+        # migration and sets SUPABASE_QUOTES to true, every kept day's sums per variant and
+        # tonight's figures are copied to the dashboard's owner-only tables too (#398).
         if: always()
-        run: uv run nhl real quotes --r2
+        env:
+          SUPABASE_QUOTES: ${{ vars.SUPABASE_QUOTES }}
+        run: |
+          if [ "$SUPABASE_QUOTES" = "true" ]; then sb=(--supabase); else sb=(); fi
+          uv run nhl real quotes --r2 "${sb[@]}"
       - name: Contract test on a golden game
         # One golden game read live must parse as its frozen copy does (issue #6). A failure
         # means the NHL API changed under the parsers.

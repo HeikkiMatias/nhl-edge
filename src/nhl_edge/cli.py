@@ -6355,6 +6355,14 @@ def real_quotes(
         bool,
         typer.Option("--r2", help="The record in R2, and the lake's tables pulled from it first."),
     ] = False,
+    supabase: Annotated[
+        bool,
+        typer.Option(
+            "--supabase",
+            help="Also upsert every kept day's figures and tonight's report into Supabase's "
+            "owner-only quote_days and quote_reports for the dashboard (#398).",
+        ),
+    ] = False,
 ) -> None:
     """Run shadow kalshi_quotes (#358 step 1) on each game date from 2026-10-31, before today, not
     kept yet: two-sided post-only quotes on both teams' Kalshi markets from three fair values (the
@@ -6363,7 +6371,9 @@ def real_quotes(
     store; then the figures over every kept day, with their weekly block bootstrap intervals, go
     there too. Beside it, under its own record, the model's quotes under each hold rule after a
     move (#385). It reads Kalshi's books and trades, so the log prints counts only (#280). Paper
-    only: no paper bet, real bet or policy reads it."""
+    only: no paper bet, real bet or policy reads it. With --supabase, each record's figures per
+    kept day and variant, sums only, and tonight's figures over every kept day are copied to the
+    dashboard's owner-only tables, every night again as the games' results come in."""
     import json
     from datetime import UTC, date
 
@@ -6371,14 +6381,18 @@ def real_quotes(
 
     from nhl_edge.backtest import reports
     from nhl_edge.ingest.odds import ET
+    from nhl_edge.lake.supabase import Supabase
     from nhl_edge.live import kalshi_quotes as kq
     from nhl_edge.live import placement, real
 
+    if supabase and not r2:
+        raise typer.BadParameter("--supabase copies the record in R2: pass --r2 too")
     now = datetime.now(UTC)
     version = reports.version("kalshi-quotes", now)
     if r2 and version.endswith("-dirty"):
         raise typer.BadParameter("commit first: the figures name their commit")
     lake, store = _real_record(r2)
+    client = Supabase.from_env() if supabase else None
     if r2:
         for table in kq.TABLES:
             lake.pull(table)
@@ -6415,6 +6429,7 @@ def real_quotes(
         )
 
     today = now.astimezone(ET).date()
+    copies: list[tuple[str, pl.DataFrame, dict[str, Any]]] = []
     for prefix, holds, first in (
         (kq.PREFIX, False, kq.FIRST_DAY),
         (kq.HOLDS_PREFIX, True, kq.HOLDS_FIRST_DAY),
@@ -6426,8 +6441,19 @@ def real_quotes(
         figures = {"as_of_utc": now.isoformat(), "code_version": version}
         figures |= kq.summary(found, metas, read["games"], holds)
         store.put(kq.report_key(now, prefix), json.dumps(figures, sort_keys=True).encode())
+        if client is not None:
+            name = kq.HOLDS_RECORD if holds else kq.RECORD
+            rows = kq.day_figures(found, metas, read["games"], holds)
+            copies.append((name, rows, kq.report_record(figures, today, holds)))
         line = kq.holds_count_line if holds else kq.count_line
         typer.echo(line(metas, len(days)))
+    # The dashboard's copies once both records are kept, so a failed copy never stops a day's
+    # keeping. Counts only in the log (#280).
+    if client is not None:
+        for name, rows, report in copies:
+            sent = client.upsert("quote_days", rows, kq.DAY_KEY)
+            client.upsert_records("quote_reports", [report], kq.REPORT_KEY)
+            typer.echo(f"supabase {name}: {sent} day rows and tonight's report upserted")
 
 
 @real_app.command("quote")

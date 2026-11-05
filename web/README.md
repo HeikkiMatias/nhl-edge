@@ -45,11 +45,12 @@ The paper-trading dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.j
 - **The browser holds only the public anon key.** The service role key stays in the GitHub workflows' secrets.
   - The app's one server route, `app/api/scores`, relays the NHL's public scoreboard. It holds no secret and reads no Supabase data.
   - It serves only dates within two days of today, and Vercel's CDN caches its answers for 20 seconds.
-- **Row-level security decides what a signed-in user can read.** Only the users in `public.dashboard_owners` can read `predictions`, `paper_bets`, `live_reports`, `real_alerts`, `real_entries`, `real_settlements`, `real_corrections` and `real_days`, and, from `games`, the scores of the bets' games. Anon reads nothing.
+- **Row-level security decides what a signed-in user can read.** Only the users in `public.dashboard_owners` can read `predictions`, `paper_bets`, `live_reports`, `real_alerts`, `real_entries`, `real_settlements`, `real_corrections`, `real_days`, `quote_days` and `quote_reports`, and, from `games`, the scores of the bets' games. Anon reads nothing.
 - **The one write is the real bets form** (#268): an owner may insert into `real_entries`, only its entry's own columns. The database sets the entry's time, lateness and author, refuses a second entry and a placed time outside the bet's alert and start, and grants no update or delete (`supabase/migrations/20261016120000_real_bets.sql`). An automatic Kalshi bet shows its order instead of the form: the pipeline records its entry (#287).
 - **Sign-in is by password, or by email link,** and only for users who already exist: sign-ups are off, and the link never creates a user (`shouldCreateUser: false`). Any other signed-in account is told it is not an owner, and is shown its user id.
 - **A link that comes back signed out says why,** in Supabase's words from the client's initialization: an expired or used-up link (as when a mail scanner opened it first), or a code it couldn't exchange, as in a browser other than the one that asked for it. A sign-in clears the message.
 - The page asks search engines not to index it.
+- **The Kalshi quoting simulator's figures are private (#280).** The owner chose on 2026-11-05 to see them on the dashboard, in owner-only tables. `quote_days` holds sums per game date and variant, `quote_reports` the night's figures over every kept day. No price, ticker, order book, trade or fill time reaches Supabase from the nightly run. The raw logs stay in R2.
 
 ## Environment variables
 
@@ -72,6 +73,7 @@ Without them the build still succeeds, and the page says it isn't configured.
    - `supabase/migrations/20261016150000_real_record.sql` (#270): the real bets' settlements, the weekly check's corrections and each alerted day's mode, for the real record. Until it is applied, the record shows its bets and twins without the bankroll or the corrections.
    - `supabase/migrations/20261018180000_kalshi_orders.sql` (#287, ADR 0040): each Kalshi bet's order on its alert, and the automatic bets' entries, which the pipeline records from their fills (`source = 'kalshi'`, never the form's). Apply it before the venue commit that makes Kalshi the real bets' venue. Until then the page reads no order and every entry is the form's.
    - `supabase/migrations/20261023120000_real_payouts.sql` (#290): the settlement status `payout`, for a Kalshi bet held for Kalshi's own resolution (its game played over two weeks late, or never) and paid out at Kalshi's price. Apply it before the venue commit too: until then such a settlement's copy to the dashboard is refused, and the nightly settle step fails on it.
+   - `supabase/migrations/20261106120000_kalshi_quotes.sql` (#398): the quoting simulator's figures per game date and variant (`quote_days`) and each night's figures over every kept day (`quote_reports`), owner-only, for the Market making tab. Then set `SUPABASE_QUOTES=true` (step 3).
 2. **Your user.**
    - Authentication → Users → Add user → Create new user, with your email and a password, and "Auto Confirm User" ticked. You sign in with those.
    - A user made without a password: delete it and add it again with one, then put its new id in `dashboard_owners` (step 2's insert). Or set the password through Supabase Auth's admin API, which hashes it as Auth does, never with SQL on `auth.users`:
@@ -81,6 +83,7 @@ Without them the build still succeeds, and the page says it isn't configured.
 3. **The repository variable `SUPABASE_LEDGER=true`** (GitHub → Settings → Secrets and variables → Actions → Variables), if not already set for #167. The midday and nightly runs then copy the ledger, and the nightly run writes the live report.
    - **`SUPABASE_REAL=true`,** once the real bets migration is applied: the midday alert then sends the day's bets to the dashboard, and copies your entries back to R2, the record.
    - **`DASHBOARD_URL`,** the Vercel production URL: the alert's message links to it.
+   - **`SUPABASE_QUOTES=true`,** once the quotes migration is applied: the nightly run then copies the simulator's figures, every kept day since 2026-10-31 on its first night, and each night again as the games' results come in.
 4. **Vercel.**
    - New Project → import `HeikkiMatias/nhl-edge`.
    - Set Root Directory to `web`. The framework is detected as Next.js.
