@@ -10,7 +10,7 @@ The dashboard (#168, docs/plans/phase-5.md task 8). It is a Next.js app that run
 
 A tab is drawn when first opened and kept after, so moving back is instant and a form keeps what was typed in it.
 
-**The theme (#399).** Dark by default, with a light theme on the switch, remembered in this browser only (`localStorage`). The fonts, Barlow Semi Condensed and IBM Plex Sans, are self-hosted by Next at build time, so no reader's browser asks Google for them. Every colour is a token in `app/globals.css`.
+**The theme (#399).** Dark by default, with a light theme on the switch, remembered in this browser only (`localStorage`). The fonts, Barlow Semi Condensed and IBM Plex Sans (OFL), are self-hosted from their `@fontsource` packages, latin only, so neither the build nor a reader's browser asks a font service for them. Every colour is a token in `app/globals.css`.
 
 **Help pop-ups.** Every section's ⓘ opens what it shows, how to read it, where it comes from and the glossary's words for its terms. They close on Esc, a click outside or their button. The texts live in one place, `lib/help.ts`, with the terms from `lib/glossary.ts`.
 

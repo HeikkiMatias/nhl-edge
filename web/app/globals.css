@@ -2,6 +2,11 @@
    switch. Every colour is a token here. The series and status colours were checked with the
    dataviz validator on both surfaces: the series pairs pass for colour vision deficiency and
    contrast, and text never wears a series colour. */
+:root {
+  --font-display: "Barlow Semi Condensed";
+  --font-text: "IBM Plex Sans";
+}
+
 :root,
 :root[data-theme="dark"] {
   --page: #0b1220;

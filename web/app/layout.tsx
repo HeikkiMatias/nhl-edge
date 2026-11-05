@@ -1,25 +1,18 @@
 import type { Metadata, Viewport } from "next";
-import { Barlow_Semi_Condensed, IBM_Plex_Sans } from "next/font/google";
 import type { ReactNode } from "react";
 
 import { THEME_SCRIPT } from "@/lib/theme";
 
+// The theme's faces (#399), self-hosted from their packages (OFL), latin only: no request leaves
+// for a font service, at build time or in a reader's browser. Figures and headings in Barlow Semi
+// Condensed, text in IBM Plex Sans (globals.css names them).
+import "@fontsource/barlow-semi-condensed/latin-500.css";
+import "@fontsource/barlow-semi-condensed/latin-600.css";
+import "@fontsource/barlow-semi-condensed/latin-700.css";
+import "@fontsource/ibm-plex-sans/latin-400.css";
+import "@fontsource/ibm-plex-sans/latin-500.css";
+import "@fontsource/ibm-plex-sans/latin-600.css";
 import "./globals.css";
-
-// The theme's faces (#399), self-hosted by Next at build time: no request reaches Google from a
-// reader's browser. Figures and headings in Barlow Semi Condensed, text in IBM Plex Sans.
-const display = Barlow_Semi_Condensed({
-  subsets: ["latin"],
-  weight: ["500", "600", "700"],
-  variable: "--font-display",
-  display: "swap",
-});
-const text = IBM_Plex_Sans({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  variable: "--font-text",
-  display: "swap",
-});
 
 export const metadata: Metadata = {
   title: "NHL edge",
@@ -35,7 +28,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     // Dark unless this browser chose light; the script sets it before the first paint.
-    <html lang="en" data-theme="dark" className={`${display.variable} ${text.variable}`} suppressHydrationWarning>
+    <html lang="en" data-theme="dark" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
