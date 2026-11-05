@@ -249,44 +249,54 @@ export function ColumnChart({
   bars,
   format,
   counts = false,
+  signed = false,
 }: {
   title: string;
   bars: { label: string; value: number }[];
   format: (v: number) => string;
   counts?: boolean;
+  /** Gains above the baseline in the gain colour, losses below it in the loss colour. */
+  signed?: boolean;
 }) {
   const { ref, width } = useWidth();
   const [active, setActive] = useState<number | null>(null);
   if (bars.length === 0) return null;
-  const [, high] = domain([0, ...bars.map((b) => b.value)]);
+  const values = bars.map((b) => b.value);
+  const [low, high] = signed && Math.min(...values) < 0 ? domain([0, ...values]) : [0, domain([0, ...values])[1]];
   const plot = width - MARGIN.left - MARGIN.right;
   const slot = plot / bars.length;
   const thick = Math.min(24, slot * 0.6);
   const y = (v: number) =>
-    MARGIN.top + ((high - v) / high) * (HEIGHT - MARGIN.top - MARGIN.bottom);
+    MARGIN.top + ((high - v) / (high - low)) * (HEIGHT - MARGIN.top - MARGIN.bottom);
   const base = y(0);
+  // Rounded at the data end, square at the baseline, a loss's hanging down from it.
   const column = (i: number, v: number) => {
     const left = MARGIN.left + i * slot + (slot - thick) / 2;
-    const top = y(v);
-    const r = Math.min(4, (base - top) / 2, thick / 2);
-    return `M${left},${base}V${top + r}Q${left},${top} ${left + r},${top}H${left + thick - r}Q${
+    const end = y(v);
+    const down = end > base ? 1 : -1;
+    const r = Math.min(4, Math.abs(base - end) / 2, thick / 2);
+    return `M${left},${base}V${end - down * r}Q${left},${end} ${left + r},${end}H${left + thick - r}Q${
       left + thick
-    },${top} ${left + thick},${top + r}V${base}Z`;
+    },${end} ${left + thick},${end - down * r}V${base}Z`;
   };
+  const tone = (v: number) => (signed ? (v < 0 ? " loss" : " gain") : "");
   const shown = active === null ? null : bars[active];
   return (
     <div className="chart" ref={ref}>
       <svg width={width} height={HEIGHT} role="img" aria-label={title}>
-        <YAxis values={ticks(0, high, 4, counts ? 1 : 0)} y={y} width={width} format={format} />
+        <YAxis values={ticks(low, high, 4, counts ? 1 : 0)} y={y} width={width} format={format} />
         {bars.map((b, i) => (
           <g key={b.label}>
-            <path className={active === i ? "column lifted" : "column"} d={column(i, b.value)} />
+            <path
+              className={`column${tone(b.value)}${active === i ? " lifted" : ""}`}
+              d={column(i, b.value)}
+            />
             <rect
               className="hit"
               x={MARGIN.left + i * slot}
               y={MARGIN.top}
               width={slot}
-              height={base - MARGIN.top}
+              height={HEIGHT - MARGIN.bottom - MARGIN.top}
               tabIndex={0}
               aria-label={`${b.label}: ${format(b.value)}`}
               onPointerEnter={() => setActive(i)}
@@ -297,7 +307,13 @@ export function ColumnChart({
             />
           </g>
         ))}
-        <line className="axis" x1={MARGIN.left} x2={width - MARGIN.right} y1={base} y2={base} />
+        <line
+          className={low < 0 ? "axis zero" : "axis"}
+          x1={MARGIN.left}
+          x2={width - MARGIN.right}
+          y1={base}
+          y2={base}
+        />
         {xLabels(bars.length, width).map((i) => (
           <text
             key={i}
@@ -410,6 +426,135 @@ export function ScatterChart({
             : null
         }
       />
+    </div>
+  );
+}
+
+export type Series = {
+  name: string;
+  /** One value per label; null where the series has none yet (such as an unsettled day). */
+  values: (number | null)[];
+};
+
+/** Up to three lines over the same labels, each in its series colour (s1, s2, s3), with a zero
+ * line when zero is in range. A legend names each line with its latest value, so no line is
+ * told apart by colour alone, and the readout gives every line's value at the nearest label. */
+export function MultiLineChart({
+  title,
+  labels,
+  series,
+  format,
+}: {
+  title: string;
+  labels: string[];
+  series: Series[];
+  format: (v: number) => string;
+}) {
+  const { ref, width } = useWidth();
+  const [active, setActive] = useState<number | null>(null);
+  if (labels.length === 0) return null;
+  const known = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
+  const [low, high] = domain([0, ...known]);
+  const plot = width - MARGIN.left - MARGIN.right;
+  const last = labels.length - 1;
+  const x = (i: number) => MARGIN.left + (labels.length === 1 ? plot / 2 : (i * plot) / last);
+  const y = (v: number) =>
+    MARGIN.top + ((high - v) / (high - low)) * (HEIGHT - MARGIN.top - MARGIN.bottom);
+  // A line is drawn through its known values; a gap starts a new piece.
+  const path = (vs: (number | null)[]) =>
+    vs
+      .map((v, i) =>
+        v === null ? "" : `${i === 0 || vs[i - 1] === null ? "M" : "L"}${x(i)},${y(v)}`,
+      )
+      .join("");
+  const latest = (vs: (number | null)[]) => {
+    for (let i = vs.length - 1; i >= 0; i -= 1) if (vs[i] !== null) return { i, v: vs[i] as number };
+    return null;
+  };
+  const nearest = (event: PointerEvent<SVGSVGElement>) => {
+    const box = event.currentTarget.getBoundingClientRect();
+    const at = ((event.clientX - box.left) / box.width) * width;
+    const i = labels.length === 1 ? 0 : Math.round(((at - MARGIN.left) / plot) * last);
+    setActive(Math.max(0, Math.min(last, i)));
+  };
+  const key = (event: KeyboardEvent<SVGSVGElement>) => {
+    const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+    if (step === undefined) return;
+    event.preventDefault();
+    setActive((i) => Math.max(0, Math.min(last, (i ?? last) + step)));
+  };
+  const at = active ?? null;
+  const readout: Readout | null =
+    at === null
+      ? null
+      : {
+          x: x(at),
+          y: MARGIN.top,
+          value: labels[at],
+          label: series
+            .map((s) => `${s.name}: ${s.values[at] === null ? "not yet" : format(s.values[at] as number)}`)
+            .join("; "),
+        };
+  return (
+    <div className="chart" ref={ref}>
+      <ul className="legend">
+        {series.map((s, k) => {
+          const end = latest(s.values);
+          return (
+            <li key={s.name}>
+              <span className={`swatch s${k + 1}`} aria-hidden="true" />
+              {s.name}: <strong>{end ? format(end.v) : "not yet"}</strong>
+            </li>
+          );
+        })}
+      </ul>
+      <svg
+        width={width}
+        height={HEIGHT}
+        role="img"
+        aria-label={`${title}: ${series
+          .map((s) => {
+            const end = latest(s.values);
+            return `${s.name} ${end ? format(end.v) : "not yet"}`;
+          })
+          .join(", ")} at ${labels[last]}`}
+        tabIndex={0}
+        onPointerMove={nearest}
+        onPointerDown={nearest}
+        onPointerLeave={() => setActive(null)}
+        onFocus={() => setActive(last)}
+        onBlur={() => setActive(null)}
+        onKeyDown={key}
+      >
+        <YAxis values={ticks(low, high)} y={y} width={width} format={format} />
+        {low < 0 && high > 0 ? (
+          <line className="axis zero" x1={MARGIN.left} x2={width - MARGIN.right} y1={y(0)} y2={y(0)} />
+        ) : null}
+        {series.map((s, k) => (
+          <path key={s.name} className={`line s${k + 1}`} d={path(s.values)} />
+        ))}
+        {at !== null ? (
+          <line className="crosshair" x1={x(at)} x2={x(at)} y1={MARGIN.top} y2={HEIGHT - MARGIN.bottom} />
+        ) : null}
+        {series.map((s, k) => {
+          const point = at !== null && s.values[at] !== null ? { i: at, v: s.values[at] as number } : latest(s.values);
+          return point ? (
+            <circle key={s.name} className={`dot s${k + 1}`} cx={x(point.i)} cy={y(point.v)} r={4} />
+          ) : null;
+        })}
+        {xLabels(labels.length, width).map((i) => (
+          <text
+            key={i}
+            className="tick"
+            x={x(i)}
+            y={HEIGHT - 8}
+            textAnchor={labels.length === 1 ? "middle" : i === 0 ? "start" : i === last ? "end" : "middle"}
+          >
+            {labels[i]}
+          </text>
+        ))}
+      </svg>
+      <Tooltip readout={readout} />
     </div>
   );
 }
