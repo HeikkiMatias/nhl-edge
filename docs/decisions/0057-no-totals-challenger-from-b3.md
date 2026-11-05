@@ -1,6 +1,6 @@
 # 0057. No totals or props challenger from B3's projection
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-11-05, #359): option 2. "let's leave totals for the future. We'd need a proper model for it": option 3 is future work, #397
 - Date: 2026-11-05
 - Part of: #359, proposed after the live review of 2026-10-30 and agreed by the owner as a proposal. Its evidence rule was fixed on the issue on 2026-11-05, before any result was read.
 
@@ -22,7 +22,7 @@
 
 ## Decision
 
-**Proposed: option 2.** By the rule fixed on #359:
+**Option 2 (the owner, 2026-11-05).** By the rule fixed on #359:
 - No measure's interval over all games lies below 0 on the explore half for either candidate (`total`, or its four parts as `total split`), so no claim is written and no confirm run is made.
 - The rule then recommends not building. The projection's total adds nothing measurable to the market's on history, much as no feature added to the moneyline's close in ADR 0053's explore run.
 - Props go with it.
@@ -54,13 +54,12 @@
 ## Consequences
 
 - No code, table or job is added beyond the script, its tests and its report.
-- **If the owner accepts:**
-  - #359 closes as not planned.
-  - Whether the watch keeps logging Kalshi's totals and props stays the owner's choice (#319). Nothing reads those tables.
-- **If the owner prefers option 1 anyway:** its ADR would name a primary measure with no support on history.
+- #359 closes as not planned.
+- **A proper totals model is future work (#397).** It is scored on the explore half by this script's measures before any shadow.
+- Whether the watch keeps logging Kalshi's totals and props stays the owner's choice (#319). Nothing reads those tables.
 - **Kalshi's settlement rule:** whether Kalshi counts the shootout goal in its totals was never needed and remains unconfirmed.
 
 ## Revisit when
 
-- **A totals-specific model is proposed** (option 3). It would be scored on the explore half with this script's measures first.
+- **A totals-specific model is proposed** (option 3, #397). It would be scored on the explore half with this script's measures first.
 - **Kalshi's totals logs show a market that lags a sharp book's totals.** Reading that would need a sharp book's totals feed, which costs Odds API credits and is the owner's decision.
