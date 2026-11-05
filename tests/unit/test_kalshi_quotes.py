@@ -516,3 +516,257 @@ def test_a_game_from_the_rounding_fix_quotes_the_away_side_at_its_cent() -> None
     dated = qf.ledger().with_columns(game_date=pl.lit(kq.ROUNDED_FROM))
     after = of(day(trades=trades, ledger=dated), "model-1c").filter(pl.col("team") == qf.AWAY)
     assert after["price"].to_list() == [0.44]
+
+
+# The dashboard's figures (#398): sums per kept day and variant, never a fill's own figures.
+
+RAW = {"price", "ticker", "team", "game_id", "posted_utc", "fill_utc", "trade_id", "order_id"}
+
+
+def kept_day(tmp_path: object, result: kq.DayResult, prefix: str = kq.PREFIX) -> tuple:
+    from pathlib import Path
+
+    from nhl_edge.live import bundle as lb
+
+    store = lb.LocalStore(Path(str(tmp_path)))
+    kq.keep(store, qf.DAY, result, "kalshi-quotes-20261103-abc1234", NOW, prefix)
+    return kq.kept(store, prefix)
+
+
+def test_the_day_figures_sum_each_variants_fills(tmp_path: object) -> None:
+    found, metas = kept_day(tmp_path, day())
+    figures = kq.day_figures(found, metas, qf.games())
+    assert figures.schema == pl.Schema(kq.DAY_SCHEMA)
+    # The day is before forecast2's first: every other fair value at each half-spread.
+    assert qf.DAY < kq.FORECAST2_FIRST_DAY
+    assert sorted(figures["variant"]) == sorted(
+        kq.variant_name(f, h) for f, h in kq.variants() if f != kq.FORECAST2
+    )
+    assert set(figures["record"]) == {kq.RECORD} and figures["hold"].is_null().all()
+    two = figures.filter(pl.col("variant") == "model-2c").row(0, named=True)
+    fill = of(day(), "model-2c").row(0, named=True)
+    fee = fill["cost_usd"] - 0.53 * 10
+    assert (two["fills"], two["contracts"], two["half_spread_cents"]) == (1, 10.0, 2)
+    assert (two["cost_usd"], two["fees_usd"]) == pytest.approx((fill["cost_usd"], fee))
+    assert two["edge_fair_usd"] == pytest.approx((0.55 - 0.53) * 10 - fee)
+    # No last mid before the start, and no Pinnacle pair, in the fixture.
+    assert (two["last_contracts"], two["edge_last_usd"]) == (0.0, 0.0)
+    assert (two["close_contracts"], two["edge_close_usd"]) == (0.0, 0.0)
+    # The home team won: ten dollars back.
+    assert (two["settled_contracts"], two["payout_usd"]) == (10.0, 10.0)
+    assert two["profit_usd"] == pytest.approx(10.0 - fill["cost_usd"])
+    assert two["posted"] == metas[0]["counts"]["model-2c"]["posted"] > 0
+    assert (two["games"], two["watch_logs"], two["code_version"]) == (
+        1,
+        True,
+        "kalshi-quotes-20261103-abc1234",
+    )
+    assert two["kept_utc"] == NOW
+    # A variant without a fill has its row, at zero.
+    none = figures.filter(pl.col("variant") == "pinnacle-1c").row(0, named=True)
+    assert (none["fills"], none["contracts"], none["profit_usd"]) == (0, 0.0, 0.0)
+    # The profit agrees with the summary's, over every variant.
+    summary = kq.summary(found, metas, qf.games())
+    for row in figures.iter_rows(named=True):
+        assert row["profit_usd"] == pytest.approx(summary[row["variant"]]["profit_usd"])
+        assert row["matched_contracts"] == summary[row["variant"]]["matched_contracts"]
+
+
+def test_each_edge_is_net_of_the_fee_on_the_contracts_it_is_known_for() -> None:
+    # Two synthetic fills of model-1c: the home side's with Kalshi's last mid and Pinnacle's
+    # close after it, the away side's with neither. A cent of fee on each.
+    base = {
+        "variant": "model-1c",
+        "fair": kq.MODEL,
+        "half_spread": 0.01,
+        "game_date": qf.DAY,
+        "season": 20262027,
+        "game_id": qf.GAME,
+        "start_utc": qf.START,
+        "posted_utc": qf.at(0),
+        "fill_utc": qf.at(5),
+        "mid_5m": None,
+        "mid_30m": None,
+    }
+    fills = pl.DataFrame(
+        [
+            base
+            | {
+                "team": qf.HOME,
+                "contracts": 10.0,
+                "price": 0.50,
+                "cost_usd": 5.01,
+                "fair_at_post": 0.53,
+                "mid_last": 0.55,
+                "p_close": 0.56,
+                "close_after_fill": True,
+                "won": None,
+            },
+            base
+            | {
+                "team": qf.AWAY,
+                "contracts": 4.0,
+                "price": 0.45,
+                "cost_usd": 1.81,
+                "fair_at_post": 0.47,
+                "mid_last": None,
+                "p_close": 0.44,
+                "close_after_fill": False,
+                "won": None,
+            },
+        ],
+        schema=kq.FILL_SCHEMA,
+    )
+    meta = {
+        "day": qf.DAY.isoformat(),
+        "computed_utc": NOW.isoformat(),
+        "code_version": "kalshi-quotes-x",
+        "counts": {"games": 1, "watch_logs": True},
+    }
+    figures = kq.day_figures(fills, [meta], qf.games())
+    row = figures.filter(pl.col("variant") == "model-1c").row(0, named=True)
+    assert (row["fills"], row["contracts"], row["matched_contracts"]) == (2, 14.0, 4.0)
+    assert row["fees_usd"] == pytest.approx(0.02)
+    assert row["edge_fair_usd"] == pytest.approx(0.03 * 10 + 0.02 * 4 - 0.02)
+    assert row["last_contracts"] == 10.0
+    assert row["edge_last_usd"] == pytest.approx(0.05 * 10 - 0.01)
+    # The away fill's close came before it: only the home fill's counts.
+    assert row["close_contracts"] == 10.0
+    assert row["edge_close_usd"] == pytest.approx(0.06 * 10 - 0.01)
+    # The home team won: its ten contracts pay, the away side's four don't.
+    assert (row["settled_contracts"], row["payout_usd"]) == (14.0, 10.0)
+    assert row["profit_usd"] == pytest.approx(10.0 - 6.82)
+    # No count of its own in the day's meta: zeros.
+    assert (row["posted"], row["pulled_move"], row["largest_inventory"]) == (0, 0, 0.0)
+
+
+def test_a_days_profit_is_null_until_every_fill_is_settled(tmp_path: object) -> None:
+    found, metas = kept_day(tmp_path, day(games=qf.games().clear()))
+    figures = kq.day_figures(found, metas, qf.games().clear())
+    filled = figures.filter(pl.col("fills") > 0)
+    assert filled.height and filled["profit_usd"].is_null().all()
+    assert (filled["settled_contracts"] == 0).all() and (filled["payout_usd"] == 0).all()
+    assert (figures.filter(pl.col("fills") == 0)["profit_usd"] == 0).all()
+    # A later night, with the result, fills it in.
+    later = kq.day_figures(found, metas, qf.games())
+    assert later.filter(pl.col("fills") > 0)["profit_usd"].is_not_null().all()
+
+
+def test_the_hold_rules_day_figures_carry_their_minutes(tmp_path: object) -> None:
+    found, metas = kept_day(tmp_path, held_day(), kq.HOLDS_PREFIX)
+    figures = kq.day_figures(found, metas, qf.games(), holds=True)
+    assert figures.height == len(kq.hold_variants())
+    assert set(figures["record"]) == {kq.HOLDS_RECORD} and set(figures["fair"]) == {kq.MODEL}
+    trust = figures.filter(pl.col("variant") == "model-1c-trust").row(0, named=True)
+    assert trust["hold"] == kq.TRUST and trust["fills"] == 1
+    assert trust["quoted_minutes"] == metas[0]["counts"]["model-1c-trust"]["quoted_minutes"]
+    assert figures["late_minutes"].is_not_null().all()
+
+
+def test_the_rows_sent_are_the_migrations_columns() -> None:
+    import re
+    from pathlib import Path
+
+    migration = Path("supabase/migrations/20261106120000_kalshi_quotes.sql").read_text()
+
+    def columns(table: str) -> list[str]:
+        body = re.search(rf"create table public\.{table} \((.*?)\n\);", migration, re.S)
+        assert body is not None
+        found = [m.group(1) for m in re.finditer(r"^  ([a-z_0-9]+) [a-z]", body.group(1), re.M)]
+        return [c for c in found if c != "primary"]
+
+    # The database sets written_utc.
+    assert columns("quote_days") == [*kq.DAY_SCHEMA, "written_utc"]
+    record = kq.report_record({"code_version": "x"}, qf.DAY)
+    assert columns("quote_reports") == [*record, "written_utc"]
+    for table, key in (("quote_days", kq.DAY_KEY), ("quote_reports", kq.REPORT_KEY)):
+        assert f"create policy {table}_owner_reads on public.{table}" in migration
+        assert f"primary key ({', '.join(key)})" in migration
+    for record_name in (kq.RECORD, kq.HOLDS_RECORD):
+        assert f"'{record_name}'" in migration
+
+
+def test_no_raw_figure_reaches_the_dashboard(tmp_path: object) -> None:
+    from nhl_edge.lake.supabase import json_rows
+
+    found, metas = kept_day(tmp_path, day())
+    rows = json_rows(kq.day_figures(found, metas, qf.games()))
+    assert not RAW & set(kq.DAY_SCHEMA) and not RAW & set(rows[0])
+    figures = {"code_version": "kalshi-quotes-x"} | kq.summary(found, metas, qf.games())
+    record = kq.report_record(figures | {"odd": float("nan")}, qf.DAY + timedelta(days=1))
+    assert record["figures"]["odd"] is None and record["record"] == kq.RECORD
+    assert record["as_of"] == "2026-11-04" and record["code_version"] == "kalshi-quotes-x"
+    assert not RAW & set(record["figures"]["model-2c"])
+    assert kq.report_record(figures, qf.DAY, holds=True)["record"] == kq.HOLDS_RECORD
+
+
+def test_nhl_real_quotes_copies_both_records_to_supabase(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pathlib import Path
+    from typing import Any
+
+    from typer.testing import CliRunner
+
+    from nhl_edge import cli
+    from nhl_edge.cli import app
+    from nhl_edge.lake import supabase as sb
+    from nhl_edge.live import bundle as lb
+
+    store = lb.LocalStore(Path(str(tmp_path)))
+    kq.keep(store, qf.DAY, day(), "kalshi-quotes-20261103-abc1234", NOW)
+    kq.keep(store, qf.DAY, held_day(), "kalshi-quotes-20261103-abc1234", NOW, kq.HOLDS_PREFIX)
+
+    class FakeLake:
+        def pull(self, table: str) -> None:
+            pass
+
+        def read(self, table: str) -> pl.DataFrame:
+            return qf.games() if table == "games" else pl.DataFrame()
+
+    runs = iter(range(10))
+
+    class Later(datetime):
+        # Each run a minute after the last: a night's report is written once.
+        @classmethod
+        def now(cls, tz: Any = None) -> Any:
+            return NOW + timedelta(minutes=next(runs))
+
+    sent: list[tuple[str, Any, tuple[str, ...]]] = []
+
+    class Fake:
+        def upsert(self, table: str, frame: pl.DataFrame, key: Any) -> int:
+            sent.append((table, frame, tuple(key)))
+            return frame.height
+
+        def upsert_records(self, table: str, records: Any, key: Any) -> int:
+            sent.append((table, records, tuple(key)))
+            return len(records)
+
+    monkeypatch.setattr(cli, "_real_record", lambda r2: (FakeLake(), store))
+    monkeypatch.setattr(cli, "datetime", Later)
+    monkeypatch.setattr(kq, "due", lambda today, done, first=kq.FIRST_DAY: [])
+    monkeypatch.setattr("nhl_edge.backtest.reports.version", lambda name, now: "kalshi-quotes-x")
+    monkeypatch.setattr(sb.Supabase, "from_env", classmethod(lambda cls: Fake()))
+    runner = CliRunner()
+    # The copy is of the record in R2.
+    assert runner.invoke(app, ["real", "quotes", "--supabase"]).exit_code == 2
+    assert not sent
+    result = runner.invoke(app, ["real", "quotes", "--r2", "--supabase"])
+    assert result.exit_code == 0, result.output
+    assert [(table, key) for table, _, key in sent] == [
+        ("quote_days", kq.DAY_KEY),
+        ("quote_reports", kq.REPORT_KEY),
+    ] * 2
+    days, holds = sent[0][1], sent[2][1]
+    assert set(days["record"]) == {kq.RECORD} and set(holds["record"]) == {kq.HOLDS_RECORD}
+    (report,) = sent[1][1]
+    assert report["as_of"] == "2026-11-04" and report["record"] == kq.RECORD
+    # Counts only in the log (#280).
+    assert f"supabase {kq.RECORD}: {days.height} day rows and tonight's report upserted" in (
+        result.output
+    )
+    assert "$" not in result.output and "usd" not in result.output.lower()
+    # Without --supabase, nothing is sent.
+    sent.clear()
+    assert runner.invoke(app, ["real", "quotes", "--r2"]).exit_code == 0 and not sent

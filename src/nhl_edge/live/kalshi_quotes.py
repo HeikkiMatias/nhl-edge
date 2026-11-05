@@ -52,7 +52,9 @@ and the largest inventory. Each through the live report's estimate (a weekly blo
 interval, counts only under 4 weeks, hard rule 7).
 
 **Private.** It reads Kalshi's books and trades (#280): every figure goes to the record's store
-under PREFIX, and the log prints counts only.
+under PREFIX, and the log prints counts only. The owner chose on 2026-11-05 to see the figures on
+the dashboard (#398): with --supabase, day_figures' sums per game date and variant and each
+night's summary go to owner-only tables. No fill's price, ticker, time or trade goes there.
 
 **Hold rules (#385),** a measurement beside the variants above, kept apart under HOLDS_PREFIX so
 their record never changes: the model fair value at each half-spread, under HOLDS, the rules for
@@ -1147,3 +1149,171 @@ def holds_count_line(metas: Sequence[Mapping[str, Any]], computed: int) -> str:
 
 def report_key(as_of: datetime, prefix: str = PREFIX) -> str:
     return f"{prefix}/reports/{as_of:%Y-%m-%dT%H%M%SZ}.json"
+
+
+# The dashboard (#398)
+
+# The records' names on the dashboard: the simulator's and the hold rules'.
+RECORD, HOLDS_RECORD = f"{SHADOW}/{VERSION}", f"{SHADOW}/holds/{HOLDS_VERSION}"
+DAY_KEY = ("game_date", "record", "variant")
+REPORT_KEY = ("as_of", "record")
+DAY_SCHEMA = {
+    "game_date": pl.Date,
+    "record": pl.String,
+    "variant": pl.String,
+    "fair": pl.String,
+    "half_spread_cents": pl.Int16,
+    "hold": pl.String,
+    "games": pl.Int64,
+    "watch_logs": pl.Boolean,
+    "posted": pl.Int64,
+    "pulled_move": pl.Int64,
+    "pulled_starter": pl.Int64,
+    "fills": pl.Int64,
+    "contracts": pl.Float64,
+    "matched_contracts": pl.Float64,
+    "largest_inventory": pl.Float64,
+    "cost_usd": pl.Float64,
+    "fees_usd": pl.Float64,
+    "edge_fair_usd": pl.Float64,
+    "last_contracts": pl.Float64,
+    "edge_last_usd": pl.Float64,
+    "close_contracts": pl.Float64,
+    "edge_close_usd": pl.Float64,
+    "settled_contracts": pl.Float64,
+    "payout_usd": pl.Float64,
+    "profit_usd": pl.Float64,
+    "quoted_minutes": pl.Float64,
+    "late_minutes": pl.Float64,
+    "kept_utc": UTC_TYPE,
+    "code_version": pl.String,
+}
+# The sums day_figures adds per game date and variant, zero on a day without a fill.
+SUMS = (
+    "contracts",
+    "matched_contracts",
+    "cost_usd",
+    "fees_usd",
+    "edge_fair_usd",
+    "last_contracts",
+    "edge_last_usd",
+    "close_contracts",
+    "edge_close_usd",
+    "settled_contracts",
+    "payout_usd",
+)
+
+
+def scored_from(fair: str) -> date:
+    """The first game date a fair value quotes on: the close forecasts' from the day after their
+    registration, the others' from FIRST_DAY."""
+    return {FORECAST: FORECAST_FIRST_DAY, FORECAST2: FORECAST2_FIRST_DAY}.get(fair, FIRST_DAY)
+
+
+def _net(value: str) -> pl.Expr:
+    """A measure in USD over a fill's contracts, net of its maker fee: the profit it expects."""
+    return pl.col(value) * pl.col("contracts") - pl.col("fee")
+
+
+def day_figures(
+    fills: pl.DataFrame,
+    metas: Sequence[Mapping[str, Any]],
+    games: pl.DataFrame,
+    holds: bool = False,
+) -> pl.DataFrame:
+    """Per kept game date and variant, the dashboard's figures (#398), with the results games
+    holds now (settled): the day's counts, the contracts and their cost with the maker fee, and
+    the profit expected at posting by the variant's fair value (spread), by Kalshi's last mid
+    before the start (markout_last) and by Pinnacle's close after the fill (markout_close), each
+    net of the fee on the contracts it is known for; then the payout and the profit at
+    settlement, null until every fill's game has its result. Every variant has a row on each kept
+    day from its fair value's first, with or without a fill. Sums only: no price, ticker, time or
+    trade of a fill (#280)."""
+    rows = per_contract(settled(fills, games)).with_columns(
+        fee=pl.col("cost_usd") - pl.col("price") * pl.col("contracts")
+    )
+    last, close, won = (pl.col(c).is_not_null() for c in ("markout_last", "markout_close", "won"))
+    sums = rows.group_by("game_date", "variant").agg(
+        fills=pl.len(),
+        contracts=pl.col("contracts").sum(),
+        cost_usd=pl.col("cost_usd").sum(),
+        fees_usd=pl.col("fee").sum(),
+        edge_fair_usd=_net("spread").sum(),
+        last_contracts=pl.col("contracts").filter(last).sum(),
+        edge_last_usd=_net("markout_last").filter(last).sum(),
+        close_contracts=pl.col("contracts").filter(close).sum(),
+        edge_close_usd=_net("markout_close").filter(close).sum(),
+        settled_contracts=pl.col("contracts").filter(won).sum(),
+        payout_usd=(pl.col("won") * pl.col("contracts")).filter(won).sum(),
+        unsettled=won.not_().sum(),
+    )
+    matched = (
+        pairs(rows)
+        .group_by("game_date", "variant")
+        .agg(matched_contracts=pl.col("matched").fill_null(0).sum())
+    )
+    specs = (
+        [(hold_name(h, hold), MODEL, h, hold) for h, hold in hold_variants()]
+        if holds
+        else [(variant_name(fair, h), fair, h, None) for fair, h in variants()]
+    )
+    skeleton = []
+    for meta in metas:
+        day = date.fromisoformat(meta["day"])
+        for name, fair, h, hold in specs:
+            if day < scored_from(fair):
+                continue
+            counts = meta["counts"].get(name, {})
+            skeleton.append(
+                {
+                    "game_date": day,
+                    "record": HOLDS_RECORD if holds else RECORD,
+                    "variant": name,
+                    "fair": fair,
+                    "half_spread_cents": int(h * 100),
+                    "hold": hold,
+                    "games": meta["counts"].get("games", 0),
+                    "watch_logs": bool(meta["counts"].get("watch_logs")),
+                    "posted": counts.get("posted", 0),
+                    "pulled_move": counts.get("pulled_move", 0),
+                    "pulled_starter": counts.get("pulled_starter", 0),
+                    "largest_inventory": float(counts.get("largest_inventory", 0.0)),
+                    "quoted_minutes": counts.get("quoted_minutes") if holds else None,
+                    "late_minutes": counts.get("late_minutes") if holds else None,
+                    "kept_utc": datetime.fromisoformat(meta["computed_utc"]),
+                    "code_version": meta["code_version"],
+                }
+            )
+    base_schema = {k: v for k, v in DAY_SCHEMA.items() if k not in (*SUMS, "fills", "profit_usd")}
+    frame = pl.DataFrame(skeleton, schema=base_schema)
+    if not frame.height:
+        return pl.DataFrame(schema=DAY_SCHEMA)
+    joined = (
+        frame.join(sums, on=["game_date", "variant"], how="left")
+        .join(matched, on=["game_date", "variant"], how="left")
+        .with_columns(pl.col(*SUMS).fill_null(0.0), pl.col("fills", "unsettled").fill_null(0))
+    )
+    return joined.with_columns(
+        profit_usd=pl.when(pl.col("unsettled") == 0).then(pl.col("payout_usd") - pl.col("cost_usd"))
+    ).select([pl.col(c).cast(t) for c, t in DAY_SCHEMA.items()])
+
+
+def _finite(value: Any) -> Any:
+    """value with every float that isn't finite as null: JSON has no NaN."""
+    if isinstance(value, float):
+        return value if np.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {k: _finite(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_finite(v) for v in value]
+    return value
+
+
+def report_record(figures: Mapping[str, Any], as_of: date, holds: bool = False) -> dict[str, Any]:
+    """A night's summary as a quote_reports row for the dashboard (#398)."""
+    return {
+        "as_of": as_of.isoformat(),
+        "record": HOLDS_RECORD if holds else RECORD,
+        "figures": _finite(json.loads(json.dumps(figures, default=str))),
+        "code_version": figures["code_version"],
+    }
