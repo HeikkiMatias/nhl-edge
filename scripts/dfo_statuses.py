@@ -42,10 +42,16 @@ from typing import Any
 import polars as pl
 
 from nhl_edge.backtest import metrics, reports
+from nhl_edge.ingest.games import result_public_utc
 from nhl_edge.lake.tables import Lake
 from nhl_edge.lineup import projection
 
 FIRST_DAY = date(2026, 10, 8)
+# The second measurement (#121, the owner's go-ahead of 2026-11-05, its rule fixed before its
+# first game): groups by status wherever a player is listed, scored on WINDOW_2's games only, with
+# the value's shares from every earlier week since FIRST_DAY.
+RULES = (1, 2)
+WINDOW_2 = (date(2026, 11, 5), date(2026, 12, 6))
 SEASON = 20262027
 REGULAR_SEASON = 2
 OUT, DTD, LINES, OTHER, ABSENT = "out", "dtd", "lines", "other", "absent"
@@ -86,14 +92,20 @@ def snapshots(lines: pl.DataFrame, decisions: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def page_groups(page: pl.DataFrame) -> pl.DataFrame:
+def page_groups(page: pl.DataFrame, rule: int = 1) -> pl.DataFrame:
     """Each player on a page with his group (the first of out, dtd, lines, other that applies),
-    his jersey and normalized names."""
+    his jersey and normalized names. Under rule 1 (step 3) the whole "ir" group is out; under
+    rule 2 (the second measurement) only status decides out and dtd, wherever he is listed."""
+    if rule not in RULES:
+        raise ValueError(f"no rule {rule}: {RULES}")
     status = pl.col("injury_status")
+    out = status.is_in(OUT_STATUSES)
+    if rule == 1:
+        out = out | (pl.col("group") == "ir")
     per = page.group_by("game_date", "team", "dfo_player_id").agg(
         player_name=pl.col("player_name").first(),
         jersey=pl.col("jersey").drop_nulls().first(),
-        out=(status.is_in(OUT_STATUSES) | (pl.col("group") == "ir")).any(),
+        out=out.any(),
         dtd=(status == "dtd").any(),
         lines=pl.col("group").is_in(LINE_GROUPS).any(),
     )
@@ -183,13 +195,21 @@ def matched(cands: pl.DataFrame, groups: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def frame(lake: Any) -> tuple[pl.DataFrame, dict[str, Any]]:
+def window(rule: int) -> tuple[date, date | None]:
+    """The games a rule scores: step 3's from FIRST_DAY on, the second measurement's WINDOW_2."""
+    return (FIRST_DAY, None) if rule == 1 else WINDOW_2
+
+
+def frame(lake: Any, rule: int = 1) -> tuple[pl.DataFrame, dict[str, Any]]:
     """The measured candidates (game_id, season, game_date, team, player_id, early_exit,
-    dressed, p_available, dfo_group, week) and the counts behind them."""
+    dressed, p_available, dfo_group, week) from FIRST_DAY to the rule's last day, grouped by the
+    rule, and the counts behind the rule's scored games."""
+    start, last = window(rule)
     games = lake.read("games").filter(
         pl.col("season") == SEASON,
         (pl.col("game_id") // 10_000 % 100) == REGULAR_SEASON,
         pl.col("game_date") >= FIRST_DAY,
+        pl.col("game_date") <= (last or date.max),
     )
     actual = lake.read("actual_lineups").filter(pl.col("season") >= SEASON - 10_001)
     cands = projection.candidates(games, actual).filter(pl.col("dressed").is_not_null())
@@ -211,28 +231,32 @@ def frame(lake: Any) -> tuple[pl.DataFrame, dict[str, Any]]:
     team_games = base.select("game_id", "team", "game_date").unique()
     paged = base.join(with_page, on=["game_date", "team"])
     paged = paged.join(jerseys(actual, paged), on=["game_id", "team", "player_id"], how="left")
-    out = matched(paged, page_groups(pages)).with_columns(
+    out = matched(paged, page_groups(pages, rule)).with_columns(
         week=metrics.week_of(pl.col("game_date")), dressed=pl.col("dressed").cast(pl.Float64)
     )
-    on_pages = page_groups(pages).filter(pl.col("dfo_group").is_in([LINES, DTD, OUT]))
+    scored = pl.col("game_date") >= start
+    on_pages = page_groups(pages, rule).filter(pl.col("dfo_group").is_in([LINES, DTD, OUT]), scored)
+    shown = out.filter(scored)
     unmatched_page = on_pages.join(
-        out.filter(pl.col("dfo_player_id").is_not_null()).select(
+        shown.filter(pl.col("dfo_player_id").is_not_null()).select(
             "game_date", "team", "dfo_player_id"
         ),
         on=["game_date", "team", "dfo_player_id"],
         how="anti",
     )
+    games_scored = team_games.filter(scored)
     counts = {
-        "team_games": team_games.height,
-        "team_games_with_a_page": team_games.join(with_page, on=["game_date", "team"]).height,
-        "candidates": out.height,
-        "matched": int(out["dfo_player_id"].is_not_null().sum()),
-        "by_jersey": int((out["how"] == "jersey").sum()),
-        "by_name": int((out["how"] == "name").sum()),
+        "rule": rule,
+        "team_games": games_scored.height,
+        "team_games_with_a_page": games_scored.join(with_page, on=["game_date", "team"]).height,
+        "candidates": shown.height,
+        "matched": int(shown["dfo_player_id"].is_not_null().sum()),
+        "by_jersey": int((shown["how"] == "jersey").sum()),
+        "by_name": int((shown["how"] == "name").sum()),
         "page_players_unmatched": unmatched_page.height,
-        "without_p_available": int(out["p_available"].is_null().sum()),
-        "first_day": str(out["game_date"].min()),
-        "last_day": str(out["game_date"].max()),
+        "without_p_available": int(shown["p_available"].is_null().sum()),
+        "first_day": str(shown["game_date"].min()),
+        "last_day": str(shown["game_date"].max()),
     }
     return out.filter(pl.col("p_available").is_not_null()), counts
 
@@ -293,8 +317,12 @@ def by_group(rows: pl.DataFrame) -> dict[str, Any]:
     }
 
 
-def run(rows: pl.DataFrame, counts: Mapping[str, Any]) -> dict[str, Any]:
-    matched_rows = informed(rows.filter(pl.col("dfo_player_id").is_not_null()))
+def run(rows: pl.DataFrame, counts: Mapping[str, Any], start: date = FIRST_DAY) -> dict[str, Any]:
+    """Every figure on the games from start: the informed shares read every earlier week, the
+    measures only the scored games."""
+    scored = pl.col("game_date") >= start
+    matched_rows = informed(rows.filter(pl.col("dfo_player_id").is_not_null())).filter(scored)
+    rows = rows.filter(scored)
     early = rows.filter(pl.col("early_exit") > 0)
     early_matched = matched_rows.filter(pl.col("early_exit") > 0)
     found: dict[str, Any] = {
@@ -344,7 +372,14 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
     lines = [
         f"# Daily Faceoff's injury statuses against who dressed: {version}",
         "",
-        "#121 step 3, by the rule fixed on the issue before it was read. Live games from "
+        (
+            "#121 step 3, by the rule fixed on the issue before it was read"
+            if c["rule"] == 1
+            else "#121's second measurement, by its rule fixed on the issue before its first game "
+            "(groups by status wherever a player is listed; the value's shares from every earlier "
+            "week since 2026-10-08)"
+        )
+        + ". Live games from "
         f"{c['first_day']} to {c['last_day']}: each team-game's last Daily Faceoff page "
         "before the paper decision, against the projection's candidate skaters and whether they "
         "dressed. Intervals are 95% weekly block bootstrap; a group under "
@@ -386,13 +421,28 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
     return "\n".join(lines)
 
 
+def complete(rule: int, now: datetime) -> None:
+    """Refused before every scored game's boxscore is public: a rule's figures are read once,
+    on its whole window."""
+    _, last = window(rule)
+    if last is not None and now < result_public_utc(last):
+        raise SystemExit(
+            f"rule {rule}'s window ends {last}: its boxscores are public from "
+            f"{result_public_utc(last):%Y-%m-%d %H:%M} UTC, so it can't be read yet"
+        )
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Daily Faceoff's statuses (#121 step 3).")
+    parser = argparse.ArgumentParser(description="Daily Faceoff's statuses (#121).")
     parser.add_argument("--out", type=Path, default=Path("reports/lineups"))
+    parser.add_argument("--rule", type=int, choices=RULES, default=1)
     args = parser.parse_args()
-    rows, counts = frame(Lake())
-    found = run(rows, counts)
-    version = reports.version("dfo-statuses", datetime.now(UTC))
+    now = datetime.now(UTC)
+    complete(args.rule, now)
+    rows, counts = frame(Lake(), args.rule)
+    found = run(rows, counts, window(args.rule)[0])
+    name = "dfo-statuses" if args.rule == 1 else "dfo-statuses-2"
+    version = reports.version(name, now)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / f"{version}.json").write_text(json.dumps(found, indent=2, sort_keys=True))
     path = args.out / f"{version}.md"
