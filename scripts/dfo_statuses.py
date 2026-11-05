@@ -234,7 +234,9 @@ def frame(lake: Any, rule: int = 1) -> tuple[pl.DataFrame, dict[str, Any]]:
     out = matched(paged, page_groups(pages, rule)).with_columns(
         week=metrics.week_of(pl.col("game_date")), dressed=pl.col("dressed").cast(pl.Float64)
     )
-    scored = pl.col("game_date") >= start
+    # The rule's window at both ends: a page or game after its last day is never counted
+    # (Codex on #395).
+    scored = pl.col("game_date").is_between(start, last or date.max)
     on_pages = page_groups(pages, rule).filter(pl.col("dfo_group").is_in([LINES, DTD, OUT]), scored)
     shown = out.filter(scored)
     unmatched_page = on_pages.join(
