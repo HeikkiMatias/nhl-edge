@@ -183,7 +183,9 @@ export type Totals = {
   games: number;
   fills: number;
   contracts: number;
+  /** Pairs: contracts bought on both teams of a game, the smaller side's. */
   matched: number;
+  /** The share of contracts in a pair, both legs counted. */
   twoSided: number | null;
   cost: number;
   fees: number;
@@ -208,7 +210,8 @@ export function totals(days: QuoteDay[]): Totals {
     fills: sum((d) => d.fills),
     contracts,
     matched: sum((d) => d.matched_contracts),
-    twoSided: share(sum((d) => d.matched_contracts)),
+    // matched_contracts counts pairs (the smaller team's contracts), so both legs are twice it.
+    twoSided: share(2 * sum((d) => d.matched_contracts)),
     cost: sum((d) => d.cost_usd),
     fees: sum((d) => d.fees_usd),
     profit: sum((d) => d.profit_usd ?? 0),

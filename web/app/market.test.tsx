@@ -34,7 +34,7 @@ test("the chosen variant's totals, its lines and its days", async () => {
   expect(tile("Game days")).toBe("3");
   expect(screen.getByText("12 games, Oct 31 to Nov 2")).toBeTruthy();
   expect(tile("Fills")).toBe("6");
-  expect(tile("Two-sided")).toBe("25.0%");
+  expect(tile("Two-sided")).toBe("50.0%");
   expect(tile("Paper profit")).toBe("−$1.00");
   expect(tile("Expected by our fair value")).toBe("+$0.90");
   expect(tile("Expected by Pinnacle's close")).toBe("−$0.60");

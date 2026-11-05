@@ -60,7 +60,8 @@ test("a variant's totals and running lines", () => {
   const t = totals(days);
   expect(t).toMatchObject({ days: 3, games: 12, fills: 6, contracts: 60, unsettledDays: 1 });
   expect(t.profit).toBe(-1);
-  expect(t.twoSided).toBe(0.25);
+  // 15 pairs over 60 contracts: both legs of each pair, half the contracts.
+  expect(t.twoSided).toBe(0.5);
   expect(t.closeShare).toBe(0.5);
   expect(t.edgeFair).toBeCloseTo(0.9);
   const r = running(days);
