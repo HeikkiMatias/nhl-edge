@@ -4,10 +4,13 @@ only the alerted bets' markets (#282), as the real-time source for re-valuing re
 (#321) and for the shadow that selects on Kalshi's own prices (#320); and on 2026-10-30 to watch
 earlier, and Kalshi's goal totals and player props beside the winner (#357, #358, #359).
 
-**When.** The timer starts a run at each of WINDOWS_ET, every 4 hours, and each stops a minute
-before the next, so the watch runs all day. A run watches its US Eastern date's games, and from
-EVENING the next date's too. A market within NEAR of its start is polled at the full cadence
-(TOP_EVERY, BOOK_EVERY), one further out at FAR_TOP_EVERY and FAR_BOOK_EVERY.
+**When.** The timer starts a run at each of WINDOWS_ET, every 4 hours, and each runs on HANDOVER
+past the next window's start (watch_end), so consecutive runs overlap and the next run's start-up
+leaves no gap in the polls (#402); the watch runs all day. Two runs can then poll in the same
+second: a poll's raw object is written once, and the later run's copy of that second is skipped.
+A run watches its US Eastern date's games, and from EVENING the next date's too. A market within
+NEAR of its start is polled at the full cadence (TOP_EVERY, BOOK_EVERY), one further out at
+FAR_TOP_EVERY and FAR_BOOK_EVERY.
 
 **Terms.** As #282 (ingest/kalshi.py), within the Developer Agreement's own-trading use (3.1):
 - both teams' markets of each game of the day's slate, never a game at or after its start;
@@ -91,10 +94,13 @@ REFRESH = timedelta(minutes=30)
 PAGE = 1000
 MAX_PAGES = 20
 # The windows the timer dispatches a run at, in US Eastern time (infra/timer), every 4 hours: a
-# run ends a minute before the next one starts, and never after LONGEST, inside GitHub's 6-hour
-# job limit.
+# run's watch ends HANDOVER into the next one (watch_end), and never after LONGEST, inside
+# GitHub's 6-hour job limit.
 WINDOWS_ET = (time(3, 5), time(7, 5), time(11, 5), time(15, 5), time(19, 5), time(23, 5))
 LONGEST = timedelta(hours=5, minutes=45)
+# How long a run polls on past the next window's start, covering the next run's start-up (2.5 to
+# 6.9 minutes in #319's week check) with room to spare (#402, the owner's choice of 2026-11-06).
+HANDOVER = timedelta(minutes=10)
 # From this window on, a run watches the next US Eastern date's games too.
 EVENING = time(19, 5)
 
@@ -127,17 +133,29 @@ def cron_due(cron: str, now: datetime) -> bool:
     return FALLBACK_CRONS.get(cron) == now.astimezone(ET).utcoffset()
 
 
-def window_end(now: datetime) -> datetime:
-    """When a run started at now stops: a minute before the next window, the next US Eastern
-    day's first after the day's last, and never more than LONGEST after now."""
+def next_window(now: datetime) -> datetime:
+    """The next window's start after now, in UTC: the next US Eastern day's first after the day's
+    last."""
     local = now.astimezone(ET)
     starts = [
         datetime.combine(local.date() + timedelta(days=d), at, tzinfo=ET)
         for d in (0, 1)
         for at in WINDOWS_ET
     ]
-    following = min(start for start in starts if start > local)
-    return min((following - timedelta(minutes=1)).astimezone(UTC), now + LONGEST)
+    return min(start for start in starts if start > local).astimezone(UTC)
+
+
+def window_end(now: datetime) -> datetime:
+    """A minute before the next window, and never more than LONGEST after now: where a job that
+    must never overlap the next run's stops, as the demo quotes (#375), whose bids two runs would
+    both place."""
+    return min(next_window(now) - timedelta(minutes=1), now + LONGEST)
+
+
+def watch_end(now: datetime) -> datetime:
+    """When a watch run started at now stops: HANDOVER past the next window's start, so it polls
+    on while the next run starts up (#402), and never more than LONGEST after now."""
+    return min(next_window(now) + HANDOVER, now + LONGEST)
 
 
 def watched_days(now: datetime) -> list[date]:
@@ -277,7 +295,9 @@ def store_poll(
         "markets": [_market_meta(m) for m in markets],
     }
     key = f"{WATCH}/{kind}/{day.isoformat()}/{polled_utc:%Y%m%dT%H%M%SZ}"
-    return store.put(kalshi.SOURCE, key, body, meta)
+    # Written once: an overlapping run (#402) that polled the same kind in the same second has
+    # already stored that second's poll, which stands.
+    return store.put(kalshi.SOURCE, key, body, meta, once=True)
 
 
 def _count(report: WatchReport, responses: Sequence[Response]) -> None:
@@ -453,7 +473,9 @@ def store_lines(
         "games": [_game_meta(row) for row in games.iter_rows(named=True)],
     }
     key = f"{WATCH}/{kind}/{day.isoformat()}/{polled_utc:%Y%m%dT%H%M%SZ}"
-    return store.put(kalshi.SOURCE, key, body, meta)
+    # Written once: an overlapping run (#402) that polled the same kind in the same second has
+    # already stored that second's poll, which stands.
+    return store.put(kalshi.SOURCE, key, body, meta, once=True)
 
 
 def _listed(

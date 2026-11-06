@@ -10,6 +10,9 @@ from nhl_edge import __version__
 from nhl_edge.backtest.seasons import DEVELOPMENT_SEASONS, SEASON_ROLES
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from datetime import date
+
     import polars as pl
 
     from nhl_edge.backtest.one_time import Places
@@ -6518,8 +6521,8 @@ def real_quotes_live(
         datetime | None,
         typer.Option(
             formats=["%Y-%m-%dT%H:%M"],
-            help="Stop at this UTC time, by default the watch's own end, a minute before the next "
-            "window.",
+            help="Stop at this UTC time, by default the watch's own end, ten minutes into the "
+            "next window (#402).",
         ),
     ] = None,
     cron: Annotated[
@@ -6570,7 +6573,9 @@ def real_quotes_live(
     version = reports.version("quotes-live", now)
     if supabase and version.endswith("-dirty"):
         raise typer.BadParameter("commit first: the rows name their commit")
-    end = (until.replace(tzinfo=UTC) if until else None) or kw.window_end(now)
+    # The watch's own end, HANDOVER past the next window, so the view has no gap either (#402):
+    # two overlapping cycles upsert the same rows from the same polls.
+    end = (until.replace(tzinfo=UTC) if until else None) or kw.watch_end(now)
     store = RawStore.from_env(mirror=r2)
     lake = Lake.from_env(mirror=r2)
     client = Supabase.from_env() if supabase else None
@@ -6962,7 +6967,8 @@ def kalshi_watch(
         datetime | None,
         typer.Option(
             formats=["%Y-%m-%dT%H:%M"],
-            help="Stop at this UTC time, by default a minute before the next window (#319).",
+            help="Stop at this UTC time, by default ten minutes into the next window, so the "
+            "next run's start-up leaves no gap (#402).",
         ),
     ] = None,
     cron: Annotated[
@@ -6972,15 +6978,31 @@ def kalshi_watch(
             "offset's line."
         ),
     ] = None,
+    rebuild: Annotated[
+        bool,
+        typer.Option(
+            help="Rebuild the polled dates' tables at the end; the workflow leaves it to its "
+            "serialized rebuild job (kalshi rebuild, #402)."
+        ),
+    ] = True,
+    dates_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Append the polled dates to this file as dates=... and line_dates=... lines "
+            "(GitHub's step outputs), for kalshi rebuild."
+        ),
+    ] = None,
 ) -> None:
     """Watch every game of today's slate on Kalshi (#319), and from 19:05 ET tomorrow's, for
     choosing the owner's own orders: each winner market's top of book every minute and its full
     book and trades every 5 minutes within 12 hours of its start, every 15 and 30 minutes
     before; and the listings of every game market, the totals and spreads near the start and the
-    player props (kalshi_lines). Until the next window or every game's start, never a game at or
-    after its start. Then rebuild the polled dates' kalshi_tops, kalshi_depth, kalshi_trades and
-    kalshi_lines from the stored polls. Only counts are printed: Kalshi's data stays private (its
-    Developer Agreement, 3.1), and run logs are public."""
+    player props (kalshi_lines). Until ten minutes into the next window, overlapping the next run
+    (#402), or every game's start, never a game at or after its start; a poll another run stored
+    in the same second stands. Then, unless --no-rebuild, rebuild the polled dates'
+    kalshi_tops, kalshi_depth, kalshi_trades and kalshi_lines from every stored poll, the next
+    run's so far included. Only counts are printed: Kalshi's data stays private (its Developer
+    Agreement, 3.1), and run logs are public."""
     from datetime import UTC
 
     from nhl_edge.ingest import kalshi
@@ -7016,33 +7038,97 @@ def kalshi_watch(
                 )
         return pl.concat(slates, how="vertical_relaxed")
 
-    end = until.replace(tzinfo=UTC) if until is not None else kw.window_end(now)
+    end = until.replace(tzinfo=UTC) if until is not None else kw.watch_end(now)
     report = kw.watch(
         client=kalshi.Kalshi(store), slate=watched, until=end, echo=typer.echo, lines=True
     )
-    if report.stored:
+    game_dates, poll_dates = sorted(report.dates), sorted(report.line_dates)
+    if dates_out is not None:
+        # Written before any failure exits, so the rebuild job still gets the stored polls.
+        with dates_out.open("a") as out:
+            for name, dates in (("dates", game_dates), ("line_dates", poll_dates)):
+                out.write(f"{name}={','.join(d.isoformat() for d in dates)}\n")
+    if rebuild and report.stored:
         lake = Lake.from_env(mirror=mirror_raw, flag="--mirror-raw")
-        game_dates, poll_dates = sorted(report.dates), sorted(report.line_dates)
-        if mirror_raw:
-            # The dates' earlier windows' polls, so the rebuilt partitions keep all of them.
-            for kinds, dates in ((kw.KINDS, game_dates), (kw.LINE_KINDS, poll_dates)):
-                for kind in kinds:
-                    for d in dates:
-                        store.restore_from_r2(f"{kalshi.SOURCE}/{kw.WATCH}/{kind}/{d.isoformat()}/")
-        try:
-            replayed = kw.replay(store, lake, game_dates) if game_dates else None
-            lined = kw.replay_lines(store, lake, poll_dates) if poll_dates else None
-        except kw.ReplayError as exc:
-            typer.echo(f"kalshi watch: {exc}", err=True)
-            raise typer.Exit(code=1) from None
-        for dates, done in ((game_dates, replayed), (poll_dates, lined)):
-            if done is not None:
-                span = ", ".join(d.isoformat() for d in dates)
-                typer.echo(
-                    f"kalshi watch {span}: rebuilt from {sum(done.objects.values())} stored polls"
-                )
+        _rebuild_watch(store, lake, game_dates, poll_dates, restore=mirror_raw)
     if report.failed:
         raise typer.Exit(code=1)
+
+
+def _rebuild_watch(
+    store: "RawStore",
+    lake: "Lake",
+    game_dates: "Sequence[date]",
+    poll_dates: "Sequence[date]",
+    *,
+    restore: bool,
+) -> None:
+    """Rebuild the dates' kalshi_tops, kalshi_depth and kalshi_trades and the poll dates'
+    kalshi_lines from every stored poll, restoring R2's first when restore is set: every
+    window's polls, an overlapping run's included (#402). Prints poll counts only."""
+    from nhl_edge.ingest import kalshi
+    from nhl_edge.ingest import kalshi_watch as kw
+
+    if restore:
+        for kinds, dates in ((kw.KINDS, game_dates), (kw.LINE_KINDS, poll_dates)):
+            for kind in kinds:
+                for d in dates:
+                    store.restore_from_r2(f"{kalshi.SOURCE}/{kw.WATCH}/{kind}/{d.isoformat()}/")
+    try:
+        replayed = kw.replay(store, lake, list(game_dates)) if game_dates else None
+        lined = kw.replay_lines(store, lake, list(poll_dates)) if poll_dates else None
+    except kw.ReplayError as exc:
+        typer.echo(f"kalshi watch: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    for dates, done in ((game_dates, replayed), (poll_dates, lined)):
+        if done is not None:
+            span = ", ".join(d.isoformat() for d in dates)
+            typer.echo(
+                f"kalshi watch {span}: rebuilt from {sum(done.objects.values())} stored polls"
+            )
+
+
+def _iso_dates(text: str) -> list["date"]:
+    from datetime import date
+
+    try:
+        return sorted(
+            {date.fromisoformat(part.strip()) for part in text.split(",") if part.strip()}
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"not a comma-separated list of YYYY-MM-DD dates: {text!r}"
+        ) from exc
+
+
+@kalshi_app.command("rebuild")
+def kalshi_rebuild(
+    dates: Annotated[
+        str,
+        typer.Option(help="Game dates of the tops, depth and trades, as YYYY-MM-DD,YYYY-MM-DD."),
+    ] = "",
+    line_dates: Annotated[
+        str, typer.Option(help="Poll dates of the lines, as YYYY-MM-DD,YYYY-MM-DD.")
+    ] = "",
+    r2: Annotated[
+        bool,
+        typer.Option("--r2", help="Restore the dates' polls from R2 first, and mirror the tables."),
+    ] = False,
+) -> None:
+    """Rebuild the watch's tables for the dates a watch run polled (#319), never calling Kalshi:
+    the kalshi-watch workflow's rebuild job, one at a time across its runs, so two overlapping
+    runs' rebuilds never publish a partition out of order (#402). Prints poll counts only."""
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    game_dates, poll_dates = _iso_dates(dates), _iso_dates(line_dates)
+    if not game_dates and not poll_dates:
+        typer.echo("kalshi rebuild: no dates, nothing rebuilt")
+        return
+    load_env()
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    _rebuild_watch(store, Lake.from_env(mirror=r2), game_dates, poll_dates, restore=r2)
 
 
 @kalshi_app.command("replay")

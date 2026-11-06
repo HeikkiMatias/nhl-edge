@@ -75,11 +75,21 @@ class RawStore:
         config = R2Config.require(flag)
         return cls(base_dir, config.bucket, config.client())
 
-    def put(self, source: str, key: str, body: bytes, meta: Mapping[str, Any]) -> str:
-        """Store one response and return its raw key, <source>/<key>."""
+    def put(
+        self, source: str, key: str, body: bytes, meta: Mapping[str, Any], once: bool = False
+    ) -> str:
+        """Store one response and return its raw key, <source>/<key>. With once and an R2
+        mirror, R2 takes the body first, and only if no other writer stored that key first
+        (IfNoneMatch): if one did, its body and sidecar stand, and nothing of this copy is
+        written, here or in R2, so a restore brings the stored pair and every copy of the key is
+        one writer's (two overlapping watch runs, #402)."""
         raw_key = f"{source}/{key}"
         data = gzip.compress(body, mtime=0)
         sidecar = json.dumps(meta, indent=2, sort_keys=True, default=str).encode() + b"\n"
+        remote = f"raw/{raw_key}{SUFFIX}"
+        claim = once and self.objects is not None
+        if claim and not self._claim(remote, data):
+            return raw_key
         data_path = self.base_dir / f"{raw_key}{SUFFIX}"
         data_path.parent.mkdir(parents=True, exist_ok=True)
         with data_path.open("xb") as f:
@@ -87,12 +97,10 @@ class RawStore:
         with (self.base_dir / f"{raw_key}.meta.json").open("xb") as f:
             f.write(sidecar)
         if self.objects is not None:
-            self.objects.put_object(
-                Bucket=self.bucket,
-                Key=f"raw/{raw_key}{SUFFIX}",
-                Body=data,
-                ContentType="application/gzip",
-            )
+            if not claim:
+                self.objects.put_object(
+                    Bucket=self.bucket, Key=remote, Body=data, ContentType="application/gzip"
+                )
             self.objects.put_object(
                 Bucket=self.bucket,
                 Key=f"raw/{raw_key}.meta.json",
@@ -100,6 +108,34 @@ class RawStore:
                 ContentType="application/json",
             )
         return raw_key
+
+    def _claim(self, remote: str, data: bytes) -> bool:
+        """Write a body to R2 unless another writer stored it first: True when this one's
+        stands, False when the other's does. A refusal of this very body, a retry's after its
+        first try landed, is this writer's own. Any other failure is raised."""
+        assert self.objects is not None
+        try:
+            self.objects.put_object(
+                Bucket=self.bucket,
+                Key=remote,
+                Body=data,
+                ContentType="application/gzip",
+                IfNoneMatch="*",
+            )
+        except Exception:
+            held = self._held(remote)
+            if held is None:
+                raise
+            return held == data
+        return True
+
+    def _held(self, remote: str) -> bytes | None:
+        """The object R2 holds at remote, or None: after a refused write-once, the stored one."""
+        assert self.objects is not None
+        try:
+            return self.objects.get_object(Bucket=self.bucket, Key=remote)["Body"].read()
+        except Exception:
+            return None
 
     def get(self, raw_key: str) -> bytes:
         return gzip.decompress((self.base_dir / f"{raw_key}{SUFFIX}").read_bytes())

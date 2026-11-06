@@ -6,8 +6,9 @@ name: kalshi-watch
 # spreads near the start and the player props, stored raw in R2 and rebuilt into the lake's private
 # kalshi_tops, kalshi_depth, kalshi_trades and kalshi_lines. The Cloudflare timer in infra/timer
 # dispatches it every 4 hours, at 03:05, 07:05, 11:05, 15:05, 19:05 and 23:05 US Eastern, since
-# GitHub's schedule started runs hours late (#50); each run stops a minute before the next window,
-# inside GitHub's 6-hour job limit, and a day without games ends at once. Kalshi's Developer Agreement limits its
+# GitHub's schedule started runs hours late (#50); each run's watch polls on until ten minutes into
+# the next window, so the next run's start-up leaves no gap (#402), inside GitHub's 6-hour job
+# limit, and a day without games ends at once. Kalshi's Developer Agreement limits its
 # API to a member's own trading (3.1): the data stays in R2, and the job prints counts only, since
 # run logs are public. The watch is public REST only: no Kalshi key is read. The quote job beside it
 # places the owner's own demo orders (#375), with the demo key.
@@ -19,8 +20,12 @@ on:
     - cron: "5 3,7,11,15,19,23 * * *"   # EDT
     - cron: "5 0,4,8,12,16,20 * * *"    # EST
   workflow_dispatch:
+# Each run on its own (#402): the next window's run starts while this one still polls. One group
+# for every run would hold the next run back until this one ends, and cancel a second waiting one.
+# Two runs polling the same second store it once (ingest/kalshi_watch.store_poll). What must not
+# overlap has a group of its own across runs: the rebuild of the lake's tables, and the demo quotes.
 concurrency:
-  group: kalshi-watch
+  group: kalshi-watch-${{ github.run_id }}
   cancel-in-progress: false
 permissions:
   contents: read
@@ -36,15 +41,49 @@ jobs:
       - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
       - run: uv sync --frozen
       - name: Kalshi watch (#319)
+        id: watch
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           CRON: ${{ github.event.schedule }}
+        # The polled dates go to the rebuild job, written before a failed poll's exit.
         run: |
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then pick=(--cron "$CRON"); else pick=(); fi
-          uv run nhl kalshi watch --mirror-raw "${pick[@]}"
+          uv run nhl kalshi watch --mirror-raw --no-rebuild --dates-out "$GITHUB_OUTPUT" "${pick[@]}"
+    outputs:
+      dates: ${{ steps.watch.outputs.dates }}
+      line_dates: ${{ steps.watch.outputs.line_dates }}
+  rebuild:
+    # The polled dates' kalshi_tops, kalshi_depth, kalshi_trades and kalshi_lines, rebuilt from
+    # every poll in R2 once the watch ends, the next run's so far included. One rebuild at a time
+    # across runs (#402): two overlapping runs' rebuilds could otherwise publish a partition out of
+    # order, an older one last. A third run's rebuild queued behind two would cancel the waiting
+    # one; the next run's rebuild, or nhl kalshi replay --r2, then restores its dates. After a
+    # failed watch too, for the polls it stored.
+    needs: watch
+    if: >-
+      (github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true') && !cancelled()
+      && (needs.watch.outputs.dates != '' || needs.watch.outputs.line_dates != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: kalshi-watch-rebuild
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
+      - run: uv sync --frozen
+      - name: Rebuild the watch's tables (#402)
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          DATES: ${{ needs.watch.outputs.dates }}
+          LINE_DATES: ${{ needs.watch.outputs.line_dates }}
+        run: uv run nhl kalshi rebuild --r2 --dates "$DATES" --line-dates "$LINE_DATES"
   live:
     # The dashboard's live view of market making (#398 step 3): beside the watch, every 5 minutes
     # until the watch's own end, the quoting simulator on today's games as they stand, from the
@@ -76,13 +115,19 @@ jobs:
   quote:
     # Two-sided quoting on Kalshi's demo exchange (#375, ADR 0055), mock funds only: the paper
     # simulator's rules at the model's fair value, a step each minute from the morning view's
-    # publication to each game's start less 10 minutes, ending with this window like the watch.
+    # publication to each game's start less 10 minutes, ending a minute before the next window,
+    # before the next run's quoter starts (the watch overlaps it, #402). One quoter at a time
+    # across runs: a second one, a manual dispatch's say, would cancel the first's orders as its
+    # own on recovery, so it waits for the first to end.
     # GitHub's runners for now, the owner's choice: a location refusal (#347) is recorded, and
     # every bid expires 10 minutes before its start on Kalshi's side. It runs only while the
     # repository variable KALSHI_TRADING is demo, with the demo key; the log prints counts only.
     if: (github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true') && vars.KALSHI_TRADING == 'demo'
     runs-on: ubuntu-latest
     timeout-minutes: 358
+    concurrency:
+      group: kalshi-watch-quote
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
