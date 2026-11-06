@@ -6518,8 +6518,8 @@ def real_quotes_live(
         datetime | None,
         typer.Option(
             formats=["%Y-%m-%dT%H:%M"],
-            help="Stop at this UTC time, by default the watch's own end, a minute before the next "
-            "window.",
+            help="Stop at this UTC time, by default the watch's own end, ten minutes into the "
+            "next window (#402).",
         ),
     ] = None,
     cron: Annotated[
@@ -6570,7 +6570,9 @@ def real_quotes_live(
     version = reports.version("quotes-live", now)
     if supabase and version.endswith("-dirty"):
         raise typer.BadParameter("commit first: the rows name their commit")
-    end = (until.replace(tzinfo=UTC) if until else None) or kw.window_end(now)
+    # The watch's own end, HANDOVER past the next window, so the view has no gap either (#402):
+    # two overlapping cycles upsert the same rows from the same polls.
+    end = (until.replace(tzinfo=UTC) if until else None) or kw.watch_end(now)
     store = RawStore.from_env(mirror=r2)
     lake = Lake.from_env(mirror=r2)
     client = Supabase.from_env() if supabase else None
@@ -6962,7 +6964,8 @@ def kalshi_watch(
         datetime | None,
         typer.Option(
             formats=["%Y-%m-%dT%H:%M"],
-            help="Stop at this UTC time, by default a minute before the next window (#319).",
+            help="Stop at this UTC time, by default ten minutes into the next window, so the "
+            "next run's start-up leaves no gap (#402).",
         ),
     ] = None,
     cron: Annotated[
@@ -6977,10 +6980,12 @@ def kalshi_watch(
     choosing the owner's own orders: each winner market's top of book every minute and its full
     book and trades every 5 minutes within 12 hours of its start, every 15 and 30 minutes
     before; and the listings of every game market, the totals and spreads near the start and the
-    player props (kalshi_lines). Until the next window or every game's start, never a game at or
-    after its start. Then rebuild the polled dates' kalshi_tops, kalshi_depth, kalshi_trades and
-    kalshi_lines from the stored polls. Only counts are printed: Kalshi's data stays private (its
-    Developer Agreement, 3.1), and run logs are public."""
+    player props (kalshi_lines). Until ten minutes into the next window, overlapping the next run
+    (#402), or every game's start, never a game at or after its start; a poll another run stored
+    in the same second stands. Then rebuild the polled dates' kalshi_tops, kalshi_depth,
+    kalshi_trades and kalshi_lines from every stored poll, the next run's so far included. Only
+    counts are printed: Kalshi's data stays private (its Developer Agreement, 3.1), and run logs
+    are public."""
     from datetime import UTC
 
     from nhl_edge.ingest import kalshi
@@ -7016,7 +7021,7 @@ def kalshi_watch(
                 )
         return pl.concat(slates, how="vertical_relaxed")
 
-    end = until.replace(tzinfo=UTC) if until is not None else kw.window_end(now)
+    end = until.replace(tzinfo=UTC) if until is not None else kw.watch_end(now)
     report = kw.watch(
         client=kalshi.Kalshi(store), slate=watched, until=end, echo=typer.echo, lines=True
     )

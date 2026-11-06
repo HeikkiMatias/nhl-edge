@@ -573,3 +573,91 @@ def test_a_failed_next_day_slate_never_stops_todays_watch(
     assert result.exit_code == 0, result.output
     assert "the next day's slate fetch failed (ConnectionError)" in result.output
     assert "kalshi watch: 3 top" in result.output
+
+
+def test_a_watch_runs_ten_minutes_into_the_next_window_and_the_demo_quotes_stop_before_it() -> None:
+    # #402: each run polls on while the next starts up (2.5 to 6.9 minutes in #319's week check).
+    assert kw.watch_end(datetime(2026, 10, 23, 11, 5, tzinfo=UTC)) == datetime(
+        2026, 10, 23, 15, 15, tzinfo=UTC
+    )  # 07:05 EDT to 11:15 EDT
+    # The day's last window runs into the next day's first, 03:15 EDT.
+    last = datetime(2026, 10, 24, 3, 5, tzinfo=UTC)
+    assert kw.watch_end(last) == datetime(2026, 10, 24, 7, 15, tzinfo=UTC)
+    late = datetime(2026, 10, 23, 13, 30, tzinfo=UTC)  # a late fallback run at 09:30 EDT
+    assert kw.watch_end(late) == datetime(2026, 10, 23, 15, 15, tzinfo=UTC)
+    # Never past LONGEST, inside GitHub's 6-hour job limit.
+    start = datetime(2026, 10, 23, 11, 5, tzinfo=UTC)
+    assert kw.watch_end(start) - start < kw.LONGEST
+    # The demo quotes still end a minute before the next window, so two runs never quote at once.
+    assert kw.window_end(start) == datetime(2026, 10, 23, 15, 4, tzinfo=UTC)
+
+
+def test_two_overlapping_runs_store_a_same_second_poll_once(tmp_path: Path) -> None:
+    import revalue_fixtures as vf
+    from fakes import ConditionalBucket
+
+    bucket = ConditionalBucket()
+    first = RawStore(tmp_path / "first", "bucket", bucket)
+    second = RawStore(tmp_path / "second", "bucket", bucket)
+    at = datetime(2026, 10, 7, 19, 5, 0, tzinfo=UTC)
+    key = vf.store_tops(first, at, {vf.WSH: ("0.4500", "0.5200")})
+    # The next run polls in the same second: its copy is skipped, and the first run's body and
+    # sidecar stand together in R2.
+    assert (
+        vf.store_tops(second, at, {vf.WSH: ("0.4600", "0.5300")}, at + timedelta(seconds=1)) == key
+    )
+    body = bucket.objects[f"raw/{key}.json.gz"]
+    assert body == (tmp_path / "first" / f"{key}.json.gz").read_bytes()
+    assert (
+        bucket.objects[f"raw/{key}.meta.json"]
+        == (tmp_path / "first" / f"{key}.meta.json").read_bytes()
+    )
+    assert "0.4500" in json.dumps(json.loads(first.get(key)))
+    # Each run keeps its own local copy; a later second of the second run is stored as usual.
+    assert second.get(key) != first.get(key)
+    later = vf.store_tops(second, at + timedelta(minutes=1), {vf.WSH: ("0.4600", "0.5300")})
+    assert f"raw/{later}.json.gz" in bucket.objects
+
+
+def test_a_write_once_failing_for_another_reason_is_not_hidden(tmp_path: Path) -> None:
+    import revalue_fixtures as vf
+    from fakes import MemoryBucket
+
+    class Down(MemoryBucket):
+        def put_object(self, **kwargs: object) -> None:
+            raise RuntimeError("ServiceUnavailable")
+
+    raw = RawStore(tmp_path, "bucket", Down())
+    with pytest.raises(RuntimeError, match="ServiceUnavailable"):
+        vf.store_tops(raw, datetime(2026, 10, 7, 19, 5, tzinfo=UTC), {vf.WSH: ("0.45", "0.52")})
+
+
+def test_a_runs_rebuild_includes_the_overlapping_runs_polls_and_never_drops_a_row(
+    tmp_path: Path,
+) -> None:
+    # #402: the last run's end-of-run rebuild restores every poll in R2 first, the next run's so
+    # far included; the next run's own rebuild later holds them all.
+    import revalue_fixtures as vf
+    from fakes import ConditionalBucket
+
+    bucket = ConditionalBucket()
+    last = RawStore(tmp_path / "last", "bucket", bucket)
+    following = RawStore(tmp_path / "next", "bucket", bucket)
+    window = datetime(2026, 10, 7, 19, 5, tzinfo=UTC)
+    for minutes in (-2, -1, 0, 1, 2):  # the last run, to ten minutes into the next window
+        vf.store_tops(last, window + timedelta(minutes=minutes), {vf.WSH: ("0.45", "0.52")})
+    for minutes in (2, 3):  # the next run, from its start-up; 2 is the same second as the last's
+        vf.store_tops(following, window + timedelta(minutes=minutes), {vf.WSH: ("0.46", "0.53")})
+    prefix = f"{kalshi.SOURCE}/{kw.WATCH}/{kw.TOPS}/{pf.DAY.isoformat()}/"
+
+    def rebuilt(store: RawStore, lake_dir: Path) -> pl.DataFrame:
+        store.restore_from_r2(prefix)
+        lake = Lake(lake_dir)
+        kw.replay(store, lake, [pf.DAY])
+        return lake.read(kw.TABLES[kw.TOPS]).filter(pl.col("ticker") == vf.WSH)
+
+    # The last run's rebuild: its five polls and the next run's one at 3 minutes.
+    assert rebuilt(last, tmp_path / "lake-last").height == 6
+    vf.store_tops(following, window + timedelta(minutes=8), {vf.WSH: ("0.47", "0.54")})
+    # The next run's rebuild, from its own polls and every one in R2: nothing dropped.
+    assert rebuilt(following, tmp_path / "lake-next").height == 7

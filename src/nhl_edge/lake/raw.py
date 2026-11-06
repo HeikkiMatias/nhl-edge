@@ -75,8 +75,13 @@ class RawStore:
         config = R2Config.require(flag)
         return cls(base_dir, config.bucket, config.client())
 
-    def put(self, source: str, key: str, body: bytes, meta: Mapping[str, Any]) -> str:
-        """Store one response and return its raw key, <source>/<key>."""
+    def put(
+        self, source: str, key: str, body: bytes, meta: Mapping[str, Any], once: bool = False
+    ) -> str:
+        """Store one response and return its raw key, <source>/<key>. With once, R2 takes the
+        body only if no other writer stored that key first (IfNoneMatch); if one did, its body and
+        sidecar stand and this copy's are not sent, so the pair always comes from one writer
+        (two overlapping watch runs, #402)."""
         raw_key = f"{source}/{key}"
         data = gzip.compress(body, mtime=0)
         sidecar = json.dumps(meta, indent=2, sort_keys=True, default=str).encode() + b"\n"
@@ -87,12 +92,19 @@ class RawStore:
         with (self.base_dir / f"{raw_key}.meta.json").open("xb") as f:
             f.write(sidecar)
         if self.objects is not None:
-            self.objects.put_object(
-                Bucket=self.bucket,
-                Key=f"raw/{raw_key}{SUFFIX}",
-                Body=data,
-                ContentType="application/gzip",
-            )
+            remote = f"raw/{raw_key}{SUFFIX}"
+            try:
+                self.objects.put_object(
+                    Bucket=self.bucket,
+                    Key=remote,
+                    Body=data,
+                    ContentType="application/gzip",
+                    **({"IfNoneMatch": "*"} if once else {}),
+                )
+            except Exception:
+                if not once or not self._held(remote):
+                    raise
+                return raw_key
             self.objects.put_object(
                 Bucket=self.bucket,
                 Key=f"raw/{raw_key}.meta.json",
@@ -100,6 +112,15 @@ class RawStore:
                 ContentType="application/json",
             )
         return raw_key
+
+    def _held(self, remote: str) -> bool:
+        """Whether R2 holds an object at remote: after a refused write-once, another writer's."""
+        assert self.objects is not None
+        try:
+            self.objects.get_object(Bucket=self.bucket, Key=remote)
+        except Exception:
+            return False
+        return True
 
     def get(self, raw_key: str) -> bytes:
         return gzip.decompress((self.base_dir / f"{raw_key}{SUFFIX}").read_bytes())

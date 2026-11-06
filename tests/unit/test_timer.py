@@ -25,7 +25,7 @@ def test_timer_dispatches_every_odds_slot_at_its_eastern_time() -> None:
 
 
 def test_timer_starts_the_kalshi_watch_at_its_windows() -> None:
-    # A run ends a minute before the next window (ingest/kalshi_watch.window_end, #319).
+    # A run's watch ends ten minutes into the next window (ingest/kalshi_watch.watch_end, #402).
     from nhl_edge.ingest.kalshi_watch import WINDOWS_ET
 
     block = re.search(r"KALSHI_WATCH_ET = \[(.*?)\];", TIMER, re.S)
@@ -40,6 +40,13 @@ def test_the_kalshi_watch_fallback_lines_are_the_ones_its_cli_knows() -> None:
     text = (WORKFLOWS / "kalshi-watch.yml").read_text()
     assert re.findall(r'- cron: "([^"]+)"', text) == list(FALLBACK_CRONS)
     assert '--cron "$CRON"' in text
+
+
+def test_each_kalshi_watch_run_has_its_own_concurrency_group() -> None:
+    # #402: the next window's run starts while the last one still polls; one group for every run
+    # would hold it back until the last ends, which is the hand-over gap.
+    text = (WORKFLOWS / "kalshi-watch.yml").read_text()
+    assert re.search(r"concurrency:\n  group: kalshi-watch-\$\{\{ github.run_id \}\}\n", text)
 
 
 # Scheduled workflows the timer leaves to GitHub's own schedule: once a year, hours of delay don't

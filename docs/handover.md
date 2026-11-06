@@ -142,7 +142,7 @@ Every deliverable merged under its own task issue:
   - it polls the goalies, raw only, then takes the odds snapshot;
   - it runs `nhl predict`, which reads the day's polls itself under v2 (`live/goalies.py`);
   - it writes the write-once ledger and the run bundle to R2, and mirrors the ledger to Supabase.
-- **Kalshi watch (#319):** at 03:05, 07:05, 11:05, 15:05, 19:05 and 23:05 ET, each run watching today's and tomorrow's games' markets until a minute before the next.
+- **Kalshi watch (#319):** at 03:05, 07:05, 11:05, 15:05, 19:05 and 23:05 ET, each run watching today's and tomorrow's games' markets until ten minutes into the next window, so consecutive runs overlap (#402).
 - **Kalshi re-valuation (#321):** every 15 minutes from 13:05 to 22:50 ET, besides each odds slot.
 - **Kalshi books (#282):** every slot ends with `nhl kalshi books --mirror-raw`. From the midday alert to each game's start, it keeps Kalshi's order book of the alerted bets' markets in R2 and the lake's `kalshi_books`, privately, for the owner's own orders (#281). It prints counts only, and its data never goes into the repository (docs/data-sources.md, "Kalshi order book").
 - **The 09:00 UTC nightly:**

@@ -6,8 +6,9 @@ name: kalshi-watch
 # spreads near the start and the player props, stored raw in R2 and rebuilt into the lake's private
 # kalshi_tops, kalshi_depth, kalshi_trades and kalshi_lines. The Cloudflare timer in infra/timer
 # dispatches it every 4 hours, at 03:05, 07:05, 11:05, 15:05, 19:05 and 23:05 US Eastern, since
-# GitHub's schedule started runs hours late (#50); each run stops a minute before the next window,
-# inside GitHub's 6-hour job limit, and a day without games ends at once. Kalshi's Developer Agreement limits its
+# GitHub's schedule started runs hours late (#50); each run's watch polls on until ten minutes into
+# the next window, so the next run's start-up leaves no gap (#402), inside GitHub's 6-hour job
+# limit, and a day without games ends at once. Kalshi's Developer Agreement limits its
 # API to a member's own trading (3.1): the data stays in R2, and the job prints counts only, since
 # run logs are public. The watch is public REST only: no Kalshi key is read. The quote job beside it
 # places the owner's own demo orders (#375), with the demo key.
@@ -19,8 +20,12 @@ on:
     - cron: "5 3,7,11,15,19,23 * * *"   # EDT
     - cron: "5 0,4,8,12,16,20 * * *"    # EST
   workflow_dispatch:
+# Each run on its own (#402): the next window's run starts while this one still polls. One group
+# for every run would hold the next run back until this one ends, and cancel a second waiting one.
+# Two runs polling the same second store it once (ingest/kalshi_watch.store_poll), and the demo
+# quotes still end a minute before the next window, so two never quote at once.
 concurrency:
-  group: kalshi-watch
+  group: kalshi-watch-${{ github.run_id }}
   cancel-in-progress: false
 permissions:
   contents: read
@@ -76,7 +81,8 @@ jobs:
   quote:
     # Two-sided quoting on Kalshi's demo exchange (#375, ADR 0055), mock funds only: the paper
     # simulator's rules at the model's fair value, a step each minute from the morning view's
-    # publication to each game's start less 10 minutes, ending with this window like the watch.
+    # publication to each game's start less 10 minutes, ending a minute before the next window,
+    # before the next run's quoter starts (the watch overlaps it, #402).
     # GitHub's runners for now, the owner's choice: a location refusal (#347) is recorded, and
     # every bid expires 10 minutes before its start on Kalshi's side. It runs only while the
     # repository variable KALSHI_TRADING is demo, with the demo key; the log prints counts only.
