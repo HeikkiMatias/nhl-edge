@@ -5,6 +5,7 @@ lines and props, on synthetic responses only: the public repository holds no Kal
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import kalshi_fixtures as kf
@@ -601,6 +602,7 @@ def test_two_overlapping_runs_store_a_same_second_poll_once(tmp_path: Path) -> N
     second = RawStore(tmp_path / "second", "bucket", bucket)
     at = datetime(2026, 10, 7, 19, 5, 0, tzinfo=UTC)
     key = vf.store_tops(first, at, {vf.WSH: ("0.4500", "0.5200")})
+    assert key is not None
     # The next run polls in the same second: its copy is skipped, and the first run's body and
     # sidecar stand together in R2.
     assert (
@@ -613,10 +615,16 @@ def test_two_overlapping_runs_store_a_same_second_poll_once(tmp_path: Path) -> N
         == (tmp_path / "first" / f"{key}.meta.json").read_bytes()
     )
     assert "0.4500" in json.dumps(json.loads(first.get(key)))
-    # Each run keeps its own local copy; a later second of the second run is stored as usual.
-    assert second.get(key) != first.get(key)
+    # The second run writes nothing of its copy, here either, so its rebuild restores the first
+    # run's and never replays a poll R2 doesn't hold (Codex on #407).
+    assert not (tmp_path / "second" / f"{key}.json.gz").exists()
+    assert not (tmp_path / "second" / f"{key}.meta.json").exists()
+    assert second.restore_from_r2(f"{kalshi.SOURCE}/").copied == 1
+    assert second.get(key) == first.get(key) and second.meta(key) == first.meta(key)
+    # A later second of the second run is stored as usual.
     later = vf.store_tops(second, at + timedelta(minutes=1), {vf.WSH: ("0.4600", "0.5300")})
     assert f"raw/{later}.json.gz" in bucket.objects
+    assert (tmp_path / "second" / f"{later}.meta.json").exists()
 
 
 def test_a_write_once_failing_for_another_reason_is_not_hidden(tmp_path: Path) -> None:
@@ -630,6 +638,100 @@ def test_a_write_once_failing_for_another_reason_is_not_hidden(tmp_path: Path) -
     raw = RawStore(tmp_path, "bucket", Down())
     with pytest.raises(RuntimeError, match="ServiceUnavailable"):
         vf.store_tops(raw, datetime(2026, 10, 7, 19, 5, tzinfo=UTC), {vf.WSH: ("0.45", "0.52")})
+    # Nothing is written here either: R2 takes a write-once body first.
+    assert not list(tmp_path.rglob("*.json*"))
+
+
+def test_a_write_once_whose_retry_is_refused_after_its_first_try_landed_stands(
+    tmp_path: Path,
+) -> None:
+    # The client's own retry is refused by the body its first try stored: that body is this
+    # run's, so its sidecar follows and the poll is kept.
+    import revalue_fixtures as vf
+    from fakes import MemoryBucket
+
+    class Retried(MemoryBucket):
+        def put_object(self, **kwargs: Any) -> None:
+            super().put_object(**kwargs)
+            if kwargs.get("IfNoneMatch") == "*":
+                raise RuntimeError("PreconditionFailed")
+
+    bucket = Retried()
+    raw = RawStore(tmp_path, "bucket", bucket)
+    key = vf.store_tops(raw, datetime(2026, 10, 7, 19, 5, tzinfo=UTC), {vf.WSH: ("0.45", "0.52")})
+    assert key is not None
+    assert bucket.objects[f"raw/{key}.json.gz"] == (tmp_path / f"{key}.json.gz").read_bytes()
+    assert bucket.objects[f"raw/{key}.meta.json"] == (tmp_path / f"{key}.meta.json").read_bytes()
+
+
+def test_the_workflow_watch_hands_its_dates_to_a_rebuild_on_another_runner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # #402: the workflow's watch leaves the rebuild to its serialized job, which runs on another
+    # runner from R2 alone (Codex on #407).
+    from fakes import ConditionalBucket
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+    from nhl_edge.ingest import nhl_api
+    from nhl_edge.lake.r2 import R2_ENV, R2Config
+    from nhl_edge.live import slate as live_slate
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    bucket = ConditionalBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    (tmp_path / "watch").mkdir()
+    monkeypatch.chdir(tmp_path / "watch")
+    clock = kf.Clock(START)
+    served = Fake(clock)
+    monkeypatch.setattr(nhl_api, "utc_now", clock.now)
+    monkeypatch.setattr(kalshi, "Kalshi", lambda store: kf.make(store, served, clock))
+    fetched = live_slate.Fetched(pf.slate(), "nhl/schedule/x", START)
+    monkeypatch.setattr(live_slate, "fetch", lambda api, day: fetched)
+    outputs = tmp_path / "github_output"
+    outputs.write_text("earlier=kept\n")
+    watched = CliRunner().invoke(
+        app,
+        ["kalshi", "watch", "--mirror-raw", "--no-rebuild", "--dates-out", str(outputs),
+         "--until", "2026-10-07T17:01"],
+    )  # fmt: skip
+    assert watched.exit_code == 0, watched.output
+    assert "rebuilt from" not in watched.output
+    assert not Path("data/lake").exists()
+    assert outputs.read_text() == "earlier=kept\ndates=2026-10-07\nline_dates=2026-10-07\n"
+
+    (tmp_path / "rebuild").mkdir()
+    monkeypatch.chdir(tmp_path / "rebuild")
+    rebuilt = CliRunner().invoke(
+        app, ["kalshi", "rebuild", "--r2", "--dates", "2026-10-07", "--line-dates", "2026-10-07"]
+    )
+    assert rebuilt.exit_code == 0, rebuilt.output
+    assert rebuilt.output.count("kalshi watch 2026-10-07: rebuilt from") == 2
+    assert "KXNHL" not in rebuilt.output and "0.44" not in rebuilt.output
+    lake = Lake()
+    assert lake.read("kalshi_tops").height == 6 * 6
+    assert lake.read("kalshi_trades").height == 6
+    assert lake.read("kalshi_lines").height > 0
+    # Mirrored, so the next reader of the lake sees the rebuilt partitions.
+    assert any(key.startswith("lake/kalshi_tops/") for key in bucket.objects)
+
+
+def test_a_rebuild_without_dates_does_nothing_and_a_bad_date_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from typer.testing import CliRunner
+
+    from nhl_edge.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    nothing = CliRunner().invoke(app, ["kalshi", "rebuild", "--dates", "", "--line-dates", ""])
+    assert nothing.exit_code == 0, nothing.output
+    assert "kalshi rebuild: no dates, nothing rebuilt" in nothing.output
+    bad = CliRunner().invoke(app, ["kalshi", "rebuild", "--dates", "2026-10-7x"])
+    assert bad.exit_code == 2
+    assert "not a comma-separated list of YYYY-MM-DD dates" in bad.output
 
 
 def test_a_runs_rebuild_includes_the_overlapping_runs_polls_and_never_drops_a_row(
