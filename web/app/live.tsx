@@ -36,35 +36,7 @@ export function LiveScores({
   /** The real bets' day as the form read it, for the bets recorded on it. */
   real?: RealState | null;
 }) {
-  const [scores, setScores] = useState<Scores | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const live = day !== null && isCurrent(day, new Date());
-
-  useEffect(() => {
-    if (!live) return;
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function read() {
-      let wait: number | null = LIVE_POLL_MS;
-      try {
-        const answer = await fetch(`/api/scores?date=${day}`);
-        const body = await answer.json();
-        if (!answer.ok) throw new Error(body.error ?? `HTTP ${answer.status}`);
-        if (!alive) return;
-        setScores(body as Scores);
-        setError(null);
-        wait = nextPoll((body as Scores).games, new Date());
-      } catch (e) {
-        if (alive) setError((e as Error).message);
-      }
-      if (alive && wait !== null) timer = setTimeout(read, wait);
-    }
-    read();
-    return () => {
-      alive = false;
-      clearTimeout(timer);
-    };
-  }, [day, live]);
+  const { scores, error, live } = useScores(day);
 
   if (!day) return null;
   if (!live) {
@@ -98,6 +70,89 @@ export function LiveScores({
         </p>
       ) : null}
       <Explain terms={["live", "provisional"]} />
+    </>
+  );
+}
+
+/** The NHL's scoreboard for a game day (#211), read through the app's route while the day is today's
+ * or last night's: every 30 seconds while a game is on or about to start, every 5 minutes while
+ * one is still to come, and no more once all are over. The Betting and Market making views share
+ * it (#408). */
+export function useScores(day: string | null): {
+  scores: Scores | null;
+  error: string | null;
+  live: boolean;
+} {
+  const [scores, setScores] = useState<Scores | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const live = day !== null && isCurrent(day, new Date());
+
+  useEffect(() => {
+    if (!live) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function read() {
+      let wait: number | null = LIVE_POLL_MS;
+      try {
+        const answer = await fetch(`/api/scores?date=${day}`);
+        const body = await answer.json();
+        if (!answer.ok) throw new Error(body.error ?? `HTTP ${answer.status}`);
+        if (!alive) return;
+        setScores(body as Scores);
+        setError(null);
+        wait = nextPoll((body as Scores).games, new Date());
+      } catch (e) {
+        if (alive) setError((e as Error).message);
+      }
+      if (alive && wait !== null) timer = setTimeout(read, wait);
+    }
+    read();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [day, live]);
+  return { scores, error, live };
+}
+
+/** A game's teams with their logos and the score, then its state in words: the scoreboard's, or
+ * else the fallback (#408: the Betting and Market making cards). The side named is in bold. */
+export function ScoreRow({
+  away,
+  home,
+  game,
+  day,
+  fallback,
+  side,
+}: {
+  away: string;
+  home: string;
+  game: LiveGame | undefined;
+  day: string;
+  fallback: string;
+  side?: "home" | "away";
+}) {
+  const scored = game && game.away_score !== null && game.home_score !== null;
+  const team = (code: string, here: "away" | "home") =>
+    side === here ? <strong className="bet-side">{code}</strong> : <span>{code}</span>;
+  const status = game ? statusLine(game, helsinkiTime(game.start_utc, day)) : fallback;
+  const on = game && (game.state === "LIVE" || game.state === "CRIT");
+  return (
+    <>
+      <div className="score-row">
+        <span className="team">
+          <Logo team={away} size={32} />
+          {team(away, "away")}
+        </span>
+        <span className={scored ? "goals" : "goals none"}>
+          {scored ? `${game.away_score}–${game.home_score}` : "at"}
+        </span>
+        <span className="team home">
+          {team(home, "home")}
+          <Logo team={home} size={32} />
+        </span>
+      </div>
+      <p className={on ? "clock on" : game && isFinal(game) ? "clock over" : "clock"}>{status}</p>
     </>
   );
 }
@@ -154,28 +209,17 @@ function GameCard({
   bet: OurBet | undefined;
   day: string;
 }) {
-  const scored = game && game.away_score !== null && game.home_score !== null;
-  const team = (code: string, side: "away" | "home") =>
-    bet?.side === side ? <strong className="bet-side">{code}</strong> : <span>{code}</span>;
-  const status = game ? statusLine(game, helsinkiTime(game.start_utc, day)) : "Not on the scoreboard";
-  const on = game && (game.state === "LIVE" || game.state === "CRIT");
   const now = bet ? rightNow(bet, game) : null;
   return (
     <article className={bet ? "live-game has-bet" : "live-game"} aria-label={`${row.away} at ${row.home}`}>
-      <div className="score-row">
-        <span className="team">
-          <Logo team={row.away} size={32} />
-          {team(row.away, "away")}
-        </span>
-        <span className={scored ? "goals" : "goals none"}>
-          {scored ? `${game.away_score}–${game.home_score}` : "at"}
-        </span>
-        <span className="team home">
-          {team(row.home, "home")}
-          <Logo team={row.home} size={32} />
-        </span>
-      </div>
-      <p className={on ? "clock on" : game && isFinal(game) ? "clock over" : "clock"}>{status}</p>
+      <ScoreRow
+        away={row.away}
+        home={row.home}
+        game={game}
+        day={day}
+        fallback="Not on the scoreboard"
+        side={bet?.side}
+      />
       {bet && now ? (
         <div className="our-bet">
           <p>

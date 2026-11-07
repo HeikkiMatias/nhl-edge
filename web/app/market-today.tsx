@@ -3,12 +3,14 @@
 // Market making › Today (#398 step 3): the quoting simulator's day as it stands, read again
 // every minute from the owner-only quote_live. Paper only: a simulator on Kalshi's real books,
 // whose fills are an upper bound. Prices are cents per $1 contract on a team to win, overtime
-// and shootout included.
+// and shootout included. Each game carries the NHL's live scoreboard, as Betting › Today's do,
+// with where its holding stands (#408): display only, the nightly record stays the result.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { useEffect, useState } from "react";
 
 import { helsinkiTime } from "@/lib/format";
+import type { LiveGame as ScoreGame } from "@/lib/live";
 import {
   dayTotals,
   gamesOf,
@@ -19,17 +21,20 @@ import {
   priceCents,
   REFRESH_MS,
   stale,
+  standing,
   STATE_NAMES,
   updatedAt,
 } from "@/lib/live-quotes";
 import { dollars, HALF_SPREADS } from "@/lib/quotes";
 
+import { ScoreRow, useScores } from "./live";
 import { Card, Chip, Logo, Segmented } from "./ui";
 
 export function MarketToday({ client }: { client: SupabaseClient }) {
   const [live, setLive] = useState<Live | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [half, setHalf] = useState<number>(1);
+  const { scores, error: scoreError } = useScores(live?.day ?? null);
 
   useEffect(() => {
     let alive = true;
@@ -71,7 +76,8 @@ export function MarketToday({ client }: { client: SupabaseClient }) {
     );
   }
   const games = gamesOf(live.rows, half);
-  const t = dayTotals(games);
+  const byId = new Map<number, ScoreGame>((scores?.games ?? []).map((g) => [g.game_id, g]));
+  const t = dayTotals(games, scores ? byId : null);
   const at = updatedAt(live.rows);
   return (
     <>
@@ -108,20 +114,35 @@ export function MarketToday({ client }: { client: SupabaseClient }) {
           <Tile
             label="If every result goes our way"
             value={dollars(t.best, true)}
-            sub="the best case, on the full game"
+            sub={t.over ? "the best case from here, the games over included" : "the best case, on the full game"}
           />
           <Tile
             label="If every result goes against us"
             value={dollars(t.worst, true)}
-            sub="the worst case"
+            sub={t.over ? "the worst case from here" : "the worst case"}
           />
+          {scores ? (
+            <Tile
+              label="Finished today"
+              value={dollars(t.finished, true)}
+              sub={`${t.over} of ${t.games} over; provisional until the nightly settlement`}
+            />
+          ) : null}
         </div>
       </Card>
+      {scoreError ? <p className="muted">Live scores unavailable: {scoreError}</p> : null}
       <div className="cards">
         {games.map((g) => (
-          <GameCard key={g.game_id} game={g} />
+          <GameCard key={g.game_id} game={g} score={byId.get(g.game_id)} scored={scores !== null} />
         ))}
       </div>
+      {scores ? (
+        <p className="muted">
+          Scores from the NHL&apos;s scoreboard of {live.day}, read at {helsinkiTime(scores.fetched_utc)}{" "}
+          Helsinki time, every 30 seconds while a game is on. A score never enters the record: the
+          nightly settlement and record stay the results.
+        </p>
+      ) : null}
     </>
   );
 }
@@ -142,15 +163,28 @@ function tone(state: LiveRow["state"]): "good" | "warn" | "info" | undefined {
   return undefined;
 }
 
-function GameCard({ game }: { game: LiveGame }) {
+function GameCard({
+  game,
+  score,
+  scored,
+}: {
+  game: LiveGame;
+  score: ScoreGame | undefined;
+  /** Whether the scoreboard has been read: before, a card shows no standing. */
+  scored: boolean;
+}) {
   const state = game.home.state === "quoting" || game.away.state === "quoting" ? "quoting" : game.home.state;
+  const now = scored ? standing(game, score) : null;
   return (
-    <div className="card game-card">
+    <article className="card game-card" aria-label={`${game.away.team} at ${game.home.team}`}>
+      <ScoreRow
+        away={game.away.team}
+        home={game.home.team}
+        game={score}
+        day={game.home.game_date}
+        fallback={helsinkiTime(game.start_utc, game.home.game_date)}
+      />
       <div className="card-title">
-        <h3>
-          {game.away.team} at {game.home.team}
-        </h3>
-        <span className="muted">{helsinkiTime(game.start_utc, game.home.game_date)}</span>
         <Chip tone={tone(state)}>{STATE_NAMES[state]}</Chip>
       </div>
       <div className="scroll">
@@ -189,12 +223,19 @@ function GameCard({ game }: { game: LiveGame }) {
           </tbody>
         </table>
       </div>
+      {now ? (
+        // Won and lost carry the board's own ✓ and ✗; the others a dot in their colour.
+        <p className={`now ${now.tone}`}>
+          {now.tone === "won" || now.tone === "lost" ? null : <span className="dot" aria-hidden="true" />}
+          {now.text}
+        </p>
+      ) : null}
       {game.pairs > 0 ? (
         <p className="muted">
           {game.pairs.toFixed(0)} contracts on both teams: ${game.pairs.toFixed(0)} paid whatever
           happens.
         </p>
       ) : null}
-    </div>
+    </article>
   );
 }
