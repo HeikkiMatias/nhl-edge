@@ -747,10 +747,16 @@ button:disabled {
 
 .game-card .card-title {
   flex-wrap: wrap;
+  margin: 6px 0 4px;
 }
 
 .game-card .card-title h3 {
   margin-right: auto;
+}
+
+/* Market making's cards (#408): the score on top, as Betting's, and the holding's standing. */
+.game-card .now {
+  margin: 8px 0 0;
 }
 
 /* Per-contract figures on one cent scale: a dot and its interval band. */
@@ -916,13 +922,13 @@ button:disabled {
   border-color: var(--accent);
 }
 
-.live-game .score-row {
+:is(.live-game, .game-card) .score-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.live-game .team {
+:is(.live-game, .game-card) .team {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -931,15 +937,15 @@ button:disabled {
   font-weight: 600;
 }
 
-.live-game .team.home {
+:is(.live-game, .game-card) .team.home {
   justify-content: flex-end;
 }
 
-.live-game .team .logo {
+:is(.live-game, .game-card) .team .logo {
   margin-right: 0;
 }
 
-.live-game .goals {
+:is(.live-game, .game-card) .goals {
   font-family: var(--font-display, system-ui), system-ui, sans-serif;
   font-size: 1.6rem;
   font-weight: 700;
@@ -947,7 +953,7 @@ button:disabled {
   white-space: nowrap;
 }
 
-.live-game .goals.none {
+:is(.live-game, .game-card) .goals.none {
   font-family: inherit;
   font-size: 14px;
   font-weight: 400;
@@ -958,13 +964,13 @@ button:disabled {
   grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
 }
 
-.live-game .clock {
+:is(.live-game, .game-card) .clock {
   margin: 4px 0 0;
   font-size: 13px;
   color: var(--secondary);
 }
 
-.live-game .clock.on {
+:is(.live-game, .game-card) .clock.on {
   color: var(--warn);
 }
 

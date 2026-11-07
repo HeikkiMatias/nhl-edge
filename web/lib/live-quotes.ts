@@ -3,7 +3,9 @@
 // watch. Paper only: fills are an upper bound. Prices are Kalshi's, shown to the owner only.
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { isFinal, type LiveGame as ScoreGame, winner } from "./live.ts";
 import { every } from "./load.ts";
+import { dollars } from "./quotes.ts";
 
 export const LIVE_COLUMNS =
   "game_date, variant, half_spread_cents, game_id, team, home, opponent, start_utc, state, " +
@@ -123,17 +125,87 @@ export function gamesOf(rows: LiveRow[], halfSpread: number): LiveGame[] {
   return games.sort((a, b) => a.start_utc.localeCompare(b.start_utc) || a.game_id - b.game_id);
 }
 
-/** The day's totals: what is held, at what cost, and the best and worst the results can give. */
-export function dayTotals(games: LiveGame[]) {
+/** Where a game's holding stands on the NHL's scoreboard (#408), in the Betting view's words:
+ * still to start, under way (who leads, and what the holding would pay if it ended there), over
+ * (what the holding made, provisional until the nightly settlement and record), or not played as
+ * scheduled. result is the holding's profit once over, null before. Display only. */
+export type Standing = {
+  tone: "waiting" | "live" | "won" | "lost" | "off";
+  text: string;
+  result: number | null;
+};
+
+export function standing(g: LiveGame, score: ScoreGame | undefined): Standing {
+  const held = g.home.contracts > 0 || g.away.contracts > 0;
+  if (!score) return { tone: "waiting", text: "Not on the scoreboard yet", result: null };
+  if (score.schedule_state !== "OK") {
+    const what = { PPD: "Postponed", SUSP: "Suspended", CNCL: "Cancelled" }[score.schedule_state];
+    return {
+      tone: "off",
+      text: `${what ?? "Not played as scheduled"}: the nightly settlement decides`,
+      result: null,
+    };
+  }
+  const won = winner(score);
+  if (won !== null) {
+    const team = won === "home" ? g.home.team : g.away.team;
+    if (!held) return { tone: "off", text: `${team} won; nothing held`, result: 0 };
+    const result = won === "home" ? g.ifHome : g.ifAway;
+    return {
+      tone: result > 0 ? "won" : result < 0 ? "lost" : "off",
+      text: `${team} won: ${dollars(result, true)}, provisional until tonight's settlement`,
+      result,
+    };
+  }
+  if (isFinal(score)) return { tone: "off", text: "Over: the nightly settlement decides", result: null };
+  if (score.state !== "LIVE" && score.state !== "CRIT") {
+    return { tone: "waiting", text: held ? "Not started yet" : "Not started yet; nothing held", result: null };
+  }
+  if (!held) return { tone: "live", text: "Under way; nothing held", result: null };
+  const [h, a] = [score.home_score, score.away_score];
+  if (h === null || a === null) return { tone: "live", text: "Under way", result: null };
+  if (h === a) {
+    return {
+      tone: "live",
+      text:
+        `Tied ${a}–${h}: ${dollars(g.ifHome, true)} if ${g.home.team} wins, ` +
+        `${dollars(g.ifAway, true)} if ${g.away.team} wins`,
+      result: null,
+    };
+  }
+  const [lead, now, goals] = h > a ? [g.home.team, g.ifHome, `${h}–${a}`] : [g.away.team, g.ifAway, `${a}–${h}`];
+  return { tone: "live", text: `${lead} leads ${goals}: ${dollars(now, true)} if it ended now`, result: null };
+}
+
+/** The day's totals: what is held, at what cost, and the best and worst the results can give.
+ * With the scoreboard, the games over count at their provisional result (finished, over) and
+ * the best and worst case run from there. */
+export function dayTotals(games: LiveGame[], scores: ReadonlyMap<number, ScoreGame> | null = null) {
   const sum = (f: (g: LiveGame) => number) => games.reduce((s, g) => s + f(g), 0);
+  let finished = 0;
+  let over = 0;
+  let best = 0;
+  let worst = 0;
+  for (const g of games) {
+    const result = scores ? standing(g, scores.get(g.game_id)).result : null;
+    if (result !== null) {
+      finished += result;
+      over += 1;
+    } else {
+      best += Math.max(g.ifHome, g.ifAway);
+      worst += Math.min(g.ifHome, g.ifAway);
+    }
+  }
   return {
     games: games.length,
     quoting: games.filter((g) => g.home.state === "quoting" || g.away.state === "quoting").length,
     fills: sum((g) => g.home.fills + g.away.fills),
     contracts: sum((g) => g.home.contracts + g.away.contracts),
     cost: sum((g) => g.cost),
-    best: sum((g) => Math.max(g.ifHome, g.ifAway)),
-    worst: sum((g) => Math.min(g.ifHome, g.ifAway)),
+    best: finished + best,
+    worst: finished + worst,
+    finished,
+    over,
   };
 }
 

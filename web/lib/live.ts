@@ -128,11 +128,17 @@ export function statusLine(g: LiveGame, start: string): string {
   return g.clock ? `${name} · ${g.clock}` : (name ?? g.state);
 }
 
-/** The bet's provisional result once its game is over on the scoreboard: the full game, so the
- * shootout's winner (credited one goal) wins. Null until then, and for a game not played. */
-export function provisional(bet: Bet, g: LiveGame | undefined): "won" | "lost" | null {
+/** The winner once a game is over on the scoreboard: the full game, so the shootout's winner
+ * (credited one goal) wins. Null until then, and for a game not played. */
+export function winner(g: LiveGame | undefined): "home" | "away" | null {
   if (!g || !isFinal(g) || isOff(g) || g.home_score === null || g.away_score === null) return null;
-  return (bet.side === "home") === g.home_score > g.away_score ? "won" : "lost";
+  return g.home_score > g.away_score ? "home" : "away";
+}
+
+/** The bet's provisional result once its game is over on the scoreboard, null until then. */
+export function provisional(bet: Bet, g: LiveGame | undefined): "won" | "lost" | null {
+  const won = winner(g);
+  return won === null ? null : won === bet.side ? "won" : "lost";
 }
 
 /** When to read the scoreboard again: every LIVE_POLL_MS while a game is on or starts within
