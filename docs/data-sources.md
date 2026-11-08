@@ -704,7 +704,7 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
       - **The inputs:** the newest publication before m that predicted the game, the morning view's or the decision's, from its bundle.
       - **The starters:** those at m by ADR 0037's rule (the NHL's flag, else Daily Faceoff's Confirmed, else its Likely, from polls observed before m). A goalie outside the candidates is rated from his latest effect before the publication's cutoff.
       - **The value:** B2, B3 and u through the bundle's frozen path, then the blend at the publication's own Pinnacle pair. Quoting resumes from m at it.
-      - **The guard:** with no new call, the same path must give the published value to 1e-9, or the change is held as wait.
+      - **The guard:** with no new call, the same path must give the published value to 1e-9, or the change is held as wait. So is a call withdrawn since the publication (a team it named a starter for, and none at m), whose model mix the bundle doesn't hold.
     - **The record:** each day counts its changes, requoted and held by reason. The primary measure, at 1 cent, is requote's profit at settlement per game less wait's on the same games, with an interval from 4 weeks.
     - **R2 only for now:** `quote_days` accepts only the two records below, so the dashboard copy needs a migration first. Point in time: `tests/leakage/test_requote.py`.
     - **Version 2,** once a paid Odds API subscription is in place (#323), takes Pinnacle's newest fresh snapshot after the news instead.

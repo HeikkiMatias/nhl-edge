@@ -65,6 +65,7 @@
   - a change before the day's first publication;
   - a bundle that can't be read;
   - a guard that fails;
+  - a call withdrawn: a team the publication named a starter for, and none at m by the rule. The bundle's rows hold the earlier starter in place, not the goalie-start model's mix to go back to (Codex on #411);
   - a change in the game's last minute before its stop.
 - **Point in time:** only polls observed before m count (hard rule 1), with a test in `tests/leakage/`.
 

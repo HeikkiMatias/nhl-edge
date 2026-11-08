@@ -541,6 +541,8 @@ def test_the_requote_record_summary_and_log_line(tmp_path: object) -> None:
     assert kq.stored_days(store, kq.HOLDS_PREFIX) == []
     assert kq.stored_days(store, kq.REQUOTE_PREFIX) == [qf.DAY]
     found, metas = kq.kept(store, kq.REQUOTE_PREFIX)
+    # Each kept day names its own record's version (Codex on #411).
+    assert metas[0]["version"] == "requote/1"
     figures = kq.summary(found, metas, qf.games(), requote=True)
     assert figures["version"] == "requote/1"
     assert figures["changes"] == {"changes": 1, "requoted": 1}

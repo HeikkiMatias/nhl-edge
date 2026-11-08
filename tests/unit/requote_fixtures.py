@@ -92,8 +92,8 @@ def players(effects: pl.DataFrame = EFFECTS) -> pl.DataFrame:
     )
 
 
-def polls(*named: tuple[datetime, str, int]) -> pl.DataFrame:
-    """Daily Faceoff polls for GAME: (observed, team, goalie_id), each Confirmed."""
+def polls(*named: tuple[datetime, str, int], status: str | None = DFO_CONFIRMED) -> pl.DataFrame:
+    """Daily Faceoff polls for GAME: (observed, team, goalie_id), each with status."""
     game = SLATE.filter(pl.col("game_id") == GAME).row(0, named=True)
     return pl.DataFrame(
         [
@@ -105,7 +105,7 @@ def polls(*named: tuple[datetime, str, int]) -> pl.DataFrame:
                 "is_home": team == game["home"],
                 "goalie_name": f"Goalie {letters(goalie)}",
                 "dfo_goalie_id": goalie,
-                "status": DFO_CONFIRMED,
+                "status": status,
                 "reported_utc": observed,
                 "source_url": None,
                 "observed_utc": observed,
@@ -151,8 +151,9 @@ BACKUP = candidates("CHI")[1]
 CONFIRMED_BACKUP = polls((CHANGE, "CHI", BACKUP))
 
 
-def write_bundle(root: Path) -> lb.Bundle:
-    """The day's bundle under root, its models read at CUTOFF, as a publication saves it."""
+def write_bundle(root: Path, starters: pl.DataFrame | None = None) -> lb.Bundle:
+    """The day's bundle under root, its models read at CUTOFF, as a publication saves it; with
+    starters, the starters it named (game_id, team), as a v2 run saves them (ADR 0037)."""
     store = lb.LocalStore(root)
     moments = SLATE.select("game_id", prediction_utc=pl.lit(CUTOFF))
     fitted = lp.models(B2_TABLES, B3_TABLES, U_TABLES, SLATE, moments, START, TEST)
@@ -163,6 +164,8 @@ def write_bundle(root: Path) -> lb.Bundle:
         pl.DataFrame(schema=ODDS_FRAME_SCHEMA),
         (B2_TABLES, B3_TABLES, U_TABLES),
     )
+    if starters is not None:
+        rows["goalie_starters"] = starters
     identity = {
         "day": str(SLATE["game_date"][0]),
         "input_cutoff": CUTOFF.isoformat(),

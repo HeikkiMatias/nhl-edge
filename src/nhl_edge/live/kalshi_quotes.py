@@ -164,6 +164,12 @@ REQUOTE_FIXED = date(2026, 11, 8)
 REQUOTE_FIRST_DAY = REQUOTE_FIXED + timedelta(days=1)
 REQUOTE_VERSION = "1"
 REQUOTE_PREFIX = f"real/shadow/{SHADOW}/requote/{REQUOTE_VERSION}"
+# Each record's version, as its days and reports name it (Codex on #411).
+RECORD_VERSIONS = {
+    PREFIX: VERSION,
+    HOLDS_PREFIX: f"holds/{HOLDS_VERSION}",
+    REQUOTE_PREFIX: f"requote/{REQUOTE_VERSION}",
+}
 LATE = timedelta(hours=3)
 PRIMARY_HALF_SPREAD = Decimal("0.01")
 # The lake tables a run reads.
@@ -995,7 +1001,7 @@ def keep(
     lb.put_once(store, fills_key, lb.parquet(result.fills))
     meta = {
         "shadow": SHADOW,
-        "version": VERSION if prefix == PREFIX else f"holds/{HOLDS_VERSION}",
+        "version": RECORD_VERSIONS[prefix],
         "day": day.isoformat(),
         "computed_utc": now.isoformat(),
         "code_version": code_version,
@@ -1103,9 +1109,7 @@ def summary(
     changes' counts."""
     rows = per_contract(settled(fills, games))
     matched = pairs(rows)
-    version = (
-        f"requote/{REQUOTE_VERSION}" if requote else f"holds/{HOLDS_VERSION}" if holds else VERSION
-    )
+    version = RECORD_VERSIONS[REQUOTE_PREFIX if requote else HOLDS_PREFIX if holds else PREFIX]
     result: dict[str, Any] = {
         "shadow": SHADOW,
         "version": version,

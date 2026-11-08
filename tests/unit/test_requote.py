@@ -19,6 +19,7 @@ from requote_fixtures import (
     STARTS,
     calls,
     games,
+    polls,
     priced,
     publication,
     write_bundle,
@@ -122,3 +123,38 @@ def test_the_newest_publication_before_the_moment_is_requoted(bundle: lb.Bundle)
     )
     assert [t for t, _ in found[GAME]] == [CHANGE + rq.REQUOTE_AFTER]
     assert counts == {"changes": 2, rq.UNREPRODUCED: 1, "requoted": 1}
+
+
+def test_a_starter_call_withdrawn_since_the_publication_is_held(tmp_path: Path) -> None:
+    # The publication named CHI's starter; at the moment Daily Faceoff names another without a
+    # Confirmed or Likely, so ADR 0037's rule names none. The bundle's rows hold the earlier
+    # starter in place, not the model's mix, so the change is held (Codex on #411).
+    named = pl.DataFrame({"game_id": [GAME], "team": ["CHI"]})
+    bundle = write_bundle(tmp_path / "named", named)
+    published = rq.blend_of(bundle, priced(), LIVE)
+    assert published is not None
+    unconfirmed = polls((CHANGE, "CHI", BACKUP), status="Unconfirmed")
+    found, counts = rq.requotes(
+        games(),
+        {GAME: [CHANGE]},
+        [publication(bundle, published)],
+        LIVE,
+        calls(unconfirmed),
+        kq.STOP_BEFORE,
+    )
+    assert found == {} and counts == {"changes": 1, rq.WITHDRAWN: 1}
+    # A starter still named at the moment, the backup confirmed, is requoted.
+    found, counts = rq.requotes(
+        games(),
+        {GAME: [CHANGE]},
+        [publication(bundle, published)],
+        LIVE,
+        calls(CONFIRMED_BACKUP),
+        kq.STOP_BEFORE,
+    )
+    assert counts == {"changes": 1, "requoted": 1} and len(found[GAME]) == 1
+    # A team the publication named none for has nothing to withdraw.
+    assert rq.withdrawn(bundle, GAME, pl.DataFrame({"team": ["CHI"]})) == []
+    assert rq.withdrawn(bundle, GAME, pl.DataFrame({"team": []}, schema={"team": pl.String})) == [
+        "CHI"
+    ]

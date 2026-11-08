@@ -13,7 +13,9 @@ the NHL's flag, else Daily Faceoff's Confirmed, else its Likely. They are put in
 bundle's goalie rows (confirmed.adjusted). A goalie outside the candidates is rated from his
 latest goalie effect before the publication's cutoff, or as one with no earlier game. The rows
 keep their own times: the call's time is m, which the record keeps by using the value only from
-m on.
+m on. The rows already hold the publication's own starters in place, not the goalie-start
+model's mix, so a team named a starter at the publication and none at m (a call withdrawn) can't
+be recomputed: the change is held (Codex on #411).
 
 **The value:** B2, B3 and u's parts through the bundle's frozen path (bundle.models), and the
 blend at the publication's own Pinnacle pair (predict.predictions, hard rule 3). The guard: the
@@ -44,12 +46,13 @@ Values = dict[int, list[tuple[datetime, float]]]
 # The rows keep their own times (confirmed.adjusted takes the later of a row's and the call's).
 EARLIEST = datetime(1970, 1, 1, tzinfo=UTC)
 # Why a change got no value: the record counts each.
-LATE, NO_PUBLICATION, NO_BUNDLE, OTHER_FIT, UNREPRODUCED, NO_VALUE, FAILED = (
+LATE, NO_PUBLICATION, NO_BUNDLE, OTHER_FIT, UNREPRODUCED, WITHDRAWN, NO_VALUE, FAILED = (
     "late",
     "no_publication",
     "no_bundle",
     "other_fit",
     "unreproduced",
+    "withdrawn",
     "no_value",
     "failed",
 )
@@ -95,16 +98,15 @@ class Calls:
     goalie_effects: pl.DataFrame
 
 
-def with_starters(bundle: lb.Bundle, game_id: int, moment: datetime, calls: Calls) -> lb.Bundle:
-    """The bundle with the game's starters at moment (ADR 0037's rule, from the polls observed
-    before it) in place in its goalie rows, the rows at their own times."""
+def starters_at(bundle: lb.Bundle, game_id: int, moment: datetime, calls: Calls) -> pl.DataFrame:
+    """The game's starters at moment by ADR 0037's rule, from the polls observed before it
+    (confirmed.starters' rows), each at the earliest time, so the rows keep their own."""
     likely = selection.LIKELY_STARTS
     if likely is None:
         raise ValueError("the policy names no starters (ADR 0030)")
     t = bundle.inputs
     cutoff = datetime.fromisoformat(bundle.manifest["input_cutoff"])
-    slate = t["slate"]
-    game = slate.filter(pl.col("game_id") == game_id)
+    game = t["slate"].filter(pl.col("game_id") == game_id)
     called = confirmed.calls(live_goalies.team_games(game, moment), calls.nhl, calls.dailyfaceoff)
     names = calls.players.select(goalie_id="player_id", name="name")
     candidates = (
@@ -119,9 +121,36 @@ def with_starters(bundle: lb.Bundle, game_id: int, moment: datetime, calls: Call
         .unique()
         .join(names, on="goalie_id")
     )
-    named = confirmed.starters(called, candidates, rated, likely).with_columns(
+    return confirmed.starters(called, candidates, rated, likely).with_columns(
         known_utc=pl.lit(EARLIEST, dtype=pl.Datetime("us", "UTC"))
     )
+
+
+def withdrawn(bundle: lb.Bundle, game_id: int, named: pl.DataFrame) -> list[str]:
+    """The game's teams the publication named a starter for (the bundle's goalie_starters) and
+    named (starters_at) has none for: their rows hold the earlier starter in place, and the
+    goalie-start model's mix they'd go back to isn't in the bundle."""
+    saved = bundle.inputs.get("goalie_starters")
+    if saved is None or saved.is_empty():
+        return []
+    then = set(saved.filter(pl.col("game_id") == game_id)["team"].to_list())
+    return sorted(then - set(named["team"].to_list()))
+
+
+def with_starters(
+    bundle: lb.Bundle,
+    game_id: int,
+    moment: datetime,
+    calls: Calls,
+    named: pl.DataFrame | None = None,
+) -> lb.Bundle:
+    """The bundle with the game's starters at moment (starters_at, or named when given) in place
+    in its goalie rows, the rows at their own times."""
+    t = bundle.inputs
+    cutoff = datetime.fromisoformat(bundle.manifest["input_cutoff"])
+    slate = t["slate"]
+    if named is None:
+        named = starters_at(bundle, game_id, moment, calls)
     ids = slate["game_id"].implode()
     # A starter outside the candidates is rated from his latest row of any game before the cutoff.
     effects = pl.concat(
@@ -209,7 +238,12 @@ def requotes(
                 if not reproduced[key]:
                     counts[UNREPRODUCED] += 1
                     continue
-                value = blend_of(with_starters(bundle, game.game_id, moment, calls), row, live)
+                named = starters_at(bundle, game.game_id, moment, calls)
+                if withdrawn(bundle, game.game_id, named):
+                    counts[WITHDRAWN] += 1
+                    continue
+                moved = with_starters(bundle, game.game_id, moment, calls, named)
+                value = blend_of(moved, row, live)
             except (ValueError, KeyError, pl.exceptions.PolarsError):
                 counts[FAILED] += 1
                 continue
