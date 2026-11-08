@@ -6507,7 +6507,7 @@ def real_quotes(
         )
 
     today = now.astimezone(ET).date()
-    copies: list[tuple[str, pl.DataFrame, dict[str, Any]]] = []
+    copies: list[tuple[str, str, pl.DataFrame, dict[str, Any]]] = []
     lines = {"main": kq.count_line, "holds": kq.holds_count_line, "requote": kq.requote_count_line}
     for prefix, record, first in (
         (kq.PREFIX, "main", kq.FIRST_DAY),
@@ -6528,19 +6528,35 @@ def real_quotes(
         figures = {"as_of_utc": now.isoformat(), "code_version": version}
         figures |= kq.summary(found, metas, read["games"], holds, requote=record == "requote")
         store.put(kq.report_key(now, prefix), json.dumps(figures, sort_keys=True).encode())
-        # The requote record stays in R2 only: quote_days takes the other two (ADR 0059).
-        if client is not None and record != "requote":
-            name = kq.HOLDS_RECORD if holds else kq.RECORD
-            rows = kq.day_figures(found, metas, read["games"], holds)
-            copies.append((name, rows, kq.report_record(figures, today, holds)))
+        if client is not None:
+            requote = record == "requote"
+            name = {"main": kq.RECORD, "holds": kq.HOLDS_RECORD, "requote": kq.REQUOTE_RECORD}
+            rows = kq.day_figures(found, metas, read["games"], holds, requote)
+            report = kq.report_record(figures, today, holds, requote)
+            copies.append((record, name[record], rows, report))
         typer.echo(lines[record](metas, len(days)))
-    # The dashboard's copies once both records are kept, so a failed copy never stops a day's
+    # The dashboard's copies once every record is kept, so a failed copy never stops a day's
     # keeping. Counts only in the log (#280).
     if client is not None:
-        for name, rows, report in copies:
-            sent = client.upsert("quote_days", rows, kq.DAY_KEY)
-            client.upsert_records("quote_reports", [report], kq.REPORT_KEY)
+        from nhl_edge.lake.supabase import SupabaseError
+
+        for record, name, rows, report in copies:
+            try:
+                sent = client.upsert("quote_days", rows, kq.DAY_KEY)
+                client.upsert_records("quote_reports", [report], kq.REPORT_KEY)
+            except SupabaseError as exc:
+                # Before its migration the tables' record check refuses the requote record
+                # (Postgres's check_violation): its days stay in R2 and are all copied the first
+                # night after (#412). The error's text is never printed: it can quote a row.
+                if record != "requote" or "23514" not in str(exc):
+                    raise
+                typer.echo(f"supabase {name}: not copied yet, apply {REQUOTE_MIGRATION}")
+                continue
             typer.echo(f"supabase {name}: {sent} day rows and tonight's report upserted")
+
+
+# The migration that lets quote_days and quote_reports take the requote record (#412).
+REQUOTE_MIGRATION = "20261108120000_quote_requote.sql"
 
 
 @real_app.command("quotes-live")

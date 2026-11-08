@@ -104,6 +104,20 @@ export const HELP = {
     source: "The hold rules' own record (quote_days and quote_reports, kalshi_quotes/holds/1).",
     terms: ["holdRule", "pull", "interval"],
   },
+  requote: {
+    title: "Requote after a starter change",
+    what:
+      "What to do when another starting goalie is named: wait for our model's next prediction " +
+      "(today's rule), or a minute later post again at the model's value recomputed with the " +
+      "new starter. Both on our model's fair value at each half-spread, scored from 2026-11-09 " +
+      "(ADR 0059).",
+    read:
+      "The measure is requote's profit per game less wait's on the same games, at 1 cent. It " +
+      "has its interval once the record spans 4 weeks; before that, counts only. A change " +
+      "requote can't recompute is held as wait does, and the line under the table says why.",
+    source: "The requote record (quote_days and quote_reports, kalshi_quotes/requote/1).",
+    terms: ["requote", "pull", "interval"],
+  },
   realBets: {
     title: "Today's real bets",
     what:

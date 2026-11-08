@@ -5,12 +5,14 @@ import { expect, test } from "vitest";
 import { quoteDays, quoteReports } from "./fixtures/quotes.ts";
 import {
   cents,
+  changesOf,
   daysOf,
   dollars,
   HOLDS_RECORD,
   intervalsFrom,
   loadQuotes,
   RECORD,
+  REQUOTE_RECORD,
   running,
   totals,
 } from "./quotes.ts";
@@ -29,8 +31,9 @@ test("an owner reads every day and each record's latest night", async () => {
   expect(quotes.days.length).toBe(quoteDays().length);
   expect(quotes.report?.record).toBe(RECORD);
   expect(quotes.holds?.record).toBe(HOLDS_RECORD);
+  expect(quotes.requote?.record).toBe(REQUOTE_RECORD);
   const reads = requests.map((r) => r.url.searchParams.get("record")).filter(Boolean);
-  expect(reads.sort()).toEqual([`eq.${RECORD}`, `eq.${HOLDS_RECORD}`]);
+  expect(reads.sort()).toEqual([`eq.${RECORD}`, `eq.${HOLDS_RECORD}`, `eq.${REQUOTE_RECORD}`]);
   // Only the columns the dashboard shows are asked for.
   const days = requests.find((r) => r.url.pathname.endsWith("/quote_days"));
   expect(days?.url.searchParams.get("select")).not.toContain("*");
@@ -43,6 +46,7 @@ test("a non-owner reads nothing, and a project without the migration says so", a
     days: [],
     report: null,
     holds: null,
+    requote: null,
   });
   const before = stubbed({}, OWNER);
   expect((await loadQuotes(before.supabase)).applied).toBe(false);
@@ -80,6 +84,23 @@ test("an interval can appear from the fourth week of the first day's", () => {
   // The hold rules from Wednesday 11-04: the fourth week starts on 11-23 (#385).
   expect(intervalsFrom("2026-11-04")).toBe("2026-11-23");
   expect(intervalsFrom("2026-11-02")).toBe("2026-11-23");
+});
+
+test("the requote record's starter changes, held by reason, most first", () => {
+  const requote = quoteReports().find((r) => r.record === REQUOTE_RECORD) ?? null;
+  expect(changesOf(requote)).toEqual({
+    changes: 5,
+    requoted: 2,
+    held: [
+      ["late", 2],
+      ["withdrawn", 1],
+    ],
+  });
+  // A report without them, or none at all, has none.
+  expect(changesOf(quoteReports()[0])).toBeNull();
+  expect(changesOf(null)).toBeNull();
+  // The requote record starts on Monday 2026-11-09: its fourth week is from 11-30.
+  expect(intervalsFrom("2026-11-09")).toBe("2026-11-30");
 });
 
 test("dollars and cents read as signed figures", () => {

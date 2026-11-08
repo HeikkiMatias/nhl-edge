@@ -368,6 +368,13 @@ export const GLOSSARY = {
       "(wait), 15 minutes (cool), until the move reverses (return), or no pull at all (trust). " +
       "Each is scored against wait on the same games (#385).",
   },
+  requote: {
+    term: "Requote",
+    meaning:
+      "Posting bids again a minute after another starting goalie is named, at our model's value " +
+      "recomputed with him, instead of waiting for the model's next prediction. Measured " +
+      "against waiting on the same games (ADR 0059).",
+  },
 } satisfies Record<string, Term>;
 
 export type TermKey = keyof typeof GLOSSARY;

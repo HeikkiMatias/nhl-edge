@@ -77,7 +77,9 @@ each half-spread, under wait (the rule above) and requote. Under requote, a STAR
 followed at its moment m (live/requote.py) by the model's value recomputed from its publication's
 bundle with the starters named by m, and quoting resumes from m at it; a change with no value holds
 as wait does. The record counts the day's changes, requoted and held by reason, and its primary
-measure, at PRIMARY_HALF_SPREAD, is requote's profit at settlement per game less wait's.
+measure, at PRIMARY_HALF_SPREAD, is requote's profit at settlement per game less wait's. The
+dashboard's copy (#412) carries the same sums per day and variant, and each night's summary with
+its changes' counts.
 """
 
 import io
@@ -1274,8 +1276,9 @@ def report_key(as_of: datetime, prefix: str = PREFIX) -> str:
 
 # The dashboard (#398)
 
-# The records' names on the dashboard: the simulator's and the hold rules'.
+# The records' names on the dashboard: the simulator's, the hold rules' and the requote record's.
 RECORD, HOLDS_RECORD = f"{SHADOW}/{VERSION}", f"{SHADOW}/holds/{HOLDS_VERSION}"
+REQUOTE_RECORD = f"{SHADOW}/requote/{REQUOTE_VERSION}"
 DAY_KEY = ("game_date", "record", "variant")
 REPORT_KEY = ("as_of", "record")
 DAY_SCHEMA = {
@@ -1341,6 +1344,7 @@ def day_figures(
     metas: Sequence[Mapping[str, Any]],
     games: pl.DataFrame,
     holds: bool = False,
+    requote: bool = False,
 ) -> pl.DataFrame:
     """Per kept game date and variant, the dashboard's figures (#398), with the results games
     holds now (settled): the day's counts, the contracts and their cost with the maker fee, and
@@ -1348,8 +1352,9 @@ def day_figures(
     before the start (markout_last) and by Pinnacle's close after the fill (markout_close), each
     net of the fee on the contracts it is known for; then the payout and the profit at
     settlement, null until every fill's game has its result. Every variant has a row on each kept
-    day from its fair value's first, with or without a fill. Sums only: no price, ticker, time or
-    trade of a fill (#280)."""
+    day from its fair value's first, with or without a fill. With holds, the hold rules' record,
+    and with requote the requote record's (#412), each variant with its minutes quoted and its
+    rule as hold. Sums only: no price, ticker, time or trade of a fill (#280)."""
     rows = per_contract(settled(fills, games)).with_columns(
         fee=pl.col("cost_usd") - pl.col("price") * pl.col("contracts")
     )
@@ -1373,11 +1378,16 @@ def day_figures(
         .group_by("game_date", "variant")
         .agg(matched_contracts=pl.col("matched").fill_null(0).sum())
     )
-    specs = (
-        [(hold_name(h, hold), MODEL, h, hold) for h, hold in hold_variants()]
-        if holds
-        else [(variant_name(fair, h), fair, h, None) for fair, h in variants()]
-    )
+    if requote:
+        record = REQUOTE_RECORD
+        specs = [(hold_name(h, rule), MODEL, h, rule) for h, rule in requote_variants()]
+    elif holds:
+        record = HOLDS_RECORD
+        specs = [(hold_name(h, hold), MODEL, h, hold) for h, hold in hold_variants()]
+    else:
+        record = RECORD
+        specs = [(variant_name(fair, h), fair, h, None) for fair, h in variants()]
+    minutes = holds or requote
     skeleton = []
     for meta in metas:
         day = date.fromisoformat(meta["day"])
@@ -1388,7 +1398,7 @@ def day_figures(
             skeleton.append(
                 {
                     "game_date": day,
-                    "record": HOLDS_RECORD if holds else RECORD,
+                    "record": record,
                     "variant": name,
                     "fair": fair,
                     "half_spread_cents": int(h * 100),
@@ -1399,8 +1409,8 @@ def day_figures(
                     "pulled_move": counts.get("pulled_move", 0),
                     "pulled_starter": counts.get("pulled_starter", 0),
                     "largest_inventory": float(counts.get("largest_inventory", 0.0)),
-                    "quoted_minutes": counts.get("quoted_minutes") if holds else None,
-                    "late_minutes": counts.get("late_minutes") if holds else None,
+                    "quoted_minutes": counts.get("quoted_minutes") if minutes else None,
+                    "late_minutes": counts.get("late_minutes") if minutes else None,
                     "kept_utc": datetime.fromisoformat(meta["computed_utc"]),
                     "code_version": meta["code_version"],
                 }
@@ -1430,11 +1440,14 @@ def _finite(value: Any) -> Any:
     return value
 
 
-def report_record(figures: Mapping[str, Any], as_of: date, holds: bool = False) -> dict[str, Any]:
-    """A night's summary as a quote_reports row for the dashboard (#398)."""
+def report_record(
+    figures: Mapping[str, Any], as_of: date, holds: bool = False, requote: bool = False
+) -> dict[str, Any]:
+    """A night's summary as a quote_reports row for the dashboard (#398): the simulator's, the
+    hold rules' with holds, or the requote record's with requote (#412)."""
     return {
         "as_of": as_of.isoformat(),
-        "record": HOLDS_RECORD if holds else RECORD,
+        "record": REQUOTE_RECORD if requote else HOLDS_RECORD if holds else RECORD,
         "figures": _finite(json.loads(json.dumps(figures, default=str))),
         "code_version": figures["code_version"],
     }

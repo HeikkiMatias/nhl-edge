@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { estimate, percent, shortDate } from "@/lib/format";
 import {
   cents,
+  changesOf,
   daysOf,
   DEFAULT_CENTS,
   DEFAULT_FAIR,
@@ -20,6 +21,7 @@ import {
   FAIRS,
   figuresOf,
   HALF_SPREADS,
+  HELD_REASONS,
   HOLD_NAMES,
   HOLDS,
   HOLDS_RECORD,
@@ -31,6 +33,9 @@ import {
   type QuoteDay,
   type Quotes,
   RECORD,
+  REQUOTE_NAMES,
+  REQUOTE_RECORD,
+  REQUOTE_RULES,
   running,
   totals,
   variantName,
@@ -132,6 +137,12 @@ export function MarketResults({ client }: { client: SupabaseClient }) {
         </Card>
         <Card title="Hold rules after a pull" topic="holds" wide>
           <Holds days={quotes.days.filter((d) => d.record === HOLDS_RECORD)} report={quotes.holds} />
+        </Card>
+        <Card title="Requote after a starter change" topic="requote" wide>
+          <Requotes
+            days={quotes.days.filter((d) => d.record === REQUOTE_RECORD)}
+            report={quotes.requote}
+          />
         </Card>
       </div>
     </>
@@ -424,6 +435,82 @@ function Holds({ days, report }: { days: QuoteDay[]; report: Quotes["holds"] }) 
       <p className="muted">
         The primary measure is at 1¢ (highlighted). Its interval comes from game dates through
         2026-11-23; then you pick a rule (#385).
+      </p>
+    </>
+  );
+}
+
+// The requote record's first game date (ADR 0059): the day after its rule was fixed.
+const REQUOTE_FIRST_DAY = "2026-11-09";
+
+function Requotes({ days, report }: { days: QuoteDay[]; report: Quotes["requote"] }) {
+  if (days.length === 0) {
+    return (
+      <p className="muted">
+        No requote day copied yet. The record starts with game date {REQUOTE_FIRST_DAY}, and the
+        nightly run copies it once <code>supabase/migrations/20261108120000_quote_requote.sql</code>{" "}
+        is applied.
+      </p>
+    );
+  }
+  const against = report?.figures.against_wait ?? {};
+  const changes = changesOf(report);
+  const first = [...new Set(days.map((d) => d.game_date))].sort()[0];
+  return (
+    <>
+      <div className="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th className="number">Half-spread</th>
+              <th className="number">Fills</th>
+              <th className="number">Minutes quoted</th>
+              <th className="number">Paper profit</th>
+              <th>Profit per game less wait&apos;s</th>
+            </tr>
+          </thead>
+          <tbody>
+            {REQUOTE_RULES.flatMap((rule) =>
+              HALF_SPREADS.map((h) => {
+                const name = variantName("model", h, rule);
+                const own = days.filter((d) => d.variant === name);
+                const t = totals(own);
+                const minutes = own.reduce((s, d) => s + (d.quoted_minutes ?? 0), 0);
+                const paired = against[name] as Estimate | undefined;
+                return (
+                  <tr key={name} className={h === PRIMARY_CENTS ? "primary" : undefined}>
+                    <td>{REQUOTE_NAMES[rule]}</td>
+                    <td className="number">{h}¢</td>
+                    <td className="number">{t.fills}</td>
+                    <td className="number">{minutes.toFixed(0)}</td>
+                    <td className="number">{dollars(t.profit, true)}</td>
+                    <td>
+                      {rule === "wait" ? "the baseline" : paired ? estimate(paired, "games", 2) : "–"}
+                    </td>
+                  </tr>
+                );
+              }),
+            )}
+          </tbody>
+        </table>
+      </div>
+      {changes ? (
+        <p>
+          {changes.changes} starter {changes.changes === 1 ? "change" : "changes"}:{" "}
+          {changes.requoted} requoted
+          {changes.held.length
+            ? `, ${changes.changes - changes.requoted} held (${changes.held
+                .map(([reason, n]) => `${n} ${HELD_REASONS[reason] ?? reason}`)
+                .join("; ")})`
+            : ""}
+          .
+        </p>
+      ) : null}
+      <p className="muted">
+        The primary measure is at 1¢ (highlighted). Its interval comes once the record spans 4
+        weeks, from about game date {intervalsFrom(first)}; then you decide whether the
+        simulator, the demo quoter or real orders should requote (ADR 0059).
       </p>
     </>
   );
