@@ -905,7 +905,10 @@ def test_nhl_real_quotes_keeps_the_requote_record_from_the_days_publications(
 
     seen: list[Any] = []
 
-    def fake_requotes(games: Any, changes: Any, publications: Any, live: Any, calls: Any) -> Any:
+    def fake_requotes(
+        games: Any, changes: Any, publications: Any, live: Any, calls: Any, stop_before: Any
+    ) -> Any:
+        assert stop_before == kq.STOP_BEFORE
         seen.append((changes, publications))
         return {qf.GAME: [(qf.at(6), 0.56)]}, {"changes": 1, "requoted": 1}
 
