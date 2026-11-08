@@ -81,6 +81,21 @@ export function quoteDays(): QuoteDay[] {
       );
     }
   }
+  for (const hold of ["wait", "requote"]) {
+    for (const cents of [0, 1, 2]) {
+      rows.push(
+        quoteDay({
+          game_date: "2026-11-09",
+          record: "kalshi_quotes/requote/1",
+          hold,
+          half_spread_cents: cents,
+          quoted_minutes: hold === "requote" ? 150 : 90,
+          late_minutes: 40,
+          profit_usd: hold === "requote" ? 1.5 : 0.25,
+        }),
+      );
+    }
+  }
   return rows;
 }
 
@@ -127,6 +142,20 @@ export function quoteReports(withIntervals = false): QuoteReport[] {
             ? { mean: -0.4, low: -0.9, high: 0.1, games: 50, weeks: 4 }
             : { games: 4, weeks: 1 },
           "model-1c-cool": { games: 4, weeks: 1 },
+        },
+      },
+    },
+    {
+      as_of: "2026-11-10",
+      record: "kalshi_quotes/requote/1",
+      figures: {
+        days: 1,
+        days_with_watch_logs: 1,
+        changes: { changes: 5, requoted: 2, late: 2, withdrawn: 1 },
+        against_wait: {
+          "model-1c-requote": withIntervals
+            ? { mean: 0.3, low: -0.2, high: 0.8, games: 80, weeks: 4 }
+            : { games: 3, weeks: 1 },
         },
       },
     },

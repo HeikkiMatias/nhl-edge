@@ -756,9 +756,31 @@ def test_the_hold_rules_day_figures_carry_their_minutes(tmp_path: object) -> Non
     assert figures["late_minutes"].is_not_null().all()
 
 
+def test_the_requote_records_day_figures_carry_their_rule_and_minutes(tmp_path: object) -> None:
+    # #412: the requote record's rows, each rule in the hold column, with the minutes quoted.
+    result = requoted_day({qf.GAME: [(qf.at(6), 0.56)]})
+    found, metas = kept_day(tmp_path, result, kq.REQUOTE_PREFIX)
+    figures = kq.day_figures(found, metas, qf.games(), requote=True)
+    assert figures.height == len(kq.requote_variants())
+    assert set(figures["record"]) == {kq.REQUOTE_RECORD} and set(figures["fair"]) == {kq.MODEL}
+    assert set(figures["hold"]) == set(kq.REQUOTE_RULES)
+    requote = figures.filter(pl.col("variant") == "model-2c-requote").row(0, named=True)
+    fills = found.filter(pl.col("variant") == "model-2c-requote").height
+    assert requote["hold"] == kq.REQUOTE and requote["fills"] == fills > 0
+    assert requote["quoted_minutes"] == metas[0]["counts"]["model-2c-requote"]["quoted_minutes"]
+    assert figures["late_minutes"].is_not_null().all()
+    assert not RAW & set(figures.columns)
+    figures_night = {"code_version": "x"} | kq.summary(found, metas, qf.games(), requote=True)
+    record = kq.report_record(figures_night, qf.DAY, requote=True)
+    assert record["record"] == kq.REQUOTE_RECORD
+    assert record["figures"]["changes"] == {"changes": 1, "requoted": 1}
+
+
 def test_the_rows_sent_are_the_migrations_columns() -> None:
     import re
     from pathlib import Path
+
+    from nhl_edge import cli
 
     migration = Path("supabase/migrations/20261106120000_kalshi_quotes.sql").read_text()
 
@@ -777,6 +799,16 @@ def test_the_rows_sent_are_the_migrations_columns() -> None:
         assert f"primary key ({', '.join(key)})" in migration
     for record_name in (kq.RECORD, kq.HOLDS_RECORD):
         assert f"'{record_name}'" in migration
+    # #412's migration lets both tables take the requote record too.
+    widened = Path("supabase/migrations/20261108120000_quote_requote.sql").read_text()
+    names = ", ".join(f"'{r}'" for r in (kq.RECORD, kq.HOLDS_RECORD, kq.REQUOTE_RECORD))
+    for table in ("quote_days", "quote_reports"):
+        assert f"alter table public.{table} drop constraint {table}_record_check;" in widened
+        assert (
+            f"alter table public.{table} add constraint {table}_record_check\n"
+            f"  check (record in ({names}));"
+        ) in widened
+    assert cli.REQUOTE_MIGRATION == "20261108120000_quote_requote.sql"
 
 
 def test_no_raw_figure_reaches_the_dashboard(tmp_path: object) -> None:
@@ -793,7 +825,7 @@ def test_no_raw_figure_reaches_the_dashboard(tmp_path: object) -> None:
     assert kq.report_record(figures, qf.DAY, holds=True)["record"] == kq.HOLDS_RECORD
 
 
-def test_nhl_real_quotes_copies_both_records_to_supabase(
+def test_nhl_real_quotes_copies_every_record_to_supabase(
     tmp_path: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from pathlib import Path
@@ -809,6 +841,8 @@ def test_nhl_real_quotes_copies_both_records_to_supabase(
     store = lb.LocalStore(Path(str(tmp_path)))
     kq.keep(store, qf.DAY, day(), "kalshi-quotes-20261103-abc1234", NOW)
     kq.keep(store, qf.DAY, held_day(), "kalshi-quotes-20261103-abc1234", NOW, kq.HOLDS_PREFIX)
+    requoted = requoted_day({qf.GAME: [(qf.at(6), 0.56)]})
+    kq.keep(store, qf.DAY, requoted, "kalshi-quotes-20261103-abc1234", NOW, kq.REQUOTE_PREFIX)
 
     class FakeLake:
         def pull(self, table: str) -> None:
@@ -850,11 +884,15 @@ def test_nhl_real_quotes_copies_both_records_to_supabase(
     assert [(table, key) for table, _, key in sent] == [
         ("quote_days", kq.DAY_KEY),
         ("quote_reports", kq.REPORT_KEY),
-    ] * 2
-    days, holds = sent[0][1], sent[2][1]
+    ] * 3
+    days, holds, requotes = sent[0][1], sent[2][1], sent[4][1]
     assert set(days["record"]) == {kq.RECORD} and set(holds["record"]) == {kq.HOLDS_RECORD}
+    assert set(requotes["record"]) == {kq.REQUOTE_RECORD}
     (report,) = sent[1][1]
     assert report["as_of"] == "2026-11-04" and report["record"] == kq.RECORD
+    (requote_report,) = sent[5][1]
+    assert requote_report["record"] == kq.REQUOTE_RECORD
+    assert requote_report["figures"]["changes"] == {"changes": 1, "requoted": 1}
     # Counts only in the log (#280).
     assert f"supabase {kq.RECORD}: {days.height} day rows and tonight's report upserted" in (
         result.output
@@ -864,13 +902,37 @@ def test_nhl_real_quotes_copies_both_records_to_supabase(
     sent.clear()
     assert runner.invoke(app, ["real", "quotes", "--r2"]).exit_code == 0 and not sent
 
+    # Before #412's migration the record check refuses the requote record: the other two are
+    # copied, the log names the migration, and the error's text, which can quote a row, isn't
+    # printed. Any other refusal still fails the run.
+    def refuse(code: str) -> Any:
+        def upsert(self: Any, table: str, frame: pl.DataFrame, key: Any) -> int:
+            if frame.height and set(frame["record"]) == {kq.REQUOTE_RECORD}:
+                raise sb.SupabaseError(f'upsert into {table} returned 400: {{"code":"{code}"}}')
+            sent.append((table, frame, tuple(key)))
+            return frame.height
+
+        return upsert
+
+    monkeypatch.setattr(Fake, "upsert", refuse("23514"))
+    sent.clear()
+    result = runner.invoke(app, ["real", "quotes", "--r2", "--supabase"])
+    assert result.exit_code == 0, result.output
+    assert len(sent) == 4
+    assert (
+        f"supabase {kq.REQUOTE_RECORD}: not copied yet, apply 20261108120000_quote_requote.sql"
+        in result.output
+    )
+    assert "23514" not in result.output and "400" not in result.output
+    monkeypatch.setattr(Fake, "upsert", refuse("42501"))
+    assert runner.invoke(app, ["real", "quotes", "--r2", "--supabase"]).exit_code != 0
+
 
 def test_nhl_real_quotes_keeps_the_requote_record_from_the_days_publications(
     tmp_path: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # ADR 0059: the nightly keeps the requote record under its own prefix, from the day's ledger
-    # and morning view with their bundles (none stored here), prints counts only, and copies
-    # nothing of it to Supabase, whose quote_days takes the other two records.
+    # and morning view with their bundles (none stored here), and prints counts only.
     from pathlib import Path
     from typing import Any
 

@@ -109,6 +109,7 @@ Without them the build still succeeds, and the page says it isn't configured.
    - `supabase/migrations/20261106120000_kalshi_quotes.sql` (#398): the quoting simulator's figures per game date and variant (`quote_days`) and each night's figures over every kept day (`quote_reports`), owner-only, for the Market making tab. Then set `SUPABASE_QUOTES=true` (step 3).
    - `supabase/migrations/20261106130000_quote_live.sql` (#398 step 3): the live view's rows (`quote_live`), owner-only. Then set `SUPABASE_QUOTES_LIVE=true` (step 3).
    - `supabase/migrations/20261106140000_real_entry_revisions.sql` (#398 step 4, ADR 0058): the owner's revisions of a real bet's entry until its game's start, owner-only. Until it is applied, the form offers no Correct or Undo, and the midday alert and nightly sync say it isn't set up; nothing else changes.
+   - `supabase/migrations/20261108120000_quote_requote.sql` (#412, ADR 0059): lets `quote_days` and `quote_reports` take the requote record, shown on Market making › Results. No variable to set: until it is applied the nightly copy says it waits for it, and the night after it copies every requote day kept.
 2. **Your user.**
    - Authentication → Users → Add user → Create new user, with your email and a password, and "Auto Confirm User" ticked. You sign in with those.
    - A user made without a password: delete it and add it again with one, then put its new id in `dashboard_owners` (step 2's insert). Or set the password through Supabase Auth's admin API, which hashes it as Auth does, never with SQL on `auth.users`:

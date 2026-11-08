@@ -706,12 +706,12 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
       - **The value:** B2, B3 and u through the bundle's frozen path, then the blend at the publication's own Pinnacle pair. Quoting resumes from m at it.
       - **The guard:** with no new call, the same path must give the published value to 1e-9, or the change is held as wait. So is a call withdrawn since the publication (a team it named a starter for, and none at m), whose model mix the bundle doesn't hold.
     - **The record:** each day counts its changes, requoted and held by reason. The primary measure, at 1 cent, is requote's profit at settlement per game less wait's on the same games, with an interval from 4 weeks.
-    - **R2 only for now:** `quote_days` accepts only the two records below, so the dashboard copy needs a migration first. Point in time: `tests/leakage/test_requote.py`.
+    - **On the dashboard (#412):** its days and nightly figures go to `quote_days` and `quote_reports` as the other two records' do, once `supabase/migrations/20261108120000_quote_requote.sql` lets those tables take it. Until then the copy logs that it waits for that migration, and the record stays in R2. Point in time: `tests/leakage/test_requote.py`.
     - **Version 2,** once a paid Odds API subscription is in place (#323), takes Pinnacle's newest fresh snapshot after the news instead.
   - **On the dashboard (#398, `--supabase`, once `SUPABASE_QUOTES` is true):** the owner chose owner-only tables on 2026-11-05.
     - `quote_days` holds, per kept game date and variant, the counts, contracts and cost with the fee. It also holds the profit expected by the fair value, by Kalshi's last mid and by Pinnacle's close, each net of the fee, and the profit at settlement, null until every fill's game has its result.
     - `quote_reports` holds each night's figures over every kept day.
-    - Both records go there, the simulator's and the hold rules', recomputed every night.
+    - The three records go there, the simulator's, the hold rules' and the requote record's (from its migration, #412), recomputed every night.
     - No fill's price, ticker, time or trade goes there (`supabase/migrations/20261106120000_kalshi_quotes.sql`).
 - **`nhl real quotes-live --r2 --supabase`, in its own job beside each watch window (#398 step 3, once `SUPABASE_QUOTES_LIVE` is true):** the dashboard's live view of the simulator, every 5 minutes until the watch's end.
   - **Each cycle:** today's new watch polls restored from R2 as the watch mirrors them (never Kalshi itself), the lake's fair values pulled, then our model's quotes at each half-spread run to now by the simulator's own rules (`run_variant`'s `until`). Before the decision is published, the slate is the morning view's.

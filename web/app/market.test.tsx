@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Market making › Results (#398) on SYNTHETIC quote tables: the tiles, the luck-against-edge
-// lines, the variant picker and table, counts only before 4 weeks and intervals after, and the
-// hold rules.
+// lines, the variant picker and table, counts only before 4 weeks and intervals after, the
+// hold rules and the requote record.
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 
@@ -86,8 +86,8 @@ test("per contract: counts only under 4 weeks, then each figure with its interva
 
 test("the hold rules: wait is the baseline, the others against it", async () => {
   render(<MarketResults client={client(true)} />);
-  await screen.findByText("Hold rules after a pull");
-  const table = screen.getByText("Profit per game less wait's").closest("table") as HTMLElement;
+  const card = (await screen.findByText("Hold rules after a pull")).closest(".card") as HTMLElement;
+  const table = within(card).getByText("Profit per game less wait's").closest("table") as HTMLElement;
   const trust = within(table)
     .getAllByText("Never pull (trust)")
     .map((c) => c.closest("tr") as HTMLElement)
@@ -100,6 +100,45 @@ test("the hold rules: wait is the baseline, the others against it", async () => 
     .find((r) => r.className === "primary") as HTMLElement;
   expect(cool.textContent).toContain("4 games over 1 weeks: too few weeks");
   expect(within(table).getAllByText("the baseline").length).toBe(3);
+});
+
+test("the requote record: wait is the baseline, requote against it, and the changes", async () => {
+  render(<MarketResults client={client(true)} />);
+  const card = (await screen.findByText("Requote after a starter change")).closest(
+    ".card",
+  ) as HTMLElement;
+  const rows = within(card)
+    .getAllByText("Requote with the new starter")
+    .map((c) => c.closest("tr") as HTMLElement);
+  expect(rows.length).toBe(3);
+  const primary = rows.find((r) => r.className === "primary") as HTMLElement;
+  expect(primary.textContent).toContain("150");
+  expect(primary.textContent).toContain("+$1.50");
+  expect(primary.textContent).toContain("+0.30 [-0.20, +0.80] (80 games, 4 weeks)");
+  expect(within(card).getAllByText("the baseline").length).toBe(3);
+  expect(
+    within(card).getByText(
+      "5 starter changes: 2 requoted, 3 held (2 too close to the start; 1 a starter call withdrawn).",
+    ),
+  ).toBeTruthy();
+  expect(within(card).getByText(/from about game date 2026-11-30/)).toBeTruthy();
+});
+
+test("before its first day is copied, the requote card says what it waits for", async () => {
+  const days = quoteDays().filter((d) => d.record !== "kalshi_quotes/requote/1");
+  render(
+    <MarketResults
+      client={stubbed({ quote_days: days, quote_reports: quoteReports() }, new Set(["anon"])).supabase}
+    />,
+  );
+  const card = (await screen.findByText("Requote after a starter change")).closest(
+    ".card",
+  ) as HTMLElement;
+  expect(within(card).getByText(/No requote day copied yet/).textContent).toContain(
+    "20261108120000_quote_requote.sql",
+  );
+  // The other records are shown as before.
+  expect(screen.getByText("Hold rules after a pull")).toBeTruthy();
 });
 
 test("a reader without the owner's rows sees no figure", async () => {

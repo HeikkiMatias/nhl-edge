@@ -9,10 +9,13 @@ import { every } from "./load.ts";
 
 export const RECORD = "kalshi_quotes/1";
 export const HOLDS_RECORD = "kalshi_quotes/holds/1";
+/** The requote record (ADR 0059, #412): wait and requote after a starter change. */
+export const REQUOTE_RECORD = "kalshi_quotes/requote/1";
 export const FAIRS = ["model", "anchored", "pinnacle", "forecast", "forecast2"] as const;
 export type Fair = (typeof FAIRS)[number];
 export const HALF_SPREADS = [0, 1, 2] as const;
 export const HOLDS = ["wait", "cool", "return", "trust"] as const;
+export const REQUOTE_RULES = ["wait", "requote"] as const;
 /** The variant shown first: the model's fair value a cent below, the demo's (ADR 0055). */
 export const DEFAULT_FAIR: Fair = "model";
 export const DEFAULT_CENTS = 1;
@@ -34,6 +37,23 @@ export const HOLD_NAMES: Record<(typeof HOLDS)[number], string> = {
   cool: "15-minute cool-off",
   return: "Until the move reverses",
   trust: "Never pull (trust)",
+};
+
+export const REQUOTE_NAMES: Record<(typeof REQUOTE_RULES)[number], string> = {
+  wait: "Wait for the next prediction",
+  requote: "Requote with the new starter",
+};
+
+/** Why a starter change got no requoted value (live/requote.py): the game then waits. */
+export const HELD_REASONS: Record<string, string> = {
+  late: "too close to the start",
+  no_publication: "before the day's first prediction",
+  no_bundle: "its saved inputs unreadable",
+  other_fit: "another blend fit",
+  unreproduced: "the saved inputs didn't give the prediction back",
+  withdrawn: "a starter call withdrawn",
+  no_value: "no value",
+  failed: "an error",
 };
 
 export const DAY_COLUMNS =
@@ -126,13 +146,15 @@ export type Quotes = {
   days: QuoteDay[];
   report: QuoteReport | null;
   holds: QuoteReport | null;
+  requote: QuoteReport | null;
 };
 
 // PostgREST's "no such table" (and Postgres's): the quotes migration isn't applied yet.
 const MISSING = new Set(["PGRST205", "42P01"]);
 
-/** The simulator's and the hold rules' days, and each record's latest night, read under
- * row-level security. A project without the quotes migration gives applied: false. */
+/** The simulator's, the hold rules' and the requote record's days, and each record's latest
+ * night, read under row-level security. A project without the quotes migration gives applied:
+ * false. */
 export async function loadQuotes(client: SupabaseClient): Promise<Quotes> {
   const latest = (record: string) =>
     client
@@ -143,7 +165,7 @@ export async function loadQuotes(client: SupabaseClient): Promise<Quotes> {
       .limit(1)
       .overrideTypes<QuoteReport[], { merge: false }>();
   try {
-    const [days, report, holds] = await Promise.all([
+    const [days, report, holds, requote] = await Promise.all([
       every((from, to) =>
         client
           .from("quote_days")
@@ -156,17 +178,19 @@ export async function loadQuotes(client: SupabaseClient): Promise<Quotes> {
       ),
       latest(RECORD),
       latest(HOLDS_RECORD),
+      latest(REQUOTE_RECORD),
     ]);
-    for (const result of [report, holds]) if (result.error) throw result.error;
+    for (const result of [report, holds, requote]) if (result.error) throw result.error;
     return {
       applied: true,
       days,
       report: report.data?.[0] ?? null,
       holds: holds.data?.[0] ?? null,
+      requote: requote.data?.[0] ?? null,
     };
   } catch (error) {
     if (MISSING.has((error as { code?: string }).code ?? "")) {
-      return { applied: false, days: [], report: null, holds: null };
+      return { applied: false, days: [], report: null, holds: null, requote: null };
     }
     throw error;
   }
@@ -265,6 +289,22 @@ export function intervalsFrom(first: string): string {
   const monday = new Date(day);
   monday.setUTCDate(day.getUTCDate() - ((day.getUTCDay() + 6) % 7) + 7 * (MIN_WEEKS - 1));
   return monday.toISOString().slice(0, 10);
+}
+
+/** The requote record's starter changes in a night's report (summary's "changes"): how many,
+ * how many were requoted, and those held by reason, most first. */
+export function changesOf(report: QuoteReport | null): {
+  changes: number;
+  requoted: number;
+  held: [string, number][];
+} | null {
+  const found = report?.figures.changes;
+  if (!found || typeof found !== "object") return null;
+  const counts = found as Record<string, number>;
+  const held = Object.entries(counts)
+    .filter(([reason, n]) => reason !== "changes" && reason !== "requoted" && n > 0)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return { changes: counts.changes ?? 0, requoted: counts.requoted ?? 0, held };
 }
 
 /** A variant's figures in a night's report, if it has them. */
