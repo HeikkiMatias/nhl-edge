@@ -73,7 +73,12 @@ def test_each_change_is_requoted_at_its_moment_or_held_by_its_reason(bundle: lb.
         rq.with_starters(bundle, GAME, moment, calls(CONFIRMED_BACKUP)), priced(), LIVE
     )
     found, counts = rq.requotes(
-        games(), {GAME: [CHANGE]}, [publication(bundle, published)], LIVE, calls(CONFIRMED_BACKUP)
+        games(),
+        {GAME: [CHANGE]},
+        [publication(bundle, published)],
+        LIVE,
+        calls(CONFIRMED_BACKUP),
+        kq.STOP_BEFORE,
     )
     assert found == {GAME: [(moment, expected)]}
     assert counts == {"changes": 1, "requoted": 1}
@@ -82,7 +87,9 @@ def test_each_change_is_requoted_at_its_moment_or_held_by_its_reason(bundle: lb.
     def held(
         changes: list[datetime], pubs: list[rq.Publication], live: blend_fit.LiveFit = LIVE
     ) -> dict[str, int]:
-        values, counted = rq.requotes(games(), {GAME: changes}, pubs, live, calls(CONFIRMED_BACKUP))
+        values, counted = rq.requotes(
+            games(), {GAME: changes}, pubs, live, calls(CONFIRMED_BACKUP), kq.STOP_BEFORE
+        )
         assert values == {}
         return counted
 
@@ -111,6 +118,7 @@ def test_the_newest_publication_before_the_moment_is_requoted(bundle: lb.Bundle)
         [decision, morning],
         LIVE,
         calls(CONFIRMED_BACKUP),
+        kq.STOP_BEFORE,
     )
     assert [t for t, _ in found[GAME]] == [CHANGE + rq.REQUOTE_AFTER]
     assert counts == {"changes": 2, rq.UNREPRODUCED: 1, "requoted": 1}

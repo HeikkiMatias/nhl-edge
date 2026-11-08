@@ -24,12 +24,20 @@ from nhl_edge.live import requote as rq
 LEAGUE = league()
 TEST = 20182019
 START = fold_start(LEAGUE.games.select("season", "start_utc"), TEST)
-B2_TABLES = replace(feature_tables(LEAGUE.games, 4), games=LEAGUE.games)
+FEATURES = feature_tables(LEAGUE.games, 4)
+# The columns a starter outside the candidates is rated from (confirmed.adjusted), which the
+# models themselves don't read: an effect per shot over 30 shots, and no xG per shot.
+SHOTS = 30.0
+EFFECTS = FEATURES.goalie_effects.with_columns(
+    effect=pl.col("goals_saved") / SHOTS, goalie_games=pl.lit(20), expected_shots=pl.lit(SHOTS)
+)
+B2_TABLES = replace(FEATURES, games=LEAGUE.games, goalie_effects=EFFECTS)
 B3_TABLES = replace(
     LEAGUE,
     schedule_terms=B2_TABLES.schedule_terms,
     goalie_starts=B2_TABLES.goalie_starts,
     actual_lineups=B2_TABLES.actual_lineups,
+    goal_multipliers=LEAGUE.goal_multipliers.with_columns(xg_per_shot=pl.lit(None, pl.Float64)),
 )
 U_TABLES = uncertainty.Tables(
     LEAGUE.games,
@@ -75,10 +83,9 @@ def candidates(team: str) -> list[int]:
     return rows.sort("p_start", descending=True)["goalie_id"].to_list()
 
 
-def players() -> pl.DataFrame:
-    ids = pl.concat(
-        [B2_TABLES.goalie_starts["goalie_id"], B2_TABLES.goalie_effects["goalie_id"]]
-    ).unique()
+def players(effects: pl.DataFrame = EFFECTS) -> pl.DataFrame:
+    """A name of letters for every goalie of the candidates and of effects."""
+    ids = pl.concat([B2_TABLES.goalie_starts["goalie_id"], effects["goalie_id"]]).unique()
     return pl.DataFrame(
         {"player_id": ids, "name": [f"Goalie {letters(i)}" for i in ids.to_list()]},
         schema={"player_id": pl.Int64, "name": pl.String},
@@ -133,12 +140,10 @@ NO_NHL = pl.DataFrame(
 )
 
 
-def calls(dailyfaceoff: pl.DataFrame | None = None) -> rq.Calls:
+def calls(dailyfaceoff: pl.DataFrame | None = None, effects: pl.DataFrame = EFFECTS) -> rq.Calls:
+    """What the starters are read from: the polls, the names, and the lake's goalie effects."""
     return rq.Calls(
-        NO_NHL,
-        polls() if dailyfaceoff is None else dailyfaceoff,
-        players(),
-        B2_TABLES.goalie_effects,
+        NO_NHL, polls() if dailyfaceoff is None else dailyfaceoff, players(effects), effects
     )
 
 

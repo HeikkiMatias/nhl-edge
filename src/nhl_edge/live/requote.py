@@ -1,6 +1,6 @@
 """Requote after a starter change (ADR 0059, #410): the model's value for a game with the starters
 named by a moment, recomputed from the publication the game was quoted from, for the quoting
-simulator's requote record (live/kalshi_quotes.py).
+simulator's requote record. It reads no market but Pinnacle's pair the publication priced with.
 
 **The moment.** A starter change observed at t is requoted at m = t + REQUOTE_AFTER, the time to
 see the change and post again. Only polls observed before m count (hard rule 1).
@@ -25,7 +25,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 
 import polars as pl
 
@@ -34,12 +34,13 @@ from nhl_edge.lineup import confirmed
 from nhl_edge.live import blend_fit
 from nhl_edge.live import bundle as lb
 from nhl_edge.live import goalies as live_goalies
-from nhl_edge.live import kalshi_quotes as kq
 from nhl_edge.live import predict as lp
 
 REQUOTE_AFTER = timedelta(minutes=1)
-# The lake tables the starters at a moment are read from, beyond the simulator's (kq.TABLES).
+# The lake tables the starters at a moment are read from, beyond the simulator's own.
 TABLES = ("players", "goalie_effects", "pregame_goalies")
+# Each game's requoted values (home side) by when they are known.
+Values = dict[int, list[tuple[datetime, float]]]
 # The rows keep their own times (confirmed.adjusted takes the later of a row's and the call's).
 EARLIEST = datetime(1970, 1, 1, tzinfo=UTC)
 # Why a change got no value: the record counts each.
@@ -52,6 +53,16 @@ LATE, NO_PUBLICATION, NO_BUNDLE, OTHER_FIT, UNREPRODUCED, NO_VALUE, FAILED = (
     "no_value",
     "failed",
 )
+
+
+class Scheduled(Protocol):
+    """A game of the day: its id and start."""
+
+    @property
+    def game_id(self) -> int: ...
+
+    @property
+    def start_utc(self) -> datetime: ...
 
 
 @dataclass(frozen=True)
@@ -151,15 +162,17 @@ def blend_of(bundle: lb.Bundle, row: Mapping[str, Any], live: blend_fit.LiveFit)
 
 
 def requotes(
-    games: Sequence[kq.Game],
+    games: Sequence[Scheduled],
     changes: Mapping[int, Sequence[datetime]],
     publications: Sequence[Publication],
     live: blend_fit.LiveFit,
     calls: Calls,
-) -> tuple[kq.Sources, dict[str, int]]:
+    stop_before: timedelta,
+) -> tuple[Values, dict[str, int]]:
     """Each game's requoted values (home side) at each starter change's moment m, and the day's
-    counts: its changes, those requoted, and those held by reason."""
-    found: kq.Sources = {}
+    counts: its changes, those requoted, and those held by reason. A change whose moment is at or
+    after the game's stop, stop_before its start, is too late to quote again."""
+    found: Values = {}
     counts: Counter[str] = Counter()
     ordered = sorted(publications, key=lambda p: p.published_utc)
     reproduced: dict[tuple[int, int], bool] = {}
@@ -167,7 +180,7 @@ def requotes(
         for t in changes.get(game.game_id, []):
             counts["changes"] += 1
             moment = t + REQUOTE_AFTER
-            if moment >= game.start_utc - kq.STOP_BEFORE:
+            if moment >= game.start_utc - stop_before:
                 counts[LATE] += 1
                 continue
             quoted = [

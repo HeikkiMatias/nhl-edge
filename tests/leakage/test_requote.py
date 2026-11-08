@@ -5,10 +5,13 @@ league's bundle."""
 from datetime import timedelta
 from pathlib import Path
 
+import polars as pl
 import pytest
 from requote_fixtures import (
     BACKUP,
     CHANGE,
+    CUTOFF,
+    EFFECTS,
     GAME,
     LIVE,
     calls,
@@ -20,6 +23,7 @@ from requote_fixtures import (
 )
 
 from nhl_edge.live import bundle as lb
+from nhl_edge.live import kalshi_quotes as kq
 from nhl_edge.live import requote as rq
 
 
@@ -53,7 +57,51 @@ def test_a_requoted_value_is_known_only_from_its_moment(bundle: lb.Bundle) -> No
         [publication(bundle, published)],
         LIVE,
         calls(polls((CHANGE, "CHI", BACKUP))),
+        kq.STOP_BEFORE,
     )
     # The change is seen at CHANGE; the value is stamped a minute later, never earlier.
     ((at, _),) = found[GAME]
     assert at == CHANGE + rq.REQUOTE_AFTER > CHANGE
+
+
+def test_a_goalie_outside_the_candidates_is_rated_from_rows_before_the_cutoff(
+    bundle: lb.Bundle,
+) -> None:
+    # Daily Faceoff names a call-up for CHI. His rows come from other games in the lake read at
+    # night: one known before the publication's cutoff, one after it, which never rates him.
+    outsider = 77777771
+    template = EFFECTS.filter(pl.col("game_id") != GAME).head(1)
+    rows = pl.concat(
+        [
+            template.with_columns(
+                game_id=pl.lit(2018029001, pl.Int64),
+                goalie_id=pl.lit(outsider, pl.Int64),
+                effect=pl.lit(-0.5),
+                goals_saved=pl.lit(-15.0),
+                as_of_utc=pl.lit(CUTOFF - timedelta(days=1)),
+                observed_utc=pl.lit(CUTOFF - timedelta(days=1)),
+            ),
+            template.with_columns(
+                game_id=pl.lit(2018029002, pl.Int64),
+                goalie_id=pl.lit(outsider, pl.Int64),
+                effect=pl.lit(0.5),
+                goals_saved=pl.lit(15.0),
+                as_of_utc=pl.lit(CUTOFF),
+                observed_utc=pl.lit(CUTOFF + timedelta(hours=1)),
+            ),
+        ]
+    ).cast(EFFECTS.schema)  # type: ignore[arg-type]
+    effects = pl.concat([EFFECTS, rows])
+    named = calls(polls((CHANGE, "CHI", outsider)), effects)
+    moved = rq.with_starters(bundle, GAME, CHANGE + rq.REQUOTE_AFTER, named)
+    starts = moved.inputs["goalie_starts"].filter(
+        pl.col("game_id") == GAME, pl.col("team") == "CHI"
+    )
+    assert starts.select("goalie_id", "p_start").rows() == [(outsider, 1.0)]
+    rated = moved.inputs["goalie_effects"].filter(
+        pl.col("game_id") == GAME, pl.col("goalie_id") == outsider
+    )
+    assert rated["effect"].to_list() == [-0.5]
+    # Only the slate's rows stay in the bundle.
+    assert set(moved.inputs["goalie_effects"]["game_id"]) <= set(bundle.inputs["slate"]["game_id"])
+    assert rq.blend_of(moved, priced(), LIVE) is not None

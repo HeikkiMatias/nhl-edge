@@ -6474,7 +6474,7 @@ def real_quotes(
             read["goalie_effects"],
         )
         publications = [p for p in found if p is not None]
-        return rq.requotes(inputs.games, inputs.changes, publications, live, calls)
+        return rq.requotes(inputs.games, inputs.changes, publications, live, calls, kq.STOP_BEFORE)
 
     def run(day: date, record: str) -> "kq.DayResult":
         dated = {
