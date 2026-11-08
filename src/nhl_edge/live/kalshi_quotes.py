@@ -70,13 +70,21 @@ Beside the measures above, each variant counts the minutes it had a bid resting,
 each game's LATE before its stop. The primary measure, at PRIMARY_HALF_SPREAD, is each rule's
 profit at settlement per game less wait's on the same games, with Holm's adjustment over the three
 rules once there are MIN_WEEKS weeks.
+
+**Requote after a starter change (ADR 0059, #410),** a measurement of its own under
+REQUOTE_PREFIX, fixed on REQUOTE_FIXED and scored from REQUOTE_FIRST_DAY: the model fair value at
+each half-spread, under wait (the rule above) and requote. Under requote, a STARTER pull is
+followed at its moment m (live/requote.py) by the model's value recomputed from its publication's
+bundle with the starters named by m, and quoting resumes from m at it; a change with no value holds
+as wait does. The record counts the day's changes, requoted and held by reason, and its primary
+measure, at PRIMARY_HALF_SPREAD, is requote's profit at settlement per game less wait's.
 """
 
 import io
 import json
 from bisect import bisect_left, bisect_right
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_FLOOR, Decimal
 from typing import Any
@@ -147,6 +155,15 @@ HOLDS_FIRST_DAY = HOLDS_FIXED + timedelta(days=1)
 HOLDS_VERSION = "1"
 HOLDS_PREFIX = f"real/shadow/{SHADOW}/holds/{HOLDS_VERSION}"
 COOL_OFF = timedelta(minutes=15)
+# The requote record (ADR 0059, #410), beside wait: fixed on REQUOTE_FIXED, the owner's
+# acceptance, and scored from the next game day. Its version 2 takes Pinnacle's newest fresh
+# snapshot once a paid Odds API subscription is in place (#323).
+REQUOTE = "requote"
+REQUOTE_RULES = (WAIT, REQUOTE)
+REQUOTE_FIXED = date(2026, 11, 8)
+REQUOTE_FIRST_DAY = REQUOTE_FIXED + timedelta(days=1)
+REQUOTE_VERSION = "1"
+REQUOTE_PREFIX = f"real/shadow/{SHADOW}/requote/{REQUOTE_VERSION}"
 LATE = timedelta(hours=3)
 PRIMARY_HALF_SPREAD = Decimal("0.01")
 # The lake tables a run reads.
@@ -201,6 +218,11 @@ def hold_variants() -> list[tuple[Decimal, str]]:
 
 def hold_name(h: Decimal, hold: str) -> str:
     return f"{variant_name(MODEL, h)}-{hold}"
+
+
+def requote_variants() -> list[tuple[Decimal, str]]:
+    """The requote record's variants (ADR 0059): the model at each half-spread under each rule."""
+    return [(h, rule) for rule in REQUOTE_RULES for h in HALF_SPREADS]
 
 
 @dataclass(frozen=True)
@@ -462,6 +484,8 @@ class VariantDay:
     h: Decimal
     # How long a MOVE pull holds the game (#385): WAIT for every variant of the record above.
     hold: str = WAIT
+    # Whether the model's requoted values follow a STARTER pull (ADR 0059).
+    requote: bool = False
     bids: dict[tuple[int, str], ks.Bid] = field(default_factory=dict)
     bought: dict[tuple[int, str], Decimal] = field(default_factory=dict)
     filled_cost: Decimal = Decimal(0)
@@ -503,22 +527,32 @@ class Inputs:
     changes: Mapping[int, list[datetime]]
     forecasts: Sources = field(default_factory=dict)
     forecasts2: Sources = field(default_factory=dict)
+    # The model's requoted values after each starter change (ADR 0059, live/requote.py).
+    requotes: Sources = field(default_factory=dict)
 
     def forecast(self, fair: str) -> Sources:
         """The close forecasts the fair value reads: version 1's or version 2's."""
         return self.forecasts2 if fair == FORECAST2 else self.forecasts
 
+    def model(self, game_id: int, requote: bool = False) -> list[tuple[datetime, float]]:
+        """The game's model values by time: its publications, and with requote its requoted
+        values too."""
+        published = self.models.get(game_id, [])
+        if not requote:
+            return published
+        return sorted([*published, *self.requotes.get(game_id, [])])
+
 
 def fair_at(
-    kind: str, game: Game, team: str, at: datetime, inputs: Inputs
+    kind: str, game: Game, team: str, at: datetime, inputs: Inputs, requote: bool = False
 ) -> tuple[float, datetime, datetime | None] | None:
     """The team's fair value at at, with its model or Pinnacle source's time and, for anchored,
-    its mid's: None without one."""
+    its mid's: None without one. With requote, the model's requoted values count (ADR 0059)."""
     if kind in (PINNACLE, *FORECASTS):
         source = inputs.pinnacle if kind == PINNACLE else inputs.forecast(kind)
         found = latest(source.get(game.game_id, []), at)
         return (game.side(team, found[1]), found[0], None) if found else None
-    model = latest(inputs.models.get(game.game_id, []), at)
+    model = latest(inputs.model(game.game_id, requote), at)
     if model is None:
         return None
     p = game.side(team, model[1])
@@ -666,7 +700,7 @@ def step_game(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules
             break
     for key in keys:
         team = key[1]
-        fair = fair_at(state.fair, game, team, at, inputs)
+        fair = fair_at(state.fair, game, team, at, inputs, state.requote)
         bid = state.bids.get(key)
         if fair is None or _still_held(state, game, fair, at, inputs):
             state.bids.pop(key, None)
@@ -710,11 +744,13 @@ def step_game(state: VariantDay, game: Game, at: datetime, inputs: Inputs, rules
         state.counts["posted"] += 1
 
 
-def steps(game: Game, inputs: Inputs, fair: str | None = None) -> list[datetime]:
+def steps(
+    game: Game, inputs: Inputs, fair: str | None = None, requote: bool = False
+) -> list[datetime]:
     """A game's steps for the variant of fair: every top of either team's market and every update
     of its fair values, before STOP_BEFORE its start, and that moment itself. The close forecast's
     publications are steps of the forecast variant only, so the other fair values step as before
-    it (ADR 0054)."""
+    it (ADR 0054), and the requoted values the requote variants' only (ADR 0059)."""
     end = game.start_utc - STOP_BEFORE
     times = {
         t
@@ -725,6 +761,8 @@ def steps(game: Game, inputs: Inputs, fair: str | None = None) -> list[datetime]
     times |= {t for t, _ in inputs.pinnacle.get(game.game_id, [])}
     if fair in FORECASTS:
         times |= {t for t, _ in inputs.forecast(fair).get(game.game_id, [])}
+    if requote:
+        times |= {t for t, _ in inputs.requotes.get(game.game_id, [])}
     times |= set(inputs.changes.get(game.game_id, []))
     # A source published at t is known just after it (latest() reads strictly before).
     return sorted({t + timedelta(microseconds=1) for t in times if t < end} | {end})
@@ -737,16 +775,18 @@ def run_variant(
     rules: Exchange,
     hold: str = WAIT,
     until: datetime | None = None,
+    requote: bool = False,
 ) -> VariantDay:
     """One variant over the day: every game's steps in time order, so the day's cap sees every
     game's bids and fills as they came. With until, only the steps to then, as the day stands at
-    that moment (the dashboard's live view, #398); the record's days run to the end."""
-    state = VariantDay(fair, h, hold)
+    that moment (the dashboard's live view, #398); the record's days run to the end. With
+    requote, a starter pull is followed by the model's requoted value (ADR 0059)."""
+    state = VariantDay(fair, h, hold, requote)
     events = sorted(
         (
             (t, g)
             for g in inputs.games
-            for t in steps(g, inputs, fair)
+            for t in steps(g, inputs, fair, requote)
             if until is None or t <= until
         ),
         key=lambda event: (event[0], event[1].game_id),
@@ -863,23 +903,34 @@ def run_day(
     now: datetime,
     forecasts: pl.DataFrame | None = None,
     holds: bool = False,
+    requotes: Callable[[Inputs], tuple[Sources, dict[str, int]]] | None = None,
 ) -> DayResult:
     """Every variant's day from the day's ledger, morning view, close forecasts, odds, Kalshi
     logs and Daily Faceoff polls; the fills valued with the results and the closing proxies known
     by now. With holds, the hold rules' variants instead (#385), each with its minutes quoted,
-    and the day's slate (game_id, season) for their paired measure."""
+    and the day's slate (game_id, season) for their paired measure. With requotes, which gives
+    the requoted values and their counts from the day's inputs (live/requote.py), the requote
+    record's variants instead, likewise (ADR 0059)."""
     inputs = inputs_of(ledger, morning, odds, depth, trades, tops, dailyfaceoff, forecasts)
+    requote_counts: dict[str, int] = {}
+    if requotes is not None:
+        values, requote_counts = requotes(inputs)
+        inputs = replace(inputs, requotes=values)
     references = lf.references(odds, now) if odds.height else pl.DataFrame()
     results = outcomes(games.filter(pl.col("game_id").is_in([g.game_id for g in inputs.games])))
     rows, counts = [], {}
     seasons = {g.game_id: (g.season, g.game_date, g.start_utc) for g in inputs.games}
-    specs = (
-        [(hold_name(h, hold), MODEL, h, hold) for h, hold in hold_variants()]
-        if holds
-        else [(variant_name(fair, h), fair, h, WAIT) for fair, h in variants()]
-    )
-    for name, fair, h, hold in specs:
-        state = run_variant(fair, h, inputs, rules, hold)
+    if requotes is not None:
+        specs = [
+            (hold_name(h, rule), MODEL, h, WAIT, rule == REQUOTE) for h, rule in requote_variants()
+        ]
+    elif holds:
+        specs = [(hold_name(h, hold), MODEL, h, hold, False) for h, hold in hold_variants()]
+    else:
+        specs = [(variant_name(fair, h), fair, h, WAIT, False) for fair, h in variants()]
+    paired = holds or requotes is not None
+    for name, fair, h, hold, requote in specs:
+        state = run_variant(fair, h, inputs, rules, hold, requote=requote)
         valued = markouts(state.fills, inputs, references, results) if state.fills else []
         for fill in valued:
             season, game_date, start = seasons[fill["game_id"]]
@@ -895,13 +946,15 @@ def run_day(
                 }
             )
         counts[name] = state.counts | {"largest_inventory": float(state.largest_inventory)}
-        if holds:
+        if paired:
             counts[name] |= {
                 "quoted_minutes": state.quoted_s / 60,
                 "late_minutes": state.late_s / 60,
             }
-    if holds:
+    if paired:
         counts["slate"] = sorted([g.game_id, g.season] for g in inputs.games)
+    if requotes is not None:
+        counts["requote"] = requote_counts
     counts["games"] = len(inputs.games)
     counts["watch_logs"] = tops.height > 0
     counts["model_days"] = sum(1 for g in inputs.games if g.game_id in inputs.models)
@@ -1041,24 +1094,30 @@ def summary(
     metas: Sequence[Mapping[str, Any]],
     games: pl.DataFrame,
     holds: bool = False,
+    requote: bool = False,
 ) -> dict[str, Any]:
     """The private figures over every kept day, per variant: its counts, and each measure per
     contract, with the results games holds now (settled). With holds, the hold rules' variants
     (#385), each with its minutes quoted, and the primary measure: each rule's profit per game
-    less wait's (paired)."""
+    less wait's (paired). With requote, the requote record's likewise (ADR 0059), and its
+    changes' counts."""
     rows = per_contract(settled(fills, games))
     matched = pairs(rows)
+    version = (
+        f"requote/{REQUOTE_VERSION}" if requote else f"holds/{HOLDS_VERSION}" if holds else VERSION
+    )
     result: dict[str, Any] = {
         "shadow": SHADOW,
-        "version": f"holds/{HOLDS_VERSION}" if holds else VERSION,
+        "version": version,
         "days": len(metas),
         "days_with_watch_logs": sum(1 for m in metas if m["counts"].get("watch_logs")),
     }
-    names = (
-        [hold_name(h, hold) for h, hold in hold_variants()]
-        if holds
-        else [variant_name(fair, h) for fair, h in variants()]
-    )
+    if requote:
+        names = [hold_name(h, rule) for h, rule in requote_variants()]
+    elif holds:
+        names = [hold_name(h, hold) for h, hold in hold_variants()]
+    else:
+        names = [variant_name(fair, h) for fair, h in variants()]
     for name in names:
         of_variant = rows.filter(pl.col("variant") == name)
         counts = [m["counts"].get(name, {}) for m in metas]
@@ -1076,24 +1135,34 @@ def summary(
             ),
             "profit_usd": float((of_variant["profit"] * of_variant["contracts"]).sum()),
         }
-        if holds:
+        if holds or requote:
             figures["quoted_minutes"] = sum(c.get("quoted_minutes", 0.0) for c in counts)
             figures["late_minutes"] = sum(c.get("late_minutes", 0.0) for c in counts)
         for measure in MEASURES:
             known = of_variant.filter(pl.col(measure).is_not_null())
             figures[measure] = per_contract_estimate(known, measure) if known.height else None
         result[name] = figures
-    if holds:
+    if requote:
+        result["against_wait"] = against_wait(rows, metas, games, REQUOTE_RULES)
+        changes: dict[str, int] = {}
+        for m in metas:
+            for reason, n in m["counts"].get("requote", {}).items():
+                changes[reason] = changes.get(reason, 0) + n
+        result["changes"] = changes
+    elif holds:
         result["against_wait"] = against_wait(rows, metas, games)
     return result
 
 
 def game_profits(
-    rows: pl.DataFrame, metas: Sequence[Mapping[str, Any]], games: pl.DataFrame
+    rows: pl.DataFrame,
+    metas: Sequence[Mapping[str, Any]],
+    games: pl.DataFrame,
+    rules: Sequence[str] = HOLDS,
 ) -> pl.DataFrame:
-    """Each hold variant's profit at settlement per game (game_id, season, game_date, variant,
+    """Each rule's variant's profit at settlement per game (game_id, season, game_date, variant,
     profit_usd), the maker fee in it: every kept game whose result games holds now, zero where
-    the variant had no fill."""
+    the variant had no fill. The rules are the hold rules', or the requote record's."""
     known = outcomes(games).filter(pl.col("home_win").is_not_null())
     slate = pl.DataFrame(
         [
@@ -1103,7 +1172,7 @@ def game_profits(
         ],
         schema={"game_id": pl.Int64, "season": pl.Int32, "game_date": pl.Date},
     ).join(known.select("game_id"), on="game_id")
-    names = pl.DataFrame({"variant": [hold_name(h, hold) for h, hold in hold_variants()]})
+    names = pl.DataFrame({"variant": [hold_name(h, rule) for rule in rules for h in HALF_SPREADS]})
     totals = (
         rows.filter(pl.col("profit").is_not_null())
         .group_by("variant", "game_id")
@@ -1117,21 +1186,25 @@ def game_profits(
 
 
 def against_wait(
-    rows: pl.DataFrame, metas: Sequence[Mapping[str, Any]], games: pl.DataFrame
+    rows: pl.DataFrame,
+    metas: Sequence[Mapping[str, Any]],
+    games: pl.DataFrame,
+    rules: Sequence[str] = HOLDS,
 ) -> dict[str, Any]:
     """Each rule's profit per game less wait's on the same games, at each half-spread, with its
     weekly block bootstrap interval, or the counts only under the live report's MIN_WEEKS. At
-    PRIMARY_HALF_SPREAD, the primary measure, Holm's adjustment over the three rules once each
-    has its interval (#385)."""
-    profits = game_profits(rows, metas, games)
+    PRIMARY_HALF_SPREAD, the primary measure, with the hold rules Holm's adjustment over the
+    three once each has its interval (#385); the requote record has one rule beside wait, so
+    none (ADR 0059)."""
+    profits = game_profits(rows, metas, games, rules)
     found: dict[str, Any] = {}
     p_values: dict[str, float] = {}
     for h in HALF_SPREADS:
         base = profits.filter(pl.col("variant") == hold_name(h, WAIT)).select(
             "game_id", "season", "game_date", wait=pl.col("profit_usd")
         )
-        for hold in HOLDS[1:]:
-            name = hold_name(h, hold)
+        for rule in rules[1:]:
+            name = hold_name(h, rule)
             paired = (
                 profits.filter(pl.col("variant") == name)
                 .join(base, on=["game_id", "season", "game_date"])
@@ -1143,7 +1216,7 @@ def against_wait(
             found[name] = metrics.bootstrap(paired, "difference").to_dict()
             if h == PRIMARY_HALF_SPREAD:
                 p_values[name] = metrics.p_value(paired, "difference")
-    if len(p_values) == len(HOLDS) - 1:
+    if len(rules) > 2 and len(p_values) == len(rules) - 1:
         found["holm"] = metrics.holm(p_values)
     return found
 
@@ -1172,6 +1245,22 @@ def holds_count_line(metas: Sequence[Mapping[str, Any]], computed: int) -> str:
     return (
         f"kalshi quote holds: {computed} days computed now, {len(metas)} kept, {fills} fills "
         f"over {len(hold_variants())} variants"
+    )
+
+
+def requote_count_line(metas: Sequence[Mapping[str, Any]], computed: int) -> str:
+    """The requote record's log line: counts only (#280)."""
+    fills = sum(
+        m["counts"].get(hold_name(h, rule), {}).get("fills", 0)
+        for m in metas
+        for h, rule in requote_variants()
+    )
+    changes = sum(m["counts"].get("requote", {}).get("changes", 0) for m in metas)
+    requoted = sum(m["counts"].get("requote", {}).get("requoted", 0) for m in metas)
+    return (
+        f"kalshi quote requotes: {computed} days computed now, {len(metas)} kept, {changes} "
+        f"starter changes, {requoted} requoted, {fills} fills over {len(requote_variants())} "
+        "variants"
     )
 
 

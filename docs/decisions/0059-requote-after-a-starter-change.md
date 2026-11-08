@@ -1,6 +1,6 @@
 # 0059. Requote after a starter change: a measurement beside wait
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-11-08, #410): option 2 for now, and option 3 once a paid Odds API subscription is in place (#323), as `requote` version 2
 - Date: 2026-11-08
 - Part of: #410. From the owner on 2026-11-08: "Why do we not post new bids after the goalie starter has been changed? We could just calculate new probabilities and post those bids right?"
 
@@ -35,7 +35,9 @@
 4. **Requote anchored to Kalshi's mid after the news.** Recompute as in option 2, then shrink the value toward Kalshi's mid, as the anchored fair value does.
    - Cost: it brings Kalshi's own price into the fair value. The simulator's anchored variant already measures that idea.
 
-## Decision (proposed): option 2, measured beside option 1, as `requote` version 1
+## Decision: option 2, measured beside option 1, as `requote` version 1 (the owner, 2026-11-08)
+
+**Then option 3:** once a paid Odds API subscription is in place (#323), the requote takes the newest fresh snapshot after the news instead, as version 2 with its own first day. The owner's words: "proposed for now and switch to fresh when we have a paid subscription".
 
 **The measurement is a record of its own** (`real/shadow/kalshi_quotes/requote/1`), the way #385's hold rules were measured:
 - **It doesn't change** the simulator's record or rules, the hold rules, the demo quoter, or real orders.
@@ -44,21 +46,30 @@
   - **requote:** described below.
 - **When it starts:** the rule is fixed on the day this ADR is accepted, and scored from the next game day. Earlier days are replayed only as a check of the mechanics, never kept.
 
-**The requote rule.** At a starter change at time t, the game's bids are pulled as today. The game's model value is then recomputed:
-- **The named starters:** each team's goalie named in the Daily Faceoff polls observed by t, read as `change_times` reads them. They are matched by name key to the candidates in the bundle of the publication the game was quoted from.
+**The requote rule.** At a starter change at time t, the game's bids are pulled as today. The game's model value is then recomputed at the requote moment m, a minute after t (REQUOTE_AFTER: time to see the change and post):
+- **The publication:** the newest one before m that predicted the game, the morning view's or the decision's, and its bundle.
+- **The named starters:** each team's starter at m by ADR 0037's rule (`lineup/confirmed.py`), the one the decision already uses at its own cutoff:
+  - the NHL's starter flag, else Daily Faceoff's Confirmed, else its Likely;
+  - only polls observed before m count.
+- **A goalie outside the candidates,** such as a call-up, is rated as ADR 0037 rates one: from his latest goalie effect before the publication's cutoff, or as a goalie with no earlier game.
 - **The new value:**
-  - each named goalie gets a start probability of 1, and his team's other candidates 0;
-  - the frozen prediction path gives B2, B3 and u's parts again, with the named starters;
+  - the starters are put in place in the bundle's goalie rows (`confirmed.adjusted`);
+  - the frozen prediction path gives B2, B3 and u's parts again;
   - the blend is formed at the publication's own Pinnacle pair (hard rule 3, unchanged).
-- **Quoting resumes** at the first step after t, at the new value.
+- **Quoting resumes** at the first step after m, at the new value.
 - **A later change requotes again,** and the source's next publication replaces the recomputed value as usual.
 
 **Holds and guards.**
-- **A named goalie the bundle doesn't hold** (no stored effect, such as a call-up) holds the game as wait does, and the record counts it.
-- **Point in time:** only the Daily Faceoff polls observed by t count (hard rule 1), with a test in `tests/leakage/`.
+- **The guard:** the publication is first recomputed from its bundle with no new call. It must give the published value to 1e-9, or the change is held.
+- **When it holds:** a change with no value holds the game as wait does, and the record counts it. That covers:
+  - a change before the day's first publication;
+  - a bundle that can't be read;
+  - a guard that fails;
+  - a change in the game's last minute before its stop.
+- **Point in time:** only polls observed before m count (hard rule 1), with a test in `tests/leakage/`.
 
 **The measures,** as the hold rules'. The primary measure is profit at settlement per game, requote less wait, at 1¢, on the same games. Its interval comes from 4 weeks (hard rule 7), with no verdict before then. Beside it, the record counts:
-- starter pulls, and of those, requoted and held;
+- starter changes, and of those, requoted and held, by reason;
 - the minutes quoted;
 - the fills after a requote, with their 5- and 30-minute markouts. Those markouts are where option 2's under-reaction would show.
 
@@ -69,10 +80,10 @@ None yet. The record provides it from its first scored day, with an interval aft
 ## Consequences
 
 - **The code:**
-  - `live/kalshi_quotes.py`: the requote record and rule, beside the hold rules, reading the day's bundles from R2;
-  - `live/bundle.py`: a value from the bundle with the named starters;
-  - `nhl real quotes`: keeps the record nightly, and the nightly report gets its counts;
-  - `web/`: the Results tab's hold-rules table could show it later.
+  - `live/requote.py`: the value from a publication's bundle with the starters named by m;
+  - `live/kalshi_quotes.py`: the requote record and its two rules, beside the hold rules;
+  - `nhl real quotes`: keeps the record nightly in R2, reading the day's bundles, and prints its counts only;
+  - **the dashboard copy waits:** Supabase's `quote_days` accepts only the two existing records, so showing it on the Results tab needs a migration, a follow-up.
 - **The tests:**
   - a synthetic bundle;
   - a leakage test that a starter is used only from its poll on;
@@ -82,5 +93,6 @@ None yet. The record provides it from its first scored day, with an interval aft
 ## Revisit when
 
 - The record has 4 weeks: the owner then decides whether the simulator, the demo quoter (a new `demo_quotes` version) or real orders (ADR 0045's cancel) should requote.
-- The held share (goalies the bundle doesn't hold) is large: then consider the goalie's effect from the lake as of the day before.
+- A paid Odds API subscription is in place (#323): option 3, as version 2.
+- The held share is large: then find out why before reading the measure.
 - The markouts after a requote are clearly negative: then consider option 3 or 4.

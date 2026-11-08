@@ -698,6 +698,16 @@ The owner bets on Kalshi automatically through its trading API (the owner's deci
   - **The fill model:** the price shadow's: a trade after the posting at or below the bid fills it once the depth ahead of it has traded, and an ask at or below it fills the rest. An upper bound on fills, so on the adverse ones too.
   - **The figures, per contract:** the spread captured, the markouts (Kalshi's mid 5 and 30 minutes after the fill and its last mid before the start, and Pinnacle's closing proxy observed after the fill, each less the price), and the profit at settlement on the full game with the maker fee. Each fill weighs by its contracts, and the results are read again at every report, so a day kept before its results gets them later. Beside them, the pairs (contracts bought on both teams of a game) and the largest inventory, measured after each fill in time order. Each has its weekly block bootstrap interval, counts only under 4 weeks.
   - **Private (#280):** each day under `real/shadow/kalshi_quotes/1/days/` and the figures under `.../reports/`. The log has counts only. Point in time: `tests/leakage/test_kalshi_quotes.py`.
+  - **Requote after a starter change (ADR 0059, #410),** its own record under `real/shadow/kalshi_quotes/requote/1/`, scored from 2026-11-09, the day after the rule was fixed. The model fair value at each half-spread runs under two rules:
+    - **wait:** the simulator's own rule;
+    - **requote:** at a starter change seen at t, the game's model value is recomputed at m = t + 1 minute (`live/requote.py`):
+      - **The inputs:** the newest publication before m that predicted the game, the morning view's or the decision's, from its bundle.
+      - **The starters:** those at m by ADR 0037's rule (the NHL's flag, else Daily Faceoff's Confirmed, else its Likely, from polls observed before m). A goalie outside the candidates is rated from his latest effect before the publication's cutoff.
+      - **The value:** B2, B3 and u through the bundle's frozen path, then the blend at the publication's own Pinnacle pair. Quoting resumes from m at it.
+      - **The guard:** with no new call, the same path must give the published value to 1e-9, or the change is held as wait.
+    - **The record:** each day counts its changes, requoted and held by reason. The primary measure, at 1 cent, is requote's profit at settlement per game less wait's on the same games, with an interval from 4 weeks.
+    - **R2 only for now:** `quote_days` accepts only the two records below, so the dashboard copy needs a migration first. Point in time: `tests/leakage/test_requote.py`.
+    - **Version 2,** once a paid Odds API subscription is in place (#323), takes Pinnacle's newest fresh snapshot after the news instead.
   - **On the dashboard (#398, `--supabase`, once `SUPABASE_QUOTES` is true):** the owner chose owner-only tables on 2026-11-05.
     - `quote_days` holds, per kept game date and variant, the counts, contracts and cost with the fee. It also holds the profit expected by the fair value, by Kalshi's last mid and by Pinnacle's close, each net of the fee, and the profit at settlement, null until every fill's game has its result.
     - `quote_reports` holds each night's figures over every kept day.

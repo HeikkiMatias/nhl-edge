@@ -6411,8 +6411,9 @@ def real_quotes(
     model, the model anchored to Kalshi's mid, and Pinnacle's latest), each at three
     half-spreads, filled on the watch's logs. Each day is kept once, privately, in the record's
     store; then the figures over every kept day, with their weekly block bootstrap intervals, go
-    there too. Beside it, under its own record, the model's quotes under each hold rule after a
-    move (#385). It reads Kalshi's books and trades, so the log prints counts only (#280). Paper
+    there too. Beside it, under their own records, the model's quotes under each hold rule after a
+    move (#385), and under wait and requote after a starter change, from the day's bundles (ADR
+    0059). It reads Kalshi's books and trades, so the log prints counts only (#280). Paper
     only: no paper bet, real bet or policy reads it. With --supabase, each record's figures per
     kept day and variant, sums only, and tonight's figures over every kept day are copied to the
     dashboard's owner-only tables, every night again as the games' results come in."""
@@ -6424,8 +6425,11 @@ def real_quotes(
     from nhl_edge.backtest import reports
     from nhl_edge.ingest.odds import ET
     from nhl_edge.lake.supabase import Supabase
+    from nhl_edge.live import blend_fit, placement, real
+    from nhl_edge.live import bundle as lb
     from nhl_edge.live import kalshi_quotes as kq
-    from nhl_edge.live import placement, real
+    from nhl_edge.live import morning as lm
+    from nhl_edge.live import requote as rq
 
     if supabase and not r2:
         raise typer.BadParameter("--supabase copies the record in R2: pass --r2 too")
@@ -6435,13 +6439,44 @@ def real_quotes(
         raise typer.BadParameter("commit first: the figures name their commit")
     lake, store = _real_record(r2)
     client = Supabase.from_env() if supabase else None
+    tables = (*kq.TABLES, *rq.TABLES)
     if r2:
-        for table in kq.TABLES:
+        for table in tables:
             lake.pull(table)
-    read = {table: lake.read(table) for table in kq.TABLES}
+    read = {table: lake.read(table) for table in tables}
     rules = placement.code_exchange(placement.LIVE) or real.DEMO_EXCHANGE
+    fits = sorted(blend_fit.REPORTS.glob("blend-live-*.json"))
+    live = blend_fit.load(json.loads(fits[0].read_text())) if len(fits) == 1 else None
 
-    def run(day: date, holds: bool) -> "kq.DayResult":
+    def publication(rows: "pl.DataFrame", day: date, root: str) -> "rq.Publication | None":
+        """A publication of the day's model, with its bundle, or None without its rows."""
+        if rows.is_empty():
+            return None
+        try:
+            bundle = lb.read(store, day, root)
+        except ValueError:
+            bundle = None
+        return rq.Publication(rows.select(pl.col("published_utc").min()).item(), rows, bundle)
+
+    def requotes(day: date, inputs: "kq.Inputs") -> "tuple[kq.Sources, dict[str, int]]":
+        """The day's requoted values and their counts (ADR 0059)."""
+        assert live is not None
+        found = [
+            publication(
+                read["morning_predictions"].filter(pl.col("game_date") == day), day, lm.BUNDLES
+            ),
+            publication(read["paper_ledger"].filter(pl.col("game_date") == day), day, lb.PREFIX),
+        ]
+        calls = rq.Calls(
+            read["pregame_goalies"].filter(pl.col("game_date") == day),
+            read["dailyfaceoff_goalies"].filter(pl.col("game_date") == day),
+            read["players"],
+            read["goalie_effects"],
+        )
+        publications = [p for p in found if p is not None]
+        return rq.requotes(inputs.games, inputs.changes, publications, live, calls)
+
+    def run(day: date, record: str) -> "kq.DayResult":
         dated = {
             table: read[table].filter(pl.col("game_date") == day)
             for table in (
@@ -6467,28 +6502,38 @@ def real_quotes(
             rules,
             now,
             dated["close_forecasts"],
-            holds=holds,
+            holds=record == "holds",
+            requotes=(lambda inputs: requotes(day, inputs)) if record == "requote" else None,
         )
 
     today = now.astimezone(ET).date()
     copies: list[tuple[str, pl.DataFrame, dict[str, Any]]] = []
-    for prefix, holds, first in (
-        (kq.PREFIX, False, kq.FIRST_DAY),
-        (kq.HOLDS_PREFIX, True, kq.HOLDS_FIRST_DAY),
+    lines = {"main": kq.count_line, "holds": kq.holds_count_line, "requote": kq.requote_count_line}
+    for prefix, record, first in (
+        (kq.PREFIX, "main", kq.FIRST_DAY),
+        (kq.HOLDS_PREFIX, "holds", kq.HOLDS_FIRST_DAY),
+        (kq.REQUOTE_PREFIX, "requote", kq.REQUOTE_FIRST_DAY),
     ):
+        holds = record == "holds"
         days = kq.due(today, kq.stored_days(store, prefix), first)
+        if record == "requote" and days and live is None:
+            # Its days stay due: the next night keeps them once the season's live fit is there.
+            typer.echo(
+                f"kalshi quote requotes: expected the season's one live fit, found {len(fits)}"
+            )
+            days = []
         for day in days:
-            kq.keep(store, day, run(day, holds), version, now, prefix)
+            kq.keep(store, day, run(day, record), version, now, prefix)
         found, metas = kq.kept(store, prefix)
         figures = {"as_of_utc": now.isoformat(), "code_version": version}
-        figures |= kq.summary(found, metas, read["games"], holds)
+        figures |= kq.summary(found, metas, read["games"], holds, requote=record == "requote")
         store.put(kq.report_key(now, prefix), json.dumps(figures, sort_keys=True).encode())
-        if client is not None:
+        # The requote record stays in R2 only: quote_days takes the other two (ADR 0059).
+        if client is not None and record != "requote":
             name = kq.HOLDS_RECORD if holds else kq.RECORD
             rows = kq.day_figures(found, metas, read["games"], holds)
             copies.append((name, rows, kq.report_record(figures, today, holds)))
-        line = kq.holds_count_line if holds else kq.count_line
-        typer.echo(line(metas, len(days)))
+        typer.echo(lines[record](metas, len(days)))
     # The dashboard's copies once both records are kept, so a failed copy never stops a day's
     # keeping. Counts only in the log (#280).
     if client is not None:
