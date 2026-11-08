@@ -467,6 +467,99 @@ def test_the_hold_rules_record_summary_and_log_line(tmp_path: object) -> None:
     )
 
 
+STARTER_POLLS = [(qf.at(-60), qf.HOME, "Logan Thompson"), (qf.at(5), qf.HOME, "Charlie Lindgren")]
+
+
+def requoted_day(values: kq.Sources, **changes: object) -> kq.DayResult:
+    """The requote record's day (ADR 0059), with values as the day's requoted ones."""
+    args = {
+        "ledger": qf.ledger(),
+        "morning": qf.morning(),
+        "odds": qf.odds(),
+        "depth": qf.depth(),
+        "trades": qf.trades([(10, qf.HOME, 0.51, 20.0), (30, qf.HOME, 0.51, 20.0)]),
+        "tops": qf.tops(),
+        "dailyfaceoff": qf.dailyfaceoff(STARTER_POLLS),
+        "games": qf.games(),
+    } | changes
+    counted = {"changes": 1, "requoted": sum(len(v) for v in values.values())}
+    return kq.run_day(
+        qf.DAY,
+        rules=DEMO_EXCHANGE,
+        now=NOW,
+        requotes=lambda inputs: (values, counted),
+        **args,  # type: ignore[arg-type]
+    )
+
+
+def test_after_a_starter_change_requote_quotes_again_where_wait_holds() -> None:
+    # The change at minute 5 pulls both; the requoted value a minute later brings requote back.
+    result = requoted_day({qf.GAME: [(qf.at(6), 0.56)]})
+    names = [kq.hold_name(h, rule) for h, rule in kq.requote_variants()]
+    assert names[:3] == ["model-0c-wait", "model-1c-wait", "model-2c-wait"]
+    assert names[3:] == ["model-0c-requote", "model-1c-requote", "model-2c-requote"]
+    for rule in kq.REQUOTE_RULES:
+        assert result.counts[f"model-2c-{rule}"]["pulled_starter"] == 1
+    assert fill_times(result, "model-2c-wait") == []
+    assert fill_times(result, "model-2c-requote")[0] == qf.at(10)
+    # Requote's bid is at the requoted value: 56 less 2 cents, and a cent below the best ask.
+    requoted = of(result, "model-2c-requote").filter(pl.col("team") == qf.HOME)
+    assert requoted["fair_at_post"][0] == pytest.approx(0.56)
+    assert requoted["price"][0] == pytest.approx(0.53)
+    assert result.counts["requote"] == {"changes": 1, "requoted": 1}
+    assert result.counts["slate"] == [[qf.GAME, 20262027]]
+    # Wait is the simulator's own rule: the same fills as its model arm.
+    own = day(
+        dailyfaceoff=qf.dailyfaceoff(STARTER_POLLS),
+        trades=qf.trades([(10, qf.HOME, 0.51, 20.0), (30, qf.HOME, 0.51, 20.0)]),
+    )
+    assert of(own, "model-2c").drop("variant").equals(of(result, "model-2c-wait").drop("variant"))
+
+
+def test_a_requoted_value_quotes_only_from_its_moment() -> None:
+    # Requoted at minute 12: the trade at 10 finds no bid, the one at 30 fills it.
+    result = requoted_day({qf.GAME: [(qf.at(12), 0.56)]})
+    assert fill_times(result, "model-2c-requote") == [qf.at(30)]
+
+
+def test_without_a_requoted_value_requote_holds_as_wait() -> None:
+    result = requoted_day({})
+    for h in kq.HALF_SPREADS:
+        wait = of(result, kq.hold_name(h, kq.WAIT)).drop("variant")
+        assert of(result, kq.hold_name(h, kq.REQUOTE)).drop("variant").equals(wait)
+    assert fill_times(result, "model-2c-requote") == []
+
+
+def test_the_requote_record_summary_and_log_line(tmp_path: object) -> None:
+    from pathlib import Path
+
+    from nhl_edge.live import bundle as lb
+
+    store = lb.LocalStore(Path(str(tmp_path)))
+    result = requoted_day({qf.GAME: [(qf.at(6), 0.56)]})
+    kq.keep(store, qf.DAY, result, "kalshi-quotes-20261108-abc1234", NOW, kq.REQUOTE_PREFIX)
+    assert kq.stored_days(store, kq.HOLDS_PREFIX) == []
+    assert kq.stored_days(store, kq.REQUOTE_PREFIX) == [qf.DAY]
+    found, metas = kq.kept(store, kq.REQUOTE_PREFIX)
+    # Each kept day names its own record's version (Codex on #411).
+    assert metas[0]["version"] == "requote/1"
+    figures = kq.summary(found, metas, qf.games(), requote=True)
+    assert figures["version"] == "requote/1"
+    assert figures["changes"] == {"changes": 1, "requoted": 1}
+    assert "quoted_minutes" in figures["model-1c-requote"]
+    # One rule beside wait: counts only under 4 weeks, and never Holm.
+    against = figures["against_wait"]
+    assert set(against) == {"model-0c-requote", "model-1c-requote", "model-2c-requote"}
+    assert against["model-1c-requote"] == {"games": 1, "weeks": 1}
+    fills = sum(figures[kq.hold_name(h, r)]["fills"] for h, r in kq.requote_variants())
+    assert kq.requote_count_line(metas, 1) == (
+        f"kalshi quote requotes: 1 days computed now, 1 kept, 1 starter changes, 1 requoted, "
+        f"{fills} fills over 6 variants"
+    )
+    # It is fixed before its first scored day.
+    assert kq.REQUOTE_FIXED + timedelta(days=1) == kq.REQUOTE_FIRST_DAY
+
+
 def test_against_wait_pairs_each_game_and_adjusts_over_the_three_rules() -> None:
     days = [qf.DAY + timedelta(weeks=w) for w in range(5)]
     ids = [qf.GAME + w for w in range(5)]
@@ -770,3 +863,85 @@ def test_nhl_real_quotes_copies_both_records_to_supabase(
     # Without --supabase, nothing is sent.
     sent.clear()
     assert runner.invoke(app, ["real", "quotes", "--r2"]).exit_code == 0 and not sent
+
+
+def test_nhl_real_quotes_keeps_the_requote_record_from_the_days_publications(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ADR 0059: the nightly keeps the requote record under its own prefix, from the day's ledger
+    # and morning view with their bundles (none stored here), prints counts only, and copies
+    # nothing of it to Supabase, whose quote_days takes the other two records.
+    from pathlib import Path
+    from typing import Any
+
+    from typer.testing import CliRunner
+
+    from nhl_edge import cli
+    from nhl_edge.cli import app
+    from nhl_edge.lake.schemas import CloseForecasts, dtypes
+    from nhl_edge.live import bundle as lb
+    from nhl_edge.live import requote as rq
+
+    store = lb.LocalStore(Path(str(tmp_path)))
+    tables = {
+        "paper_ledger": qf.ledger(),
+        "morning_predictions": qf.morning([(0.54, qf.PUBLISHED - timedelta(hours=5))]),
+        "close_forecasts": pl.DataFrame(schema=dtypes(CloseForecasts)),
+        "odds_snapshots": qf.odds(),
+        "kalshi_depth": qf.depth(),
+        "kalshi_trades": qf.trades([(10, qf.HOME, 0.51, 20.0)]),
+        "kalshi_tops": qf.tops(),
+        "dailyfaceoff_goalies": qf.dailyfaceoff(STARTER_POLLS),
+        "games": qf.games(),
+        "pregame_goalies": pl.DataFrame({"game_date": [qf.DAY]}),
+        "players": pl.DataFrame(),
+        "goalie_effects": pl.DataFrame(),
+    }
+
+    class FakeLake:
+        def pull(self, table: str) -> None:
+            pass
+
+        def read(self, table: str) -> pl.DataFrame:
+            return tables[table]
+
+    seen: list[Any] = []
+
+    def fake_requotes(
+        games: Any, changes: Any, publications: Any, live: Any, calls: Any, stop_before: Any
+    ) -> Any:
+        assert stop_before == kq.STOP_BEFORE
+        seen.append((changes, publications))
+        return {qf.GAME: [(qf.at(6), 0.56)]}, {"changes": 1, "requoted": 1}
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> Any:
+            return NOW
+
+    monkeypatch.setattr(cli, "_real_record", lambda r2: (FakeLake(), store))
+    monkeypatch.setattr(cli, "datetime", Later)
+    monkeypatch.setattr(
+        kq,
+        "due",
+        lambda today, done, first=kq.FIRST_DAY: [qf.DAY] if first == kq.REQUOTE_FIRST_DAY else [],
+    )
+    monkeypatch.setattr(rq, "requotes", fake_requotes)
+    monkeypatch.setattr("nhl_edge.backtest.reports.version", lambda name, now: "kalshi-quotes-x")
+    result = CliRunner().invoke(app, ["real", "quotes", "--r2"])
+    assert result.exit_code == 0, result.output
+    ((changes, publications),) = seen
+    assert changes == {qf.GAME: [qf.at(5)]}
+    # The morning view's and the decision's, in that order, each without a bundle stored here.
+    assert [p.published_utc for p in publications] == [
+        qf.PUBLISHED - timedelta(hours=5),
+        qf.PUBLISHED,
+    ]
+    assert all(p.bundle is None for p in publications)
+    assert kq.stored_days(store, kq.REQUOTE_PREFIX) == [qf.DAY]
+    assert kq.stored_days(store) == [] and kq.stored_days(store, kq.HOLDS_PREFIX) == []
+    assert (
+        "kalshi quote requotes: 1 days computed now, 1 kept, 1 starter changes, 1 requoted"
+        in result.output
+    )
+    assert "$" not in result.output and "0.56" not in result.output
