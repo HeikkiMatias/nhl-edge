@@ -53,6 +53,7 @@ from nhl_edge.lake.schemas import (
     KalshiLines,
     KalshiTops,
     KalshiTrades,
+    LakeOddsNearStart,
     LakeOddsSnapshots,
     LineupReplacements,
     Lineups,
@@ -132,6 +133,8 @@ TABLES: dict[str, Table] = {
     "finishing": Table(Finishing, ("game_id", "player_id"), BY_DATE),
     "goal_multipliers": Table(GoalMultipliers, ("game_id", "team", "goalie_id"), BY_DATE),
     "odds_snapshots": Table(LakeOddsSnapshots, ODDS_KEY, ("snapshot_date",)),
+    # Pinnacle about 5 minutes before each start, beside the proxy (ADR 0060, #254).
+    "odds_near_start": Table(LakeOddsNearStart, ODDS_KEY, ("snapshot_date",)),
     "sbr_odds": Table(SbrOdds, SBR_KEY, ("season",)),
     "pregame_goalies": Table(PregameGoalies, PREGAME_GOALIES_KEY, BY_DATE),
     "dailyfaceoff_goalies": Table(DailyFaceoffGoalies, DAILYFACEOFF_GOALIES_KEY, BY_DATE),

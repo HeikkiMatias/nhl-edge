@@ -22,6 +22,8 @@ ODDS_SIDES = {
 }
 ODDS_MARKETS = tuple(ODDS_SIDES)
 ODDS_KEY = ("snapshot_utc", "event_id", "book", "market", "side")
+# The slot of the snapshots taken about 5 minutes before each start (ADR 0060, #254).
+NEAR_START_SLOT = "near_start"
 # The book's last_update comes from the Odds API clock, snapshot_utc from ours.
 CLOCK_SKEW = timedelta(seconds=60)
 
@@ -112,6 +114,20 @@ class LakeOddsSnapshots(OddsSnapshots):
     @pa.dataframe_check
     def matched_events_have_a_game_type(cls, data: pa.PolarsData) -> pl.LazyFrame:
         return data.lazyframe.select(pl.col("game_id").is_null() == pl.col("game_type").is_null())
+
+
+class LakeOddsNearStart(LakeOddsSnapshots):
+    """The snapshots taken about 5 minutes before each start (ADR 0060, #254), replayed from their
+    own raw responses (odds-near-start/) by `nhl odds replay`, with LakeOddsSnapshots' columns and
+    checks. They are kept apart from odds_snapshots, so no closing proxy, decision or CLV of the
+    policy reads them within the season: the live report shows CLV against them beside the
+    proxy's. Their slot is NEAR_START_SLOT and none is a closing proxy."""
+
+    @pa.dataframe_check
+    def near_start_snapshots_only(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            (pl.col("slot") == NEAR_START_SLOT) & ~pl.col("is_closing_proxy")
+        )
 
 
 SBR_MARKETS = ("h2h", "spreads", "totals")

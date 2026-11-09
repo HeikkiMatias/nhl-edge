@@ -32,6 +32,11 @@ an event still gives its commence time.
 A day without a decision snapshot made no decision, so its games have no close.
 
 These read quote ages, snapshot times and the slot schedule only, never a result or a CLV.
+
+**Near-start pairs (ADR 0060, #254),** a reference beside the proxy, never replacing it within the
+season: Pinnacle's h2h pair from the latest near-start snapshot (lake odds_near_start) before a
+started game's start and at most NEAR_START_LEAD before it, both sides at most MAX_AGE old. The
+start is the commence time of the game's latest odds_snapshots snapshot, as the proxy's.
 """
 
 from datetime import UTC, datetime, time, timedelta
@@ -42,6 +47,8 @@ from nhl_edge.ingest.odds import ET, SLOT_PLANS
 
 MAX_AGE = timedelta(minutes=5)
 MAX_LEAD = timedelta(minutes=90)
+# A near-start snapshot is taken 5 to 15 minutes before its start (ingest/odds.py, ADR 0060).
+NEAR_START_LEAD = timedelta(minutes=15)
 MARKETS = ("h2h",)
 BOOK = "pinnacle"
 PLAN = "free-tier"
@@ -201,4 +208,39 @@ def pinnacle_closes(quotes: pl.DataFrame, now: datetime, plan: str = PLAN) -> pl
         )
         .select("event_id", "game_id", "start_utc", "proxy_utc", "lead", "status")
         .sort("start_utc", "event_id")
+    )
+
+
+def near_start_pairs(near: pl.DataFrame, quotes: pl.DataFrame, now: datetime) -> pl.DataFrame:
+    """Each game started by now with Pinnacle's h2h pair about 5 minutes before its start (ADR
+    0060): from near's latest snapshot before the start and at most NEAR_START_LEAD before it whose
+    two sides are each at most MAX_AGE old. The start is the commence time of the game's latest
+    snapshot in quotes (odds_snapshots), as the proxy's, else in near. Returns (event_id,
+    near_utc, near_home, near_away), near_home and near_away decimal prices."""
+    known = starts(quotes)
+    starting = pl.concat([known, starts(near).join(known, on="event_id", how="anti")])
+    started = starting.filter(pl.col("start_utc") <= _at(now))
+    pinnacle = near.filter(pl.col("book") == BOOK, pl.col("market").is_in(MARKETS))
+    pairs = (
+        pinnacle.join(started, on="event_id")
+        .group_by("snapshot_utc", "event_id", "start_utc")
+        .agg(
+            sides=pl.col("side").n_unique(),
+            age=(pl.col("snapshot_utc") - pl.col("last_update_utc")).max(),
+            near_home=pl.col("price_decimal").filter(pl.col("side") == "home").first(),
+            near_away=pl.col("price_decimal").filter(pl.col("side") == "away").first(),
+        )
+        .filter(
+            pl.col("sides") == 2,
+            pl.col("age") <= MAX_AGE,
+            pl.col("snapshot_utc") < pl.col("start_utc"),
+            pl.col("start_utc") - pl.col("snapshot_utc") <= NEAR_START_LEAD,
+        )
+    )
+    return (
+        pairs.sort("snapshot_utc")
+        .group_by("event_id", maintain_order=True)
+        .last()
+        .select("event_id", near_utc="snapshot_utc", near_home="near_home", near_away="near_away")
+        .sort("event_id")
     )

@@ -4,6 +4,13 @@ A call costs one credit per market per region and returns every listed game, so 
 spends credits on the markets that matter at each time of day and skips days without games. Slots
 are defined in US Eastern time. The workflow has one cron line per slot for each UTC offset, and
 resolve_slot maps the line that fired to a slot, which keeps the plan right across DST changes.
+
+**Near-start snapshots (ADR 0060, #254).** Beside the slots, run_near_start takes one h2h snapshot
+when a game starts within NEAR_START_WITHIN and its start time has none yet, so each distinct
+start costs one credit. They are stored under NEAR_START_SOURCE, apart from SOURCE, so they never
+enter odds_snapshots, the closing proxy or a decision: the live report shows CLV against them
+beside the proxy's. A call is made only while the month's credits left also cover what the rest
+of the month's slots and re-valuation calls can spend (reserve), so the free tier's 500 holds.
 """
 
 import json
@@ -20,7 +27,7 @@ import polars as pl
 
 from nhl_edge.ingest.nhl_api import PLAYOFFS, REGULAR_SEASON, NhlApi, ScheduledGame, parse_utc
 from nhl_edge.lake.raw import RawStore
-from nhl_edge.lake.schemas import OddsSnapshots
+from nhl_edge.lake.schemas import NEAR_START_SLOT, OddsSnapshots
 
 BASE_URL = "https://api.the-odds-api.com"
 SPORT = "icehockey_nhl"
@@ -377,3 +384,131 @@ def run_snapshot(
         return
     written = sink(live)
     echo(f"{summary}; {written} of {len(live)} live-window rows sent to odds_snapshots")
+
+
+# Near-start snapshots (ADR 0060, #254)
+
+NEAR_START_SOURCE = "odds-near-start"
+# A start is due when it is at most this far ahead: the timer's runs at :10, :25, :40 and :55
+# reach every :00, :15, :30 and :45 start 5 minutes before it, and any other start within 15.
+NEAR_START_WITHIN = timedelta(minutes=15)
+NEAR_START_MARKETS = ("h2h",)
+# Every job's stored Odds API responses, whose newest sidecar holds the month's credits left: the
+# slots', re-valuation's (live/revalue.SOURCE) and the near-start snapshots'.
+CREDIT_SOURCES = (SOURCE, "odds-revalue", NEAR_START_SOURCE)
+
+
+def slot_credits_per_day(plan: str = "free-tier") -> int:
+    """The credits a day of the slot plan spends at most, one region: one per market per slot."""
+    return sum(len(slot.markets) for slot in SLOT_PLANS[plan])
+
+
+def due_starts(
+    games: Sequence[ScheduledGame], now: datetime, within: timedelta = NEAR_START_WITHIN
+) -> list[datetime]:
+    """The distinct start times of the regular-season and playoff games starting after now and at
+    most within ahead."""
+    return sorted(
+        {
+            game.start_utc
+            for game in games
+            if game.game_type in (REGULAR_SEASON, PLAYOFFS) and now < game.start_utc <= now + within
+        }
+    )
+
+
+def covered(store: RawStore, start: datetime, within: timedelta = NEAR_START_WITHIN) -> bool:
+    """Whether a near-start snapshot was taken for start already: one fetched within before it."""
+    for day in sorted({start.date(), (start - within).date()}):
+        key = store.latest_before(f"{NEAR_START_SOURCE}/{day.isoformat()}", start)
+        if key is None:
+            continue
+        fetched = parse_utc(store.meta(key)["fetched_utc"])
+        if start - within <= fetched < start:
+            return True
+    return False
+
+
+def remaining_credits(store: RawStore, now: datetime) -> int | None:
+    """The credits left this UTC month by the newest stored response of any job (CREDIT_SOURCES)
+    from today or yesterday within the month, or None when none is stored: a new month starts with
+    the tier's whole allowance."""
+    today = now.astimezone(UTC).date()
+    newest: tuple[datetime, int] | None = None
+    for day in (today, today - timedelta(days=1)):
+        if day.month != today.month:
+            continue
+        for source in CREDIT_SOURCES:
+            key = store.latest(f"{source}/{day.isoformat()}")
+            if key is None:
+                continue
+            meta = store.meta(key)
+            left = (meta.get("credits") or {}).get("remaining")
+            if left is None:
+                continue
+            fetched = parse_utc(meta["fetched_utc"])
+            if newest is None or fetched > newest[0]:
+                newest = (fetched, int(left))
+    return None if newest is None else newest[1]
+
+
+def reserve(now: datetime, per_day: int) -> int:
+    """The credits the rest of the UTC month's slots and re-valuation calls can spend, today's
+    included: per_day for each day left. The Odds API counts the free tier's 500 by month."""
+    today = now.astimezone(UTC).date()
+    following = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return per_day * (following - today).days
+
+
+def run_near_start(
+    *,
+    nhl: NhlApi,
+    odds: OddsApi,
+    store: RawStore,
+    now: datetime,
+    per_day: int,
+    echo: Callable[[str], None],
+    regions: str = "eu",
+) -> str | None:
+    """One h2h snapshot when a regular-season or playoff game starts within NEAR_START_WITHIN and
+    its start time has none yet, stored raw under NEAR_START_SOURCE: its raw key, or None when no
+    call was due, or the credits left don't cover the month's slots and re-valuation calls (per_day
+    a day, reserve) besides it. Never writes odds_snapshots or Supabase."""
+    games = nhl.schedule(now.astimezone(ET).date())
+    due = due_starts(games, now)
+    if not due:
+        echo("odds near-start: no game starts within 15 minutes, no Odds API call made")
+        return None
+    left = [start for start in due if not covered(store, start)]
+    if not left:
+        echo(f"odds near-start: {len(due)} start times due, each has its snapshot already")
+        return None
+    remaining, kept = remaining_credits(store, now), reserve(now, per_day)
+    if remaining is not None and remaining - len(NEAR_START_MARKETS) < kept:
+        echo(
+            f"::warning::odds near-start: skipped, {remaining} credits left this month and the "
+            f"slots and re-valuation keep {kept}"
+        )
+        return None
+    response = odds.odds(regions, NEAR_START_MARKETS)
+    credits = response.credits
+    stamp = f"{response.snapshot_utc:%Y%m%dT%H%M%SZ}"
+    raw_key = store.put(
+        NEAR_START_SOURCE,
+        f"{response.snapshot_utc:%Y-%m-%d}/{stamp}_{NEAR_START_SLOT}_{regions}",
+        response.body,
+        {
+            "fetched_utc": response.snapshot_utc.isoformat(),
+            "endpoint": f"/v4/sports/{SPORT}/odds",
+            "params": response.params,
+            "slot": NEAR_START_SLOT,
+            "starts": [start.isoformat() for start in left],
+            "credits": vars(credits),
+        },
+    )
+    quotes = parse_odds(response.body, response.snapshot_utc, NEAR_START_SLOT, raw_key)
+    echo(
+        f"odds near-start: {len(left)} start times, {quotes['event_id'].n_unique()} events, raw "
+        f"{raw_key}; credits remaining={credits.remaining} used={credits.used}"
+    )
+    return raw_key

@@ -1,0 +1,35 @@
+name: odds-near-start
+# Pinnacle about 5 minutes before each start (ADR 0060, #254): one h2h call (1 credit) when a game
+# starts within 15 minutes and its start time has no snapshot yet, stored apart from odds/, so it
+# never enters the closing proxy or a decision; the live report shows CLV against it beside the
+# proxy's. A call is made only while the month's credits left also cover the slots and
+# re-valuation, inside the Odds API's free 500. The Cloudflare timer in infra/timer dispatches it
+# at :10, :25, :40 and :55 from 10:55 to 22:55 US Eastern, so every :00, :15, :30 and :45 start
+# gets its snapshot 5 minutes before it.
+on:
+  schedule:
+    # The fallback while the timer is off: GitHub starts scheduled runs late, so a late run finds
+    # no start due and makes no call.
+    - cron: "10,25,40,55 14-23,0-4 * * *"
+  workflow_dispatch:
+concurrency: odds-near-start
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    # Once the Cloudflare timer runs (#50), TIMER_ACTIVE is true and only its dispatches run.
+    if: github.event_name != 'schedule' || vars.TIMER_ACTIVE != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
+      - run: uv sync --frozen
+      - name: Near-start snapshot (ADR 0060)
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: uv run nhl odds near-start --mirror-raw

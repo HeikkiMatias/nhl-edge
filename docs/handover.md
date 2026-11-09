@@ -198,7 +198,7 @@ Every deliverable merged under its own task issue:
 **What's left in phase 5:**
 - #169, task 9: a second copy of `raw/` outside R2. The owner chose, on 2026-10-09, to keep it on their own computer, set up later. The steps are on the issue (`nhl lake restore-raw` with a read-only R2 token).
 - #264 (fixed): a replay stamps the policy its day's manifest names, so v1 days replay every column again. Today's selection, guard and staking decide every replay, which v1 and v2 share. A replay of any policy outside `selection.REPLAYABLE` is refused, so a freeze that changes them must add code that replays its days.
-- #253, selected-bet calibration: a diagnostic from the review agenda. #254, the proxy's lead, is in the weekly report (below), and its cost is counted on the issue; the owner decides once the measure has intervals.
+- #253, selected-bet calibration: a diagnostic from the review agenda. #254, the proxy's lead, is in the weekly report (below); measured with intervals on 2026-11-09, the owner then chose near-start snapshots within the free tier (ADR 0060): one h2h call about 5 minutes before each start time, about 127 credits a month, reported beside the proxy and never replacing it within the season. They start once the owner redeploys the timer (`infra/timer`).
 - #121 step 3, on 2026-11-05; #67, around 2027-04-17.
 - #173 (done, 2026-10-21): post-game corrections move the live predictions by hundredths of a point and change no bet (ADR 0004's "Measured at the level of predictions"). `nhl audit corrections-replay --work <scratch> --r2` runs it again as rechecks accumulate; it takes about 15 minutes, and never writes the lake, R2 or the ledger.
 
@@ -206,7 +206,7 @@ Every deliverable merged under its own task issue:
 
 **The review agenda.** An external review on 2026-10-15 gave the agenda in #250. Three of its diagnostics are now in the weekly live report, with no verdict:
 - **Entry to close** (#251, `live/movement.py`): whether Pinnacle's price moved toward each model's disagreement by the close. First reading: 42 games, a mean move of 1.0 point, and a correlation of 0.05. It gives counts only until 4 weeks.
-- **The closing proxy's lead** (#254): Pinnacle's fair move from the decision to the proxy, and the bets' CLV, by the proxy's lead before the start (up to 30, 30 to 60 and over 60 minutes), with each one's slope on the lead. It gives counts only until 4 weeks. If either changes with the lead, the proxy is biased for some start times.
+- **The closing proxy's lead** (#254): Pinnacle's fair move from the decision to the proxy, and the bets' CLV, by the proxy's lead before the start (up to 30, 30 to 60 and over 60 minutes), with each one's slope on the lead. It gives counts only until 4 weeks. If either changes with the lead, the proxy is biased for some start times. Beside it, CLV against Pinnacle about 5 minutes before the start (ADR 0060), with the proxy's on the same bets and their paired difference, and the bets without a pre-game slot apart.
   - **The cost of a fix:** a near-start h2h snapshot for each distinct start time would cost 799 credits a season (at most 139 in a month, in March). That is against about 290 a month now and the free tier's 500. It would also need the timer to fire at each start time.
 - **Shadows** (#252, `live/shadow.py`):
   - **Market-only selection:** the frozen rules on the market-only control made 0 bets.

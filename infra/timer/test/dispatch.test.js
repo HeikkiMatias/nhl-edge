@@ -55,7 +55,7 @@ test("the cron handler throws when a dispatch fails, so the event shows as faile
     await assert.rejects(worker.scheduled({ scheduledTime: Date.parse("2026-09-29T22:45:00Z") }, env), /1 of 1/);
     // A fire with nothing due makes no request.
     globalThis.fetch = fakeFetch([204]);
-    await worker.scheduled({ scheduledTime: Date.parse("2026-09-29T22:40:00Z") }, env);
+    await worker.scheduled({ scheduledTime: Date.parse("2026-09-29T22:30:00Z") }, env);
     assert.equal(globalThis.fetch.calls.length, 0);
   } finally {
     globalThis.fetch = saved;
