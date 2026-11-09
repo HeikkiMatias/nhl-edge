@@ -19,6 +19,10 @@ snapshots span two UTC dates (the midday decision snapshot, then the evening's),
 game's later snapshots give its new start, however late. So the flag is derived over the lake's
 whole odds history, the requested dates replayed into it, and any other date whose flags change
 is rewritten too (ReplayReport.reflagged).
+
+The near-start snapshots (ADR 0060, #254), stored under odds-near-start/, are replayed apart into
+odds_near_start by replay_near_start, matched to their games the same way and never flagged: no
+closing proxy reads them.
 """
 
 from collections import Counter
@@ -29,9 +33,9 @@ from datetime import UTC, date, datetime, timedelta
 import polars as pl
 
 from nhl_edge.ingest.nhl_api import parse_utc, scheduled_games
-from nhl_edge.ingest.odds import SOURCE, parse_odds
+from nhl_edge.ingest.odds import NEAR_START_SOURCE, SOURCE, parse_odds
 from nhl_edge.lake.raw import SUFFIX, RawStore
-from nhl_edge.lake.schemas import LakeOddsSnapshots, dtypes
+from nhl_edge.lake.schemas import NEAR_START_SLOT, LakeOddsNearStart, LakeOddsSnapshots, dtypes
 from nhl_edge.lake.tables import Lake
 from nhl_edge.market import closing
 
@@ -199,3 +203,40 @@ def replay_odds(
         else:
             report.matched[GAME_TYPES.get(game_type, f"game type {game_type}")] += 1
     return report
+
+
+def replay_near_start(
+    store: RawStore, lake: Lake, dates: Collection[date] | None = None
+) -> tuple[int, int]:
+    """Parse the stored near-start snapshots (ADR 0060) of the given UTC dates, all stored dates
+    when None, into the lake's odds_near_start: pre-game quotes only, each event matched to its NHL
+    game as odds_snapshots' are, none a closing proxy. Every requested date's partition is
+    replaced. Never calls the Odds API, and never touches odds_snapshots. Returns the snapshots
+    and quotes replayed."""
+    frames, replayed = [], []
+    for day, keys in dated_raw_keys(NEAR_START_SOURCE, store).items():
+        if dates is not None and day not in dates:
+            continue
+        for raw_key in keys:
+            if not is_complete(store, raw_key):
+                continue
+            snapshot_utc = parse_utc(store.meta(raw_key)["fetched_utc"])
+            frames.append(parse_odds(store.get(raw_key), snapshot_utc, NEAR_START_SLOT, raw_key))
+        replayed.append(day)
+    schema = dtypes(LakeOddsNearStart)
+    table = pl.DataFrame(schema=schema)
+    if frames:
+        quotes = pl.concat(frames).filter(pl.col("commence_time_utc") > pl.col("snapshot_utc"))
+        if quotes.height:
+            commence = pl.col("commence_time_utc").dt.date()
+            first, last = quotes.select(commence.min(), commence.max().alias("last")).row(0)
+            listings = nhl_listings(store, first - timedelta(days=1), last)
+            table = (
+                match_games(quotes, listings)
+                .with_columns(snapshot_date=pl.col("snapshot_utc").dt.date())
+                .select(list(schema))
+                .cast(schema)  # type: ignore[arg-type]
+            )
+    table = LakeOddsNearStart.validate(table)
+    lake.replace_dates("odds_near_start", table, sorted(dates) if dates is not None else replayed)
+    return len(frames), table.height

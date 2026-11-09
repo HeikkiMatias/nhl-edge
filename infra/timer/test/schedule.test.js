@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { KALSHI_REVALUE_ET, dueJobs, easternClock } from "../src/schedule.js";
+import { KALSHI_REVALUE_ET, NEAR_START_ET, dueJobs, easternClock } from "../src/schedule.js";
 
 const at = (iso) => Date.parse(iso);
 const names = (iso) => dueJobs(at(iso)).map((j) => `${j.workflow}${j.inputs.slot ? `:${j.inputs.slot}` : ""}`);
@@ -64,7 +64,7 @@ test("the Kalshi watch starts at its six US Eastern windows in EDT and EST (#319
   assert.deepEqual(names("2026-10-23T19:05:00Z"), ["kalshi-watch.yml", "kalshi-revalue.yml"]);
   assert.deepEqual(names("2026-10-23T23:05:00Z"), ["kalshi-watch.yml", "kalshi-revalue.yml"]);
   assert.deepEqual(names("2026-12-02T00:05:00Z"), ["kalshi-watch.yml", "kalshi-revalue.yml"]);
-  assert.deepEqual(names("2026-10-23T15:10:00Z"), []);
+  assert.deepEqual(names("2026-10-23T15:15:00Z"), []);
 });
 
 test("the Kalshi re-valuation every 15 minutes from 13:05 to 22:50 US Eastern, clear of the slots", () => {
@@ -80,3 +80,23 @@ test("the Kalshi re-valuation every 15 minutes from 13:05 to 22:50 US Eastern, c
   assert.equal(KALSHI_REVALUE_ET.length, 40);
   assert.equal(KALSHI_REVALUE_ET.at(-1), "22:50");
 });
+
+test("the near-start snapshots every 15 minutes, 5 minutes before each quarter hour", () => {
+  // 18:55 EDT is 22:55 UTC, 18:55 EST is 23:55 UTC: 5 minutes before a 19:00 start (ADR 0060).
+  assert.deepEqual(names("2026-10-23T22:55:00Z"), ["odds-near-start.yml"]);
+  assert.deepEqual(names("2026-12-01T23:55:00Z"), ["odds-near-start.yml"]);
+  // :10, :25 and :40 reach the :15, :30 and :45 starts; 10:55 ET the first 11:00 start.
+  assert.deepEqual(names("2026-10-23T23:25:00Z"), ["odds-near-start.yml"]);
+  assert.deepEqual(names("2026-12-01T19:10:00Z"), ["odds-near-start.yml"]);
+  assert.deepEqual(names("2026-12-01T19:40:00Z"), ["odds-near-start.yml"]);
+  assert.deepEqual(names("2026-12-01T15:55:00Z"), ["odds-near-start.yml"]);
+  // Before 10:55 ET and after 22:55 ET there is none.
+  assert.deepEqual(names("2026-12-01T15:40:00Z"), []);
+  assert.deepEqual(names("2026-12-02T04:10:00Z"), []);
+  assert.equal(NEAR_START_ET.length, 49);
+  assert.equal(NEAR_START_ET[0], "10:55");
+  assert.equal(NEAR_START_ET.at(-1), "22:55");
+  // Never at the same minute as an odds slot or a re-valuation check.
+  for (const clock of NEAR_START_ET) assert.ok(!KALSHI_REVALUE_ET.includes(clock), clock);
+});
+

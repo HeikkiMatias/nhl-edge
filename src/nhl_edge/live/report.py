@@ -66,7 +66,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from nhl_edge.backtest import b2_report
+from nhl_edge.backtest import b2_report, e3
 from nhl_edge.backtest import selected as selected_bets
 from nhl_edge.backtest.e3 import stake_weighted
 from nhl_edge.backtest.market import Experiment, market_prices
@@ -625,6 +625,46 @@ def proxy_lead(moves: pl.DataFrame, bets: pl.DataFrame, leads: pl.DataFrame) -> 
         pl.col("settled") == ls.SETTLED, pl.col("close_status") == closing.PROXY
     ).join(leads, on=keys, how="left")
     return {"move_points": _by_lead(valid, "points"), "clv": _by_lead(valued, "clv")}
+
+
+def near_start(
+    bets: pl.DataFrame, odds: pl.DataFrame, near: pl.DataFrame | None, now: datetime
+) -> dict[str, Any]:
+    """ADR 0060's reference beside the closing proxy (#254), with no verdict: over the settled bets
+    whose game has Pinnacle's pair about 5 minutes before its start (closing.near_start_pairs),
+    CLV per bet against it, valued as settlement values the proxy (backtest/e3.closing_value); over
+    those with a valid proxy too, the proxy's CLV and the paired difference, near-start less
+    proxy; and apart, the bets with no pre-game slot due (ADR 0032's NO_PREGAME), outside its
+    coverage. It never changes the proxy, the coverage or any verdict within the season."""
+    if near is None or near.is_empty():
+        return {"first": None, "bets": 0}
+    keys = ["game_date", "game_id"]
+    pairs = closing.near_start_pairs(near, odds, now)
+    settled = (
+        bets.filter(pl.col("settled") == ls.SETTLED)
+        .rename({"clv": "proxy_clv"})
+        .drop("fair_move")
+        .join(pairs, on="event_id")
+    )
+    closes = settled.select(*keys, close_home="near_home", close_away="near_away")
+    valued = e3.closing_value(settled.drop("near_home", "near_away"), closes, keys).rename(
+        {"clv": "near_clv"}
+    )
+    with_proxy = valued.filter(
+        pl.col("close_status") == closing.PROXY, pl.col("proxy_clv").is_not_null()
+    ).with_columns(difference=pl.col("near_clv") - pl.col("proxy_clv"))
+    outside = valued.filter(pl.col("close_status") == closing.NO_PREGAME)
+    return {
+        "first": valued["game_date"].min().isoformat() if valued.height else None,  # type: ignore[union-attr]
+        "bets": valued.height,
+        "clv_per_bet": estimate(valued, "near_clv"),
+        "with_proxy": {
+            "bets": with_proxy.height,
+            "proxy_clv_per_bet": estimate(with_proxy, "proxy_clv"),
+            "near_less_proxy": estimate(with_proxy, "difference"),
+        },
+        "no_pregame": {"bets": outside.height, "clv_per_bet": estimate(outside, "near_clv")},
+    }
 
 
 def edge_bids(
@@ -1424,6 +1464,7 @@ def report(
     scale_up: dict[str, Any] | None = None,
     morning: pl.DataFrame | None = None,
     forecasts: pl.DataFrame | None = None,
+    near: pl.DataFrame | None = None,
 ) -> dict[str, Any]:
     """The live report of one policy, the frozen one by default, as of as_of: ledger and
     settlements as written, games' results, the odds' Pinnacle quotes, SBR's history
@@ -1435,7 +1476,8 @@ def report(
     which #308's edge bids read for the share of fills after a starter changed. scale_up is ADR
     0047's public counts (live/scale_up.public), None when not read. morning is the stored
     morning views (morning_predictions, ADR 0052), and forecasts the stored close forecasts
-    (close_forecasts, ADR 0054), none by default."""
+    (close_forecasts, ADR 0054), none by default. near is the snapshots about 5 minutes before
+    each start (odds_near_start, ADR 0060), reported beside the closing proxy, none by default."""
     now = now or datetime.combine(as_of + timedelta(days=1), time(12), UTC)
     rows = counted(ledger, as_of, policy)
     bets = bets_of(rows, settlements)
@@ -1496,7 +1538,8 @@ def report(
         },
         "market_timing": market_timing(scored, history),
         "entry_to_close": entry_to_close(moves),
-        "proxy_lead": proxy_lead(moves, bets, proxy_leads(started, odds, now)),
+        "proxy_lead": proxy_lead(moves, bets, proxy_leads(started, odds, now))
+        | {"near_start": near_start(bets, odds, near, now)},
         "selected_calibration": selected_calibration(scored),
         "shadows": shadows(started, moves, odds, dailyfaceoff),
         "real_stakes": real_stakes(
@@ -1586,6 +1629,23 @@ def _share(n: int, of: int) -> str:
 
 def _minutes(spread: dict[str, float] | None) -> str:
     return f"median {spread['median']:.1f}, max {spread['max']:.1f}" if spread else "none yet"
+
+
+def _near_start_lines(near: dict[str, Any]) -> list[str]:
+    """ADR 0060's reference beside the proxy, in the #254 section."""
+    name = "Against Pinnacle about 5 minutes before the start (ADR 0060)"
+    if not near["bets"]:
+        return [f"- {name}: no settled bet has one yet."]
+    both, outside = near["with_proxy"], near["no_pregame"]
+    return [
+        f"- {name}, from {near['first']}: CLV per bet {_cell(near['clv_per_bet'], 4)} on "
+        f"{near['bets']} bets. A reference beside the proxy, never replacing it within the season.",
+        f"  - The {both['bets']} with a valid proxy too: the proxy's CLV "
+        f"{_cell(both['proxy_clv_per_bet'], 4)}; near-start less the proxy, paired, "
+        f"{_cell(both['near_less_proxy'], 4)}.",
+        f"  - Without a pre-game slot, outside ADR 0032's coverage: {outside['bets']} bets, CLV "
+        f"per bet {_cell(outside['clv_per_bet'], 4)}.",
+    ]
 
 
 def markdown(result: dict[str, Any]) -> str:
@@ -1821,6 +1881,7 @@ def markdown(result: dict[str, Any]) -> str:
         f"- Slope on the lead, per hour: the move {_cell(lead['move_points']['slope_per_hour'])}, "
         f"CLV {_cell(lead['clv']['slope_per_hour'], 4)}.",
     ]
+    lines += _near_start_lines(lead.get("near_start") or {"first": None, "bets": 0})
     lines += _selected_lines(result["selected_calibration"])
     market = result["shadows"]["market_only"]
     best = result["shadows"]["best_price"]

@@ -32,6 +32,16 @@ export const KALSHI_REVALUE_ET = Array.from({ length: 10 }, (_, i) => 13 + i).fl
   ["05", "20", "35", "50"].map((minute) => `${hour}:${minute}`),
 );
 
+// Pinnacle about 5 minutes before each start (ADR 0060, #254), in US Eastern wall time: every 15
+// minutes at :10, :25, :40 and :55 from 10:55 to 22:55, so every :00, :15, :30 and :45 start
+// gets its snapshot 5 minutes before it. The job calls the Odds API only when a start is due.
+export const NEAR_START_ET = [
+  "10:55",
+  ...Array.from({ length: 12 }, (_, i) => 11 + i).flatMap((hour) =>
+    ["10", "25", "40", "55"].map((minute) => `${hour}:${minute}`),
+  ),
+];
+
 const EASTERN = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
   hour: "2-digit",
@@ -66,6 +76,9 @@ export function dueJobs(scheduledMs) {
   if (KALSHI_WATCH_ET.includes(eastern)) jobs.push({ workflow: "kalshi-watch.yml", inputs: {} });
   if (KALSHI_REVALUE_ET.includes(eastern)) {
     jobs.push({ workflow: "kalshi-revalue.yml", inputs: {} });
+  }
+  if (NEAR_START_ET.includes(eastern)) {
+    jobs.push({ workflow: "odds-near-start.yml", inputs: {} });
   }
   const [hour, minute] = utc.split(":").map(Number);
   if (minute === 50 && GOALIE_HOURS_UTC.includes(hour)) {

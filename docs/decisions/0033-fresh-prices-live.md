@@ -64,6 +64,7 @@ None: history has no Pinnacle quotes or timestamps. The ages and counts above co
 ## Revisit when
 
 - The eligible share of bets falls well short of 81%. More snapshot slots would be a new decision, made before the games they cover.
+- Near-start snapshots were added beside the proxy, never replacing it within the season: ADR 0060 (2026-11-09).
 - Or stale quotes become common in a slot, which would show Pinnacle's feed behaving differently from these first ten days.
 
 ## Amendment, 2026-10-07: the quote's age at publication

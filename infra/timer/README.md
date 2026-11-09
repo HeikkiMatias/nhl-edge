@@ -11,6 +11,7 @@ Worker's cron fires every five minutes, and `src/schedule.js` decides which work
 | `ingest-nightly.yml` | 09:00 UTC | none |
 | `kalshi-watch.yml` | 07:05, 11:05, 15:05 and 19:05 US Eastern (DST included); each run watches every game's Kalshi markets until a minute before the next (#319) | none |
 | `kalshi-revalue.yml` | :05, :20, :35 and :50 from 13:05 to 22:50 US Eastern (DST included), clear of the odds slots at :45; each run re-values the resting maker bids on a Kalshi move or a starter change (#321) | none |
+| `odds-near-start.yml` | :10, :25, :40 and :55 from 10:55 to 22:55 US Eastern (DST included); each run takes Pinnacle's h2h about 5 minutes before any start due within 15 minutes, one credit per start time (ADR 0060, #254) | none |
 
 `player-seasons.yml` (#117) runs once a year on GitHub's own schedule alone, since hours of delay don't matter to it.
 

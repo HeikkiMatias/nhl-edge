@@ -3907,6 +3907,7 @@ def live_report(
         tables = (
             "games",
             "odds_snapshots",
+            "odds_near_start",
             "paper_settlements",
             "sbr_odds",
             "dailyfaceoff_goalies",
@@ -3958,6 +3959,7 @@ def live_report(
         scale_up=scale_up,
         morning=mornings,
         forecasts=forecasts,
+        near=lake.read("odds_near_start"),
     )
     json_path, md_path = lr.write(result, out)
     if supabase:
@@ -4559,6 +4561,36 @@ def snapshot(
     )
 
 
+@odds_app.command("near-start")
+def near_start(
+    regions: Annotated[str, typer.Option(help="Odds API regions.")] = "eu",
+    mirror_raw: Annotated[
+        bool, typer.Option(help="Mirror the raw response to R2 (needs the R2_* variables).")
+    ] = False,
+) -> None:
+    """One h2h snapshot about 5 minutes before each start time (ADR 0060, #254): when a game starts
+    within 15 minutes and its start has none yet, and the month's credits left also cover the
+    slots and re-valuation. Stored apart from odds_snapshots, so it never enters the closing proxy
+    or a decision; the live report shows CLV against it beside the proxy's."""
+    from nhl_edge.ingest.nhl_api import NhlApi
+    from nhl_edge.ingest.odds import OddsApi, run_near_start, slot_credits_per_day, utc_now
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.live.revalue import CALLS_PER_DAY
+    from nhl_edge.settings import load_env, require
+
+    load_env()
+    store = RawStore.from_env(mirror=mirror_raw)
+    run_near_start(
+        nhl=NhlApi(store),
+        odds=OddsApi(require("ODDS_API_KEY")),
+        store=store,
+        now=utc_now(),
+        per_day=slot_credits_per_day() + CALLS_PER_DAY,
+        echo=typer.echo,
+        regions=regions,
+    )
+
+
 @odds_app.command()
 def backfill() -> None:
     """Backfill historical odds from the paid Odds API endpoint."""
@@ -4657,11 +4689,18 @@ def replay(
     ] = False,
 ) -> None:
     """Rebuild the lake's odds_snapshots from the stored raw snapshots, matching each event to its
-    NHL game and marking each started game's closing proxy (#21, ADR 0033). Never calls the Odds
-    API. Without a window, every stored snapshot is replayed."""
+    NHL game and marking each started game's closing proxy (#21, ADR 0033), and odds_near_start
+    from the near-start snapshots apart (ADR 0060). Never calls the Odds API. Without a window,
+    every stored snapshot is replayed."""
     from datetime import UTC, timedelta
 
-    from nhl_edge.ingest.odds_lake import SCHEDULE_DAYS, SCHEDULE_PREFIX, replay_odds
+    from nhl_edge.ingest.odds import NEAR_START_SOURCE
+    from nhl_edge.ingest.odds_lake import (
+        SCHEDULE_DAYS,
+        SCHEDULE_PREFIX,
+        replay_near_start,
+        replay_odds,
+    )
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
@@ -4687,12 +4726,16 @@ def replay(
     store = RawStore.from_env(mirror=r2, flag="--r2")
     if r2:
         if dates is None:
-            prefixes = ["odds/", f"{SCHEDULE_PREFIX}/"]
+            prefixes = ["odds/", f"{NEAR_START_SOURCE}/", f"{SCHEDULE_PREFIX}/"]
         else:
             # Snapshots of the window, and the schedules that can list their games: events are
             # priced up to about ten days ahead, and a schedule response covers seven days.
             span = range(-SCHEDULE_DAYS - 1, (dates[-1] - dates[0]).days + 3 * SCHEDULE_DAYS)
-            prefixes = [f"odds/{day.isoformat()}/" for day in dates]
+            prefixes = [
+                f"{source}/{day.isoformat()}/"
+                for source in ("odds", NEAR_START_SOURCE)
+                for day in dates
+            ]
             prefixes += [
                 f"{SCHEDULE_PREFIX}/{(dates[0] + timedelta(days=d)).isoformat()}/" for d in span
             ]
@@ -4704,6 +4747,7 @@ def replay(
         typer.echo(f"pulled {lake.pull('odds_snapshots'):,} odds_snapshots files from R2")
     now = datetime.now(UTC)
     report = replay_odds(store, lake, dates, now=now)
+    near, near_quotes = replay_near_start(store, lake, dates)
     if supabase:
         import polars as pl
 
@@ -4732,6 +4776,7 @@ def replay(
         typer.echo(f"  unmatched {event_id}: {away} at {home}, {commence:%Y-%m-%d %H:%M} UTC")
     if report.in_play:
         typer.echo(f"  left out {report.in_play:,} quotes on games already under way")
+    typer.echo(f"odds_near_start (ADR 0060): {near} snapshots, {near_quotes:,} quotes")
     if report.reflagged:
         days = ", ".join(str(day) for day in report.reflagged)
         typer.echo(f"  closing proxies moved on other dates, rewritten: {days}")

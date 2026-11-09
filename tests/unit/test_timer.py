@@ -92,6 +92,7 @@ def test_every_scheduled_workflow_is_dispatched_by_the_timer_and_skips_its_sched
             "ingest-nightly.yml",
             "kalshi-revalue.yml",
             "kalshi-watch.yml",
+            "odds-near-start.yml",
             "odds-snapshots.yml",
             "pregame-goalies.yml",
         ]
