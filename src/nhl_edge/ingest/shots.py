@@ -1,4 +1,5 @@
-"""Shots: every unblocked shot attempt in a game's play-by-play (docs/plan.md section 4).
+"""Shots: every unblocked shot attempt in a game's play-by-play (docs/plan.md section 4), and
+apart from them every blocked one (#419).
 
 Shots on goal, missed shots and goals in periods 1 to 4 become rows; blocked shots are not
 unblocked attempts, and shootout attempts are not play. Each play carries a situationCode of four
@@ -34,6 +35,7 @@ from nhl_edge.lake.schemas import (
     SHOT_EVENTS,
     STRENGTH_SOURCES,
     ZONES,
+    BlockedShots,
     Shots,
     dtypes,
 )
@@ -56,6 +58,15 @@ def unblocked_attempts(plays: list[dict[str, Any]]) -> list[dict[str, Any]]:
         play
         for play in plays
         if play["typeDescKey"] in SHOT_EVENTS and play["periodDescriptor"]["periodType"] != SHOOTOUT
+    ]
+
+
+def blocked_attempts(plays: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        play
+        for play in plays
+        if play["typeDescKey"] == BLOCKED_SHOT
+        and play["periodDescriptor"]["periodType"] != SHOOTOUT
     ]
 
 
@@ -205,3 +216,66 @@ def parse_shots(body: bytes, game: FeedGame, raw_key: str) -> pl.DataFrame:
         shot_row(play, game, directions, previous.get(play["eventId"]), raw_key) for play in shots
     ]
     return Shots.validate(pl.DataFrame(rows, schema=dtypes(Shots)))
+
+
+def blocked_zone(x: int | None, zone_code: str | None) -> str | None:
+    """A blocked shot's zone from the shooting team's side: from its turned x when known, or
+    else from the logged zoneCode turned around, which is nearly always the blocker's side."""
+    if x is not None:
+        return "O" if x > BLUE_LINE_X else "D" if x < -BLUE_LINE_X else "N"
+    return OTHER_SIDE[zone_code] if zone_code in ZONES else None
+
+
+def blocked_row(
+    play: dict[str, Any], game: FeedGame, directions: Directions, raw_key: str
+) -> dict[str, Any]:
+    details = play["details"]
+    period = play["periodDescriptor"]["number"]
+    team_id = details["eventOwnerTeamId"]
+    team = game.team(team_id)
+    if team is None:
+        raise ValueError(f"blocked shot {play['eventId']} of {game.game_id} is by team {team_id}")
+    clock = clock_s(play["timeInPeriod"])
+    if clock is None or not 1 <= period <= OT_PERIOD:
+        raise ValueError(f"blocked shot {play['eventId']} of {game.game_id} has no game time")
+    is_home = team_id == game.home_id
+    strength = situation(play.get("situationCode"), is_home)
+    direction = directions.get((period, team_id))
+    x, y = details.get("xCoord"), details.get("yCoord")
+    turned_x = x * direction if x is not None and direction else None
+    return {
+        **game.keys(),
+        "event_id": play["eventId"],
+        "sort_order": play["sortOrder"],
+        "period": period,
+        "seconds": (period - 1) * PERIOD_S + clock,
+        "team": team,
+        "is_home": is_home,
+        "shooter_id": details.get("shootingPlayerId"),
+        "blocker_id": details.get("blockingPlayerId"),
+        "reason": details.get("reason"),
+        "zone": blocked_zone(turned_x, details.get("zoneCode")),
+        "x": turned_x,
+        "y": y * direction if y is not None and direction else None,
+        "skaters_for": strength[0] if strength else None,
+        "skaters_against": strength[1] if strength else None,
+        "strength": f"{strength[0]}v{strength[1]}" if strength else None,
+        # Unknown without a situationCode: a blocked shot names no goalie in net.
+        "is_empty_net": not strength[2] if strength else None,
+        "situation_code": play.get("situationCode") or None,
+        "strength_source": STRENGTH_SOURCES[0] if strength else None,
+        "observed_utc": game.observed_utc,
+        "raw_key": raw_key,
+    }
+
+
+def parse_blocked_shots(body: bytes, game: FeedGame, raw_key: str) -> pl.DataFrame:
+    """The game's blocked shot attempts, validated against BlockedShots. Coordinates are turned by
+    the attack directions of the game's unblocked attempts, as in parse_shots."""
+    data = json.loads(body)
+    check_game_id(data, game.game_id, "play-by-play")
+    directions = attack_directions(unblocked_attempts(data["plays"]))
+    rows = [
+        blocked_row(play, game, directions, raw_key) for play in blocked_attempts(data["plays"])
+    ]
+    return BlockedShots.validate(pl.DataFrame(rows, schema=dtypes(BlockedShots)))
