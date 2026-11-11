@@ -4,6 +4,7 @@ its latest feed is; later games change no earlier rate;
 the pull is chosen on 2012-13 without any later game; and the script reads the lake only to the
 explore half."""
 
+import sys
 from datetime import timedelta
 from typing import Any
 
@@ -134,7 +135,9 @@ def test_the_script_reads_the_lake_only_to_the_explore_half(
 
     monkeypatch.setattr(ga.ys, "read", read)
     monkeypatch.setattr(ga, "team_games", team_games)
+    monkeypatch.setattr(ga, "Lake", Lake)
+    monkeypatch.setattr(sys, "argv", ["goals_attempts.py"])
     with pytest.raises(RuntimeError, match="stop here"):
-        ga.run(Lake())
+        ga.main()
     assert asked == [max(ys.EXPLORE)]
     assert len(seen) == 4 and set(seen.values()) == {max(ys.EXPLORE)}
