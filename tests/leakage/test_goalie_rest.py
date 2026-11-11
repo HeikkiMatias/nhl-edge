@@ -63,6 +63,27 @@ def test_the_game_columns_read_only_what_was_known_at_the_prediction() -> None:
     assert unknown.is_empty() and missing == columns.height
 
 
+def test_the_game_columns_are_as_of_the_prediction_not_the_start() -> None:
+    read = f.league_read()
+    hours = (pl.col("game_date").cast(f.UTC_TYPE) + timedelta(hours=20)).alias("cut")
+    frame = read.frame.with_columns(hours)
+    # Every prediction comes before 20:00 UTC on its date, and every start after it.
+    assert (frame["prediction_utc"] < frame["cut"]).all() and (
+        frame["start_utc"] > frame["cut"]
+    ).all()
+    columns, _ = gr.rest_columns(read)
+    assert columns["goalie_b2b_diff"].abs().max() > 0  # type: ignore[operator]
+    # Yesterday's boxscores turn public at 20:00 UTC today: after the prediction, before the
+    # start. A column read at the start would count them; at the prediction, none counts.
+    lineups = read.b2_tables.actual_lineups.with_columns(
+        observed_utc=pl.col("game_date").cast(f.UTC_TYPE) + timedelta(days=1, hours=20)
+    )
+    shifted, _ = gr.rest_columns(
+        replace(read, b2_tables=replace(read.b2_tables, actual_lineups=lineups))
+    )
+    assert shifted["goalie_b2b_diff"].abs().max() == 0
+
+
 def test_shot_rows_read_no_later_season_and_no_term_known_after_the_start() -> None:
     shots, xg = f.step1_shots()
     later = shots.with_columns(
@@ -70,12 +91,13 @@ def test_shot_rows_read_no_later_season_and_no_term_known_after_the_start() -> N
     )
     rows, _ = gr.shot_rows(pl.concat([shots, later]), xg, f.step1_read())
     assert set(rows["game_id"]) == {2} and rows["season"].max() == 20132014
-    # An xG fitted at or after the start is left out and counted (the starters' two shots).
+    # An xG fitted at or after its season's fold start is left out and counted (the starters'
+    # two shots).
     refit = xg.with_columns(
         train_cutoff=pl.lit(datetime(2013, 11, 2, tzinfo=UTC), dtype=f.UTC_TYPE)
     )
     rows, counts = gr.shot_rows(shots, refit, f.step1_read())
-    assert rows.is_empty() and counts["xg_fitted_at_or_after_the_start"] == 2
+    assert rows.is_empty() and counts["xg_fitted_at_or_after_the_fold_start"] == 2
 
 
 def test_each_shot_season_is_fitted_on_earlier_seasons_public_before_its_fold_start() -> None:

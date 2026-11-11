@@ -165,6 +165,8 @@ def step1_read() -> Any:
     )
     return SimpleNamespace(
         games=games,
+        # The calendar ys.fold_start reads: each season's first start.
+        frame=games,
         b2_tables=SimpleNamespace(actual_lineups=lineups),
         b3_tables=SimpleNamespace(goal_multipliers=gammas),
     )

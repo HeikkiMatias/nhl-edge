@@ -70,7 +70,10 @@ def test_shot_rows_keep_the_starters_shots_with_terms_known_before_the_start() -
     # G2 has no earlier start (7 or more), BOS rested, and his gamma came after the start.
     assert g2["band"] == "7+" and g2["band_7_plus"] == 1.0 and g2["starts7"] == 0.0
     assert g2["defending_home"] == 0.0 and g2["team_b2b"] == 0.0 and g2["log_gamma"] == 0.0
-    assert counts == {"xg_fitted_at_or_after_the_start": 0, "starters_without_a_known_gamma": 1}
+    assert counts == {
+        "xg_fitted_at_or_after_the_fold_start": 0,
+        "starters_without_a_known_gamma": 1,
+    }
 
 
 def test_the_rest_terms_help_the_fit_when_rest_matters() -> None:

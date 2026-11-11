@@ -10,8 +10,9 @@ was public before the as-of time.
 **Step 1, the shot level** (a measurement on the goalie who played, not a forecast input):
 - the unblocked shots shot_xg scores, faced by the defending team's starter;
 - an unpenalized logistic regression of the goal on logit(xG), his log gamma (B3's conversion
-  multiplier for the shooting team against him, ADR 0022, known before the start; 0 when he was
-  no candidate), the defending team at home and the defending team's back-to-back (the base);
+  multiplier for the shooting team against him, ADR 0022, from data known before the start; 0
+  when he was no candidate), the defending team at home and the defending team's back-to-back
+  (the base);
 - the full model adds his rest: days since his last start, one-hot as 1, 3, 4 to 6 and 7 or more
   against 2 (no earlier start counts as 7 or more), and his starts in the 7 days before;
 - each explore season is fitted on the shots from FIRST_FIT to the season before, public before
@@ -49,6 +50,7 @@ from sklearn.linear_model import LogisticRegression
 
 from nhl_edge.backtest import metrics, reports
 from nhl_edge.backtest import yardstick as ys
+from nhl_edge.features.team_strength import TUNED_CUTOFF
 from nhl_edge.game import b2, b3
 from nhl_edge.lake.tables import Lake, Reader
 
@@ -155,8 +157,9 @@ def shot_rows(
     shots: pl.DataFrame, shot_xg: pl.DataFrame, read: ys.Read
 ) -> tuple[pl.DataFrame, dict[str, int]]:
     """Step 1's shots: each unblocked shot shot_xg scores whose goalie was the defending team's
-    starter, from FIRST_FIT to the last season of read, with its goal, its xG, the base terms
-    and his rest, each known before the game's start; and the counts left out on the way."""
+    starter, from FIRST_FIT to the last season of read, with its goal, its xG (from a fit
+    before its season's fold start), the base terms and his rest, each from data known before
+    the game's start; and the counts left out on the way."""
     last = int(read.games["season"].max())  # type: ignore[arg-type]
     seasons = pl.col("season").is_between(ys.FIRST_FIT, last)
     games = read.games.filter(seasons).select("game_id", "game_date", "start_utc", "home", "away")
@@ -168,6 +171,11 @@ def shot_rows(
         shot_xg.filter(seasons).select("game_id", "event_id", "xg", xg_cutoff="train_cutoff"),
         on=["game_id", "event_id"],
     )
+    present = sorted(scored["season"].unique().to_list())
+    folds = pl.DataFrame(
+        {"season": present, "fold_start": [ys.fold_start(read.frame, s) for s in present]},
+        schema={"season": pl.Int32, "fold_start": ys.UTC},
+    )
     frame = (
         scored.drop("game_date")
         .join(games, on="game_id")
@@ -177,8 +185,10 @@ def shot_rows(
         )
         .join(starters, on=["game_id", "defending", "goalie_id"])
     )
-    fitted_late = frame.filter(pl.col("xg_cutoff") >= pl.col("start_utc")).height
-    frame = frame.filter(pl.col("xg_cutoff") < pl.col("start_utc"))
+    # Each shot's xG comes from a fit before its season's fold start (hard rule 1).
+    frame = frame.join(folds, on="season")
+    fitted_late = frame.filter(pl.col("xg_cutoff") >= pl.col("fold_start")).height
+    frame = frame.filter(pl.col("xg_cutoff") < pl.col("fold_start"))
     gammas = read.b3_tables.goal_multipliers.filter(pl.col("goalie_id").is_not_null()).select(
         "game_id", "team", "goalie_id", "gamma", gamma_utc="observed_utc"
     )
@@ -205,7 +215,7 @@ def shot_rows(
         )
     )
     counts = {
-        "xg_fitted_at_or_after_the_start": fitted_late,
+        "xg_fitted_at_or_after_the_fold_start": fitted_late,
         "starters_without_a_known_gamma": out.filter(~known)
         .select("game_id", "goalie_id")
         .unique()
@@ -414,6 +424,11 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
         "2026-11-11). Intervals are 95% weekly block bootstrap. Not fresh: #361, #366 and #370",
         "read these seasons, so every p-value is development evidence only.",
         "",
+        "**In-sample settings:** gamma's and the goalie part's settings (and the yardstick's other",
+        f"features') were tuned on these seasons, through {found['tuning_cutoff']}, and are read",
+        "at their data's time under the training seasons' exception (ADR 0053, ADR 0011). None",
+        "of these figures is out of sample.",
+        "",
         "## Step 1: the shot level",
         "",
         f"{step1['shots']:,} unblocked shots, faced by the starters of {step1['starter_games']:,}",
@@ -536,6 +551,7 @@ def run(lake: Reader) -> dict[str, Any]:
         },
         "missing_games": missing,
         "stale_rested": stale,
+        "tuning_cutoff": str(TUNED_CUTOFF),
         "figures": figures,
         "calibration": calibration(frame),
         "decision": decision,
