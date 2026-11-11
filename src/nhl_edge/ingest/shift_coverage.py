@@ -9,6 +9,7 @@ A complete chart also supplies each shot's skater counts (chart_strength, ADR 00
 situationCode can stay a skater off for the rest of a game after a penalty (#28).
 """
 
+import pandera.polars as pa
 import polars as pl
 
 from nhl_edge.ingest.feeds import FeedGame
@@ -29,7 +30,9 @@ def on_ice_counts(
     to what the situationCode says. A player is on the ice at second t when start_s < t <= end_s;
     a player missing from the lineup counts as a skater."""
     code = pl.col("situation_code")
-    checked = shots.filter(~pl.col("is_penalty_shot") & code.str.contains(r"^[0-9]{4}$")).select(
+    # A blocked shot (#419) is never a penalty shot, and its table has no such flag.
+    penalty = pl.col("is_penalty_shot") if "is_penalty_shot" in shots.columns else pl.lit(False)
+    checked = shots.filter(~penalty & code.str.contains(r"^[0-9]{4}$")).select(
         "event_id",
         "period",
         "seconds",
@@ -70,12 +73,16 @@ CHART_SKATERS = (3, 6)
 
 
 def chart_strength(
-    game: FeedGame, shots: pl.DataFrame, shifts: pl.DataFrame, lineups: pl.DataFrame
+    game: FeedGame,
+    shots: pl.DataFrame,
+    shifts: pl.DataFrame,
+    lineups: pl.DataFrame,
+    schema: type[pa.DataFrameModel] = Shots,
 ) -> pl.DataFrame:
     """shots with skater counts from the shift chart (ADR 0009) at each shot on_ice_counts checks
     (it has a situationCode and is not a penalty shot) where the chart puts CHART_SKATERS of each
     team on the ice. The caller passes only a complete chart. is_empty_net and situation_code keep
-    what situationCode says."""
+    what situationCode says. schema is the frame's table: Shots, or BlockedShots (#419)."""
     low, high = CHART_SKATERS
     counts = (
         on_ice_counts(game, shots, shifts, lineups)
@@ -102,7 +109,7 @@ def chart_strength(
     counted = counted.with_columns(
         strength=pl.when(chart).then(rebuilt).otherwise(pl.col("strength"))
     )
-    return Shots.validate(counted.select(list(dtypes(Shots))))
+    return schema.validate(counted.select(list(dtypes(schema))))
 
 
 def shift_coverage(

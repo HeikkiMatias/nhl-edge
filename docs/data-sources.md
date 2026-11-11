@@ -148,7 +148,7 @@ The 16 seasons come to 19,152 games. With the feeds this is about 64,000 request
 
 ## Per-game tables
 
-`nhl ingest` parses each final game's three feeds into seven lake tables, partitioned like `games` (`season=S/game_date=D/`) and replaced a whole game date at a time. `--replay` rebuilds them from the raw cache. The parsers are in `src/nhl_edge/ingest/` (`shots.py`, `shifts.py`, `toi_reports.py`, `lineups.py`, `shift_coverage.py`, `strength_time.py`, `plays.py`), and the schemas in `lake/schemas.py` document every column.
+`nhl ingest` parses each final game's three feeds into eight lake tables, partitioned like `games` (`season=S/game_date=D/`) and replaced a whole game date at a time. `--replay` rebuilds them from the raw cache. The parsers are in `src/nhl_edge/ingest/` (`shots.py`, `shifts.py`, `toi_reports.py`, `lineups.py`, `shift_coverage.py`, `strength_time.py`, `plays.py`), and the schemas in `lake/schemas.py` document every column.
 
 | Table | From | Grain | What it holds |
 | --- | --- | --- | --- |
@@ -159,6 +159,7 @@ The 16 seasons come to 19,152 games. With the feeds this is about 64,000 request
 | `strength_time` | play-by-play and shift chart | one team, game and strength state | seconds at each strength state (such as `5v4`), with each net manned or empty (below) |
 | `penalties` | play-by-play | one penalty | the penalized team, the players who took it, drew it and served it, its type and minutes (below) |
 | `faceoffs` | play-by-play | one faceoff | winning team, winner, loser and the zone from the home team's side (below) |
+| `blocked_shots` | play-by-play | one blocked attempt | shots blocked in periods 1 to 4 (#419), with time, the shooting team, shooter and blocker, where it was blocked, and strength (below) |
 
 Every row counts as public at 10:00 UTC the morning after its game date, like the game's result (ADR 0003). A game's own shots, shifts and lineup never feed a prediction for it, and backtest lineups come only from earlier games' boxscores (hard rule 9). The backfilled feeds were fetched years after the games and include post-game corrections, which live does not see. The tables leave out scoring credits, but corrections can still change kept values: a goal's scorer, a shot record, time on ice. ADR 0004 accepts this small look-ahead, and #30 measures it.
 
@@ -195,6 +196,12 @@ Shift chart rows the parser leaves out, counted in `shift_coverage`:
 The API returns an empty shift chart for 57 games, 2024021235 to 2024021291 (2025-04-08 to 2025-04-15). A live request on 2026-09-29 still gave none. One other game from 2010-11 on gives no shifts, 2013020971, whose chart holds a goal marker and nothing else; it stays without shifts (#68 covers only the 57). Those copies were fetched long after their games, so they count as settled and are not fetched again. Their shifts come from the NHL's time-on-ice reports instead (#68, below).
 
 A game's chart is `complete` when it has no bad rows and every dressed player's shifts add up to his boxscore time on ice within 60 seconds (a missing boxscore time counts as not adding up). At every unblocked shot except penalty shots, the players on the ice by the chart are also compared with `situationCode`, and `skater_mismatches` and `goalie_mismatches` count where they differ. RAPM drops the stints that contradict the strength state. `nhl audit shifts` prints the per-season summary, which is reviewed before RAPM depends on the charts.
+
+`blocked_shots` (#419) completes `shots`: with it, every shot attempt a team took.
+- **Its team.** The API logs a blocked shot under the team that took it. The shooter is on that team and the blocker on the other in every game checked, and each team's blocked attempts equal the other team's blocks in the boxscore (`blockedShots`, summed over its players).
+- **Where.** The coordinates are where the shot was blocked, turned by the shooting team's attack direction from its unblocked shots. `zone` is from the shooting team's side: from x, or without it from `zoneCode` turned around, since a blocked shot's `zoneCode` is nearly always the blocker's side.
+- **Strength.** As for `shots` (ADR 0009): the complete chart's counts, or `situationCode`. Without a `situationCode`, `is_empty_net` is null, since a blocked shot names no goalie in net.
+- **Not read yet.** No model or feature reads it; #420 is its first reader.
 
 `penalties` and `faceoffs` (#96) are for the player layer (#12): each player's penalties taken and drawn give B3's expected power plays, and the faceoff that opens a stint gives RAPM its zone start. Checked on every game of the open seasons, 2010-11 to 2021-22: each of the 110,753 penalties in play has a team of the game and a time, 2,953 name no one who took it and 9,336 no one who drew it, and each of the 819,251 faceoffs names both players and a zone.
 - **Penalties.** `team` is the penalized team, the play's `eventOwnerTeamId`. `committed_by` is the player penalized, `drawn_by` the player fouled, and `served_by` the player who sat in the box for someone else: a bench minor, a goalie's penalty, some majors. Each is null where the feed names no one, such as a head coach's game misconduct. `type_code` is MIN (a double minor is a MIN of 4 minutes), MAJ, MIS, GAM, MAT, BEN or PS. A penalty shot's 0 minutes and a misconduct's 10 put no team short-handed. A new type code fails the schema, which stops the ingest rather than pass unread. The two penalties of 2010-11 to 2021-22 logged in a shootout (2013021096, 2017020755) are left out.

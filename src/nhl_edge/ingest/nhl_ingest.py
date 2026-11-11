@@ -51,10 +51,10 @@ from nhl_edge.ingest.players import (
 from nhl_edge.ingest.plays import parse_faceoffs, parse_penalties
 from nhl_edge.ingest.shift_coverage import chart_strength, shift_coverage
 from nhl_edge.ingest.shifts import parse_shifts
-from nhl_edge.ingest.shots import parse_shots
+from nhl_edge.ingest.shots import parse_blocked_shots, parse_shots
 from nhl_edge.ingest.strength_time import parse_strength_time
 from nhl_edge.ingest.toi_reports import HOME_REPORTS, CachedReports, parse_reports
-from nhl_edge.lake.schemas import Games, dtypes
+from nhl_edge.lake.schemas import BlockedShots, Games, dtypes
 from nhl_edge.lake.supabase import Supabase
 from nhl_edge.lake.tables import FEED_TABLES, TABLES, Lake
 
@@ -147,6 +147,7 @@ def parse_feeds(
     pbp, box, chart = (feeds[kind] for kind in FEED_KINDS)
     feed_game = FeedGame.from_boxscore(game, box[0])
     shots = parse_shots(pbp[0], feed_game, pbp[1])
+    blocked = parse_blocked_shots(pbp[0], feed_game, pbp[1])
     shifts, drops = parse_shifts(chart[0], feed_game, chart[1])
     lineups = parse_actual_lineups(box[0], feed_game, box[1])
     shifts_key = chart[1]
@@ -163,11 +164,12 @@ def parse_feeds(
     complete = coverage["complete"].item()
     if complete:
         shots = chart_strength(feed_game, shots, shifts, lineups)
+        blocked = chart_strength(feed_game, blocked, shifts, lineups, BlockedShots)
     on_chart = (shifts, lineups) if complete else (None, None)
     strength = parse_strength_time(pbp[0], feed_game, pbp[1], *on_chart)
     penalties = parse_penalties(pbp[0], feed_game, pbp[1])
     faceoffs = parse_faceoffs(pbp[0], feed_game, pbp[1])
-    tables = (shots, shifts, lineups, coverage, strength, penalties, faceoffs)
+    tables = (shots, shifts, lineups, coverage, strength, penalties, faceoffs, blocked)
     return dict(zip(FEED_TABLES, tables, strict=True))
 
 

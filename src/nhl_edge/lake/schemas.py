@@ -1419,6 +1419,66 @@ class Shots(pa.DataFrameModel):
         )
 
 
+class BlockedShots(pa.DataFrameModel):
+    """One blocked shot attempt in play-by-play, periods 1 to 4 (#419), beside Shots' unblocked
+    ones: with them, every shot attempt a team took. Shootout attempts are not play.
+
+    team is the shooting team: the API logs a blocked shot under the team that took it, and
+    shooter_id took it while blocker_id, of the other team, blocked it. seconds is elapsed game
+    time, as in Shots. x and y are where the shot was blocked, not where it was taken, in rink
+    feet turned as Shots turns them: the shooting team attacks the net at x = +89, from the
+    attack direction its unblocked shots give. zone is from the shooting team's side: from x when
+    it is known, otherwise the logged zoneCode turned around, since a blocked shot's zoneCode is
+    nearly always from the blocking team's side (ingest/shots.py).
+
+    The skater counts and strength are the shooting team's view, from the complete shift chart
+    or situationCode as for Shots (ADR 0009, strength_source); is_empty_net, the blocking team's
+    goalie off the ice, always comes from situationCode, and is null without one. observed_utc
+    is 10:00 UTC the morning after game_date, as for Shots (ADR 0003), and a backfilled feed
+    includes post-game corrections (ADR 0004)."""
+
+    game_id: pl.Int64
+    season: pl.Int32
+    game_date: pl.Date
+    event_id: pl.Int32
+    sort_order: pl.Int32
+    period: pl.Int8 = pa.Field(ge=1, le=OT_PERIOD)
+    seconds: pl.Int32 = pa.Field(ge=0)
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    is_home: pl.Boolean
+    shooter_id: pl.Int64 = pa.Field(nullable=True)
+    blocker_id: pl.Int64 = pa.Field(nullable=True)
+    zone: pl.String = pa.Field(isin=ZONES, nullable=True)
+    x: pl.Int16 = pa.Field(ge=-100, le=100, nullable=True)
+    y: pl.Int16 = pa.Field(ge=-43, le=43, nullable=True)
+    skaters_for: pl.Int8 = pa.Field(ge=0, le=6, nullable=True)
+    skaters_against: pl.Int8 = pa.Field(ge=0, le=6, nullable=True)
+    strength: pl.String = pa.Field(str_matches=r"^[0-6]v[0-6]$", nullable=True)
+    is_empty_net: pl.Boolean = pa.Field(nullable=True)
+    situation_code: pl.String = pa.Field(nullable=True)
+    strength_source: pl.String = pa.Field(isin=STRENGTH_SOURCES, nullable=True)
+    observed_utc: UtcDatetime
+    raw_key: pl.String
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = ["game_id", "event_id"]  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def strength_has_a_source(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("strength").is_null() == pl.col("strength_source").is_null()
+        )
+
+    @pa.dataframe_check
+    def seconds_inside_the_period(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        seconds, period = pl.col("seconds"), pl.col("period")
+        return data.lazyframe.select(
+            (seconds >= period_start_s(period)) & (seconds <= period_end_s(period))
+        )
+
+
 class StrengthTime(pa.DataFrameModel):
     """The seconds one team spent at one strength state in a game (#72): strength in the team's
     own view (5v4 is its power play), and whether its own or the opponent's net was empty. The

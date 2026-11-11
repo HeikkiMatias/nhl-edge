@@ -35,6 +35,7 @@ from nhl_edge.lake.schemas import (
     PREGAME_GOALIES_KEY,
     SBR_KEY,
     ActualLineups,
+    BlockedShots,
     ChallengerPredictions,
     CloseForecasts,
     DailyFaceoffGoalies,
@@ -108,6 +109,8 @@ TABLES: dict[str, Table] = {
     "schedule": Table(Schedule, ("game_id",), BY_DATE),
     "players": Table(Players, ("player_id",)),
     "shots": Table(Shots, ("game_id", "event_id"), BY_DATE),
+    # Blocked shot attempts, beside the unblocked ones (#419).
+    "blocked_shots": Table(BlockedShots, ("game_id", "event_id"), BY_DATE),
     "shifts": Table(Shifts, ("game_id", "player_id", "period", "shift_number"), BY_DATE),
     "actual_lineups": Table(ActualLineups, ("game_id", "player_id"), BY_DATE),
     "shift_coverage": Table(ShiftCoverage, ("game_id",), BY_DATE),
@@ -189,6 +192,7 @@ FEED_TABLES = (
     "strength_time",
     "penalties",
     "faceoffs",
+    "blocked_shots",
 )
 
 
