@@ -416,8 +416,9 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
         "",
         "## Step 1: the shot level",
         "",
-        f"{step1['shots']:,} unblocked shots faced by {step1['starter_games']:,} starters'",
-        "games. Per-shot log loss of the full model (with his rest) less the base, in thousandths:",
+        f"{step1['shots']:,} unblocked shots, faced by the starters of {step1['starter_games']:,}",
+        "team-games. Per-shot log loss of the full model (with his rest) less the base, in",
+        "thousandths:",
         f"**{_thousandths(decision['shots']['primary'], 4)}**. Negative favours the rest terms.",
         "",
         "Left out on the way: "
@@ -439,9 +440,15 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
         "",
         "## Step 2: the game level",
         "",
-        f"Games left out because a side had no candidate known at the prediction: "
-        f"{found['missing_games']:,}. Move skill and result beyond the close in thousandths:",
-        "negative means the candidate anticipates SBR's move beyond the opener's drift.",
+        "Games left out because a side had no candidate known at the prediction: "
+        f"{found['missing_games']:,}.",
+        "",
+        "Rested games where a candidate started yesterday, for the team he had moved to (a",
+        "start counts for any team, and goalie_starts can keep a traded goalie as a candidate of",
+        f"his old team): {found['stale_rested']:,} of the explore half's.",
+        "",
+        "Move skill and result beyond the close in thousandths: negative means the candidate",
+        "anticipates SBR's move beyond the opener's drift.",
         "",
         "| Candidate | Games | Move skill | On the rested games | Result beyond the close |",
         "|---|---|---|---|---|",
@@ -515,6 +522,8 @@ def run(lake: Reader) -> dict[str, Any]:
     )
     scored = shot_scores(shots, read.frame)
     frame, missing = with_candidates(read)
+    explore = frame.filter(pl.col("season").is_in(ys.EXPLORE), pl.col("rested"))
+    stale = explore.filter(pl.col("goalie_b2b_diff") != 0).height
     per_game, figures = ys.run(frame, "explore", CANDIDATES)
     decision = decide(per_game, scored)
     return {
@@ -526,6 +535,7 @@ def run(lake: Reader) -> dict[str, Any]:
             "train_cutoffs": sorted(str(c) for c in scored["train_cutoff"].unique()),
         },
         "missing_games": missing,
+        "stale_rested": stale,
         "figures": figures,
         "calibration": calibration(frame),
         "decision": decision,
