@@ -642,3 +642,7 @@ def main() -> None:
     path = args.out / f"{version}.md"
     path.write_text(markdown(found, version))
     print(f"wrote {path}")
+
+
+if __name__ == "__main__":
+    main()
