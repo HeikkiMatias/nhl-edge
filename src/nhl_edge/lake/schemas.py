@@ -1424,12 +1424,17 @@ class BlockedShots(pa.DataFrameModel):
     ones: with them, every shot attempt a team took. Shootout attempts are not play.
 
     team is the shooting team: the API logs a blocked shot under the team that took it, and
-    shooter_id took it while blocker_id, of the other team, blocked it. seconds is elapsed game
-    time, as in Shots. x and y are where the shot was blocked, not where it was taken, in rink
-    feet turned as Shots turns them: the shooting team attacks the net at x = +89, from the
-    attack direction its unblocked shots give. zone is from the shooting team's side: from x when
-    it is known, otherwise the logged zoneCode turned around, since a blocked shot's zoneCode is
-    nearly always from the blocking team's side (ingest/shots.py).
+    shooter_id took it while blocker_id blocked it. reason is the feed's own, from 2023-24 only:
+    "blocked" by an opponent, "teammate-blocked" by one of the shooter's teammates, or
+    "other-block" with no blocker named. Before 2023-24 it is null, and every blocker is an
+    opponent: those feeds log no teammate's block, so a count across seasons keeps only the
+    opponents' blocks (reason null or "blocked").
+
+    seconds is elapsed game time, as in Shots. x and y are where the shot was blocked, not where
+    it was taken, in rink feet turned as Shots turns them: the shooting team attacks the net at
+    x = +89, from the attack direction its unblocked shots give. zone is from the shooting team's
+    side: from x when it is known, otherwise the logged zoneCode turned around, since a blocked
+    shot's zoneCode is nearly always from the blocking team's side (ingest/shots.py).
 
     The skater counts and strength are the shooting team's view, from the complete shift chart
     or situationCode as for Shots (ADR 0009, strength_source); is_empty_net, the blocking team's
@@ -1448,6 +1453,8 @@ class BlockedShots(pa.DataFrameModel):
     is_home: pl.Boolean
     shooter_id: pl.Int64 = pa.Field(nullable=True)
     blocker_id: pl.Int64 = pa.Field(nullable=True)
+    # Not checked against a list: a new value from the feed must not stop the nightly ingest.
+    reason: pl.String = pa.Field(nullable=True)
     zone: pl.String = pa.Field(isin=ZONES, nullable=True)
     x: pl.Int16 = pa.Field(ge=-100, le=100, nullable=True)
     y: pl.Int16 = pa.Field(ge=-43, le=43, nullable=True)

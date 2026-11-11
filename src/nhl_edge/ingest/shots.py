@@ -253,6 +253,7 @@ def blocked_row(
         "is_home": is_home,
         "shooter_id": details.get("shootingPlayerId"),
         "blocker_id": details.get("blockingPlayerId"),
+        "reason": details.get("reason"),
         "zone": blocked_zone(turned_x, details.get("zoneCode")),
         "x": turned_x,
         "y": y * direction if y is not None and direction else None,

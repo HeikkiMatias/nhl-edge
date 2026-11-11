@@ -153,3 +153,24 @@ def test_the_unblocked_shots_are_unchanged() -> None:
         ).height
     )
     assert "blocked-shot" not in set(shots["event_type"])
+
+
+def test_the_feeds_reason_is_kept_and_null_before_it_existed() -> None:
+    # The fixture feeds predate 2023-24's reason field: every reason is null.
+    assert blocked_of(MTL_ARI)["reason"].null_count() == 29
+    # A teammate's block, as 2023-24 onward logs it, keeps its reason and its blocker.
+    data = json.loads(feed("play-by-play", MTL_ARI))
+    plays = [p for p in data["plays"] if p["typeDescKey"] == "blocked-shot"]
+    teammate, other = plays[0], plays[1]
+    teammate["details"] |= {
+        "reason": "teammate-blocked",
+        "blockingPlayerId": teammate["details"]["shootingPlayerId"] + 1,
+    }
+    other["details"]["reason"] = "other-block"
+    del other["details"]["blockingPlayerId"]
+    blocked = blocked_of(MTL_ARI, json.dumps(data).encode())
+    rows = {r["event_id"]: r for r in blocked.iter_rows(named=True)}
+    assert rows[teammate["eventId"]]["reason"] == "teammate-blocked"
+    assert rows[teammate["eventId"]]["blocker_id"] == teammate["details"]["blockingPlayerId"]
+    assert rows[other["eventId"]]["reason"] == "other-block"
+    assert rows[other["eventId"]]["blocker_id"] is None

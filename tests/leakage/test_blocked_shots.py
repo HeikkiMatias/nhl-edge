@@ -22,6 +22,7 @@ COLUMNS = [
     "is_home",
     "shooter_id",
     "blocker_id",
+    "reason",
     "zone",
     "x",
     "y",
