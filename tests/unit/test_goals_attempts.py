@@ -172,6 +172,14 @@ def test_steady_differences_between_teams_take_no_pull() -> None:
     assert ga.choose(losses) == 0.0
 
 
+def test_the_pulls_cutoff_is_the_last_team_game_of_their_season() -> None:
+    last = HISTORY.filter(pl.col("season") == 20122013)["observed_utc"].max()
+    later = pl.concat([HISTORY, f.later(HISTORY)])
+    assert ga.pull_cutoff(later) == last == ga.pull_cutoff(HISTORY)
+    with pytest.raises(ValueError, match="no team-games"):
+        ga.pull_cutoff(HISTORY, season=20102011)
+
+
 def test_choose_breaks_ties_toward_more_pull() -> None:
     assert ga.choose({0.0: 2.0, 40.0: 1.0, 80.0: 1.0, 160.0: 3.0}) == 80.0
 
@@ -234,6 +242,7 @@ def test_the_report_names_the_pulls_the_check_and_the_decision() -> None:
         "pulls": {
             "losses": {m: {str(p): 100.0 - p / 10 for p in ga.PULLS} for m in ga.MEASURES},
             "chosen": {m: 320.0 for m in ga.MEASURES},
+            "train_cutoff": "2013-06-25 10:00:00+00:00",
         },
         "check": {"games": 10, "agree": 10, "largest_gap": 0.0, "settings": ts.TUNED.label},
         "tuning_cutoff": str(ts.TUNED_CUTOFF),
@@ -246,4 +255,5 @@ def test_the_report_names_the_pulls_the_check_and_the_decision() -> None:
     for heading in ("## The pulls, chosen on 2012-13", "## The candidates", "## The decision"):
         assert heading in text
     assert "on 10 of 10" in text and "**68.0**" in text
+    assert "through 2013-06-25 10:00:00+00:00, before the first explore fold" in text
     assert "| team xg |" in text and "five_goals_diff" in text

@@ -21,8 +21,10 @@ the other's rate against. five_team_xg_diff is ΔS's own 5v5 part, the control.
 
 **The pull** of each measure is chosen on 2012-13 alone (FIT_SEASON): the one on PULLS whose rate
 before each team-game best forecasts that game's own rate, for and against, weighted by its
-minutes, Σ (count - rate·minutes)² / minutes, ties going to more pull. No explore game, result or
-price is read to choose it.
+minutes, Σ (count - rate·minutes)² / minutes, ties going to more pull. The pull's own choice
+reads no explore game, result or price, and its cutoff is checked to fall before the first explore
+fold. The half-life is not out of sample: it is ΔS's, tuned on these seasons' results through
+team_strength.TUNED_CUTOFF (ADR 0011), so the pulls are chosen at an in-sample half-life.
 
 **The candidates** on the yardstick's explore half (ADR 0053): the 5v5 xG part (B3's five_diff)
 alone, and with five_goals_diff, five_attempts_diff or both. Each is paired against the 5v5 xG part
@@ -297,6 +299,15 @@ def pull_losses(
     return losses
 
 
+def pull_cutoff(history: pl.DataFrame, season: int = FIT_SEASON) -> datetime:
+    """The last team-game the pull's choice reads: every one to the season's end (its targets,
+    and the history and league before them)."""
+    last = history.filter(pl.col("season") <= season)["observed_utc"].max()
+    if not isinstance(last, datetime):
+        raise ValueError(f"no team-games to {season}")
+    return last
+
+
 def choose(losses: Mapping[float, float]) -> float:
     """The pull with the lowest loss, ties going to more pull (team_strength.steadiness)."""
     best = min(losses.values())
@@ -442,8 +453,10 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
         "",
         "**In-sample settings:** the 5v5 xG part's settings (and the yardstick's other features')",
         f"were tuned on these seasons, through {found['tuning_cutoff']}, and are read at their",
-        "data's time under the training seasons' exception (ADR 0053, ADR 0011). The new",
-        "columns' pulls were chosen on 2012-13 alone.",
+        "data's time under the training seasons' exception (ADR 0053, ADR 0011). So is the new",
+        f"columns' half-life, ΔS's {HALF_LIFE:g} games: their pulls were chosen on 2012-13 alone",
+        f"(through {found['pulls']['train_cutoff']}, before the first explore fold), but at that",
+        "in-sample half-life. None of these figures is out of sample.",
         "",
         "## The pulls, chosen on 2012-13",
         "",
@@ -527,7 +540,9 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
         "**Kept:** "
         + (
             f"{', '.join(kept)}: proposed to the owner as challenger inputs, as development "
-            "evidence only."
+            "evidence only. On the rested games, where no rate knows a game the opener may not: "
+            + "; ".join(f"{n} {_thousandths(decision[n]['rested'])}" for n in kept)
+            + "."
             if kept
             else "none."
         ),
@@ -582,6 +597,10 @@ def run(lake: Reader) -> dict[str, Any]:
     )
     if history["season"].max() != last:
         raise ValueError(f"the team-games end before {last}")
+    cutoff = pull_cutoff(history)
+    first_fold = ys.fold_start(read.frame, min(ys.EXPLORE))
+    if cutoff >= first_fold:
+        raise ValueError(f"the pulls read to {cutoff}, not before the first explore fold")
     losses = {m: pull_losses(history, read.games, m) for m in MEASURES}
     pulls = {m: choose(found) for m, found in losses.items()}
     frame = with_rates(read, history, pulls)
@@ -598,6 +617,8 @@ def run(lake: Reader) -> dict[str, Any]:
         "pulls": {
             "losses": {m: {str(p): v for p, v in found.items()} for m, found in losses.items()},
             "chosen": pulls,
+            "train_cutoff": str(cutoff),
+            "first_explore_fold": str(first_fold),
         },
         "check": agreement,
         "tuning_cutoff": str(ts.TUNED_CUTOFF),

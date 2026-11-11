@@ -1,5 +1,6 @@
 """Point in time for scripts/goals_attempts.py (#420, hard rule 1): a rate never counts a team-game
-public at or after its as-of time, the game's own included; later games change no earlier rate;
+public at or after its as-of time, the game's own included, and a team-game is public only when
+its latest feed is; later games change no earlier rate;
 the pull is chosen on 2012-13 without any later game; and the script reads the lake only to the
 explore half."""
 
@@ -41,6 +42,26 @@ def test_a_team_game_public_at_the_as_of_time_is_not_counted() -> None:
         .otherwise("observed_utc")
     )
     assert ga.team_sums(just, target)["games"].item() == before["games"].item()
+
+
+def test_a_late_blocked_shots_feed_delays_its_team_game() -> None:
+    game = GAMES.filter(pl.col("season") == 20122013).row(0, named=True)
+    own = pl.col("game_id") == game["game_id"]
+    delay = timedelta(days=5)
+    late = LEAGUE["blocked_shots"].with_columns(
+        observed_utc=pl.when(own).then(pl.col("observed_utc") + delay).otherwise("observed_utc")
+    )
+    delayed = ga.team_games(LEAGUE["shots"], late, LEAGUE["shot_xg"], LEAGUE["strength_time"])
+    assert (delayed.filter(own)["observed_utc"] == game["observed_utc"] + delay).all()
+    # An as-of time between the two: the game counts with its feeds on time, not with a late one.
+    target = pl.DataFrame(
+        {"team": [game["home"]], "season": [game["season"]]},
+        schema={"team": pl.String, "season": pl.Int32},
+    ).with_columns(as_of_utc=pl.lit(game["observed_utc"] + timedelta(hours=1)))
+    assert (
+        ga.team_sums(delayed, target)["games"].item()
+        < ga.team_sums(HISTORY, target)["games"].item()
+    )
 
 
 def test_a_games_own_counts_never_enter_its_own_columns() -> None:
