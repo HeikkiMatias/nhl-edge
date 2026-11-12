@@ -167,6 +167,13 @@ def test_game_types_listed_for_the_season() -> None:
     assert et.edge_game_types(detail, 20272028) == ()
 
 
+@pytest.mark.parametrize("changed", [b"{}", b"[]", b'{"seasonsWithEdgeStats": null}'])
+def test_a_team_detail_without_its_seasons_list_fails(changed: bytes) -> None:
+    # A changed shape is never taken for a season with no EDGE figures yet (Codex on #432).
+    with pytest.raises(ValueError, match="seasonsWithEdgeStats"):
+        et.edge_game_types(changed, SEASON)
+
+
 # The schema
 
 
@@ -281,6 +288,20 @@ def test_a_team_without_edge_figures_for_the_season_is_left_at_its_team_detail(
     report = et.snapshot(api(RawStore(tmp_path), server), {"MTL": MTL}, SEASON)
     assert len(server.paths) == 1
     assert (report.teams, report.responses, report.not_listed, report.failed) == (0, 1, ["MTL"], [])
+
+
+def test_a_changed_team_detail_fails_the_run_but_the_rest_are_stored(tmp_path: Path) -> None:
+    def changed(data: dict[str, Any]) -> None:
+        del data["seasonsWithEdgeStats"]
+
+    store, server = RawStore(tmp_path), Server(team_detail={2: edited("team-detail", changed)})
+    report = et.snapshot(api(store, server), {"MTL": MTL}, SEASON)
+    # Every regular-season endpoint is still fetched and stored; the run fails once they are.
+    assert server.paths == [f"/v1/edge/{endpoint}/8/{SEASON}/2" for endpoint in EDGE_ENDPOINTS]
+    assert report.not_listed == [] and report.responses == 6
+    assert [problem.split(":")[0] for problem in report.failed] == ["MTL team-detail 2"]
+    for endpoint in EDGE_ENDPOINTS:
+        assert store.latest(f"nhl/edge-{endpoint}/{SEASON}/8/2") is not None
 
 
 def test_a_failed_endpoint_is_reported_after_the_rest_are_stored(tmp_path: Path) -> None:

@@ -127,8 +127,13 @@ def parse_edge_team(
 
 def edge_game_types(detail: bytes, season: int) -> tuple[int, ...]:
     """The game types a team-detail response lists EDGE data for in the season (its
-    seasonsWithEdgeStats), of the regular season and playoffs only."""
-    listed = json.loads(detail).get("seasonsWithEdgeStats") or []
+    seasonsWithEdgeStats), of the regular season and playoffs only. A response without that list
+    has changed shape and fails, so it is never taken for a season with no figures yet (Codex on
+    #432)."""
+    data = json.loads(detail)
+    listed = data.get("seasonsWithEdgeStats") if isinstance(data, dict) else None
+    if not isinstance(listed, list) or not all(isinstance(entry, dict) for entry in listed):
+        raise ValueError("team-detail has no seasonsWithEdgeStats list")
     types = {t for entry in listed if entry.get("id") == season for t in entry.get("gameTypes", [])}
     return tuple(t for t in (REGULAR_SEASON, PLAYOFFS) if t in types)
 
@@ -213,8 +218,10 @@ def snapshot(api: NhlApi, teams: Mapping[str, int], season: int) -> SnapshotRepo
         try:
             game_types = edge_game_types(detail.body, season)
         except ParseErrors as exc:
+            # A changed team-detail fails the run, but the day's other totals are still stored:
+            # they can never be fetched again (Codex on #432).
             report.failed.append(f"{team} {DETAIL} {REGULAR_SEASON}: {exc}")
-            continue
+            game_types = (REGULAR_SEASON,)
         if REGULAR_SEASON not in game_types:
             report.not_listed.append(team)
             continue
