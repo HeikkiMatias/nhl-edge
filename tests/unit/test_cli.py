@@ -1,4 +1,6 @@
+import json
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -37,6 +39,7 @@ COMMANDS = [
     "status",
     "toi-reports",
     "player-seasons",
+    "edge",
 ]
 STUBS = [
     ["rate"],
@@ -243,6 +246,127 @@ def test_toi_reports_refuses_a_game_the_owner_did_not_allow(
     assert result.exit_code == 1
     assert "outside the owner's decision" in plain(result.output)
     assert not (tmp_path / "data" / "raw").exists()
+
+
+EDGE_FIXTURES = Path(__file__).parent / "fixtures" / "nhl_api" / "edge"
+
+
+def edge_games() -> None:
+    """One final 2026-27 game of MTL's in the lake, its boxscore in the raw cache."""
+    from datetime import date
+
+    import polars as pl
+    from schedule_fixtures import game_row
+
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.schemas import Games, dtypes
+    from nhl_edge.lake.tables import Lake
+
+    row = game_row(2026020287, 20262027, date(2026, 11, 10), "MTL", "MIN", venue="Centre Bell")
+    raw_key = "nhl/play-by-play/20262027/2026020287/20261111T090000Z"
+    row |= {"decided_in": "REG", "raw_key": raw_key}
+    Lake().write("games", pl.DataFrame([row], schema=dtypes(Games)))
+    boxscore = {"id": 2026020287, "homeTeam": {"id": 8, "abbrev": "MTL"}}
+    boxscore |= {"awayTeam": {"id": 30, "abbrev": "MIN"}}
+    meta = {"fetched_utc": "2026-11-11T09:00:00+00:00"}
+    RawStore(Path("data") / "raw").put(
+        "nhl", "boxscore/20262027/2026020287/20261111T090000Z", json.dumps(boxscore).encode(), meta
+    )
+
+
+def serve_edge(monkeypatch: pytest.MonkeyPatch, broken: str | None = None) -> list[str]:
+    """Answer every NHL request with its EDGE fixture, or with {} for the broken endpoint, and
+    record the URLs."""
+    from datetime import UTC, datetime
+
+    from nhl_edge.ingest.nhl_api import NhlApi
+
+    urls: list[str] = []
+
+    def get(self: object, url: str, headers: object = None) -> tuple[bytes, Any, dict[str, Any]]:
+        urls.append(url)
+        endpoint = url.split("/")[3]
+        body = (EDGE_FIXTURES / f"{endpoint}_8_20262027_2.json").read_bytes()
+        fetched = datetime.now(UTC).replace(microsecond=0)
+        meta = {"url": url, "status": 200, "fetched_utc": fetched.isoformat(), "attempts": 1}
+        return (b"{}" if endpoint == broken else body), fetched, meta
+
+    monkeypatch.setattr(NhlApi, "_get", get)
+    return urls
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--season", "2026"], "expected a season like 20232024"),
+        (["--season", "20252026-20262027"], "one season only"),
+        (["--teams", " , "], "no team code given"),
+    ],
+)
+def test_edge_snapshot_rejects_bad_options_before_any_call(
+    args: list[str], message: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    no_requests(monkeypatch)
+    result = runner.invoke(app, ["edge", "snapshot", *args])
+    assert result.exit_code == 2
+    assert message in plain(result.output)
+
+
+def test_edge_snapshot_takes_none_before_the_season_s_first_game(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    no_requests(monkeypatch)
+    result = runner.invoke(app, ["edge", "snapshot", "--season", "20262027"])
+    assert result.exit_code == 0, result.output
+    assert "no final game of the season in the lake, nothing to do" in plain(result.output)
+    named = runner.invoke(app, ["edge", "snapshot", "--season", "20262027", "--teams", "MTL"])
+    assert named.exit_code == 1
+    assert "no final game of MTL in the lake's games" in plain(named.output)
+
+
+def test_edge_snapshot_stores_every_endpoint_of_each_team(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    edge_games()
+    urls = serve_edge(monkeypatch)
+    result = runner.invoke(app, ["edge", "snapshot", "--season", "20262027", "--teams", "MTL"])
+    assert result.exit_code == 0, result.output
+    assert urls == [
+        f"/v1/edge/{endpoint}/8/20262027/2"
+        for endpoint in (
+            "team-detail",
+            "team-zone-time-details",
+            "team-skating-speed-detail",
+            "team-skating-distance-detail",
+            "team-shot-speed-detail",
+            "team-shot-location-detail",
+        )
+    ]
+    assert (
+        "edge snapshot 20262027: 1 of 1 teams, 0 with playoff figures; 6 responses, 6 fetched "
+        "and 0 stored earlier today" in plain(result.output)
+    )
+    assert "808 figures; 0 failed" in plain(result.output)
+    stored = list((tmp_path / "data" / "raw" / "nhl").glob("edge-*/20262027/8/2/*.json.gz"))
+    assert len(stored) == 6
+
+
+def test_edge_snapshot_fails_on_a_changed_endpoint_after_storing_the_rest(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    edge_games()
+    urls = serve_edge(monkeypatch, broken="team-zone-time-details")
+    result = runner.invoke(app, ["edge", "snapshot", "--season", "20262027", "--teams", "mtl"])
+    assert result.exit_code == 1
+    assert len(urls) == 6
+    assert "1 failed" in plain(result.output)
+    assert "warning: MTL team-zone-time-details 2: ValueError" in plain(result.output)
+    # The copy that no longer parses is stored too, for a fixed parser to replay.
+    stored = list((tmp_path / "data" / "raw" / "nhl").glob("edge-*/20262027/8/2/*.json.gz"))
+    assert len(stored) == 6
 
 
 def test_player_seasons_rebuilds_the_table_from_the_cached_pages(

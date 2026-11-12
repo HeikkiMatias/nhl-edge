@@ -62,6 +62,11 @@ research_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(research_app, name="research")
+edge_app = typer.Typer(
+    help="NHL EDGE tracking (#424): daily snapshots of every team's season totals, stored raw.",
+    no_args_is_help=True,
+)
+app.add_typer(edge_app, name="edge")
 
 DEFAULT_BACKTEST_SEASONS = ",".join(str(season) for season in DEVELOPMENT_SEASONS)
 DEFAULT_BACKTEST_OUT = Path("reports/backtest")
@@ -4904,6 +4909,90 @@ def goalies_replay(
         f"{team_pages.rows} rows; {len(team_pages.incomplete)} incomplete, "
         f"{len(team_pages.wrong_team)} another team's page, {len(team_pages.unparsed)} unparsed"
     )
+
+
+@edge_app.command("snapshot")
+def edge_snapshot(
+    season: Annotated[
+        str | None,
+        typer.Option(help="Season as 20262027 (default: today's, counted from July to June)."),
+    ] = None,
+    teams: Annotated[
+        str | None,
+        typer.Option(
+            help="Comma list of team codes, such as MTL,TOR (default: every team with a final "
+            "game of the season in the lake)."
+        ),
+    ] = None,
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2", help="Read games and boxscores from R2, and mirror the responses to R2."
+        ),
+    ] = False,
+) -> None:
+    """Store today's copy of every NHL EDGE team endpoint (#424) of each team, throttled: zone
+    time, skating speed and distance, shot speed and location, each a season total to date. The
+    regular season always, the playoffs too once a team's team-detail lists them. A copy fetched
+    earlier the same UTC day is reused. Each copy is parsed to check it; a fetch or parse that
+    failed fails the run once the rest are stored. Prints counts only."""
+    from nhl_edge.ingest.dailyfaceoff import season_of
+    from nhl_edge.ingest.edge_tracking import snapshot, team_ids
+    from nhl_edge.ingest.nhl_api import NhlApi, utc_now
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    if season is None:
+        chosen = season_of(utc_now().date())
+    else:
+        try:
+            seasons = parse_seasons(season)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--season") from None
+        if len(seasons) != 1:
+            raise typer.BadParameter("one season only", param_hint="--season")
+        chosen = seasons[0]
+    wanted = None
+    if teams is not None:
+        wanted = sorted({team.strip().upper() for team in teams.split(",") if team.strip()})
+        if not wanted:
+            raise typer.BadParameter("no team code given", param_hint="--teams")
+    load_env()
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    lake = Lake.from_env(mirror=r2)
+    if r2:
+        lake.pull("games", seasons=[chosen])
+    api = NhlApi(store)
+    ids = team_ids(api, lake.read("games", seasons=[chosen]), chosen, wanted)
+    unknown = sorted(set(wanted or []) - ids.keys())
+    if unknown:
+        typer.echo(
+            f"edge snapshot {chosen}: no final game of {', '.join(unknown)} in the lake's games",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if not ids:
+        typer.echo(
+            f"edge snapshot {chosen}: no final game of the season in the lake, nothing to do"
+        )
+        return
+    report = snapshot(api, ids, chosen)
+    typer.echo(
+        f"edge snapshot {chosen}: {report.teams} of {len(ids)} teams, {report.playoff_teams} "
+        f"with playoff figures; {report.responses} responses, {report.fetched} fetched and "
+        f"{report.reused} stored earlier today, {api.requests} requests; {report.figures:,} "
+        f"figures; {len(report.failed)} failed"
+    )
+    if report.not_listed:
+        typer.echo(
+            f"edge snapshot {chosen}: no EDGE figures listed yet for {', '.join(report.not_listed)}"
+        )
+    for problem in report.failed:
+        typer.echo(f"warning: {problem}", err=True)
+    if report.failed:
+        raise typer.Exit(code=1)
 
 
 @lake_app.command()
