@@ -285,6 +285,15 @@ def test_the_report_has_every_step() -> None:
             "games": 6,
             "goalie_gap": 0.0,
         },
+        "fits": [
+            {
+                "level": m.level,
+                "season": m.season,
+                "iterations": m.iterations,
+                "converged": m.converged,
+            }
+            for m in FITS
+        ],
         "tuning_cutoff": "2018-04-09 10:00:00+00:00",
         "figures": figures,
         "calibration": rx.calibration(frame),
@@ -294,3 +303,4 @@ def test_the_report_has_every_step() -> None:
     for heading in ("## Step 1: the fit", "## Step 2: flurries", "## Step 3", "## The decision"):
         assert heading in text
     assert "on 5 of 5 shots" in text and "| M4 | angle_change |" in text
+    assert f"Fits: {len(FITS)}, of which {len(FITS)} converged" in text

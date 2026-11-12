@@ -238,6 +238,15 @@ class Fit:
     def predict(self, frame: pl.DataFrame) -> np.ndarray:
         return self.model.predict_proba(design(frame, self.seasons, self.level))[:, 1]
 
+    @property
+    def iterations(self) -> int:
+        return int(np.max(self.model.n_iter_))
+
+    @property
+    def converged(self) -> bool:
+        """Whether the solver stopped before its iteration limit."""
+        return self.iterations < xg.MAX_ITER
+
 
 def fit(frame: pl.DataFrame, season: int, start: datetime, level: str) -> Fit:
     """The level's model for season, on the earlier seasons' shots public before start (the
@@ -538,6 +547,10 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
         f"Shots without the shooter's hand: {counts['no_hand']:,}; without the previous play's "
         f"coordinates: {counts['no_prev']:,}; rebounds: {counts['rebounds']:,}.",
         "",
+        f"Fits: {len(found['fits'])}, of which {sum(f['converged'] for f in found['fits'])} "
+        f"converged before {xg.MAX_ITER} iterations (most taken: "
+        f"{max(f['iterations'] for f in found['fits'])}).",
+        "",
         "Per-shot log loss in thousandths: negative means the model fits better.",
         "",
         "| Model | Adds | Log loss | Less M0 | p | Less the one before | p | AUC |",
@@ -708,6 +721,8 @@ def run(lake: Reader, get: Callable[[str], bytes]) -> dict[str, Any]:
                 "season": f.season,
                 "shots": f.shots,
                 "train_cutoff": str(f.train_cutoff),
+                "iterations": f.iterations,
+                "converged": f.converged,
             }
             for f in fits
         ],
