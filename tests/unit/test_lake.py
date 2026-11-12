@@ -1,4 +1,5 @@
-from datetime import UTC, date, datetime
+import threading
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,7 @@ from fakes import MemoryBucket
 from nhl_edge.ingest.games import listed_games, parse_games
 from nhl_edge.ingest.players import landing_row, parse_players
 from nhl_edge.lake.r2 import POOL_CONNECTIONS, R2Config, bucket_usage, list_keys
-from nhl_edge.lake.tables import PULL_WORKERS, Lake
+from nhl_edge.lake.tables import PULL_WORKERS, PUT_WORKERS, Lake
 
 FIXTURES = Path(__file__).parent / "fixtures" / "nhl_api"
 OPENING_DAYS = {date(2010, 10, 7), date(2010, 10, 8)}
@@ -76,6 +77,58 @@ def test_replacing_dates_leaves_other_dates_alone(tmp_path: Path) -> None:
     assert lake.read("games")["game_id"].to_list() == [2010020003, 2010020004]
     with pytest.raises(ValueError, match="not partitioned by a date"):
         lake.replace_dates("players", players(1), {date(2010, 10, 8)})
+
+
+class ListingBucket(MemoryBucket):
+    """A bucket that records the prefix of every listing request."""
+
+    def __init__(self) -> None:
+        super().__init__(page_size=1)
+        self.listed: list[str] = []
+
+    def list_objects_v2(self, **kwargs: Any) -> dict[str, Any]:
+        self.listed.append(kwargs["Prefix"])
+        return super().list_objects_v2(**kwargs)
+
+
+def test_replacing_dates_lists_the_table_once_however_many_dates(tmp_path: Path) -> None:
+    # #428: a replay replaces a season's dates in one call, so its listing must not grow with
+    # the dates. One page per listed file here, so the two pages are the one listing.
+    bucket = ListingBucket()
+    lake = Lake(tmp_path, "b", bucket)
+    days = {date(2010, 10, 1) + timedelta(days=i) for i in range(200)}
+    lake.replace_dates("games", GAMES, days)
+    assert bucket.listed == ["lake/games/"] * 2
+
+
+def test_a_mirrored_write_uploads_in_parallel_and_fails_on_any_upload_that_fails(
+    tmp_path: Path,
+) -> None:
+    # #428: one upload at a time took about a second each, so a full replay to R2 ran for
+    # hours. Each upload here waits for the other date's, so one at a time would time out.
+    bucket = MemoryBucket()
+    put = bucket.put_object
+    both = threading.Barrier(2, timeout=10)
+
+    def together(**kwargs: Any) -> None:
+        both.wait()
+        put(**kwargs)
+
+    bucket.put_object = together  # type: ignore[method-assign]
+    lake = Lake(tmp_path, "b", bucket)
+    assert lake.write("games", GAMES) == [OCT_7, OCT_8]
+    assert sorted(bucket.objects) == [f"lake/{OCT_7}", f"lake/{OCT_8}"]
+    for key in (OCT_7, OCT_8):
+        assert bucket.objects[f"lake/{key}"] == (tmp_path / key).read_bytes()
+
+    def flaky(**kwargs: Any) -> None:
+        if kwargs["Key"] == f"lake/{OCT_8}":
+            raise ConnectionError("lost")
+        put(**kwargs)
+
+    bucket.put_object = flaky  # type: ignore[method-assign]
+    with pytest.raises(ConnectionError, match="lost"):
+        lake.write("games", GAMES)
 
 
 def test_replacing_a_table_drops_every_file_the_frame_no_longer_has(tmp_path: Path) -> None:
@@ -198,7 +251,7 @@ def test_the_r2_client_has_a_connection_for_every_pull_thread() -> None:
     # #207: boto3's default pool of 10 held a pull's threads to 10 requests at a time.
     client = R2Config("account", "key", "secret", "bucket").client()
     assert client.meta.config.max_pool_connections == POOL_CONNECTIONS  # type: ignore[attr-defined]
-    assert POOL_CONNECTIONS >= PULL_WORKERS
+    assert max(PULL_WORKERS, PUT_WORKERS) <= POOL_CONNECTIONS
 
 
 @pytest.mark.parametrize("table", ["players", "odds_snapshots"])
