@@ -3,7 +3,8 @@
 Partitioned tables are laid out as <table>/season=S/game_date=D/part-0.parquet. A write replaces
 every partition it touches, so the writer supplies each partition's full content and reruns are
 idempotent. Unpartitioned tables are one file, <table>/part-0.parquet, rewritten whole. Every
-write validates against the table's pandera schema.
+write validates against the table's pandera schema. A write to a lake mirrored in R2 uploads
+its files on parallel threads (#428).
 
 The local copy is what readers use. A fresh machine, such as the nightly runner, pulls a table
 from R2 before a read-modify-write. A pull downloads only the files that differ from the local
@@ -12,7 +13,7 @@ copy, and can be limited to some seasons.
 
 import hashlib
 import io
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -91,6 +92,9 @@ R2_PREFIX = "lake"
 PART = "part-0.parquet"
 # A pull's download threads, each with its own connection (r2.POOL_CONNECTIONS, #207).
 PULL_WORKERS = 64
+# A mirrored write's upload threads. One upload at a time took about a second each, so a full
+# replay to R2 (some 27,000 partitions) ran for hours (#428).
+PUT_WORKERS = 64
 
 
 @dataclass(frozen=True)
@@ -254,10 +258,12 @@ class Lake:
                     list(spec.partition_by), as_dict=True, maintain_order=True
                 ).items()
             }
+        bodies: dict[str, bytes] = {}
         for key, part in files.items():
             buffer = io.BytesIO()
             part.write_parquet(buffer)
-            self._put(key, buffer.getvalue())
+            bodies[key] = buffer.getvalue()
+        self._put(bodies)
         return sorted(files)
 
     def replace_dates(self, table: str, frame: pl.DataFrame, dates: Collection[date]) -> list[str]:
@@ -369,15 +375,25 @@ class Lake:
         if self.objects is not None:
             self.objects.delete_object(Bucket=self.bucket, Key=f"{R2_PREFIX}/{key}")
 
-    def _put(self, key: str, data: bytes) -> None:
-        self._write_local(key, data)
-        if self.objects is not None:
-            self.objects.put_object(
+    def _put(self, bodies: Mapping[str, bytes], workers: int = PUT_WORKERS) -> None:
+        """Write each file locally, then, when mirrored, upload them to R2 on parallel threads.
+        A file that fails to upload fails the write."""
+        for key, data in bodies.items():
+            self._write_local(key, data)
+        objects = self.objects
+        if objects is None:
+            return
+
+        def upload(key: str) -> None:
+            objects.put_object(
                 Bucket=self.bucket,
                 Key=f"{R2_PREFIX}/{key}",
-                Body=data,
+                Body=bodies[key],
                 ContentType="application/vnd.apache.parquet",
             )
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(upload, bodies))
 
     def _write_local(self, key: str, data: bytes) -> None:
         path = self.base_dir / key
