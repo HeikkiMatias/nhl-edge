@@ -3600,9 +3600,17 @@
     "first_seen_hours_median": 0.22902777777777777,
     "games": 298,
     "known_by_decision": 0,
-    "logged": false,
     "matinees": 11,
     "never_named_before_start": 52,
+    "outcome": "close",
+    "share_bootstrap_interval": [
+      0.0,
+      0.0
+    ],
+    "share_exact_interval": [
+      0.0,
+      0.012770988416409758
+    ],
     "share_known": 0.0,
     "uncovered": 0
   }
