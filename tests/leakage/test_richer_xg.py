@@ -1,5 +1,6 @@
 """Point in time for scripts/richer_xg.py (#421, hard rule 1): the previous play is never one after
-the shot or in another period; the score state counts only earlier goals; a flurry discount reads
+the shot or in another period; the score state counts only goals earlier in game time, however
+the feed logged them; a flurry discount reads
 only its chain's earlier shots; each season's fit reads only earlier seasons' shots public before
 its fold start; and the script reads the lake, and the cached play-by-play, only to the explore
 half."""
@@ -40,6 +41,7 @@ def test_a_later_goal_changes_no_earlier_score_state() -> None:
             {
                 "game_id": [1] * n,
                 "event_id": list(range(1, n + 1)),
+                "seconds": [10 * i for i in range(1, n + 1)],
                 "sort_order": [10 * i for i in range(1, n + 1)],
                 "is_home": [i % 2 == 0 for i in range(1, n + 1)],
                 "is_goal": [True] * n,
@@ -49,6 +51,23 @@ def test_a_later_goal_changes_no_earlier_score_state() -> None:
     short = rx.score_state(game(3)).sort("event_id")
     longer = rx.score_state(game(6)).sort("event_id").head(3)
     assert short.equals(longer)
+
+
+def test_a_goal_logged_before_a_shot_but_timed_after_it_never_counts() -> None:
+    # The home goal is logged first (sort order 10) but scored 3 seconds after the away shot.
+    game = pl.DataFrame(
+        {
+            "game_id": [1, 1],
+            "event_id": [1, 2],
+            "seconds": [103, 100],
+            "sort_order": [10, 20],
+            "is_home": [True, False],
+            "is_goal": [True, False],
+        }
+    )
+    state = {r["event_id"]: r for r in rx.score_state(game).iter_rows(named=True)}
+    assert (state[2]["leads"], state[2]["trails"]) == (0.0, 0.0)
+    assert (state[1]["leads"], state[1]["trails"]) == (0.0, 0.0)
 
 
 def test_a_flurry_discount_reads_only_its_chains_earlier_shots() -> None:

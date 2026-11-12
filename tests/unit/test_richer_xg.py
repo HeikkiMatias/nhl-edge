@@ -60,6 +60,7 @@ def _game(goals: list[tuple[int, bool]]) -> pl.DataFrame:
         {
             "game_id": [1] * len(goals),
             "event_id": list(range(1, len(goals) + 1)),
+            "seconds": [s for s, _ in goals],
             "sort_order": [s for s, _ in goals],
             "is_home": [h for _, h in goals],
             "is_goal": [True] * len(goals),
@@ -219,7 +220,7 @@ def test_a_flurry_discounts_each_shot_by_its_chains_earlier_shots() -> None:
 
 def test_as_shot_xg_needs_every_shot() -> None:
     today = pl.DataFrame({"game_id": [1, 1], "event_id": [1, 2], "xg": [0.1, 0.2]})
-    scored = pl.DataFrame({"game_id": [1], "event_id": [1], "p_M4": [0.3]})
+    scored = pl.DataFrame({"game_id": [1], "event_id": [1], "p_M4": [0.3], "train_cutoff": [None]})
     with pytest.raises(ValueError, match="1 of today's xG shots without M4"):
         rx.as_shot_xg(scored, today, "M4")
 

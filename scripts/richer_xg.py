@@ -9,7 +9,8 @@ on every earlier season's scorable shots public before its fold start. M1 to M4 
 of terms to the one before:
 - M1, off-wing: the shooter shoots right and the shot's turned y > 0, or left and y < 0
   (players.shoots, a fact fixed before a player's debut);
-- M2, score state: the shooting team leads, or trails, from every goal earlier in the game;
+- M2, score state: the shooting team leads, or trails, from every goal earlier in the game by
+  game time and then play order;
 - M3, the previous event: log(1 + d), log(1 + t) and log(1 + d / max(t, 1)), d the feet from the
   play logged just before the shot (the one its prev_ columns describe) and t prev_seconds, and an
   indicator for no previous play or no coordinates, the three then 0. The previous play's
@@ -156,13 +157,15 @@ def previous_frame(shots: pl.DataFrame, get: Callable[[str], bytes]) -> pl.DataF
 
 def score_state(shots: pl.DataFrame) -> pl.DataFrame:
     """Each shot with whether the shooting team leads or trails, from every goal earlier in the
-    game by sort_order (any strength, penalty shots and empty nets included)."""
+    game (any strength, penalty shots and empty nets included). Earlier is by game time and then
+    play order, as ingest.shots.previous_plays orders plays: old feeds log some plays out of
+    order, so play order alone can put a goal ahead of the shot taken just before it."""
     goal = pl.col("is_goal").cast(pl.Int32)
     home = (goal * pl.col("is_home").cast(pl.Int32)).alias("home_goal")
     away = (goal * (~pl.col("is_home")).cast(pl.Int32)).alias("away_goal")
-    ordered = shots.select("game_id", "event_id", "sort_order", "is_home", home, away).sort(
-        "game_id", "sort_order"
-    )
+    ordered = shots.select(
+        "game_id", "event_id", "seconds", "sort_order", "is_home", home, away
+    ).sort("game_id", "seconds", "sort_order")
     counted = ordered.with_columns(
         home_before=pl.col("home_goal").cum_sum().over("game_id") - pl.col("home_goal"),
         away_before=pl.col("away_goal").cum_sum().over("game_id") - pl.col("away_goal"),
@@ -344,20 +347,26 @@ def flurry(today: pl.DataFrame, frame: pl.DataFrame) -> pl.DataFrame:
         [{"game_id": k[0], "event_id": k[1], "factor": factor(k)} for k in known],
         schema={"game_id": pl.Int64, "event_id": pl.Int64, "factor": pl.Float64},
     )
-    return (
-        today.join(discount, on=["game_id", "event_id"], how="left")
-        .with_columns(xg=pl.col("xg") * pl.col("factor").fill_null(1.0))
-        .drop("factor")
+    out = today.join(discount, on=["game_id", "event_id"], how="left").with_columns(
+        xg=pl.col("xg") * pl.col("factor").fill_null(1.0)
     )
+    if "artifact_version" in out.columns:
+        out = out.with_columns(artifact_version=pl.lit("richer-xg-flurry"))
+    return out.drop("factor")
 
 
 def as_shot_xg(scored: pl.DataFrame, today: pl.DataFrame, level: str) -> pl.DataFrame:
-    """A level's probabilities as shot_xg rows: today's rows with xg replaced."""
-    found = scored.select("game_id", "event_id", new=f"p_{level}")
+    """A level's probabilities as shot_xg rows: today's rows with xg, its fit's cutoff and the
+    version replaced."""
+    found = scored.select("game_id", "event_id", new=f"p_{level}", cutoff="train_cutoff")
     out = today.join(found, on=["game_id", "event_id"], how="left")
     if out["new"].null_count():
         raise ValueError(f"{out['new'].null_count()} of today's xG shots without {level}")
-    return out.with_columns(xg=pl.col("new")).drop("new")
+    return out.with_columns(
+        xg=pl.col("new"),
+        train_cutoff=pl.col("cutoff"),
+        artifact_version=pl.lit(f"richer-xg-{level}"),
+    ).drop("new", "cutoff")
 
 
 def five_part(
