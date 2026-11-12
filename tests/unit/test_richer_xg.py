@@ -295,6 +295,11 @@ def test_the_report_has_every_step() -> None:
             for m in FITS
         ],
         "tuning_cutoff": "2018-04-09 10:00:00+00:00",
+        "settings": {
+            "five": "team strength x",
+            "goalie": "goalie effect y",
+            "equal_to_tuned": True,
+        },
         "figures": figures,
         "calibration": rx.calibration(frame),
         "decision": rx.decide(per_game),
@@ -304,3 +309,4 @@ def test_the_report_has_every_step() -> None:
         assert heading in text
     assert "on 5 of 5 shots" in text and "| M4 | angle_change |" in text
     assert f"Fits: {len(FITS)}, of which {len(FITS)} converged" in text
+    assert "steadiest corner (team strength x; goalie effect y)" in text

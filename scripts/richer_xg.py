@@ -27,10 +27,14 @@ rebound of the same team's scored shot continues that shot's chain, and its xG i
 the product of (1 - xG) over the chain's earlier shots.
 
 **Step 3, downstream** on the yardstick's explore half (ADR 0053): B2's parts that read xG, rebuilt
-in memory at their frozen settings: ΔS's 5v5 part (team_strength.strength's delta_5v5) and the
-goalie effect ΔG (goalie.effects, averaged over the start scenarios known at the prediction as the
-yardstick's delta_g is). The candidates, each alone and paired against today's part alone on the
-move skill: richer 5v5 (from M4), flurry 5v5 (from the flurry xG) and richer goalie (ΔG from M4).
+in memory: ΔS's 5v5 part (team_strength.strength's delta_5v5) and the goalie effect ΔG
+(goalie.effects, averaged over the start scenarios known at the prediction as the yardstick's
+delta_g is). Their settings read no result (Codex on #430): each is its grid's steadiest corner,
+the longest memory and then the most pull (ADR 0011's tie order), and every rating is observed at
+its own as-of time. They equal the frozen settings, which a tuning run chose on results through
+2018-04-09, after the explore folds start; here no result chooses them. The candidates, each
+alone and paired against today's part alone on the move skill: richer 5v5 (from M4), flurry 5v5
+(from the flurry xG) and richer goalie (ΔG from M4).
 **The decision:** Holm's step-down at ALPHA over the three; a test holds when it passes with a
 negative estimate. One or more holds: an ADR for a new xG version goes to the owner. None: xG stays
 parked, the figures noted on #250.
@@ -65,6 +69,10 @@ from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import Lake, Reader
 
 ALPHA = ys.ALPHA
+# The rebuilt parts' settings, fixed without reading any result: each grid's steadiest corner,
+# longer memory first and then more pull (team_strength.steadiness, goalie.steadiness).
+FIVE_SETTINGS = max(ts.GRID, key=ts.steadiness)
+GOALIE_SETTINGS = max(ge.GRID, key=ge.steadiness)
 # Each model's added terms: each model is the one before it plus its own.
 ADDED: dict[str, tuple[str, ...]] = {
     "M0": (),
@@ -381,24 +389,32 @@ def as_shot_xg(scored: pl.DataFrame, today: pl.DataFrame, level: str) -> pl.Data
 def five_part(
     games: pl.DataFrame, shots: pl.DataFrame, strength_time: pl.DataFrame, shot_xg: pl.DataFrame
 ) -> pl.DataFrame:
-    """ΔS's 5v5 part of each game from the given xG, at team strength's frozen settings."""
+    """ΔS's 5v5 part of each game from the given xG, at FIVE_SETTINGS."""
     history = ts.team_games(shots, shot_xg, strength_time)
-    return ts.strength(games, history, ts.TUNED).select("game_id", "delta_5v5", "as_of_utc")
+    return ts.strength(games, history, FIVE_SETTINGS).select("game_id", "delta_5v5", "as_of_utc")
 
 
 def goalie_part(
     read: ys.Read, games: pl.DataFrame, shots: pl.DataFrame, shot_xg: pl.DataFrame
 ) -> pl.DataFrame:
-    """The goalie effect ΔG of each game from the given xG, at its frozen settings, averaged over
-    the start scenarios known at the prediction as the yardstick's delta_g is (ys.features)."""
+    """The goalie effect ΔG of each game from the given xG, at GOALIE_SETTINGS, averaged over the
+    start scenarios known at the prediction as the yardstick's delta_g is (ys.features). With
+    settings that read no result, each effect is observed at its own as-of time: the cutoff is
+    the earliest of them, not a tuning run's."""
     candidates = read.b2_tables.goalie_starts.join(
         games.select("game_id", "game_date"), on=["game_id", "game_date"], how="semi"
     )
     goalies = ge.goalie_games(shots, shot_xg)
     team_shots = ge.team_shot_games(read.games, shots, shot_xg)
-    rated = ge.effects(candidates, games, goalies, team_shots, ge.TUNED)
+    rated = ge.effects(candidates, games, goalies, team_shots, GOALIE_SETTINGS)
     version = reports.version(ge.COMPONENT, datetime.now(UTC))
-    effects = ys.untuned(ge.rows(rated, ge.TUNED, version))
+    earliest = rated["as_of_utc"].min()
+    if not isinstance(earliest, datetime):
+        raise ValueError("no goalie to rate")
+    effects = ge.rows(rated, GOALIE_SETTINGS, version, train_cutoff=earliest)
+    late = effects.filter(pl.col("observed_utc") != pl.col("as_of_utc")).height
+    if late:
+        raise ValueError(f"{late} goalie effects observed after their as-of time")
     tables = replace(read.b2_tables, goalie_effects=effects)
     moments = read.frame.select("game_id", "prediction_utc")
     inputs = b2.game_inputs(tables)
@@ -532,10 +548,13 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
         "of 2026-11-12). Intervals are 95% weekly block bootstrap. Not fresh: #361, #366, #370,",
         "#418 and #420 read the explore half, so every p-value is development evidence only.",
         "",
-        "**In-sample settings:** the downstream parts' half-lives and pulls were tuned with",
-        f"today's xG on these seasons, through {found['tuning_cutoff']} (ADR 0011), which favours",
-        "today's xG. The xG fits themselves read only earlier seasons, each before its fold",
-        "start.",
+        "**Settings:** the rebuilt parts' half-lives and pulls read no result: each is its grid's",
+        f"steadiest corner ({found['settings']['five']}; {found['settings']['goalie']}), the",
+        "longest memory and then the most pull (ADR 0011's tie order). They"
+        + (" equal" if found["settings"]["equal_to_tuned"] else " differ from")
+        + " the frozen settings,",
+        f"which a tuning run chose with today's xG on results through {found['tuning_cutoff']}.",
+        "The xG fits read only earlier seasons, each before its fold start.",
         "",
         "## Step 1: the fit",
         "",
@@ -659,8 +678,8 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
         "## Limits",
         "",
         "- **Fit versus forecasts:** a better fit per shot often barely moves game forecasts.",
-        "- **Frozen settings:** the downstream half-lives and pulls were tuned with today's xG,",
-        "  which favours it.",
+        "- **Settings:** the steadiest corners are also what the tuning with today's xG chose; a",
+        "  richer xG might suit other settings, which this stage does not search.",
         "- **Rink bias:** finer location terms can amplify it.",
         "- **Stage one:** B3's parts read xG through RAPM and the finishing multipliers, which",
         "  only the full rebuild would test.",
@@ -727,6 +746,11 @@ def run(lake: Reader, get: Callable[[str], bytes]) -> dict[str, Any]:
             for f in fits
         ],
         "tuning_cutoff": str(ts.TUNED_CUTOFF),
+        "settings": {
+            "five": f"team strength {FIVE_SETTINGS.label}",
+            "goalie": f"goalie effect {GOALIE_SETTINGS.label}",
+            "equal_to_tuned": FIVE_SETTINGS == ts.TUNED and GOALIE_SETTINGS == ge.TUNED,
+        },
         "figures": figures,
         "calibration": calibration(yardstick),
         "decision": decide(per_game),

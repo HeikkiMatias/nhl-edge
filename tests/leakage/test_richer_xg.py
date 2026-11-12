@@ -1,8 +1,8 @@
 """Point in time for scripts/richer_xg.py (#421, hard rule 1): the previous play is never one after
 the shot or in another period; the score state counts only goals earlier in game time, however
-the feed logged them; a flurry discount reads
-only its chain's earlier shots; each season's fit reads only earlier seasons' shots public before
-its fold start; and the script reads the lake, and the cached play-by-play, only to the explore
+the feed logged them; a flurry discount reads only its chain's earlier shots; each season's fit
+reads only earlier seasons' shots public before its fold start; the rebuilt parts' settings read
+no result; and the script reads the lake, and the cached play-by-play, only to the explore
 half."""
 
 from typing import Any
@@ -110,6 +110,18 @@ def test_each_seasons_fit_reads_only_earlier_seasons_before_its_fold_start() -> 
     earlier = pl.col("season") < 20142015
     columns = [f"p_{level}" for level in rx.LEVELS]
     assert again.filter(earlier).select(columns).equals(scored.filter(earlier).select(columns))
+
+
+def test_the_rebuilt_parts_settings_read_no_result() -> None:
+    # Each grid's steadiest corner, by the tie order alone: no tuning run, so no result after a
+    # fold start, picks them (Codex on #430). They happen to equal the frozen settings.
+    from nhl_edge.features import goalie as ge
+    from nhl_edge.features import team_strength as ts
+
+    longest = max(s.half_life for s in ts.GRID)
+    assert ts.Settings(longest, max(s.prior_games for s in ts.GRID)) == rx.FIVE_SETTINGS
+    longest = max(s.half_life for s in ge.GRID)
+    assert ge.Settings(longest, max(s.prior_shots for s in ge.GRID)) == rx.GOALIE_SETTINGS
 
 
 def test_the_script_reads_the_lake_and_the_play_by_play_only_to_the_explore_half(
