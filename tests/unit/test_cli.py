@@ -826,6 +826,63 @@ def test_status_says_nothing_of_time_on_ice_reports_in_step(
     assert "time-on-ice" not in result.output and "raw/nhl/toi-" not in result.output
 
 
+def test_status_compares_the_edge_snapshots_with_r2(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #431: a day's NHL EDGE totals (#424) can't be fetched once the day has passed, so a copy
+    # missing on either side is shown, as a time-on-ice report is.
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.raw import RawStore
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    runner_store = RawStore(tmp_path / "runner", "test", bucket)
+    runner_store.put("nhl", "edge-team-detail/20262027/8/2/20261112T090600Z", b"{}", {})
+    runner_store.put("nhl", "edge-team-shot-speed-detail/20262027/8/2/20261112T090601Z", b"{}", {})
+    monkeypatch.chdir(tmp_path)
+    # This machine lacks the team-detail copy and holds a shot-speed copy R2 lacks.
+    RawStore().put("nhl", "edge-team-shot-speed-detail/20262027/8/2/20261112T090601Z", b"{}", {})
+    RawStore().put("nhl", "edge-team-shot-speed-detail/20262027/8/2/20261113T090601Z", b"{}", {})
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "raw/nhl/edge-team-detail/: 1 snapshots only in R2, 0 only here" in result.output
+    assert "raw/nhl/edge-team-shot-speed-detail/: 0 snapshots only in R2, 1 only here" in (
+        result.output
+    )
+    assert "NHL EDGE snapshots are behind R2: nhl lake restore-raw --prefix nhl/edge-" in (
+        result.output
+    )
+    assert "R2 lacks NHL EDGE snapshots here: nhl lake sync-raw --prefix nhl/edge-" in (
+        result.output
+    )
+    assert "up to date with R2" not in result.output
+
+
+def test_status_says_nothing_of_edge_snapshots_in_step(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.raw import RawStore
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    monkeypatch.chdir(tmp_path)
+    RawStore.from_env(mirror=True).put(
+        "nhl", "edge-team-detail/20262027/8/2/20261112T090600Z", b"{}", {}
+    )
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "EDGE" not in result.output and "raw/nhl/edge-" not in result.output
+
+
 def test_status_notices_a_file_that_differs_from_r2(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
