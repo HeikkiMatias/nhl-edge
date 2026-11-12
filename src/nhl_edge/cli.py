@@ -5457,6 +5457,7 @@ def _status_against_r2(local: "list[TableState]") -> None:
     from nhl_edge.lake.r2 import R2Config
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.status import (
+        EDGE_RAW,
         PREGAME_RAW,
         TOI_RAW,
         compare,
@@ -5534,6 +5535,16 @@ def _status_against_r2(local: "list[TableState]") -> None:
             reports_behind |= only_there > 0
             reports_ahead |= only_here > 0
             typer.echo(f"  raw/{prefix}: {only_there:,} pages only in R2, {only_here:,} only here")
+    # Nor can the NHL EDGE snapshots: a day's season totals are gone once the day has passed
+    # (#424, #431).
+    edge_behind = edge_ahead = False
+    for prefix, only_here, only_there in raw_sets(store, EDGE_RAW):
+        if only_here or only_there:
+            edge_behind |= only_there > 0
+            edge_ahead |= only_here > 0
+            typer.echo(
+                f"  raw/{prefix}: {only_there:,} snapshots only in R2, {only_here:,} only here"
+            )
     # The replayed tables are rebuilt by their own replay, every other table by the NHL ingest.
     replayed_here = sorted(
         {key.split("/")[0] for key in missing_here if key.split("/")[0] in REPLAYED}
@@ -5581,6 +5592,15 @@ def _status_against_r2(local: "list[TableState]") -> None:
         typer.echo("  time-on-ice reports are behind R2: nhl lake restore-raw copies them")
     if reports_ahead:
         typer.echo("  R2 lacks time-on-ice reports here: nhl lake sync-raw copies them")
+    if edge_behind:
+        typer.echo(
+            "  NHL EDGE snapshots are behind R2: nhl lake restore-raw --prefix nhl/edge- "
+            "copies them"
+        )
+    if edge_ahead:
+        typer.echo(
+            "  R2 lacks NHL EDGE snapshots here: nhl lake sync-raw --prefix nhl/edge- copies them"
+        )
     if differ:
         # A size difference does not tell which copy is current, so no direction is suggested.
         tables = sorted({key.split("/")[0] for key in differ})
@@ -5598,7 +5618,8 @@ def _status_against_r2(local: "list[TableState]") -> None:
         or differ
     )
     raw_drift = raw_behind or raw_ahead or polls_behind or polls_ahead
-    if in_step and not (raw_drift or reports_behind or reports_ahead):
+    once_only = reports_behind or reports_ahead or edge_behind or edge_ahead
+    if in_step and not (raw_drift or once_only):
         typer.echo("  up to date with R2")
 
 

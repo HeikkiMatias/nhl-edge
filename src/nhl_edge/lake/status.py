@@ -11,6 +11,7 @@ import polars as pl
 
 from nhl_edge.lake.r2 import list_keys
 from nhl_edge.lake.raw import META, R2_RAW, SUFFIX, RawStore
+from nhl_edge.lake.schemas import EDGE_ENDPOINTS
 from nhl_edge.lake.tables import R2_PREFIX, TABLES, Lake
 
 GAME_DATE = "game_date="
@@ -26,6 +27,9 @@ PREGAME_RAW = (
 # The NHL's time-on-ice reports of the 57 games of 2024-25 whose shift chart is empty (#68). The
 # owner allowed one fetch, so only the copies here and in R2 keep them (#114).
 TOI_RAW = ("nhl/toi-home/", "nhl/toi-visitor/")
+# The NHL EDGE snapshots (#424): a day's season totals can't be fetched once the day has passed,
+# so only the copies here and in R2 keep them (#431).
+EDGE_RAW = tuple(f"nhl/edge-{endpoint}/" for endpoint in EDGE_ENDPOINTS)
 
 
 def partition_dates(keys: Iterable[str]) -> list[str]:
