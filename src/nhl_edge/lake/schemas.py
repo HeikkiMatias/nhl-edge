@@ -2719,6 +2719,58 @@ class DailyFaceoffLines(pa.DataFrameModel):
         )
 
 
+# The NHL EDGE team endpoints snapshotted every day (#424), as api-web.nhle.com names them.
+EDGE_ENDPOINTS = (
+    "team-detail",
+    "team-zone-time-details",
+    "team-skating-speed-detail",
+    "team-skating-distance-detail",
+    "team-shot-speed-detail",
+    "team-shot-location-detail",
+)
+# The game types an EDGE snapshot covers: regular season (2) and playoffs (3).
+EDGE_GAME_TYPES = (2, 3)
+EDGE_TEAM_METRICS_KEY = ("team_id", "season", "game_type", "endpoint", "metric", "observed_utc")
+
+
+class EdgeTeamMetrics(pa.DataFrameModel):
+    """One figure of one NHL EDGE team response (#424): a team's season total to date for one
+    game type, as the API gave it at observed_utc, the fetch time, which is when that total was
+    public. A total covers the season's games played before the fetch and carries no date of its
+    own, so per-day figures would come from the differences between consecutive days' rows.
+
+    endpoint is the EDGE endpoint and metric the figure's path in its response, a list item
+    named by the fields that identify it, such as
+    zoneTimeDetails[strengthCode=all].offensiveZonePctg. Ranks and league averages are figures
+    too. Text, ids, null figures and the blocks about single players' events (overlay,
+    topSkatingSpeeds, hardestShots) give no row. Not a lake table yet: ingest/edge_tracking.py
+    validates every response it parses.
+    """
+
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    team_id: pl.Int32 = pa.Field(ge=1)
+    season: pl.Int32
+    game_type: pl.Int8 = pa.Field(isin=list(EDGE_GAME_TYPES))
+    endpoint: pl.String = pa.Field(isin=list(EDGE_ENDPOINTS))
+    metric: pl.String = pa.Field(str_length={"min_value": 1})
+    value: pl.Float64
+    observed_utc: UtcDatetime
+    raw_key: pl.String = pa.Field(str_length={"min_value": 1})
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(EDGE_TEAM_METRICS_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def seasons_are_seasons(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(valid_season(pl.col("season")))
+
+    @pa.dataframe_check
+    def finite_values(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("value").is_finite())
+
+
 KALSHI_SIDES = ("yes", "no")
 KALSHI_BOOKS_KEY = ("observed_utc", "ticker", "side", "price")
 # Kalshi's NHL moneyline markets, one per team and game: KXNHLGAME-26OCT17NJWSH-WSH is WSH's

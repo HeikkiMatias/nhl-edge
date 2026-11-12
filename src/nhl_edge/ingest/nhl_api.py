@@ -7,7 +7,8 @@ backfill can stop and restart without refetching. In offline (replay) mode the c
 the network and fails on a cache miss.
 
 The same client fetches the NHL's HTML time-on-ice reports on www.nhl.com (#68), for the games
-whose shift chart is empty, once only and by `nhl toi-reports` alone (ingest/toi_reports.py).
+whose shift chart is empty, once only and by `nhl toi-reports` alone (ingest/toi_reports.py), and
+the NHL EDGE team endpoints once a day (#424, ingest/edge_tracking.py).
 """
 
 import json
@@ -21,7 +22,7 @@ from typing import Any
 import httpx
 
 from nhl_edge.lake.raw import RawStore
-from nhl_edge.lake.schemas import PERIOD_S
+from nhl_edge.lake.schemas import EDGE_ENDPOINTS, PERIOD_S
 
 BASE_URL = "https://api-web.nhle.com"
 STATS_URL = "https://api.nhle.com/stats/rest"
@@ -55,6 +56,8 @@ RECHECK_SUFFIX = "-recheck"
 # A team's time-on-ice report by side, its raw kind and the letter in the page's name (#68).
 TOI_KINDS = {"home": "toi-home", "visitor": "toi-visitor"}
 TOI_LETTERS = {"home": "H", "visitor": "V"}
+# An NHL EDGE team endpoint's raw kind is this prefix and the endpoint, such as edge-team-detail.
+EDGE_KIND_PREFIX = "edge-"
 
 
 @dataclass(frozen=True)
@@ -184,6 +187,14 @@ def toi_report_url(season: int, game_id: int, side: str) -> str:
     """The URL of one team's time-on-ice report: TH for the home team, TV for the visitors, then
     the last six digits of the game id, in the season's folder."""
     return f"{REPORTS_URL}/{season}/T{TOI_LETTERS[side]}{game_id % 1_000_000:06d}.HTM"
+
+
+def edge_team_url(endpoint: str, team_id: int, season: int, game_type: int) -> str:
+    """The URL of one NHL EDGE team endpoint (#424). The API also answers .../<teamId>/now, but
+    only with a redirect to the season's path, so the season and game type are always given."""
+    if endpoint not in EDGE_ENDPOINTS:
+        raise ValueError(f"{endpoint} is not an NHL EDGE team endpoint")
+    return f"/v1/edge/{endpoint}/{team_id}/{season}/{game_type}"
 
 
 def fetched_after(moment: datetime) -> Reuse:
@@ -329,6 +340,20 @@ class NhlApi:
 
     def roster(self, team: str, season: int, reuse: Reuse) -> Response:
         return self.fetch("roster", f"{season}/{team}", f"/v1/roster/{team}/{season}", reuse)
+
+    def edge_team(self, endpoint: str, team_id: int, season: int, game_type: int) -> Response:
+        """One NHL EDGE team endpoint (#424): the team's season total to date for the game type,
+        stored under nhl/edge-<endpoint>/<season>/<team_id>/<game_type>/. The API takes no date,
+        so the dated series is the daily copies: the first run of a UTC day fetches it fresh, and
+        a later run that day reuses that copy."""
+        today = self.now().astimezone(UTC)
+        day_start = datetime(today.year, today.month, today.day, tzinfo=UTC)
+        return self.fetch(
+            f"{EDGE_KIND_PREFIX}{endpoint}",
+            f"{season}/{team_id}/{game_type}",
+            edge_team_url(endpoint, team_id, season, game_type),
+            fetched_after(day_start),
+        )
 
     def player_landing(self, player_id: int, reuse: Reuse = always) -> Response:
         """A player's landing page: his bio and draft facts and every season line. The ingest

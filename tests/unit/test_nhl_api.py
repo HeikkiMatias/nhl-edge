@@ -56,6 +56,7 @@ def make_api(
     clock: Clock | None = None,
     min_interval_s: float = 0.0,
     offline: bool = False,
+    now: Callable[[], datetime] | None = None,
 ) -> NhlApi:
     clock = clock or Clock()
     client = httpx.Client(transport=httpx.MockTransport(handler), base_url=nhl_api.BASE_URL)
@@ -63,7 +64,7 @@ def make_api(
         store,
         client,
         min_interval_s=min_interval_s,
-        now=ticker(),
+        now=now or ticker(),
         offline=offline,
         sleep=clock.sleep,
         monotonic=clock.monotonic,
@@ -337,3 +338,64 @@ def test_charts_settle_within_the_nightly_lookback() -> None:
     lookback = re.search(r"--recent (\d+)", workflow.read_text())
     assert lookback is not None
     assert timedelta(days=int(lookback[1])) == nhl_api.CHART_SETTLED
+
+
+# NHL EDGE team endpoints (#424)
+
+EDGE_ZONE_TIME = (FIXTURES / "edge" / "team-zone-time-details_8_20262027_2.json").read_bytes()
+
+
+class SetClock:
+    """A UTC clock that stays where a test sets it."""
+
+    def __init__(self, at: datetime) -> None:
+        self.at = at
+
+    def __call__(self) -> datetime:
+        return self.at
+
+
+def test_edge_team_url_and_raw_key(tmp_path: Path) -> None:
+    requests, handler = serve(EDGE_ZONE_TIME)
+    store = RawStore(tmp_path)
+    clock = SetClock(datetime(2026, 11, 12, 9, 5, 30, tzinfo=UTC))
+    response = make_api(store, handler, now=clock).edge_team(
+        "team-zone-time-details", 8, 20262027, 2
+    )
+    assert [str(r.url) for r in requests] == [
+        "https://api-web.nhle.com/v1/edge/team-zone-time-details/8/20262027/2"
+    ]
+    assert response.raw_key == "nhl/edge-team-zone-time-details/20262027/8/2/20261112T090530Z"
+    assert store.get(response.raw_key) == EDGE_ZONE_TIME
+    # The sidecar keeps the fetch time, which the parsed rows take as observed_utc.
+    assert store.meta(response.raw_key)["fetched_utc"] == "2026-11-12T09:05:30+00:00"
+    assert response.fetched_utc == clock.at
+
+
+def test_edge_team_is_fetched_once_a_utc_day(tmp_path: Path) -> None:
+    requests, handler = serve(EDGE_ZONE_TIME)
+    clock = SetClock(datetime(2026, 11, 12, 9, 5, tzinfo=UTC))
+    api = make_api(RawStore(tmp_path), handler, now=clock)
+    first = api.edge_team("team-zone-time-details", 8, 20262027, 2)
+    clock.at = datetime(2026, 11, 12, 23, 59, tzinfo=UTC)  # a rerun the same UTC day
+    rerun = api.edge_team("team-zone-time-details", 8, 20262027, 2)
+    assert len(requests) == 1
+    assert rerun.cached and rerun.raw_key == first.raw_key
+    assert rerun.fetched_utc == first.fetched_utc
+    clock.at = datetime(2026, 11, 13, 0, 0, tzinfo=UTC)  # the next UTC day
+    next_day = api.edge_team("team-zone-time-details", 8, 20262027, 2)
+    assert len(requests) == 2 and not next_day.cached
+    assert next_day.raw_key.endswith("/20261113T000000Z")
+    # Another team, game type or endpoint is its own copy.
+    api.edge_team("team-zone-time-details", 8, 20262027, 3)
+    api.edge_team("team-zone-time-details", 10, 20262027, 2)
+    api.edge_team("team-detail", 8, 20262027, 2)
+    assert len(requests) == 5
+
+
+def test_edge_team_url_refuses_an_unknown_endpoint(tmp_path: Path) -> None:
+    assert nhl_api.edge_team_url("team-detail", 8, 20262027, 3) == (
+        "/v1/edge/team-detail/8/20262027/3"
+    )
+    with pytest.raises(ValueError, match="team-landing"):
+        make_api(RawStore(tmp_path), fail).edge_team("team-landing", 8, 20262027, 2)
