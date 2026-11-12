@@ -21,8 +21,11 @@ is left out.
   game whose copies before 13:30 ET name none and include none from the midday slot (12:30 to
   13:30 ET) is uncovered: counted and left out of the share.
 
-**The rule:** at least half of the covered evening games known by the decision: log the officials
-through /add-data-source (step 2). Otherwise close #423 with the timing.
+**The rule:** on the share of covered evening games known by the decision, with its interval
+(hard rule 7, Codex on #433): its weekly block bootstrap interval, and the exact binomial
+(Clopper-Pearson) one, which stays informative when every game falls on one side. The officials
+are logged through /add-data-source (step 2) when both lower bounds reach one half; #423 closes
+with the timing when both upper bounds fall below it; otherwise the measurement goes on.
 
 It writes reports/research/officials-timing-<yyyymmdd>-<shortsha>.md and .json.
 """
@@ -36,8 +39,9 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
+from scipy.stats import beta
 
-from nhl_edge.backtest import reports
+from nhl_edge.backtest import metrics, reports
 from nhl_edge.ingest.nhl_api import parse_utc
 from nhl_edge.ingest.pregame import ET, RIGHT_RAIL
 from nhl_edge.lake.raw import SUFFIX, RawStore
@@ -51,6 +55,7 @@ REGULAR_SEASON = 2
 # Bands of first seen, in hours before the start: (low, high].
 BANDS = ((0, 1), (1, 3), (3, 6), (6, 9), (9, 12), (12, 18), (18, 48))
 THRESHOLD = 0.5
+LEVEL = 0.95
 UTC_TYPE = pl.Datetime("us", "UTC")
 
 
@@ -168,12 +173,36 @@ def _minutes(start: datetime, moment: Any) -> float | None:
     return (start - moment) / timedelta(minutes=1)
 
 
+def exact_interval(known: int, games: int, level: float = LEVEL) -> tuple[float, float]:
+    """The exact binomial (Clopper-Pearson) interval of a share of known out of games."""
+    tail = (1 - level) / 2
+    low = float(beta.ppf(tail, known, games - known + 1)) if known > 0 else 0.0
+    high = float(beta.ppf(1 - tail, known + 1, games - known)) if known < games else 1.0
+    return low, high
+
+
+def outcome(bootstrap: tuple[float, float], exact: tuple[float, float]) -> str:
+    """The rule on the share's intervals: "log", "close" or "measure on"."""
+    if min(bootstrap[0], exact[0]) >= THRESHOLD:
+        return "log"
+    if max(bootstrap[1], exact[1]) < THRESHOLD:
+        return "close"
+    return "measure on"
+
+
 def summary(per_game: pl.DataFrame) -> dict[str, Any]:
-    """The counts the report gives, and the rule's outcome."""
+    """The counts the report gives, the share known by the decision with its intervals, and the
+    rule's outcome."""
     evening = per_game.filter(~pl.col("matinee"))
-    covered = evening.filter(pl.col("covered"))
+    covered = evening.filter(pl.col("covered")).with_columns(
+        season=(pl.col("game_id") // 1_000_000 * 10_001 + 1).cast(pl.Int32),
+        known=pl.col("known_by_decision").cast(pl.Float64),
+    )
     known = int(covered["known_by_decision"].sum())
     share = known / covered.height if covered.height else None
+    interval = metrics.bootstrap(covered, "known") if covered.height else None
+    bootstrap = (interval.low, interval.high) if interval is not None else (0.0, 1.0)
+    exact = exact_interval(known, covered.height) if covered.height else (0.0, 1.0)
     first = per_game["first_seen_min"].drop_nulls() / 60
     bands = {f"{low}-{high} h": int(((first > low) & (first <= high)).sum()) for low, high in BANDS}
     gap = (per_game["last_empty_min"] - per_game["first_seen_min"]).drop_nulls() / 60
@@ -188,17 +217,20 @@ def summary(per_game: pl.DataFrame) -> dict[str, Any]:
         "covered": covered.height,
         "known_by_decision": known,
         "share_known": share,
+        "share_bootstrap_interval": list(bootstrap),
+        "share_exact_interval": list(exact),
         "never_named_before_start": int(per_game["first_seen_min"].null_count()),
         "first_seen_hours_median": float(first.median()) if first.len() else None,  # type: ignore[arg-type]
         "first_seen_bands": bands,
         "bracket_hours_median": float(gap.median()) if gap.len() else None,  # type: ignore[arg-type]
-        "logged": share is not None and share >= THRESHOLD,
+        "outcome": outcome(bootstrap, exact),
     }
 
 
 def markdown(found: dict[str, Any], version: str) -> str:
     s = found["summary"]
-    share = "none" if s["share_known"] is None else f"{s['share_known']:.0%}"
+    share = "none" if s["share_known"] is None else f"{s['share_known']:.1%}"
+    boot, exact = s["share_bootstrap_interval"], s["share_exact_interval"]
     median = s["first_seen_hours_median"]
     bracket = s["bracket_hours_median"]
     lines = [
@@ -214,7 +246,9 @@ def markdown(found: dict[str, Any], version: str) -> str:
         f"{s['copies_per_game_median']:g} a game). {found['incomplete']} incomplete copies left "
         "out.",
         f"- **Known by the decision** (a copy before 13:30 ET on the game date names a referee): "
-        f"**{s['known_by_decision']:,} of {s['covered']:,}** covered evening games ({share}).",
+        f"**{s['known_by_decision']:,} of {s['covered']:,}** covered evening games ({share}; 95%",
+        f"  weekly block bootstrap interval [{boot[0]:.1%}, {boot[1]:.1%}], exact binomial",
+        f"  [{exact[0]:.1%}, {exact[1]:.1%}]).",
         f"  {s['matinees']:,} games start before 13:30 ET and are counted apart; "
         f"{s['uncovered']:,} evening games have no copy from the midday slot and are left out.",
         f"- **First seen:** median {median:.1f} hours before the start"
@@ -230,14 +264,13 @@ def markdown(found: dict[str, Any], version: str) -> str:
     ]
     for band, count in s["first_seen_bands"].items():
         lines.append(f"| {band} | {count:,} |")
-    outcome = (
-        "at least half the covered evening games had their officials by the decision: step 2, "
-        "log them through /add-data-source."
-        if s["logged"]
-        else "fewer than half the covered evening games had their officials by the decision: "
-        "close #423 with this timing."
-    )
-    lines += ["", f"**The rule's outcome:** {outcome}", ""]
+    said = {
+        "log": "both intervals' lower bounds reach one half: step 2, log the officials through "
+        "/add-data-source.",
+        "close": "both intervals' upper bounds fall below one half: close #423 with this timing.",
+        "measure on": "the intervals straddle one half: the measurement goes on.",
+    }
+    lines += ["", f"**The rule's outcome:** {said[s['outcome']]}", ""]
     return "\n".join(line for line in lines if line is not None) + "\n"
 
 

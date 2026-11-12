@@ -130,19 +130,33 @@ def test_first_seen_known_by_the_decision_matinees_and_coverage() -> None:
     # Covered evening games: A (known), B and D (not); C is uncovered; the matinee is apart.
     assert (found["covered"], found["known_by_decision"], found["uncovered"]) == (3, 1, 1)
     assert found["matinees"] == 1 and found["never_named_before_start"] == 1
-    assert found["share_known"] == pytest.approx(1 / 3) and not found["logged"]
+    assert found["share_known"] == pytest.approx(1 / 3)
+    low, high = found["share_exact_interval"]
+    assert low < 1 / 3 < high and high > 0.5  # three games can't settle it
+    assert found["outcome"] == "measure on"
     # A at 11h55m, the matinee at 4h55m, and B and C (uncovered, but first seen all the same)
     # at 15 minutes before their starts.
     assert found["first_seen_bands"]["9-12 h"] == 1
     assert found["first_seen_bands"]["3-6 h"] == 1 and found["first_seen_bands"]["0-1 h"] == 2
 
 
-def test_the_rule_logs_the_officials_when_half_are_known() -> None:
+def test_the_rule_acts_on_the_intervals_never_the_share_alone() -> None:
+    # Half the games known, but two games can't settle the rule either way.
     per_game = ot.measure(
         copied((A, et(7, 5), 2), (B, et(12, 46), 0)),
         games((A, EVENING), (B, EVENING)),
     )
-    assert ot.summary(per_game)["logged"]
+    assert ot.summary(per_game)["outcome"] == "measure on"
+    assert ot.outcome((0.6, 0.9), (0.55, 0.95)) == "log"
+    assert ot.outcome((0.0, 0.0), (0.0, 0.013)) == "close"
+    assert ot.outcome((0.0, 0.0), (0.0, 0.6)) == "measure on"
+
+
+def test_the_exact_interval_stays_informative_when_none_is_known() -> None:
+    low, high = ot.exact_interval(0, 287)
+    assert low == 0.0 and 0.012 < high < 0.013
+    low, high = ot.exact_interval(287, 287)
+    assert high == 1.0 and 0.987 < low < 0.988
 
 
 def test_copies_are_read_through_the_raw_store(tmp_path: Path) -> None:
