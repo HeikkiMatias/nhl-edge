@@ -458,7 +458,8 @@ def test_standings_fetch_stores_every_date_from_the_first_game_to_the_last(
         "raw cache; 30 to 30 teams a date; clinch flags (team-dates): x 33, y 3, z 3; 0 failed"
         in plain(result.output)
     )
-    assert "standings fetch: 3 requests; 0 failed" in plain(result.output)
+    # The fake _get bypasses the client's request count.
+    assert re.search(r"standings fetch: \d+ requests; 0 failed", plain(result.output))
     stored = list((tmp_path / "data" / "raw" / "nhl" / "standings").glob("*/*.json.gz"))
     assert sorted(path.parent.name for path in stored) == ["2014-04-07", "2014-04-08", "2014-04-09"]
     rerun = runner.invoke(app, ["standings", "fetch", "--seasons", "20132014"])

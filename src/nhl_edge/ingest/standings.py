@@ -6,8 +6,8 @@ A date's standings include that date's games, so its rows are observed at 10:00 
 after the date, when the date's results count as public (ADR 0003), and a game on date D reads
 the standings of D-1 at the latest (standings_as_of). `nhl standings fetch` stores each date's
 response raw (NhlApi.standings) and parses it into Standings rows, one per team, so a response
-that changed shape fails the run. No lake table holds the rows yet: #422's research parses the
-raw copies itself, and no model reads them.
+that changed shape fails the run. No lake table holds the rows yet: #422's research reads them
+through fetch_standings, which reuses the stored copies, and no model reads them.
 """
 
 import json
@@ -105,35 +105,47 @@ def parse_standings(body: bytes, day: date, raw_key: str) -> pl.DataFrame:
     return Standings.validate(pl.DataFrame(rows, schema=dtypes(Standings)))
 
 
-def standings_as_of(standings: pl.DataFrame, asks: pl.DataFrame) -> pl.DataFrame:
-    """For each ask, a row with at least team and as_of_utc (a UTC datetime), the latest
-    Standings row of its team observed strictly before as_of_utc: the asks in their order with
-    their columns, then every Standings column but team, null where the team has none by then.
-    A row observed at the ask's very time is not yet known. So a game on date D predicted at
-    10:00 US Eastern on D reads the standings of D-1 (observed 10:00 UTC on D), never D's.
-    standings is validated first; an ask column that shares a Standings column's name (other
-    than team) fails, so no column is renamed behind the caller's back."""
-    missing = sorted({"team", "as_of_utc"} - set(asks.columns))
+def _with_times(frame: pl.DataFrame, what: str, column: str) -> None:
+    """Fail unless the frame has team and the column, a datetime with a time zone and no null."""
+    missing = [name for name in ("team", column) if name not in frame.columns]
     if missing:
-        raise ValueError(f"the asks have no {', '.join(missing)}")
-    shared = sorted(set(asks.columns) & (set(Standings.to_schema().columns) - {"team"}))
+        raise ValueError(f"the {what} have no {', '.join(missing)}")
+    dtype = frame.schema[column]
+    if not isinstance(dtype, pl.Datetime) or dtype.time_zone is None:
+        raise ValueError(f"the {what}' {column} is {dtype}, not a datetime with a time zone")
+    if frame[column].null_count():
+        raise ValueError(f"the {what} have a null {column}")
+
+
+def standings_as_of(standings: pl.DataFrame, asks: pl.DataFrame) -> pl.DataFrame:
+    """For each ask, a row with at least team and as_of_utc, the latest standings row of its
+    team observed strictly before as_of_utc: the asks in their order with their columns, then
+    every column of standings but team, null where the team has none by then. A row observed at
+    the ask's very time is not yet known. So a game on date D predicted at 10:00 US Eastern on D
+    reads the standings of D-1 (observed 10:00 UTC on D), never D's own.
+
+    standings is Standings rows (parse_standings), or any frame derived from them with team,
+    observed_utc and the columns to read, one row per team and observed_utc. Both times must be
+    datetimes with a time zone. An ask column with the name of a standings column other than
+    team fails, rather than being renamed, so an observed_utc read is always the standings'."""
+    _with_times(asks, "asks", "as_of_utc")
+    _with_times(standings, "standings", "observed_utc")
+    shared = sorted(set(asks.columns) & (set(standings.columns) - {"team"}))
     if shared:
-        raise ValueError(f"the asks have Standings columns of their own: {', '.join(shared)}")
-    as_of = asks.schema["as_of_utc"]
-    if not isinstance(as_of, pl.Datetime) or as_of.time_zone is None:
-        raise ValueError(f"as_of_utc is {as_of}, not a datetime with a time zone")
-    if asks["as_of_utc"].null_count():
-        raise ValueError("an ask has no as_of_utc")
-    rows = Standings.validate(standings)
+        raise ValueError(f"the asks have columns of the standings' own: {', '.join(shared)}")
+    if standings.select("team", "observed_utc").is_duplicated().any():
+        raise ValueError("the standings have two rows of a team observed at the same time")
     order, key = "__ask", "__as_of_utc"
+
+    def utc(column: str) -> pl.Expr:
+        return pl.col(column).dt.convert_time_zone("UTC").dt.cast_time_unit("us")
+
     joined = (
         asks.with_row_index(order)
-        .with_columns(
-            pl.col("as_of_utc").dt.convert_time_zone("UTC").dt.cast_time_unit("us").alias(key)
-        )
+        .with_columns(utc("as_of_utc").alias(key))
         .sort(key)
         .join_asof(
-            rows.sort("observed_utc"),
+            standings.with_columns(utc("observed_utc")).sort("observed_utc"),
             left_on=key,
             right_on="observed_utc",
             by="team",
@@ -144,7 +156,8 @@ def standings_as_of(standings: pl.DataFrame, asks: pl.DataFrame) -> pl.DataFrame
         )
         .sort(order)
     )
-    return joined.select(*asks.columns, *(column for column in rows.columns if column != "team"))
+    read = [column for column in standings.columns if column != "team"]
+    return joined.select(*asks.columns, *read)
 
 
 @dataclass
@@ -172,11 +185,11 @@ class StandingsReport:
         return {flag: seen[flag] for flag in STANDINGS_CLINCH if seen[flag]}
 
 
-def fetch_standings(api: NhlApi, days: Iterable[date]) -> StandingsReport:
+def fetch_report(api: NhlApi, days: Iterable[date]) -> StandingsReport:
     """Fetch, or reuse from the raw cache, and parse the standings of each date, once each and
-    in date order. A fetch or parse that fails is recorded and the rest go on; the caller fails
-    the run after. Every response is stored raw before it is parsed, so a copy that no longer
-    parses stays for a fixed parser to replay."""
+    in date order, with the counts `nhl standings fetch` prints. A fetch or parse that fails is
+    recorded and the rest go on; the caller fails the run after. Every response is stored raw
+    before it is parsed, so a copy that no longer parses stays for a fixed parser to replay."""
     report = StandingsReport()
     frames: list[pl.DataFrame] = []
     for day in sorted(set(days)):
@@ -197,3 +210,10 @@ def fetch_standings(api: NhlApi, days: Iterable[date]) -> StandingsReport:
     if frames:
         report.standings = pl.concat(frames)
     return report
+
+
+def fetch_standings(api: NhlApi, days: Iterable[date]) -> tuple[pl.DataFrame, list[str]]:
+    """The Standings rows of every date that parsed, and each date's fetch or parse that failed
+    ("<date>: <error>"), as fetch_report gets them."""
+    report = fetch_report(api, days)
+    return report.standings, report.failed

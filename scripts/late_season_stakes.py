@@ -52,13 +52,13 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
-from nhl_edge.ingest.standings import fetch_standings, standings_as_of
 
 from nhl_edge.backtest import metrics, reports
 from nhl_edge.backtest import yardstick as ys
 from nhl_edge.features.team_strength import TUNED_CUTOFF
 from nhl_edge.game import b3
 from nhl_edge.ingest.nhl_api import NhlApi
+from nhl_edge.ingest.standings import fetch_standings, standings_as_of
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.tables import Lake, Reader
 
@@ -103,8 +103,10 @@ def season_days(games: pl.DataFrame, seasons: Iterable[int]) -> list[date]:
         if dates.is_empty():
             raise ValueError(f"the lake has no regular-season games of {season}")
         first, last = dates.min(), dates.max()
-        assert isinstance(first, date) and isinstance(last, date)
-        days += [first + timedelta(days=i) for i in range((last - first).days + 1)]
+        if not isinstance(first, date) or not isinstance(last, date):
+            raise TypeError(f"{season}'s game dates are not dates")
+        span = (last - first).days  # type: ignore[operator]
+        days += [first + timedelta(days=i) for i in range(span + 1)]
     return days
 
 
@@ -333,7 +335,7 @@ def lineup_rows(
     rows = (
         skaters.join(numbered, on=["game_id", "team"])
         .join(goalies, on=["game_id", "team"], how="left")
-        .with_columns(as_of_utc=pl.col("observed_utc"))
+        .rename({"observed_utc": "as_of_utc"})
     )
     known = known_flags(flagged, rows)
     return known.with_columns(
@@ -359,6 +361,12 @@ def _slope(frame: pl.DataFrame, x: str, y: str) -> dict[str, Any] | None:
     }
 
 
+def _mean(frame: pl.DataFrame, column: str) -> float | None:
+    """The column's mean over the frame, or None when it is empty."""
+    value = frame[column].mean()
+    return float(value) if isinstance(value, int | float) else None
+
+
 def lineup_figures(rows: pl.DataFrame) -> dict[str, Any]:
     """Step 2's test and the figures shown beside it."""
     late = rows.filter(pl.col("number") > LATE)
@@ -376,8 +384,8 @@ def lineup_figures(rows: pl.DataFrame) -> dict[str, Any]:
         "test": _slope(late, "flagged", "surprise"),
         "late_team_games": late.height,
         "mean_surprise": {
-            "flagged": float(late.filter(pl.col("flagged") == 1)["surprise"].mean() or 0.0),
-            "unflagged": float(unflagged["surprise"].mean() or 0.0),
+            "flagged": _mean(late.filter(pl.col("flagged") == 1), "surprise"),
+            "unflagged": _mean(unflagged, "surprise"),
         },
         "clinched": _slope(clinched, "clinched_f", "surprise"),
         "eliminated": _slope(eliminated, "eliminated_f", "surprise"),
@@ -513,6 +521,10 @@ def _plain(estimate: Mapping[str, Any] | None, digits: int = 2) -> str:
     return f"{mean:+.{digits}f} [{estimate['low']:+.{digits}f}, {estimate['high']:+.{digits}f}]"
 
 
+def _number(value: float | None) -> str:
+    return "none" if value is None else f"{value:+.2f}"
+
+
 def _thousandths(estimate: Mapping[str, Any] | None) -> str:
     if estimate is None:
         return "none"
@@ -578,7 +590,8 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
     means = lineups["mean_surprise"]
     lines += [
         "",
-        f"Mean surprise: flagged {means['flagged']:+.2f}, unflagged {means['unflagged']:+.2f}.",
+        f"Mean surprise: flagged {_number(means['flagged'])}, "
+        f"unflagged {_number(means['unflagged'])}.",
         "",
         "## Step 3: the yardstick",
         "",

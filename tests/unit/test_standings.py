@@ -1,7 +1,7 @@
 """NHL standings by date (#422): the parser on one real response (2014-04-08, fetched
-2026-11-14), the Standings schema, standings_as_of, the client's past-dates-only cache and
-fetch_standings, all without the network. Other dates and the e flag are synthetic edits of the
-fixture made in memory."""
+2026-11-14), the Standings schema, standings_as_of, the client's past-dates-only cache, and
+fetch_report and fetch_standings, all without the network. Other dates and the e flag are
+synthetic edits of the fixture made in memory."""
 
 import json
 from collections.abc import Callable
@@ -18,7 +18,12 @@ from pandera.errors import SchemaError
 from nhl_edge.ingest import nhl_api
 from nhl_edge.ingest.games import result_public_utc
 from nhl_edge.ingest.nhl_api import NhlApi, NotCachedError
-from nhl_edge.ingest.standings import fetch_standings, parse_standings, standings_as_of
+from nhl_edge.ingest.standings import (
+    fetch_report,
+    fetch_standings,
+    parse_standings,
+    standings_as_of,
+)
 from nhl_edge.lake.raw import RawStore
 from nhl_edge.lake.schemas import STANDINGS_PUBLIC_AFTER, Standings, dtypes
 
@@ -296,22 +301,54 @@ def test_an_ask_in_another_time_zone_reads_the_same_instant() -> None:
 @pytest.mark.parametrize(
     ("frame", "message"),
     [
-        (pl.DataFrame({"team": ["BOS"]}), "no as_of_utc"),
-        (asks([("BOS", NOW)], season=[20132014]), "Standings columns of their own: season"),
+        (pl.DataFrame({"team": ["BOS"]}), "the asks have no as_of_utc"),
+        (asks([("BOS", NOW)], season=[20132014]), "columns of the standings' own: season"),
+        # A lineup's own observed time can't ride along: an observed_utc read is the standings'.
+        (
+            asks([("BOS", NOW)]).with_columns(observed_utc=pl.col("as_of_utc")),
+            "columns of the standings' own: observed_utc",
+        ),
         (pl.DataFrame({"team": ["BOS"], "as_of_utc": [datetime(2014, 4, 8, 14)]}), "time zone"),
         (
             pl.DataFrame(
                 {"team": ["BOS"], "as_of_utc": [None]},
                 schema={"team": pl.String, "as_of_utc": pl.Datetime("us", "UTC")},
             ),
-            "an ask has no as_of_utc",
+            "the asks have a null as_of_utc",
         ),
     ],
-    ids=["no time", "shared column", "naive time", "null time"],
+    ids=["no time", "shared column", "own observed time", "naive time", "null time"],
 )
 def test_asks_that_cannot_be_read_fail(frame: pl.DataFrame, message: str) -> None:
     with pytest.raises(ValueError, match=message):
         standings_as_of(of_dates(DAY), frame)
+
+
+def test_a_frame_derived_from_the_standings_is_read_too() -> None:
+    before = DAY - timedelta(days=1)
+    flags = of_dates(before, DAY).select(
+        "team", "standings_date", "observed_utc", clinched=pl.col("clinch_indicator").is_not_null()
+    )
+    read = standings_as_of(flags, asks([("BOS", at_ten_et(DAY)), ("TOR", at_ten_et(DAY))]))
+    assert read.columns == ["team", "as_of_utc", "standings_date", "observed_utc", "clinched"]
+    assert read.select("standings_date", "clinched").rows() == [(before, True), (before, False)]
+
+
+@pytest.mark.parametrize(
+    ("standings", "message"),
+    [
+        (of_dates(DAY).drop("observed_utc"), "the standings have no observed_utc"),
+        (
+            of_dates(DAY).with_columns(pl.col("observed_utc").dt.replace_time_zone(None)),
+            "time zone",
+        ),
+        (pl.concat([of_dates(DAY), of_dates(DAY)]), "two rows of a team observed at the same"),
+    ],
+    ids=["no observed time", "naive observed time", "a team twice at a time"],
+)
+def test_standings_that_cannot_be_read_fail(standings: pl.DataFrame, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        standings_as_of(standings, asks([("BOS", NOW)]))
 
 
 # The client
@@ -421,7 +458,7 @@ def test_replay_reads_the_raw_cache_only(tmp_path: Path) -> None:
         replay.standings(DAY - timedelta(days=1))
 
 
-# fetch_standings
+# fetch_report and fetch_standings
 
 
 DAYS = [DAY - timedelta(days=1), DAY, DAY + timedelta(days=1)]
@@ -429,7 +466,7 @@ DAYS = [DAY - timedelta(days=1), DAY, DAY + timedelta(days=1)]
 
 def test_fetch_parses_every_date_once_in_date_order(tmp_path: Path) -> None:
     server = Server()
-    report = fetch_standings(api(RawStore(tmp_path), server), [DAYS[2], DAYS[0], DAYS[1], DAY])
+    report = fetch_report(api(RawStore(tmp_path), server), [DAYS[2], DAYS[0], DAYS[1], DAY])
     assert server.paths == [f"/v1/standings/{day.isoformat()}" for day in DAYS]
     assert (report.dates, report.fetched, report.reused, report.failed) == (3, 3, 0, [])
     assert report.standings.height == 90
@@ -440,8 +477,8 @@ def test_fetch_parses_every_date_once_in_date_order(tmp_path: Path) -> None:
 
 def test_a_rerun_reuses_every_copy(tmp_path: Path) -> None:
     store = RawStore(tmp_path)
-    fetch_standings(api(store, Server()), DAYS)
-    report = fetch_standings(api(store, no_request), DAYS)
+    fetch_report(api(store, Server()), DAYS)
+    report = fetch_report(api(store, no_request), DAYS)
     assert (report.dates, report.fetched, report.reused, report.failed) == (3, 0, 3, [])
     assert report.standings.height == 90
 
@@ -450,7 +487,7 @@ def test_failures_are_recorded_and_the_rest_go_on(tmp_path: Path) -> None:
     store = RawStore(tmp_path)
     server = Server({DAYS[0]: 404, DAYS[1]: b'{"standings": []}'})
     days = [*DAYS, NOW.date()]  # today is refused
-    report = fetch_standings(api(store, server), days)
+    report = fetch_report(api(store, server), days)
     assert (report.dates, report.fetched, report.reused) == (4, 2, 0)
     assert [problem.split(":")[0] for problem in report.failed] == [
         "2014-04-07",
@@ -466,6 +503,13 @@ def test_failures_are_recorded_and_the_rest_go_on(tmp_path: Path) -> None:
 
 
 def test_a_fetch_with_nothing_parsed_reports_no_teams(tmp_path: Path) -> None:
-    report = fetch_standings(api(RawStore(tmp_path), Server({DAY: 404})), [DAY])
+    report = fetch_report(api(RawStore(tmp_path), Server({DAY: 404})), [DAY])
     assert report.standings.is_empty()
     assert report.teams_per_date() is None and report.clinch_flags() == {}
+
+
+def test_fetch_standings_gives_the_rows_and_the_failures(tmp_path: Path) -> None:
+    standings, failed = fetch_standings(api(RawStore(tmp_path), Server({DAYS[0]: 404})), DAYS)
+    assert sorted(standings["standings_date"].unique()) == DAYS[1:]
+    assert Standings.validate(standings).height == 60
+    assert len(failed) == 1 and failed[0].startswith("2014-04-07: NotFoundError")

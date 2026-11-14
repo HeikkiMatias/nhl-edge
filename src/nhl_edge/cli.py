@@ -5024,7 +5024,7 @@ def standings_fetch(
 
     from nhl_edge.ingest.nhl_api import REGULAR_SEASON, NhlApi
     from nhl_edge.ingest.nhl_ingest import parse_seasons
-    from nhl_edge.ingest.standings import fetch_standings
+    from nhl_edge.ingest.standings import fetch_report
     from nhl_edge.lake.raw import RawStore
     from nhl_edge.lake.tables import Lake
     from nhl_edge.settings import load_env
@@ -5050,7 +5050,7 @@ def standings_fetch(
     if missing:
         typer.echo(
             f"standings fetch: no regular-season game of {', '.join(missing)} in the lake's "
-            "games: run nhl ingest for those seasons, or pass --r2 to read R2's",
+            "games: run nhl ingest for those seasons, or pass --r2 to read R2's games",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -5059,7 +5059,7 @@ def standings_fetch(
     for season in wanted:
         first, last = spans[season]
         days = [first + timedelta(days=n) for n in range((last - first).days + 1)]
-        report = fetch_standings(api, days)
+        report = fetch_report(api, days)
         teams = report.teams_per_date()
         flags = report.clinch_flags()
         typer.echo(
