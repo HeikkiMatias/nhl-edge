@@ -86,8 +86,20 @@ CANDIDATES: dict[str, tuple[str, ...]] = {
     # Descriptive, never part of the decision: each column alone, for the move's slope on it.
     "clinched_diff": ("clinched_diff",),
     "eliminated_diff": ("eliminated_diff",),
+    # Shown beside (the leakage audit of 2026-11-14): the flags of the standings two days before,
+    # public before any opener posted the evening before (ADR 0006), which the day before's may
+    # postdate when a flag flips on that night's games.
+    "clinched (two days before)": (*b3.SPLIT, "clinched_diff_2d"),
+    "eliminated (two days before)": (*b3.SPLIT, "eliminated_diff_2d"),
 }
 COLUMNS = {"clinched": "clinched_diff", "eliminated": "eliminated_diff"}
+TWO_DAYS = {
+    "clinched (two days before)": "clinched_diff_2d",
+    "eliminated (two days before)": "eliminated_diff_2d",
+}
+# The run stops when the API's clinch comes more than this many days before our bound's, which
+# would suggest flags set after the fact (fixed before the run; 3 at most in 2012-13).
+MAX_API_LEAD_DAYS = 14
 
 
 def regular(games: pl.DataFrame) -> pl.DataFrame:
@@ -259,7 +271,11 @@ def flag_checks(flagged: pl.DataFrame, games: pl.DataFrame) -> dict[str, Any]:
         .with_columns(lead=(pl.col("bound") - pl.col("api")).dt.total_days())
     )
     leads = first["lead"]
+    seen = flagged.sort("standings_date").with_columns(
+        before=pl.col("clinched").cast(pl.Int8).cum_max().over("season", "team")
+    )
     return {
+        "flags_lost": seen.filter((pl.col("before") == 1) & ~pl.col("clinched")).height,
         "bound_before_api": flagged.filter(pl.col("clinched_bound") & ~pl.col("clinched")).height,
         "clinched_missed_playoffs": seasons.filter(pl.col("clinched") & ~pl.col("in_playoffs"))
         .select("season", "team")
@@ -281,16 +297,51 @@ def flag_checks(flagged: pl.DataFrame, games: pl.DataFrame) -> dict[str, Any]:
     }
 
 
+def enforce(checks: Mapping[str, Any]) -> None:
+    """Stop the run when a check that must be 0 isn't, or the API's clinch leads our bound's by
+    more than MAX_API_LEAD_DAYS (the leakage audit of 2026-11-14)."""
+    nonzero = {
+        name: checks[name]
+        for name in (
+            "flags_lost",
+            "bound_before_api",
+            "clinched_missed_playoffs",
+            "eliminated_in_playoffs",
+        )
+        if checks[name]
+    }
+    if nonzero:
+        raise ValueError(f"the standings' flags fail checks that must be 0: {nonzero}")
+    lead = checks["api_lead_days"]["max"]
+    if lead is not None and lead > MAX_API_LEAD_DAYS:
+        raise ValueError(
+            f"the API's clinch leads our bound's by {lead} days, over {MAX_API_LEAD_DAYS}"
+        )
+
+
 def known_flags(flagged: pl.DataFrame, asks: pl.DataFrame) -> pl.DataFrame:
-    """Each ask (its columns, with team and as_of_utc) with the team's clinched and eliminated
-    flags from the latest standings observed before as_of_utc, False when there are none, and
-    the date of those standings (null when none)."""
+    """Each ask (its columns, with season, team and as_of_utc) with the team's clinched and
+    eliminated flags from the latest standings of the ask's season observed before as_of_utc, and
+    the date of those standings. A season's first date has none: the previous season's final
+    standings are the latest known then, but they are another season's, so the flags are False
+    and the date null (the leakage audit of 2026-11-14)."""
     found = standings_as_of(
-        flagged.select("team", "standings_date", "observed_utc", "clinched", "eliminated"), asks
+        flagged.select(
+            "team",
+            "standings_date",
+            "observed_utc",
+            "clinched",
+            "eliminated",
+            standings_season="season",
+        ),
+        asks,
     )
+    same = pl.col("standings_season") == pl.col("season")
     return found.with_columns(
-        pl.col("clinched").fill_null(False), pl.col("eliminated").fill_null(False)
-    )
+        standings_date=pl.when(same).then(pl.col("standings_date")),
+        clinched=pl.when(same).then(pl.col("clinched")).otherwise(False),
+        eliminated=pl.when(same).then(pl.col("eliminated")).otherwise(False),
+    ).drop("standings_season")
 
 
 def lineup_rows(
@@ -394,15 +445,21 @@ def lineup_figures(rows: pl.DataFrame) -> dict[str, Any]:
     }
 
 
-def with_columns(read: ys.Read, flagged: pl.DataFrame) -> tuple[pl.DataFrame, int]:
-    """The yardstick's rows with clinched_diff and eliminated_diff from the standings known at
-    each game's prediction time, and how many of the explore half's games had no standings for a
-    side then (each season's first date, before any flag can exist; counted as unflagged)."""
+def with_columns(
+    read: ys.Read, flagged: pl.DataFrame, earlier: timedelta = timedelta(0), suffix: str = ""
+) -> tuple[pl.DataFrame, int]:
+    """The yardstick's rows with clinched_diff and eliminated_diff (each with suffix) from the
+    standings of the game's season known at its prediction time less earlier, and how many of
+    the explore half's games had none for a side then (each season's first dates, before any
+    flag can exist; counted as unflagged)."""
     frame = read.frame
     sides = []
     for side in ("home", "away"):
         asks = frame.join(read.games.select("game_id", side), on="game_id").select(
-            "game_id", team=pl.col(side), as_of_utc=pl.col("prediction_utc")
+            "game_id",
+            "season",
+            team=pl.col(side),
+            as_of_utc=pl.col("prediction_utc") - earlier,
         )
         found = known_flags(flagged, asks).select(
             "game_id",
@@ -411,18 +468,17 @@ def with_columns(read: ys.Read, flagged: pl.DataFrame) -> tuple[pl.DataFrame, in
             pl.col("eliminated").cast(pl.Float64).alias(f"{side}_eliminated"),
         )
         sides.append(found)
+    clinched, eliminated = f"clinched_diff{suffix}", f"eliminated_diff{suffix}"
     columns = (
         sides[0]
         .join(sides[1], on="game_id")
         .with_columns(
-            clinched_diff=pl.col("home_clinched") - pl.col("away_clinched"),
-            eliminated_diff=pl.col("home_eliminated") - pl.col("away_eliminated"),
+            (pl.col("home_clinched") - pl.col("away_clinched")).alias(clinched),
+            (pl.col("home_eliminated") - pl.col("away_eliminated")).alias(eliminated),
         )
     )
     out = frame.join(
-        columns.select(
-            "game_id", "clinched_diff", "eliminated_diff", "home_standings", "away_standings"
-        ),
+        columns.select("game_id", clinched, eliminated, "home_standings", "away_standings"),
         on="game_id",
     )
     explore = out.filter(pl.col("season").is_in(ys.EXPLORE))
@@ -482,6 +538,25 @@ def decide(
     return {"family": list(FAMILY), "estimates": estimates}
 
 
+def two_days_before(per_game: pl.DataFrame, frame: pl.DataFrame) -> dict[str, Any]:
+    """Shown beside: each candidate on the standings of two days before, paired against B3's
+    split on the move skill, over all games and over the games with its column nonzero."""
+    out: dict[str, Any] = {}
+    for name, column in TWO_DAYS.items():
+        both = paired_frame(per_game, name, BASE).join(
+            frame.select("game_id", column), on="game_id"
+        )
+        flagged = both.filter(pl.col(column) != 0)
+        out[name] = {
+            "primary": metrics.bootstrap(both, "difference").to_dict(),
+            "flagged_games": flagged.height,
+            "on_flagged_games": metrics.bootstrap(flagged, "difference").to_dict()
+            if flagged.height
+            else None,
+        }
+    return out
+
+
 def run(lake: Reader, api: NhlApi) -> dict[str, Any]:
     """Every step on the lake to the explore half's last season, and the family's decision."""
     last = max(ys.EXPLORE)
@@ -494,6 +569,8 @@ def run(lake: Reader, api: NhlApi) -> dict[str, Any]:
     if check["mismatches"]:
         raise ValueError(f"the standings differ from the lake's games: {check['examples']}")
     flagged = flags(standings)
+    checks = flag_checks(flagged, games)
+    enforce(checks)
     explore_games = games.filter(pl.col("season").is_in(ys.EXPLORE))
     rows = lineup_rows(
         lake.read("lineups").filter(pl.col("season").is_in(ys.EXPLORE)),
@@ -503,9 +580,14 @@ def run(lake: Reader, api: NhlApi) -> dict[str, Any]:
     )
     lineups = lineup_figures(rows)
     frame, unknown = with_columns(read, flagged)
+    earlier, _ = with_columns(read, flagged, timedelta(days=1), "_2d")
+    frame = frame.join(
+        earlier.select("game_id", "clinched_diff_2d", "eliminated_diff_2d"), on="game_id"
+    )
     per_game, figures = ys.run(frame, "explore", CANDIDATES)
     return {
-        "standings": check | {"flags": flag_checks(flagged, games)},
+        "standings": check | {"flags": checks},
+        "two_days_before": two_days_before(per_game, frame),
         "lineups": lineups,
         "explore_games_without_standings": unknown,
         "tuning_cutoff": str(TUNED_CUTOFF),
@@ -557,9 +639,12 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
         f"- **Team-seasons flagged:** clinched {checks['team_seasons']['clinched']},",
         f"  eliminated {checks['team_seasons']['eliminated']}; our clinch bound",
         f"  {checks['team_seasons']['clinched_bound']}.",
+        f"- **Flags lost** (a clinch that disappears later in the season): {checks['flags_lost']}",
+        "  (must be 0).",
         f"- **Our clinch bound before the API's flag:** {checks['bound_before_api']} team-dates",
         "  (must be 0). The API's clinch leads our bound's by a median of",
-        f"  {checks['api_lead_days']['median']} days (at most {checks['api_lead_days']['max']}).",
+        f"  {checks['api_lead_days']['median']} days (at most {checks['api_lead_days']['max']};",
+        f"  the run stops beyond {MAX_API_LEAD_DAYS}).",
         "- **Against the playoffs:** clinched teams that missed them,",
         f"  {checks['clinched_missed_playoffs']}; eliminated teams that played in them,",
         f"  {checks['eliminated_in_playoffs']} (both must be 0).",
@@ -614,6 +699,21 @@ def markdown(found: Mapping[str, Any], version: str) -> str:
     for name in COLUMNS.values():
         slope = found["figures"][name].get("slope")
         lines.append(f"- `{name}`: {_plain(slope, 4)}")
+    lines += [
+        "",
+        "**The standings two days before** (shown beside): an opener posted the evening before",
+        "(ADR 0006) can predate the night's results that flip a flag, and the rested games don't",
+        "control for that, since another team's game can flip it. These read the standings of",
+        "two days before, public before any such opener.",
+        "",
+        "| Candidate | All games | On games with the flag | Games with the flag |",
+        "| --- | --- | --- | --- |",
+    ]
+    for name, entry in found["two_days_before"].items():
+        lines.append(
+            f"| {name} | {_thousandths(entry['primary'])} | "
+            f"{_thousandths(entry['on_flagged_games'])} | {entry['flagged_games']} |"
+        )
     lines += [
         "",
         "## The decision",

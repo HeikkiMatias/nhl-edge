@@ -123,12 +123,12 @@ def test_the_api_flags_clinched_and_unknown_flags_stay_false() -> None:
     assert out["BOS"]["clinched"] and not out["TOR"]["clinched"]
 
 
-GAME, TEAM = 2014020100, "BOS"
+GAME, TEAM = 2013020100, "BOS"
 PROJECTED = datetime.combine(DAY, time(14), UTC)
 
 
 def one_game() -> pl.DataFrame:
-    return f.games([(GAME, DAY, TEAM, "TOR", 3, 1, "REG")], 20142015)
+    return f.games([(GAME, DAY, TEAM, "TOR", 3, 1, "REG")], MODERN)
 
 
 def test_the_surprise_is_the_minutes_missing_beyond_what_the_projection_expected() -> None:
@@ -257,3 +257,36 @@ def test_season_days_cover_every_date_from_first_to_last_regular_game() -> None:
     assert ls.season_days(games, [MODERN]) == [date(2013, 10, d) for d in range(1, 5)]
     with pytest.raises(ValueError, match="no regular-season games"):
         ls.season_days(games, [20142015])
+
+
+def checks(**changes: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "flags_lost": 0,
+        "bound_before_api": 0,
+        "clinched_missed_playoffs": 0,
+        "eliminated_in_playoffs": 0,
+        "api_lead_days": {"teams": 10, "median": 1.0, "max": 3},
+    }
+    return base | changes
+
+
+def test_the_run_stops_on_a_check_that_must_be_zero_or_a_long_api_lead() -> None:
+    ls.enforce(checks())
+    for name in ("flags_lost", "bound_before_api", "clinched_missed_playoffs"):
+        with pytest.raises(ValueError, match=name):
+            ls.enforce(checks(**{name: 1}))
+    ls.enforce(checks(api_lead_days={"teams": 1, "median": 14.0, "max": ls.MAX_API_LEAD_DAYS}))
+    with pytest.raises(ValueError, match="leads our bound"):
+        ls.enforce(checks(api_lead_days={"teams": 1, "median": 15.0, "max": 15}))
+
+
+def test_flag_checks_count_a_clinch_that_disappears() -> None:
+    days = [DAY + timedelta(days=d) for d in range(3)]
+    rows = [
+        f.standings([("BOS", "E", "A", 70 + d, 100)], day, MODERN, {"BOS": "x"} if d != 1 else {})
+        for d, day in enumerate(days)
+    ]
+    flagged = ls.flags(pl.concat(rows))
+    games = f.games([(2013030111, date(2014, 4, 20), "BOS", "TOR", 1, 0, "REG")], MODERN)
+    found = ls.flag_checks(flagged, games)
+    assert found["flags_lost"] == 1 and found["clinched_missed_playoffs"] == 0

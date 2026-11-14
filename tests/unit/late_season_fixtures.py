@@ -77,18 +77,29 @@ def standings(
     )
 
 
-def flagged(rows: Sequence[tuple[str, date, bool, bool]]) -> pl.DataFrame:
+def season_of(day: date) -> int:
+    """The season of a date: 20132014 from July 2013 to June 2014."""
+    start = day.year if day.month >= 7 else day.year - 1
+    return start * 10_000 + start + 1
+
+
+def flagged(
+    rows: Sequence[tuple[str, date, bool, bool]], seasons: dict[date, int] | None = None
+) -> pl.DataFrame:
     """SYNTHETIC flags as flags() gives them: (team, standings_date, clinched, eliminated), each
-    observed the morning after its date."""
+    observed the morning after its date, of the season seasons gives its date or else
+    season_of's."""
+    known = seasons or {}
     return pl.DataFrame(
         {
+            "season": [known.get(r[1], season_of(r[1])) for r in rows],
             "team": [r[0] for r in rows],
             "standings_date": [r[1] for r in rows],
             "observed_utc": [morning_after(r[1]) for r in rows],
             "clinched": [r[2] for r in rows],
             "eliminated": [r[3] for r in rows],
         },
-        schema_overrides={"observed_utc": UTC_TYPE},
+        schema_overrides={"season": pl.Int32, "observed_utc": UTC_TYPE},
     )
 
 
@@ -130,5 +141,11 @@ def actual(rows: Sequence[tuple[int, str, int, bool]]) -> pl.DataFrame:
             "team": [r[1] for r in rows],
             "player_id": [r[2] for r in rows],
             "starting_goalie": [r[3] for r in rows],
-        }
+        },
+        schema={
+            "game_id": pl.Int64,
+            "team": pl.String,
+            "player_id": pl.Int64,
+            "starting_goalie": pl.Boolean,
+        },
     )
