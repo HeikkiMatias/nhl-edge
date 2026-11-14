@@ -100,6 +100,8 @@ TWO_DAYS = {
 # The run stops when the API's clinch comes more than this many days before our bound's, which
 # would suggest flags set after the fact (fixed before the run; 3 at most in 2012-13).
 MAX_API_LEAD_DAYS = 14
+# Playoff teams a season: eight a conference.
+PLAYOFF_TEAMS = 16
 
 
 def regular(games: pl.DataFrame) -> pl.DataFrame:
@@ -246,21 +248,20 @@ def flags(standings: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def flag_checks(flagged: pl.DataFrame, games: pl.DataFrame) -> dict[str, Any]:
-    """The flags against what happened, shown beside: team-dates where our clinch bound comes
-    before the API's flag (must be none), the API's clinches and our eliminations of teams that
-    then did or didn't play in the playoffs (must be none), and how many days the API's clinch
-    leads our bound's."""
-    playoffs = (
-        games.filter((pl.col("game_id") // 10_000 % 100) == 3)
-        .select("season", team=pl.concat_list("home", "away"))
-        .explode("team")
-        .unique()
-        .with_columns(in_playoffs=pl.lit(True))
-    )
+def flag_checks(flagged: pl.DataFrame) -> dict[str, Any]:
+    """The flags against how each season ended, shown beside. The playoff teams are those the
+    API flags clinched on the season's last date, when every game is played (the lake's games
+    hold the regular season only): PLAYOFF_TEAMS a season. Then, each must be none: a clinch
+    that disappears later in the season, team-dates where our clinch bound comes before the
+    API's flag, teams the API flagged clinched that are not among the playoff teams, and teams
+    our bound eliminated that are. And how many days the API's clinch leads our bound's."""
+    last = pl.col("standings_date") == pl.col("standings_date").max().over("season")
+    final = flagged.filter(last)
+    playoffs = final.filter(pl.col("clinched")).select("season", "team", in_playoffs=pl.lit(True))
     seasons = flagged.join(playoffs, on=["season", "team"], how="left").with_columns(
         pl.col("in_playoffs").fill_null(False)
     )
+    per_season = playoffs.group_by("season").len().sort("season")
     first = (
         flagged.group_by("season", "team")
         .agg(
@@ -294,6 +295,11 @@ def flag_checks(flagged: pl.DataFrame, games: pl.DataFrame) -> dict[str, Any]:
             name: flagged.filter(pl.col(name)).select("season", "team").unique().height
             for name in ("clinched", "eliminated", "clinched_bound")
         },
+        "playoff_teams": {
+            str(season): count
+            for season, count in zip(per_season["season"], per_season["len"], strict=True)
+        },
+        "seasons": flagged["season"].n_unique(),
     }
 
 
@@ -312,6 +318,9 @@ def enforce(checks: Mapping[str, Any]) -> None:
     }
     if nonzero:
         raise ValueError(f"the standings' flags fail checks that must be 0: {nonzero}")
+    teams = checks["playoff_teams"]
+    if len(teams) != checks["seasons"] or any(n != PLAYOFF_TEAMS for n in teams.values()):
+        raise ValueError(f"the last dates' clinch flags don't give {PLAYOFF_TEAMS} teams: {teams}")
     lead = checks["api_lead_days"]["max"]
     if lead is not None and lead > MAX_API_LEAD_DAYS:
         raise ValueError(
@@ -569,7 +578,7 @@ def run(lake: Reader, api: NhlApi) -> dict[str, Any]:
     if check["mismatches"]:
         raise ValueError(f"the standings differ from the lake's games: {check['examples']}")
     flagged = flags(standings)
-    checks = flag_checks(flagged, games)
+    checks = flag_checks(flagged)
     enforce(checks)
     explore_games = games.filter(pl.col("season").is_in(ys.EXPLORE))
     rows = lineup_rows(

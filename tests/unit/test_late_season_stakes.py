@@ -266,6 +266,8 @@ def checks(**changes: object) -> dict[str, object]:
         "clinched_missed_playoffs": 0,
         "eliminated_in_playoffs": 0,
         "api_lead_days": {"teams": 10, "median": 1.0, "max": 3},
+        "playoff_teams": {"20132014": 16},
+        "seasons": 1,
     }
     return base | changes
 
@@ -278,15 +280,31 @@ def test_the_run_stops_on_a_check_that_must_be_zero_or_a_long_api_lead() -> None
     ls.enforce(checks(api_lead_days={"teams": 1, "median": 14.0, "max": ls.MAX_API_LEAD_DAYS}))
     with pytest.raises(ValueError, match="leads our bound"):
         ls.enforce(checks(api_lead_days={"teams": 1, "median": 15.0, "max": 15}))
+    # Every season's last date must flag 16 teams clinched.
+    with pytest.raises(ValueError, match="16 teams"):
+        ls.enforce(checks(playoff_teams={"20132014": 15}))
+    with pytest.raises(ValueError, match="16 teams"):
+        ls.enforce(checks(seasons=2))
 
 
-def test_flag_checks_count_a_clinch_that_disappears() -> None:
+def test_flag_checks_read_the_playoff_teams_from_the_last_date() -> None:
     days = [DAY + timedelta(days=d) for d in range(3)]
+    # BOS clinched on the first and last dates, not between: a lost flag. TOR is bound
+    # eliminated on the last date (far behind with no games left), MTL clinches only at the end.
     rows = [
-        f.standings([("BOS", "E", "A", 70 + d, 100)], day, MODERN, {"BOS": "x"} if d != 1 else {})
+        f.standings(
+            [
+                ("BOS", "E", "A", 80 + d, 100),
+                ("TOR", "E", "A", 80 + d, 40),
+                ("MTL", "E", "A", 80 + d, 90),
+            ],
+            day,
+            MODERN,
+            {"BOS": "x", "MTL": "x"} if d == 2 else ({"BOS": "x"} if d == 0 else {}),
+        )
         for d, day in enumerate(days)
     ]
-    flagged = ls.flags(pl.concat(rows))
-    games = f.games([(2013030111, date(2014, 4, 20), "BOS", "TOR", 1, 0, "REG")], MODERN)
-    found = ls.flag_checks(flagged, games)
-    assert found["flags_lost"] == 1 and found["clinched_missed_playoffs"] == 0
+    found = ls.flag_checks(ls.flags(pl.concat(rows)))
+    assert found["flags_lost"] == 1
+    assert found["playoff_teams"] == {str(MODERN): 2} and found["seasons"] == 1
+    assert found["clinched_missed_playoffs"] == 0 and found["eliminated_in_playoffs"] == 0
