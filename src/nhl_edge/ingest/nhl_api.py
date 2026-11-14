@@ -7,8 +7,9 @@ backfill can stop and restart without refetching. In offline (replay) mode the c
 the network and fails on a cache miss.
 
 The same client fetches the NHL's HTML time-on-ice reports on www.nhl.com (#68), for the games
-whose shift chart is empty, once only and by `nhl toi-reports` alone (ingest/toi_reports.py), and
-the NHL EDGE team endpoints once a day (#424, ingest/edge_tracking.py).
+whose shift chart is empty, once only and by `nhl toi-reports` alone (ingest/toi_reports.py), the
+NHL EDGE team endpoints once a day (#424, ingest/edge_tracking.py), and the standings of past
+dates (#422, ingest/standings.py).
 """
 
 import json
@@ -18,11 +19,12 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from nhl_edge.lake.raw import RawStore
-from nhl_edge.lake.schemas import EDGE_ENDPOINTS, PERIOD_S
+from nhl_edge.lake.schemas import EDGE_ENDPOINTS, PERIOD_S, STANDINGS_PUBLIC_AFTER
 
 BASE_URL = "https://api-web.nhle.com"
 STATS_URL = "https://api.nhle.com/stats/rest"
@@ -58,6 +60,7 @@ TOI_KINDS = {"home": "toi-home", "visitor": "toi-visitor"}
 TOI_LETTERS = {"home": "H", "visitor": "V"}
 # An NHL EDGE team endpoint's raw kind is this prefix and the endpoint, such as edge-team-detail.
 EDGE_KIND_PREFIX = "edge-"
+ET = ZoneInfo("America/New_York")  # the NHL's game dates
 
 
 @dataclass(frozen=True)
@@ -354,6 +357,22 @@ class NhlApi:
             edge_team_url(endpoint, team_id, season, game_type),
             fetched_after(day_start),
         )
+
+    def standings(self, day: date) -> Response:
+        """The league standings as of day (#422), every team's line through day's games, stored
+        under nhl/standings/<YYYY-MM-DD>/. Past dates only: a date on or after today's US Eastern
+        date, whose games may still be to come, is refused before any request. A copy fetched
+        from 10:00 UTC the morning after day, when the date's games are surely over and its rows
+        count as public (Standings), is settled and reused for good. One fetched earlier, in the
+        night after the date while a late game may still be on, is fetched again."""
+        today = self.now().astimezone(ET).date()
+        if day >= today:
+            raise ValueError(
+                f"the standings of {day} are not final: only dates before {today} (US Eastern)"
+            )
+        settled = datetime(day.year, day.month, day.day, tzinfo=UTC) + STANDINGS_PUBLIC_AFTER
+        path = f"/v1/standings/{day.isoformat()}"
+        return self.fetch("standings", day.isoformat(), path, fetched_after(settled))
 
     def player_landing(self, player_id: int, reuse: Reuse = always) -> Response:
         """A player's landing page: his bio and draft facts and every season line. The ingest
