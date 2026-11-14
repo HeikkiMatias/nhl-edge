@@ -2771,6 +2771,80 @@ class EdgeTeamMetrics(pa.DataFrameModel):
         return data.lazyframe.select(pl.col("value").is_finite())
 
 
+# The clinch flags of api-web.nhle.com's standings (#422): x a playoff spot, y the division, z the
+# conference, p the Presidents' Trophy, e eliminated (listed only from 2024-25).
+STANDINGS_CLINCH = ("x", "y", "z", "p", "e")
+STANDINGS_KEY = ("standings_date", "team")
+# A date's standings count that date's games, so they are public when its results are: 10:00 UTC
+# the morning after (ingest/games.RESULT_PUBLIC_AT, ADR 0003).
+STANDINGS_PUBLIC_AFTER = timedelta(days=1, hours=10)
+
+
+class Standings(pa.DataFrameModel):
+    """One team's line of the league standings as of one date (#422), from
+    /v1/standings/{date}: its conference and division (abbreviations), games played, points,
+    wins, regulation losses, overtime and shootout losses (ot_losses), and the clinch flag the
+    NHL showed that day (STANDINGS_CLINCH), or null.
+
+    A date's standings include that date's games: on 2014-03-15 every team's games played equal
+    its games through that date. So they are public only once the date's games are over, and
+    observed_utc is 10:00 UTC the morning after standings_date, when the date's results count as
+    public (Games, ADR 0003); the schema refuses an earlier one. A game on date D, predicted on D,
+    reads the standings of D-1 at the latest (ingest/standings.standings_as_of), never D's own.
+    Not a lake table yet: ingest/standings.py validates every response it parses, for #422's
+    research only; no model reads it.
+    """
+
+    season: pl.Int32
+    standings_date: pl.Date
+    team: pl.String = pa.Field(str_matches=TRI_CODE)
+    conference: pl.String = pa.Field(str_length={"min_value": 1})
+    division: pl.String = pa.Field(str_length={"min_value": 1})
+    games_played: pl.Int16 = pa.Field(ge=0)
+    points: pl.Int16 = pa.Field(ge=0)
+    wins: pl.Int16 = pa.Field(ge=0)
+    losses: pl.Int16 = pa.Field(ge=0)
+    ot_losses: pl.Int16 = pa.Field(ge=0)
+    clinch_indicator: pl.String = pa.Field(isin=STANDINGS_CLINCH, nullable=True)
+    observed_utc: UtcDatetime
+    raw_key: pl.String = pa.Field(str_length={"min_value": 1})
+
+    class Config(pa.DataFrameModel.Config):
+        strict = True
+        ordered = True
+        unique: str | list[str] | None = list(STANDINGS_KEY)  # noqa: RUF012 (pandera config)
+
+    @pa.dataframe_check
+    def seasons_are_seasons(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(valid_season(pl.col("season")))
+
+    @pa.dataframe_check
+    def dated_in_its_season(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        year = pl.col("standings_date").dt.year()
+        season = pl.col("season")
+        return data.lazyframe.select((year >= season // 10_000) & (year <= season % 10_000))
+
+    @pa.dataframe_check
+    def one_season_a_date(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(pl.col("season").n_unique().over("standings_date") == 1)
+
+    @pa.dataframe_check
+    def decisions_within_games_played(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        decided = pl.sum_horizontal(pl.col("wins", "losses", "ot_losses").cast(pl.Int32))
+        return data.lazyframe.select(decided <= pl.col("games_played"))
+
+    @pa.dataframe_check
+    def at_most_two_points_a_game(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        return data.lazyframe.select(
+            pl.col("points").cast(pl.Int32) <= 2 * pl.col("games_played").cast(pl.Int32)
+        )
+
+    @pa.dataframe_check
+    def public_from_the_morning_after(cls, data: pa.PolarsData) -> pl.LazyFrame:
+        day = pl.col("standings_date").cast(pl.Datetime("us")).dt.replace_time_zone("UTC")
+        return data.lazyframe.select(pl.col("observed_utc") >= day + STANDINGS_PUBLIC_AFTER)
+
+
 KALSHI_SIDES = ("yes", "no")
 KALSHI_BOOKS_KEY = ("observed_utc", "ticker", "side", "price")
 # Kalshi's NHL moneyline markets, one per team and game: KXNHLGAME-26OCT17NJWSH-WSH is WSH's

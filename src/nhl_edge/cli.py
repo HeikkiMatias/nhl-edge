@@ -67,6 +67,11 @@ edge_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(edge_app, name="edge")
+standings_app = typer.Typer(
+    help="NHL standings by date (#422): every team's line as of each past date, stored raw.",
+    no_args_is_help=True,
+)
+app.add_typer(standings_app, name="standings")
 
 DEFAULT_BACKTEST_SEASONS = ",".join(str(season) for season in DEVELOPMENT_SEASONS)
 DEFAULT_BACKTEST_OUT = Path("reports/backtest")
@@ -4992,6 +4997,84 @@ def edge_snapshot(
     for problem in report.failed:
         typer.echo(f"warning: {problem}", err=True)
     if report.failed:
+        raise typer.Exit(code=1)
+
+
+@standings_app.command("fetch")
+def standings_fetch(
+    seasons: Annotated[
+        str,
+        typer.Option(help="Seasons as 20132014, a comma list or a range like 20122013-20142015."),
+    ],
+    r2: Annotated[
+        bool,
+        typer.Option(
+            "--r2", help="Read games and stored copies from R2, and mirror new copies to R2."
+        ),
+    ] = False,
+) -> None:
+    """Store the league standings of every date of each season's regular season (#422), from
+    its first to its last regular-season game date in the lake's games, off days included, since
+    a game's day before can be one. Past dates only, throttled; a stored copy is reused. Each copy
+    is parsed to check it; a fetch or parse that failed fails the run once the rest are stored.
+    Prints counts only."""
+    from datetime import timedelta
+
+    import polars as pl
+
+    from nhl_edge.ingest.nhl_api import REGULAR_SEASON, NhlApi
+    from nhl_edge.ingest.nhl_ingest import parse_seasons
+    from nhl_edge.ingest.standings import fetch_report
+    from nhl_edge.lake.raw import RawStore
+    from nhl_edge.lake.tables import Lake
+    from nhl_edge.settings import load_env
+
+    try:
+        wanted = sorted(set(parse_seasons(seasons)))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--seasons") from None
+    load_env()
+    store = RawStore.from_env(mirror=r2, flag="--r2")
+    lake = Lake.from_env(mirror=r2)
+    if r2:
+        lake.pull("games", seasons=wanted)
+    spans = {
+        season: (first, last)
+        for season, first, last in lake.read("games", seasons=wanted)
+        .filter(pl.col("game_id") // 10_000 % 100 == REGULAR_SEASON)
+        .group_by("season")
+        .agg(first=pl.col("game_date").min(), last=pl.col("game_date").max())
+        .iter_rows()
+    }
+    missing = [str(season) for season in wanted if season not in spans]
+    if missing:
+        typer.echo(
+            f"standings fetch: no regular-season game of {', '.join(missing)} in the lake's "
+            "games: run nhl ingest for those seasons, or pass --r2 to read R2's games",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    api = NhlApi(store)
+    failed = 0
+    for season in wanted:
+        first, last = spans[season]
+        days = [first + timedelta(days=n) for n in range((last - first).days + 1)]
+        report = fetch_report(api, days)
+        teams = report.teams_per_date()
+        flags = report.clinch_flags()
+        typer.echo(
+            f"standings {season}: {report.dates} dates ({first}..{last}), {report.fetched} "
+            f"fetched and {report.reused} reused from the raw cache; "
+            + ("no date parsed" if teams is None else f"{teams[0]} to {teams[1]} teams a date")
+            + "; clinch flags (team-dates): "
+            + (", ".join(f"{flag} {count:,}" for flag, count in flags.items()) or "none")
+            + f"; {len(report.failed)} failed"
+        )
+        for problem in report.failed:
+            typer.echo(f"warning: {season} {problem}", err=True)
+        failed += len(report.failed)
+    typer.echo(f"standings fetch: {api.requests} requests; {failed} failed")
+    if failed:
         raise typer.Exit(code=1)
 
 

@@ -40,6 +40,7 @@ COMMANDS = [
     "toi-reports",
     "player-seasons",
     "edge",
+    "standings",
 ]
 STUBS = [
     ["rate"],
@@ -367,6 +368,147 @@ def test_edge_snapshot_fails_on_a_changed_endpoint_after_storing_the_rest(
     # The copy that no longer parses is stored too, for a fixed parser to replay.
     stored = list((tmp_path / "data" / "raw" / "nhl").glob("edge-*/20262027/8/2/*.json.gz"))
     assert len(stored) == 6
+
+
+STANDINGS_FIXTURE = Path(__file__).parent / "fixtures" / "nhl_api" / "standings_2014-04-08.json"
+
+
+def standings_games(lake: Any = None) -> None:
+    """Two final 2013-14 games in the lake, on 2014-04-07 and 2014-04-09: an off day between."""
+    from datetime import date
+
+    import polars as pl
+    from schedule_fixtures import game_row
+
+    from nhl_edge.lake.schemas import Games, dtypes
+    from nhl_edge.lake.tables import Lake
+
+    rows = []
+    for game_id, day in ((2013021200, date(2014, 4, 7)), (2013021215, date(2014, 4, 9))):
+        row = game_row(game_id, 20132014, day, "BOS", "NYR")
+        raw_key = f"nhl/play-by-play/20132014/{game_id}/20261101T090000Z"
+        rows.append(row | {"decided_in": "REG", "raw_key": raw_key})
+    (lake or Lake()).write("games", pl.DataFrame(rows, schema=dtypes(Games)))
+
+
+def serve_standings(monkeypatch: pytest.MonkeyPatch, broken: str | None = None) -> list[str]:
+    """Answer every standings request with the 2014-04-08 fixture relabelled as the date asked
+    for (synthetic), or with {} for the broken date, and record the URLs."""
+    from datetime import UTC, datetime
+
+    from nhl_edge.ingest.nhl_api import NhlApi
+
+    urls: list[str] = []
+
+    def get(self: object, url: str, headers: object = None) -> tuple[bytes, Any, dict[str, Any]]:
+        urls.append(url)
+        day = url.rsplit("/", 1)[1]
+        data = json.loads(STANDINGS_FIXTURE.read_bytes())
+        for entry in data["standings"]:
+            entry["date"] = day
+        fetched = datetime.now(UTC).replace(microsecond=0)
+        meta = {"url": url, "status": 200, "fetched_utc": fetched.isoformat(), "attempts": 1}
+        return (b"{}" if day == broken else json.dumps(data).encode()), fetched, meta
+
+    monkeypatch.setattr(NhlApi, "_get", get)
+    return urls
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        ([], "Missing option '--seasons'"),
+        (["--seasons", "2014"], "expected a season like 20232024"),
+        (["--seasons", "20142015-20132014"], "runs backwards"),
+    ],
+)
+def test_standings_fetch_rejects_bad_seasons_before_any_call(
+    args: list[str], message: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    no_requests(monkeypatch)
+    result = runner.invoke(app, ["standings", "fetch", *args])
+    assert result.exit_code == 2
+    assert message in plain(result.output)
+
+
+def test_standings_fetch_needs_each_season_s_games_in_the_lake(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    no_requests(monkeypatch)
+    standings_games()
+    result = runner.invoke(app, ["standings", "fetch", "--seasons", "20122013-20132014"])
+    assert result.exit_code == 1
+    assert "no regular-season game of 20122013 in the lake's games" in plain(result.output)
+    assert not (tmp_path / "data" / "raw").exists()
+
+
+def test_standings_fetch_stores_every_date_from_the_first_game_to_the_last(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    standings_games()
+    urls = serve_standings(monkeypatch)
+    result = runner.invoke(app, ["standings", "fetch", "--seasons", "20132014"])
+    assert result.exit_code == 0, result.output
+    # The off day between the two games too.
+    assert urls == [f"/v1/standings/2014-04-{day:02d}" for day in (7, 8, 9)]
+    assert (
+        "standings 20132014: 3 dates (2014-04-07..2014-04-09), 3 fetched and 0 reused from the "
+        "raw cache; 30 to 30 teams a date; clinch flags (team-dates): x 33, y 3, z 3; 0 failed"
+        in plain(result.output)
+    )
+    # The fake _get bypasses the client's request count.
+    assert re.search(r"standings fetch: \d+ requests; 0 failed", plain(result.output))
+    stored = list((tmp_path / "data" / "raw" / "nhl" / "standings").glob("*/*.json.gz"))
+    assert sorted(path.parent.name for path in stored) == ["2014-04-07", "2014-04-08", "2014-04-09"]
+    rerun = runner.invoke(app, ["standings", "fetch", "--seasons", "20132014"])
+    assert rerun.exit_code == 0, rerun.output
+    assert len(urls) == 3
+    assert "0 fetched and 3 reused from the raw cache" in plain(rerun.output)
+
+
+def test_standings_fetch_fails_on_a_date_that_does_not_parse_after_storing_the_rest(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    standings_games()
+    urls = serve_standings(monkeypatch, broken="2014-04-08")
+    result = runner.invoke(app, ["standings", "fetch", "--seasons", "20132014"])
+    assert result.exit_code == 1
+    assert len(urls) == 3
+    assert "3 fetched and 0 reused from the raw cache; 30 to 30 teams a date" in plain(
+        result.output
+    )
+    assert "x 22, y 2, z 2; 1 failed" in plain(result.output)
+    assert "warning: 20132014 2014-04-08: ValueError" in plain(result.output)
+    # The copy that does not parse is stored too, for a fixed parser to replay.
+    stored = list((tmp_path / "data" / "raw" / "nhl" / "standings").glob("*/*.json.gz"))
+    assert len(stored) == 3
+
+
+def test_standings_fetch_reads_games_from_r2_and_mirrors_the_copies(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fakes import MemoryBucket
+
+    from nhl_edge.lake.tables import Lake
+
+    for name in R2_ENV:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.setattr("nhl_edge.settings.load_env", lambda: None)
+    bucket = MemoryBucket()
+    monkeypatch.setattr(R2Config, "client", lambda self: bucket)
+    # The games another machine ingested, which this one lacks.
+    standings_games(Lake(tmp_path / "runner" / "lake", "test", bucket))
+    monkeypatch.chdir(tmp_path)
+    urls = serve_standings(monkeypatch)
+    result = runner.invoke(app, ["standings", "fetch", "--seasons", "20132014", "--r2"])
+    assert result.exit_code == 0, result.output
+    assert len(urls) == 3
+    stored = [key for key in bucket.objects if key.startswith("raw/nhl/standings/")]
+    assert sum(key.endswith(".json.gz") for key in stored) == 3
+    assert sum(key.endswith(".meta.json") for key in stored) == 3
 
 
 def test_player_seasons_rebuilds_the_table_from_the_cached_pages(
